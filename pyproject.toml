@@ -1,0 +1,72 @@
+[project]
+name = "flexviz"
+version = "0.1.0"
+description = "Interactive cross-filter dashboards on 100M+ rows, in pure Python — Polars-native"
+readme = "README.md"
+license = "To Decide"
+authors = [
+    { name = "Jeroen Van der Donckt" },
+    { name = "Jonas Van der Donckt" },
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "polars>=1.43.2",
+    "fastapi>=0.135.1",
+    "uvicorn>=0.41.0",
+    "requests>=2.32.5",
+    "flexviz-polars",
+]
+
+[project.urls]
+Homepage = "https://flexviz.tech"
+Repository = "https://github.com/flex-analytics/flexviz"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.5",
+    "black>=26.3.0",
+    "numpy>=2.2.6",
+    "pytest>=9.0.2",
+    "httpx>=0.28.0",
+    "playwright>=1.58.0",
+    "pytest-playwright>=0.7.2",
+    "pytest-xdist>=3.8.0",
+    "maturin>=1.12.6",
+    "pytest-benchmark>=5.2.3",
+    "pytest-randomly>=4.0.1",
+    # polars_lf_from() accepts PyArrow tables; tests exercise that path.
+    "pyarrow>=22.0.0",
+]
+
+[tool.black]
+target-version = ["py310"]
+
+[tool.uv.sources]
+flexviz-polars = { path = "flexviz_polars", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not browser and not benchmark'"
+markers = [
+    "integration: tests that spin up a FastAPI TestClient",
+    "slow: benchmarks and large-dataset tests",
+    "browser: browser-based tests that require Playwright (run with make test-browser)",
+    "benchmark: performance benchmarks (reserved for the future benchmark suite)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

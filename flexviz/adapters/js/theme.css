@@ -1,0 +1,168 @@
+/* === FlexViz CSS design tokens === */
+/* Override any token with a later :root { --fv-accent: ... } rule in the page head. */
+/* The outer panel shell, inner plot surface, and lower control bar intentionally */
+/* have separate tokens so demos can either keep them identical or create contrast. */
+
+:root {
+  /* Accent / primary action */
+  --fv-accent:               #2563eb; /* Solid accent fill for active primary controls */
+  --fv-accent-dark:          #1d4ed8; /* Darker accent used for pressed/hovered active controls */
+  --fv-accent-bg:            rgba(37, 99, 235, 0.10); /* Low-contrast accent wash for subtle active states */
+  --fv-accent-border:        rgba(37, 99, 235, 0.26); /* Border color paired with accent-tinted controls */
+  --fv-accent-text:          rgba(37, 99, 235, 0.75); /* Accent-colored text for selected but lightweight UI */
+  --fv-accent-text-strong:   rgba(37, 99, 235, 0.78); /* Slightly stronger accent text for emphasized selected UI */
+
+  /* Surfaces */
+  --fv-bg:                   #ffffff; /* Page background behind the dashboard */
+  --fv-surface:              #fafaf8; /* Default control surface for buttons and shells */
+  --fv-surface-2:            #fafaf8; /* Secondary chrome surface, used by the top header */
+  --fv-surface-hover:        #f2ede7; /* Hover state for general controls */
+  --fv-surface-overlay:      rgba(255, 255, 255, 0.92); /* Translucent overlays/popovers */
+  --fv-panel-bg:             var(--fv-surface); /* Outer panel shell around plot + bar */
+  --fv-panel-bg-editing:     var(--fv-panel-bg); /* Outer panel shell in grid edit mode */
+  --fv-panel-surface:        var(--fv-bg); /* Inner plot area background */
+  --fv-panel-surface-editing: var(--fv-panel-surface); /* Inner plot area background in grid edit mode */
+
+  /* Borders */
+  --fv-border:               #e0d8ce; /* Standard divider/border tone for layout chrome */
+  --fv-border-btn:           #cbc1b6; /* Default border for top-toolbar buttons */
+  --fv-border-soft:          rgba(70, 55, 35, 0.15);  /* Soft UI borders such as buttons and bar separators */
+  --fv-panel-border:         rgba(35, 28, 17, 0.3); /* Outer panel border color */
+  --fv-panel-border-editing: #cfc5b8; /* Outer panel border color in grid edit mode */
+
+  /* Text */
+  --fv-text:                 #2f2822; /* Default readable text color across the UI */
+  --fv-text-muted:           rgba(47, 40, 34, 0.48); /* Muted labels for inactive mode buttons and metadata */
+  --fv-text-secondary:       rgba(47, 40, 34, 0.62); /* Secondary text for control bars and supporting UI */
+  --fv-text-strong:          rgba(33, 28, 24, 0.82); /* Strong text used on hover or emphasized controls */
+  --fv-text-faint:           rgba(47, 40, 34, 0.30); /* Very low-emphasis helper/warning text */
+  --fv-text-hover:           rgba(33, 28, 24, 0.76); /* Hover-state text color for interactive controls */
+
+  /* Danger / destructive */
+  --fv-danger-bg:            #fff0f0; /* Hover/fill color for destructive actions such as reset/deselect */
+  --fv-danger-border:        #ffb3b3; /* Border paired with destructive hover/fill states */
+
+  /* Shadows */
+  --fv-shadow-sm:            0 1px 3px rgba(72, 53, 33, 0.06); /* Small shadow for top-level chrome such as the header */
+  --fv-shadow-xs:            0 1px 2px rgba(72, 53, 33, 0.05); /* Extra-light shadow available for compact surfaces */
+  --fv-panel-shadow:         none; /* Shadow applied to each figure panel in normal mode */
+  --fv-panel-shadow-editing: none; /* Shadow applied to each figure panel while grid editing is enabled */
+
+  /* Typography */
+  --fv-font:                 sans-serif; /* Base UI font family used by toolbars and panel controls */
+  --fv-font-size-xs:         9px; /* Tiny helper text size */
+  --fv-font-size-sm:         10px; /* Compact control/button text size */
+  --fv-font-size-base:       13px; /* Default toolbar button and UI text size */
+  --fv-font-size-lg:         14px; /* Brand/header text size */
+
+  /* Shape */
+  --fv-radius:               7px; /* Default corner radius for shared buttons and control groups */
+  --fv-panel-radius:         10px; /* Panel corner radius */
+
+  /* Spacing */
+  --fv-gap-xs:               2px; /* Tight gap within compact control clusters */
+  --fv-gap-sm:               3px; /* Small gap between adjacent panel controls */
+  --fv-gap-md:               3px; /* Standard horizontal padding unit for grouped toolbar controls */
+  --fv-gap-lg:               6px; /* Larger page-level spacing used in the top header */
+  --fv-panel-pad:            2px; /* Panel inner padding around the plot/bar shell */
+
+  /* Toolbar */
+  --fv-toolbar-height:       44px; /* Shared top toolbar/header height */
+  --fv-panel-bar-height:     28px; /* Bottom control bar minimum height */
+  --fv-panel-bar-bg:         var(--fv-panel-bg); /* Bottom control bar background */
+  --fv-panel-bar-border:     var(--fv-border-soft); /* Bottom control bar top border color */
+  --fv-filter-strip-bg:      rgba(239, 246, 255, 0.96); /* Background for the global active-filter row */
+  --fv-filter-strip-border:  rgba(37, 99, 235, 0.38); /* Top border for the global active-filter row */
+  --fv-filter-strip-text:    rgba(29, 78, 216, 0.92); /* Label text for the global active-filter row */
+  --fv-filter-chip-bg:       rgba(37, 99, 235, 0.08); /* Background for individual active-filter chips */
+  --fv-filter-chip-border:   rgba(37, 99, 235, 0.18); /* Border color for active-filter chips */
+  --fv-filter-chip-text:     var(--fv-text-strong); /* Text color inside active-filter chips */
+  --fv-filter-chip-source-bg: rgba(37, 99, 235, 0.14); /* Background for the source figure label within an active-filter chip */
+  --fv-filter-chip-source-text: rgba(37, 99, 235, 0.92); /* Text color for the source figure label within an active-filter chip */
+  --fv-filter-chip-field-text: var(--fv-text-strong); /* Bold field name color inside active-filter chips */
+  --fv-filter-chip-value-text: var(--fv-text-secondary); /* Value text color inside active-filter chips */
+  --fv-filter-chip-separator-text: rgba(47, 40, 34, 0.42); /* Separator text color inside active-filter chips */
+  --fv-filter-chip-joiner-bg: rgba(47, 40, 34, 0.06); /* Background for OR joiners inside active-filter chips */
+  --fv-filter-chip-remove-bg: rgba(37, 99, 235, 0.10); /* Default background for the active-filter clear button */
+  --fv-filter-chip-remove-border: rgba(37, 99, 235, 0.22); /* Default border for the active-filter clear button */
+  --fv-filter-chip-remove-text: rgba(37, 99, 235, 0.92); /* Default text color for the active-filter clear button */
+  --fv-filter-chip-remove-hover-bg: rgba(37, 99, 235, 0.14); /* Hover background for the chip clear button */
+  --fv-filter-chip-remove-hover-border: rgba(37, 99, 235, 0.34); /* Hover border for the active-filter clear button */
+  --fv-filter-chip-remove-hover-text: var(--fv-text-strong); /* Hover text color for the chip clear button */
+
+  /* Hover interaction visuals (teal palette) */
+  --fv-hover-color:           rgba(13, 148, 136, 0.85); /* point guide line */
+  --fv-hover-interval-fill:   rgba(13, 148, 136, 0.10); /* interval band fill */
+  --fv-hover-interval-edge:   rgba(13, 148, 136, 0.60); /* interval band dashed edges */
+  --fv-hover-cell-border:     rgba(13, 148, 136, 0.80); /* cell rect outline */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Accent / primary action */
+    --fv-accent:             #93c5fd; /* Lighter accent fill so active toolbar text can stay readable */
+    --fv-accent-dark:        #60a5fa; /* Pressed/hovered active accent state in dark mode */
+    --fv-accent-bg:          rgba(147, 197, 253, 0.16); /* Subtle accent wash for selected lightweight controls */
+    --fv-accent-border:      rgba(147, 197, 253, 0.34); /* Border paired with accent-tinted controls in dark mode */
+    --fv-accent-text:        rgba(191, 219, 254, 0.92); /* Accent-colored text for active but non-solid controls */
+    --fv-accent-text-strong: rgba(219, 234, 254, 0.96); /* Stronger accent text for emphasized active controls */
+
+    /* Surfaces */
+    --fv-bg:                 #171411; /* Page background behind the dashboard */
+    --fv-surface:            #24201c; /* Default control surface for buttons and shells */
+    --fv-surface-2:          #211d19; /* Secondary chrome surface, used by the top header */
+    --fv-surface-hover:      #2d2823; /* Hover state for general controls */
+    --fv-surface-overlay:    rgba(31, 27, 24, 0.92); /* Translucent overlays/popovers */
+    --fv-panel-bg:           var(--fv-surface); /* Outer panel shell around plot + bar */
+    --fv-panel-bg-editing:   #2a2520; /* Outer panel shell in grid edit mode */
+    --fv-panel-surface:      #1d1916; /* Inner plot area background */
+    --fv-panel-surface-editing: #221d19; /* Inner plot area background in grid edit mode */
+
+    /* Borders */
+    --fv-border:             rgba(255, 245, 235, 0.12); /* Standard divider/border tone for layout chrome */
+    --fv-border-btn:         rgba(255, 245, 235, 0.18); /* Default border for top-toolbar buttons */
+    --fv-border-soft:        rgba(255, 245, 235, 0.14); /* Soft UI borders such as buttons and bar separators */
+    --fv-panel-border:       rgba(255, 245, 235, 0.12); /* Outer panel border color */
+    --fv-panel-border-editing: rgba(255, 245, 235, 0.20); /* Outer panel border color in grid edit mode */
+
+    /* Text */
+    --fv-text:               rgba(255, 248, 242, 0.92); /* Default readable text color across the UI */
+    --fv-text-muted:         rgba(255, 248, 242, 0.52); /* Muted labels for inactive mode buttons and metadata */
+    --fv-text-secondary:     rgba(255, 248, 242, 0.68); /* Secondary text for control bars and supporting UI */
+    --fv-text-strong:        rgba(255, 250, 246, 0.96); /* Strong text used on hover or emphasized controls */
+    --fv-text-faint:         rgba(255, 248, 242, 0.34); /* Very low-emphasis helper/warning text */
+    --fv-text-hover:         rgba(255, 250, 246, 0.88); /* Hover-state text color for interactive controls */
+
+    /* Danger / destructive */
+    --fv-danger-bg:          rgba(127, 29, 29, 0.34); /* Hover/fill color for destructive actions such as reset/deselect */
+    --fv-danger-border:      rgba(248, 113, 113, 0.44); /* Border paired with destructive hover/fill states */
+
+    /* Shadows */
+    --fv-shadow-sm:          0 1px 3px rgba(0, 0, 0, 0.32); /* Small shadow for top-level chrome such as the header */
+    --fv-shadow-xs:          0 1px 2px rgba(0, 0, 0, 0.24); /* Extra-light shadow available for compact surfaces */
+    --fv-panel-shadow:       none; /* Shadow applied to each figure panel in normal mode */
+    --fv-panel-shadow-editing: none; /* Shadow applied to each figure panel while grid editing is enabled */
+
+    /* Toolbar */
+    --fv-panel-bar-bg:       rgba(36, 32, 28, 0.92); /* Dark-mode-only control bar surface */
+    --fv-panel-bar-border:   rgba(255, 245, 235, 0.15); /* Dark-mode-only divider above the control bar */
+    --fv-filter-strip-bg:    rgba(23, 37, 84, 0.94); /* Background for the global active-filter row */
+    --fv-filter-strip-border: rgba(147, 197, 253, 0.42); /* Top border for the global active-filter row */
+    --fv-filter-strip-text:  rgba(191, 219, 254, 0.96); /* Label text for the global active-filter row */
+    --fv-filter-chip-bg:     rgba(147, 197, 253, 0.14); /* Background for individual active-filter chips */
+    --fv-filter-chip-border: rgba(147, 197, 253, 0.24); /* Border color for active-filter chips */
+    --fv-filter-chip-text:   rgba(255, 250, 246, 0.94); /* Text color inside active-filter chips */
+    --fv-filter-chip-source-bg: rgba(147, 197, 253, 0.20); /* Background for the source figure label within an active-filter chip */
+    --fv-filter-chip-source-text: rgba(239, 246, 255, 0.98); /* Text color for the source figure label within an active-filter chip */
+    --fv-filter-chip-field-text: rgba(255, 250, 246, 0.98); /* Bold field name color inside active-filter chips */
+    --fv-filter-chip-value-text: rgba(255, 248, 242, 0.78); /* Value text color inside active-filter chips */
+    --fv-filter-chip-separator-text: rgba(255, 248, 242, 0.46); /* Separator text color inside active-filter chips */
+    --fv-filter-chip-joiner-bg: rgba(255, 248, 242, 0.08); /* Background for OR joiners inside active-filter chips */
+    --fv-filter-chip-remove-bg: rgba(147, 197, 253, 0.16); /* Default background for the active-filter clear button */
+    --fv-filter-chip-remove-border: rgba(147, 197, 253, 0.28); /* Default border for the active-filter clear button */
+    --fv-filter-chip-remove-text: rgba(239, 246, 255, 0.98); /* Default text color for the active-filter clear button */
+    --fv-filter-chip-remove-hover-bg: rgba(147, 197, 253, 0.18); /* Hover background for the chip clear button */
+    --fv-filter-chip-remove-hover-border: rgba(191, 219, 254, 0.36); /* Hover border for the active-filter clear button */
+    --fv-filter-chip-remove-hover-text: rgba(255, 250, 246, 0.98); /* Hover text color for the chip clear button */
+  }
+}

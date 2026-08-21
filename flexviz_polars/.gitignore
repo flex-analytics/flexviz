@@ -1,0 +1,8 @@
+*.so
+*.pyc
+target
+venv
+.venv
+*.dll
+*.pyd
+*.dylib*
