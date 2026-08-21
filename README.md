@@ -87,4 +87,4 @@ versions — see the compatibility policy in [AGENTS.md](AGENTS.md).
 
 ## License
 
-[TO DECIDE](LICENSE) © 2026 [Flex Analytics BV](https://flexviz.tech)
+[Apache-2.0](LICENSE) © 2026 [Flex Analytics BV](https://flexviz.tech)

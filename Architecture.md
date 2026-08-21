@@ -880,9 +880,8 @@ Every cross-filter interaction above recomputes the target aggregations over the
 data — O(n) in rows, once per committed selection. The **cube** path ports Mosaic's data-cube
 index so an *active brush* becomes a slice over a tiny pre-aggregation — O(cells), flat in
 dataset size — and adds drag-time updates that flexviz previously did not have at all (only
-`plotly_selected`/mouseup was bound). The normative design, including the Mosaic comparison and
-the phased rollout, is `docs/superpowers/specs/2026-06-08-cube-cross-filter-design.md`; this
-section describes what is implemented (Phases 1–4).
+`plotly_selected`/mouseup was bound). This section is the normative description of what is
+implemented.
 
 A cube is one target trace's grouping × the brushed (free) axis, holding decomposable partial
 measures. A **range** free axis (hist / box / line source) is binned to a **fixed resolution
@@ -1436,50 +1435,29 @@ flexviz/
 │   │   └── test_plugin_functions.py ← unit tests for every_nth and arg_min_max
 │   ├── Cargo.toml
 │   └── pyproject.toml
-├── tests/
-│   ├── conftest.py          ← shared fixtures (DataFrames, traces, API client)
-│   ├── test_spec.py
-│   ├── test_lf.py
-│   ├── test_engine.py
-│   ├── test_trace_base.py
-│   ├── test_trace_line.py
-│   ├── test_trace_hist.py
-│   ├── test_trace_box.py
-│   ├── test_trace_pie.py
-│   ├── test_trace_treemap.py
-│   ├── test_trace_hist2d.py
-│   ├── test_trace_geo_hist2d.py
-│   ├── test_trace_corr_heatmap.py
-│   ├── test_adapters.py
-│   ├── test_html_adapters.py
-│   ├── test_integration.py
-│   ├── test_predicates.py
-│   ├── test_cube.py         ← cube build / codec / descriptor unit tests
-│   ├── test_cube_server.py  ← request_cube server/engine path
-│   ├── test_cache.py
-│   ├── test_bench_smoke.py
-│   ├── test_browser.py      ← Playwright (make test-browser)
-│   └── test_browser_cube.py ← Playwright live-brush / cube gesture tests
-├── benchmarks/
-│   ├── HARNESS_PLAN.md       ← unified harness design of record
-│   ├── harness/              ← unified time + peak-memory harness (make bench-harness*)
-│   │   ├── core.py           ← timing + fresh-subprocess memory pass + cgroup cap
-│   │   ├── sources.py        ← memory / parquet warm+cold seam (backend-agnostic)
-│   │   ├── fixtures.py       ← one wide parquet per size (generate-once)
-│   │   ├── workloads.py      ← init / zoom / cube build+encode / transport
-│   │   ├── scenarios.py      ← tagged canonical matrix
-│   │   ├── runner.py         ← CLI → results JSON
-│   │   └── report.py         ← results JSON → Markdown
-│   ├── bench.py              ← standalone interactive benchmarks
-│   ├── polars_bench.py       ← dtype-casting, grouped queries, plugin vs. Polars
-│   ├── polars_bench_hist2d.py ← 2D histogram binning strategies
-│   └── suite/test_micro.py   ← pytest-benchmark Polars/Rust KERNEL micros only
-├── demo/
-│   ├── server.py             ← Fly.io demo: energy dashboard (line/bar/pie/treemap)
-│   ├── prepare_data.py       ← data preparation script
-│   └── data/                 ← energy.parquet (hourly solar/wind, 2015-2020, DE/FR/ES/IT)
-└── examples/
-    └── line_poc.py
+└── tests/
+    ├── conftest.py          ← shared fixtures (DataFrames, traces, API client)
+    ├── test_spec.py
+    ├── test_lf.py
+    ├── test_engine.py
+    ├── test_trace_base.py
+    ├── test_trace_line.py
+    ├── test_trace_hist.py
+    ├── test_trace_box.py
+    ├── test_trace_pie.py
+    ├── test_trace_treemap.py
+    ├── test_trace_hist2d.py
+    ├── test_trace_geo_hist2d.py
+    ├── test_trace_corr_heatmap.py
+    ├── test_adapters.py
+    ├── test_html_adapters.py
+    ├── test_integration.py
+    ├── test_predicates.py
+    ├── test_cube.py         ← cube build / codec / descriptor unit tests
+    ├── test_cube_server.py  ← request_cube server/engine path
+    ├── test_cache.py
+    ├── test_browser.py      ← Playwright (make test-browser)
+    └── test_browser_cube.py ← Playwright live-brush / cube gesture tests
 ```
 
 ---
