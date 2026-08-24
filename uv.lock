@@ -319,6 +319,12 @@ dev = [
 [[package]]
 name = "flexviz-polars"
 source = { editable = "flexviz_polars" }
+dependencies = [
+    { name = "polars" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "polars", specifier = ">=1.43.2,<1.50" }]
 
 [[package]]
 name = "greenlet"

@@ -1,20 +1,39 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0", "polars>=1.38"]
+requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "flexviz-polars"
+description = "Rust Polars expression kernels for FlexViz"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    { name = "Jeroen Van der Donckt" },
+    { name = "Jonas Van der Donckt" },
+]
 requires-python = ">=3.10"
 classifiers = [
-  "Programming Language :: Rust",
-  "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
 ]
+# The kernels register themselves onto `pl.Expr.flexviz`, so polars is a hard
+# runtime import, not an optional accelerator. The upper bound is here rather
+# than on flexviz because this is the package with the ABI coupling: the
+# compiled plugin is built against pyo3-polars 0.28 / polars-rs 0.55, and a
+# mismatch is a call-time error. The weekly canary says when to raise it.
+dependencies = ["polars>=1.43.2,<1.50"]
 dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://flexviz.tech"
+Repository = "https://github.com/flex-analytics/flexviz"
+Issues = "https://github.com/flex-analytics/flexviz/issues"
 
 [tool.maturin]
 module-name = "flexviz_polars._internal"
-
-[[tool.mypy.overrides]]
-module = "polars.utils.udfs"
-ignore_missing_imports = true

@@ -2,6 +2,10 @@
 name = "flexviz-polars"
 version = "0.1.0"
 edition = "2021"
+description = "Rust Polars expression kernels for FlexViz"
+license = "Apache-2.0"
+repository = "https://github.com/flex-analytics/flexviz"
+authors = ["Jeroen Van der Donckt", "Jonas Van der Donckt"]
 
 [lib]
 name = "flexviz_polars"
