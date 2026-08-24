@@ -6,8 +6,6 @@
 #     `dependencies = ["polars>=..."]` (plan 1.2).
 #   - Cargo.toml must carry the SemVer spelling, `0.1.0-beta.1`, which maturin
 #     normalizes to 0.1.0b1 (plan 0.4).
-#   - Once the cargo feature gate exists (plan 2.2), the wheel build args gain
-#     `--features nightly`, and a stable-toolchain sdist job joins `smoke`.
 #
 # Build once, publish twice: TestPyPI first, then the *same* artifacts to PyPI
 # after a human approves the `pypi` environment.
@@ -91,14 +89,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # Phase 2 adds `--features nightly` here.
+      # Shipped wheels get the nightly SIMD path; the pinned toolchain is what
+      # makes that legal. Source builds fall back to stable, see `stable-sdist`.
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           rust-toolchain: nightly-2026-04-14
           sccache: "true"
-          args: --release --out dist -m flexviz_polars/Cargo.toml
+          args: --release --features nightly --out dist -m flexviz_polars/Cargo.toml
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -150,8 +149,40 @@ jobs:
         run: smoke-env/Scripts/python -m pytest flexviz_polars/tests -q
         if: runner.os == 'Windows'
 
+  # The promise the `nightly` feature gate exists to keep: anyone on a platform
+  # we ship no wheel for builds this sdist with whatever toolchain they have.
+  # `cargo build` cannot verify it — a pyo3 extension-module cdylib does not
+  # link standalone — so this installs the real sdist the way pip would, with
+  # stable forced, and runs the kernels against what that produced.
+  stable-sdist:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-sdist
+          path: dist
+
+      - name: Build the sdist from source on stable
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          uv venv stable-env
+          VIRTUAL_ENV=stable-env uv pip install --no-binary :all: dist/*.tar.gz pytest
+
+      - name: Kernels work without the nightly SIMD path
+        run: stable-env/bin/python -m pytest flexviz_polars/tests -q
+
   publish-testpypi:
-    needs: [gate, smoke]
+    needs: [gate, smoke, stable-sdist]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:

@@ -81,7 +81,7 @@ jobs:
       # compiles faster, and its overflow checks are worth having in CI.
       # release.yml builds and tests the release artifact.
       - name: Build plugin wheel
-        run: uv run --no-sync maturin build -m flexviz_polars/Cargo.toml -o dist
+        run: uv run --no-sync maturin build --features nightly -m flexviz_polars/Cargo.toml -o dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

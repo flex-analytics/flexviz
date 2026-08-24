@@ -18,13 +18,26 @@ pyo3-polars = { version = "0.28.0", features = ["derive", "dtype-struct", "dtype
 serde = { version = "1", features = ["derive"] }
 polars = { version = "0.55.1", default-features = false, features = ["dtype-f16", "dtype-struct", "dtype-i8", "dtype-i16", "dtype-u8", "dtype-u16"] }
 polars-arrow = { version = "0.55.1", default-features = false }
-argminmax = { version = "0.6", default-features = false, features = ["float", "half", "nightly_simd"] }
+argminmax = { version = "0.6", default-features = false, features = ["float", "half"] }
 half = { version = "2.7", default-features = false }
 # Kernel-internal parallelism. A cdylib plugin statically links its own
 # polars-core, so the host's pool cannot be joined (pola-rs/polars#19650); the
 # kernels run on a dedicated pool sized from POLARS_MAX_THREADS instead — see
 # kernel_pool() in src/expressions.rs and benchmarks/results/hist-parallel-*.md.
 rayon = "1.12"
+
+# `nightly_simd` buys AVX512 (x86) and most of NEON (ARM) through std::simd,
+# which is nightly-only, and is the *only* reason this crate needs nightly: the
+# source itself has no #![feature] and no portable_simd. Released wheels are
+# built on the pinned nightly with `--features nightly`, so they lose nothing.
+#
+# It is off by default so that a source build works on stable, which matters
+# because the maturin sdist does not carry rust-toolchain.toml: without this,
+# `pip install` on any platform we ship no wheel for fails outright instead of
+# building a slightly slower kernel. x86_64 keeps SSE/AVX2 either way.
+[features]
+default = []
+nightly = ["argminmax/nightly_simd"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

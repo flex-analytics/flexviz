@@ -14,8 +14,8 @@ test-browser:
 
 .PHONY: build-plugin
 build-plugin:
-	uv run maturin develop --manifest-path flexviz_polars/Cargo.toml
+	uv run maturin develop --features nightly --manifest-path flexviz_polars/Cargo.toml
 
 .PHONY: build-plugin-release
 build-plugin-release:
-	uv run maturin develop --release --manifest-path flexviz_polars/Cargo.toml
+	uv run maturin develop --release --features nightly --manifest-path flexviz_polars/Cargo.toml
