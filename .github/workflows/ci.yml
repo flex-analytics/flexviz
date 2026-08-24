@@ -41,8 +41,8 @@ jobs:
         run: uv run --no-sync ruff check flexviz tests
 
       # rustfmt.toml uses group_imports/imports_granularity, which are
-      # nightly-only. rustup installs the toolchain pinned in
-      # rust-toolchain.toml automatically.
+      # nightly-only. rustup auto-installs the toolchain pinned in
+      # rust-toolchain.toml, including the components it names.
       - name: cargo fmt
         run: cargo fmt --manifest-path flexviz_polars/Cargo.toml --check
 

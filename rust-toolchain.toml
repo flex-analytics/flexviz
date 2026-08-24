@@ -1,2 +1,6 @@
 [toolchain]
 channel = "nightly-2026-04-14"
+# CI runners configure rustup with the minimal profile, which omits both of
+# these. Naming them here means the toolchain rustup auto-installs is complete
+# everywhere, rather than only on machines using the default profile.
+components = ["rustfmt", "clippy"]
