@@ -1,5 +1,10 @@
 <h1 align="center">
-  <img src="docs/logo.svg" width="54" style="vertical-align: middle" alt="FlexViz logo">&nbsp;&nbsp;&nbsp;FlexViz
+  <a href="https://flexviz.tech/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flexviz-wordmark-dark.png">
+      <img src="docs/assets/flexviz-wordmark-light.png" width="212" alt="FlexViz">
+    </picture>
+  </a>
 </h1>
 
 <p align="center">
