@@ -1,0 +1,175 @@
+# Publishes flexviz. Triggered by a `v*` tag.
+#
+# Prerequisites that are NOT in place yet (plan phases 0 to 1). Until they land,
+# tagging will stop at the `gate` job, which is the intended behaviour:
+#   - pyproject.toml needs the sdist allowlist (plan 0.1), numpy and pydantic
+#     declared, and the flexviz-polars pin (plan 0.2).
+#   - flexviz-polars must already be on PyPI, or the smoke install cannot
+#     resolve it. Release the plugin first; see release-plugin.yml.
+#
+# Build once, publish twice: TestPyPI first, then the *same* artifacts to PyPI
+# after a human approves the `pypi` environment.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: flexviz_polars
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Build and install the plugin
+        run: |
+          uv sync --locked --no-install-package flexviz-polars
+          uv run --no-sync maturin build -m flexviz_polars/Cargo.toml -o build-check
+          VIRTUAL_ENV=.venv uv pip install build-check/*.whl
+
+      - name: Lint
+        run: |
+          uv run --no-sync black --check flexviz tests
+          uv run --no-sync ruff check flexviz tests
+
+      - name: Tests
+        run: uv run --no-sync pytest tests flexviz_polars/tests -q
+
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+
+      - name: Artifacts match the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for expected in "dist/flexviz-${version}.tar.gz" "dist/flexviz-${version}-py3-none-any.whl"; do
+            if [ ! -f "$expected" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} expects ${expected}, got: $(ls dist)"
+              exit 1
+            fi
+          done
+
+      # The last automated thing standing between the private working notes and
+      # a permanent public upload. An allowlist, so a new private file at the
+      # repo root fails this check instead of shipping unnoticed.
+      - name: sdist contains only what it should
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          actual=$(tar tzf "dist/flexviz-${version}.tar.gz" \
+            | sed "s|^flexviz-${version}/||" | cut -d/ -f1 | sort -u | grep -v '^$')
+          expected=$(printf '%s\n' \
+            Architecture.md CHANGELOG.md LICENSE NOTICE PKG-INFO README.md \
+            SECURITY.md flexviz pyproject.toml tests | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::sdist contents do not match the allowlist"
+            diff <(echo "$expected") <(echo "$actual") || true
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  smoke:
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      # An empty venv with no repo checkout: the wheel and its declared
+      # dependencies only. flexviz-polars resolves from PyPI, which is why the
+      # plugin has to be released first.
+      - name: Install the wheel alone
+        run: |
+          uv venv smoke-env
+          VIRTUAL_ENV=smoke-env uv pip install dist/flexviz-*.whl
+
+      # Covers the three things a wheel silently gets wrong: an undeclared
+      # runtime import (numpy, pydantic), an unresolvable plugin pin, and
+      # missing package data. The JS bundle and theme CSS are read from the
+      # installed package, so a wheel without them fails here.
+      - name: Import, build a spec, read the packaged assets
+        run: |
+          cat > smoke.py <<'EOF'
+          import polars as pl
+          from flexviz import Figure
+          from flexviz.adapters import runtime
+
+          spec = Figure(
+              pl.DataFrame({"x": [1, 2, 3], "y": [1.0, 2.0, 3.0]})
+          ).add_line(x="x", y="y").to_spec()
+          assert len(spec.figure.traces) == 1
+          assert len(runtime.plotly_bundle_js()) > 50_000
+          assert len(runtime.theme_css()) > 1_000
+          print("smoke ok")
+          EOF
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            smoke-env/Scripts/python smoke.py
+          else
+            smoke-env/bin/python smoke.py
+          fi
+
+  publish-testpypi:
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+
+  publish-pypi:
+    # Gated on the `pypi` environment's required reviewers. The rehearsal
+    # against TestPyPI happens in that pause, and the artifacts published here
+    # are byte-for-byte the ones that were rehearsed.
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist

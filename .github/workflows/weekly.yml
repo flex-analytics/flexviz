@@ -1,0 +1,51 @@
+# Early warning for breakage that arrives without anyone touching FlexViz.
+#
+# Polars guards the plugin ABI at call time (`_polars_plugin_get_version`), so a
+# mismatch surfaces as "this Polars engine doesn't support plugin version:" on
+# the first chart rather than as wrong numbers. This job is what tells us that
+# before a user does, and it is the signal that says when the polars ceiling in
+# pyproject.toml can be raised.
+name: Weekly
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  polars-latest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: flexviz_polars
+
+      # Self-contained rather than reusing ci.yml's artifact: a weekly job that
+      # depends on a recent CI run is a weekly job that silently stops running.
+      - name: Build and install the plugin
+        run: |
+          uv sync --locked --no-install-package flexviz-polars
+          uv run --no-sync maturin build -m flexviz_polars/Cargo.toml -o dist
+          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+
+      - name: Upgrade polars past the pinned version
+        run: |
+          VIRTUAL_ENV=.venv uv pip install --upgrade polars
+          uv run --no-sync python -c "import polars; print('polars', polars.__version__)"
+
+      - name: Tests
+        run: uv run --no-sync pytest tests flexviz_polars/tests -q
