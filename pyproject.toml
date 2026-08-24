@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Interactive cross-filter dashboards on 100M+ rows, in pure Python — Polars-native"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "Jeroen Van der Donckt" },
     { name = "Jonas Van der Donckt" },
@@ -29,7 +30,7 @@ dependencies = [
     "requests>=2.32.5",
     "numpy>=1.24",
     "pydantic>=2",
-    "flexviz-polars",
+    "flexviz-polars>=0.1.0b1,<0.2",
 ]
 
 [project.urls]
