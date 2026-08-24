@@ -9,8 +9,12 @@ on:
 permissions:
   contents: read
 
+# Pull requests group by PR number, so a new push supersedes the old run.
+# Pushes group by SHA, i.e. never collide: sharing one group across pushes to
+# main makes GitHub cancel the intermediate *pending* run even with
+# cancel-in-progress false, and a cancelled run shows up as a failing badge.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -45,6 +49,9 @@ jobs:
       # rust-toolchain.toml, including the components it names.
       - name: cargo fmt
         run: cargo fmt --manifest-path flexviz_polars/Cargo.toml --check
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path flexviz_polars/Cargo.toml --all-targets -- -D warnings
 
   plugin:
     strategy:

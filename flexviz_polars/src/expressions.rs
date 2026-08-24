@@ -67,7 +67,7 @@ fn every_nth(inputs: &[Series], kwargs: EveryNthKwargs) -> PolarsResult<Series> 
     let stride = (len / kwargs.n_points).max(1);
 
     // Compute ceil(len / stride) but cap at n_points to guarantee at most n_points output.
-    let n_out = ((len + stride - 1) / stride).min(kwargs.n_points);
+    let n_out = len.div_ceil(stride).min(kwargs.n_points);
 
     let indices: Vec<u32> = (0..n_out).map(|i| (i * stride) as u32).collect();
     let idx_ca = UInt32Chunked::from_iter_values("".into(), indices.into_iter());
@@ -467,12 +467,14 @@ where
         // The inverted comparisons match the FPCS paper/tsdownsample behavior:
         // regular extrema update as expected, and NaNs are selected by the
         // NaN-propagating policy because comparisons with NaN are false.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN-propagating, see above
         if !(max_point.y > max_y) {
             max_point = FpcsPoint {
                 x: max_idx,
                 y: max_y,
             };
         }
+        #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN-propagating, see above
         if !(min_point.y <= min_y) {
             min_point = FpcsPoint {
                 x: min_idx,
@@ -508,11 +510,12 @@ where
     sampled_indices
 }
 
+/// Per-window `(arg_min, arg_max)` row indices; `None` where a window is
+/// empty or all-null.
+type ArgMinMaxIdx = (Vec<Option<u64>>, Vec<Option<u64>>);
+
 // Dispatch: try SIMD path first; fall back to Polars arg_min/arg_max per window.
-fn simd_argminmax(
-    s: &Series,
-    offsets: &[(usize, usize)],
-) -> Option<(Vec<Option<u64>>, Vec<Option<u64>>)> {
+fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx> {
     macro_rules! try_dispatch {
         ($downcast:ident) => {
             if let Ok(ca) = s.$downcast() {
@@ -558,10 +561,7 @@ fn simd_argminmax(
     None
 }
 
-fn argminmax_contiguous<T>(
-    values: &[T],
-    offsets: &[(usize, usize)],
-) -> (Vec<Option<u64>>, Vec<Option<u64>>)
+fn argminmax_contiguous<T>(values: &[T], offsets: &[(usize, usize)]) -> ArgMinMaxIdx
 where
     for<'a> &'a [T]: ArgMinMax,
 {
@@ -581,10 +581,7 @@ where
     (min_indices, max_indices)
 }
 
-fn argminmax_chunked<T>(
-    chunks: &[&[T]],
-    offsets: &[(usize, usize)],
-) -> (Vec<Option<u64>>, Vec<Option<u64>>)
+fn argminmax_chunked<T>(chunks: &[&[T]], offsets: &[(usize, usize)]) -> ArgMinMaxIdx
 where
     T: ArgMinMaxValue,
     for<'a> &'a [T]: ArgMinMax,
@@ -622,10 +619,10 @@ where
             let base = chunk_pos + lo;
             let cmin = slice[min_i];
             let cmax = slice[max_i];
-            if min_best.map_or(true, |(_, v)| min_is_better(cmin, v)) {
+            if min_best.is_none_or(|(_, v)| min_is_better(cmin, v)) {
                 min_best = Some((base + min_i, cmin));
             }
-            if max_best.map_or(true, |(_, v)| max_is_better(cmax, v)) {
+            if max_best.is_none_or(|(_, v)| max_is_better(cmax, v)) {
                 max_best = Some((base + max_i, cmax));
             }
             if chunk_end <= window_end {
@@ -668,10 +665,7 @@ fn pf16_as_half_slice(values: &[pf16]) -> &[f16] {
     unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<f16>(), values.len()) }
 }
 
-fn fallback_window_argminmax(
-    s: &Series,
-    offsets: &[(usize, usize)],
-) -> (Vec<Option<u64>>, Vec<Option<u64>>) {
+fn fallback_window_argminmax(s: &Series, offsets: &[(usize, usize)]) -> ArgMinMaxIdx {
     let mut arg_min_idx: Vec<Option<u64>> = Vec::with_capacity(offsets.len());
     let mut arg_max_idx: Vec<Option<u64>> = Vec::with_capacity(offsets.len());
 
@@ -913,6 +907,7 @@ fn count_2d_slices<X, Y>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn count_2d_ca<T>(
     x_ca: &ChunkedArray<T>,
     y_ca: &ChunkedArray<T>,
@@ -986,6 +981,7 @@ fn update_reducer(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reduce_2d_ca<T>(
     x_ca: &ChunkedArray<T>,
     y_ca: &ChunkedArray<T>,
@@ -1038,6 +1034,7 @@ fn reduce_2d_ca<T>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fixed_hist2d_counts(
     x: &Series,
     y: &Series,
@@ -1123,6 +1120,7 @@ fn fixed_hist2d_counts(
     Ok(counts)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fixed_hist2d_reduce_values(
     x: &Series,
     y: &Series,
