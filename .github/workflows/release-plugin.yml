@@ -1,0 +1,190 @@
+# Publishes flexviz-polars. Triggered by a `polars-v*` tag.
+#
+# Prerequisites that are NOT in place yet (plan phases 0 to 2). Until they land,
+# tagging will stop at the `gate` job, which is the intended behaviour:
+#   - flexviz_polars/pyproject.toml needs a description, license, and its own
+#     `dependencies = ["polars>=..."]` (plan 1.2).
+#   - Cargo.toml must carry the SemVer spelling, `0.1.0-beta.1`, which maturin
+#     normalizes to 0.1.0b1 (plan 0.4).
+#   - Once the cargo feature gate exists (plan 2.2), the wheel build args gain
+#     `--features nightly`, and a stable-toolchain sdist job joins `smoke`.
+#
+# Build once, publish twice: TestPyPI first, then the *same* artifacts to PyPI
+# after a human approves the `pypi` environment.
+name: Release plugin
+
+on:
+  push:
+    tags: ["polars-v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: flexviz_polars
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Build and install the plugin
+        run: |
+          uv sync --locked --no-install-package flexviz-polars
+          uv run --no-sync maturin build -m flexviz_polars/Cargo.toml -o build-check
+          VIRTUAL_ENV=.venv uv pip install build-check/*.whl
+
+      - name: Tests
+        run: uv run --no-sync pytest tests flexviz_polars/tests -q
+
+      # The sdist filename carries maturin's own PEP 440 normalization, so
+      # asserting against it checks the Cargo `0.1.0-beta.1` to `0.1.0b1`
+      # mapping instead of reimplementing it here.
+      - name: Build sdist and check it matches the tag
+        run: |
+          uv run --no-sync maturin sdist -m flexviz_polars/Cargo.toml -o dist
+          version="${GITHUB_REF_NAME#polars-v}"
+          expected="dist/flexviz_polars-${version}.tar.gz"
+          if [ ! -f "$expected" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} expects ${expected}, got: $(ls dist)"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-wheels:
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runners for all five targets, so every wheel can be smoke
+        # tested on the architecture it is built for. Cross-compiling would
+        # leave the aarch64 and Intel-macOS wheels shipped but never executed.
+        include:
+          - {os: ubuntu-latest, target: x86_64, manylinux: "2_28"}
+          - {os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28"}
+          - {os: macos-13, target: x86_64}
+          - {os: macos-latest, target: aarch64}
+          - {os: windows-latest, target: x64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Phase 2 adds `--features nightly` here.
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          rust-toolchain: nightly-2026-04-14
+          sccache: "true"
+          args: --release --out dist -m flexviz_polars/Cargo.toml
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  smoke:
+    needs: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, target: x86_64}
+          - {os: ubuntu-24.04-arm, target: aarch64}
+          - {os: macos-13, target: x86_64}
+          - {os: macos-latest, target: aarch64}
+          - {os: windows-latest, target: x64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+
+      # An empty venv holding nothing but the wheel and its declared
+      # dependencies. This is what catches an undeclared runtime dependency,
+      # which `pip check` cannot see.
+      - name: Install the wheel alone
+        run: |
+          uv venv smoke-env
+          VIRTUAL_ENV=smoke-env uv pip install dist/*.whl pytest
+
+      # The existing 135-test plugin suite rather than a hand-written list of
+      # calls: a hand-maintained list is what let the docs drift to claiming
+      # four kernels when there are seven.
+      - name: Plugin suite against the installed wheel
+        run: smoke-env/bin/python -m pytest flexviz_polars/tests -q
+        if: runner.os != 'Windows'
+
+      - name: Plugin suite against the installed wheel (Windows)
+        run: smoke-env/Scripts/python -m pytest flexviz_polars/tests -q
+        if: runner.os == 'Windows'
+
+  publish-testpypi:
+    needs: [gate, smoke]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      # One aggregating publish call. Publishing per matrix leg would leave a
+      # half-released version behind on any failure, and a released version
+      # cannot be replaced, only yanked.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+
+  publish-pypi:
+    # Gated on the `pypi` environment's required reviewers. The rehearsal
+    # against TestPyPI happens in that pause, and the artifacts published here
+    # are byte-for-byte the ones that were rehearsed.
+    needs: [gate, publish-testpypi]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist

@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; dependabot is what keeps those pins
+  # current and rewrites the trailing version comment along with them.
+  # Grouped, so a quiet week costs nothing and a busy one costs one PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /flexviz_polars
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+        # polars and pyo3-polars are ABI-coupled to the polars Python package,
+        # so their bumps arrive as their own PR rather than buried in a batch
+        # with serde and rayon.
+        exclude-patterns: ["polars*", "pyo3-polars"]
+
+  # No pip/uv ecosystem: uv owns uv.lock and the PRs would be noise.
