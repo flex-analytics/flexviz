@@ -72,3 +72,20 @@ markers = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# An allowlist, not an exclude list: anything new at the repo root stays out of
+# the sdist unless it is named here
+[tool.hatch.build.targets.sdist]
+# Leading slashes anchor to the repo root. Without them these are
+# gitignore-style patterns that match at any depth, which pulls
+# flexviz_polars/{README.md,pyproject.toml,tests} in as well.
+include = [
+    "/flexviz",
+    "/tests",
+    "/Architecture.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/README.md",
+    "/SECURITY.md",
+    "/pyproject.toml",
+]
