@@ -1804,6 +1804,67 @@ class TestArgMinMaxParallel:
         assert _arg_min_max(one, n_points=n_points).to_list() == expected
         assert _arg_min_max(many, n_points=n_points).to_list() == expected
 
+    # -- null fallback -----------------------------------------------------
+    #
+    # `simd_argminmax` requires null_count == 0, so a single null routes the whole
+    # column to `fallback_window_argminmax`. That is also split by window, so these
+    # exercise the parallel fallback rather than the SIMD paths.
+
+    @staticmethod
+    def _expected_with_nulls(values: list[float | None], n_points: int) -> list[int]:
+        n = len(values)
+        n_out = max(min(max(n_points // 2, 1), n), 1)
+        base, remainder = divmod(n, n_out)
+        indices: set[int] = set()
+        start = 0
+        for i in range(n_out):
+            window_len = base + (1 if i < remainder else 0)
+            live = [
+                start + k for k in range(window_len) if values[start + k] is not None
+            ]
+            # An all-null window yields no index at all (both args are None and the
+            # pair is dropped), matching `arg_min_max_pairs`.
+            if live:
+                indices.add(min(live, key=lambda j: values[j]))
+                indices.add(max(live, key=lambda j: values[j]))
+            start += window_len
+        return sorted(indices)
+
+    @pytest.mark.parametrize("n_chunks_in", [1, 5])
+    def test_scattered_nulls_match_oracle(self, n_chunks_in):
+        values: list[float | None] = list(_distinct_values(PAR_ROWS))
+        for i in range(0, PAR_ROWS, 7):  # ~14% nulls, none of them window-aligned
+            values[i] = None
+        if n_chunks_in == 1:
+            s = pl.Series("y", values, dtype=pl.Float64)
+        else:
+            step = PAR_ROWS // n_chunks_in
+            s = pl.concat(
+                [
+                    pl.Series("y", values[a : a + step], dtype=pl.Float64)
+                    for a in range(0, PAR_ROWS, step)
+                ],
+                rechunk=False,
+            )
+        assert s.null_count() > 0 and s.n_chunks() == n_chunks_in
+        assert _arg_min_max(s, n_points=1000).to_list() == self._expected_with_nulls(
+            values, 1000
+        )
+
+    def test_all_null_window_contributes_no_index(self):
+        values: list[float | None] = list(_distinct_values(PAR_ROWS))
+        # 500 windows of 600 rows; blank window 3 entirely.
+        for i in range(3 * 600, 4 * 600):
+            values[i] = None
+        s = pl.Series("y", values, dtype=pl.Float64)
+        result = _arg_min_max(s, n_points=1000).to_list()
+        assert result == self._expected_with_nulls(values, 1000)
+        assert not any(3 * 600 <= i < 4 * 600 for i in result)
+
+    def test_all_null_series(self):
+        s = pl.Series("y", [None] * PAR_ROWS, dtype=pl.Float64)
+        assert _arg_min_max(s, n_points=1000).to_list() == []
+
     def test_window_count_below_worker_count_stays_correct(self):
         """n_points=2 gives one window: below the 2-window floor, so serial."""
         values = _distinct_values(PAR_ROWS)

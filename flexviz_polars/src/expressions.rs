@@ -316,8 +316,12 @@ fn arg_min_max_pairs(s: &Series, n_buckets: usize) -> PolarsResult<Vec<(u32, u32
     }
 
     let offsets = uniform_offsets(s.len(), n_buckets.min(s.len()).max(1));
-    let (arg_min_vec, arg_max_vec) =
-        simd_argminmax(s, &offsets).unwrap_or_else(|| fallback_window_argminmax(s, &offsets));
+    // The fallback is the null path, and nulls are common in real signals: one null
+    // in 20M rows drops the whole column here, costing ~12x. It splits by window
+    // like the SIMD paths — each entry carries an absolute `start`, so no cursor to
+    // seed — so it gets the same treatment for free.
+    let (arg_min_vec, arg_max_vec) = simd_argminmax(s, &offsets)
+        .unwrap_or_else(|| par_by_window(&offsets, |o| fallback_window_argminmax(s, o)));
 
     Ok(arg_min_vec
         .into_iter()
