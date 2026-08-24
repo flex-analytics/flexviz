@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="docs/logo.svg" width="46" align="middle" alt="FlexViz logo">&nbsp;&nbsp;FlexViz
+  <img src="docs/logo.svg" width="54" style="vertical-align: middle" alt="FlexViz logo">&nbsp;&nbsp;&nbsp;FlexViz
 </h1>
 
 <p align="center">
