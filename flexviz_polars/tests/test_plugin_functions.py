@@ -1728,3 +1728,84 @@ class TestKernelThreadPool:
         assert (
             limited < cores
         ), f"{limited} threads under POLARS_MAX_THREADS=2 on a {cores}-core box"
+
+
+# ---------------------------------------------------------------------------
+# arg_min_max — parallel window path
+#
+# `par_by_window` only engages above MIN_PAR (1 << 17) total rows, so every test
+# above this point exercises the serial path only. These run over that threshold.
+# ---------------------------------------------------------------------------
+
+PAR_ROWS = 300_000  # > MIN_PAR (131_072)
+
+
+def _distinct_values(n: int) -> list[float]:
+    """Distinct, non-monotonic values.
+
+    Multiplication by an odd constant mod 2**23 is a bijection, so no two entries
+    tie. Ties matter: SIMD argminmax may pick any index among equal values, so a
+    tie would make the oracle comparison legitimately ambiguous. 2**23 also keeps
+    every value exact in Float32 and in range for Int32.
+    """
+    return [float((i * 2654435761) % (2**23)) for i in range(n)]
+
+
+def _expected_arg_min_max(values: list[float], n_points: int) -> list[int]:
+    """Independent oracle: pure-Python argmin/argmax per uniform window."""
+    n = len(values)
+    n_out = max(min(max(n_points // 2, 1), n), 1)
+    base, remainder = divmod(n, n_out)
+    indices: set[int] = set()
+    start = 0
+    for i in range(n_out):
+        window_len = base + (1 if i < remainder else 0)
+        if window_len:
+            window = values[start : start + window_len]
+            indices.add(start + min(range(window_len), key=window.__getitem__))
+            indices.add(start + max(range(window_len), key=window.__getitem__))
+        start += window_len
+    return sorted(indices)
+
+
+class TestArgMinMaxParallel:
+    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Float32, pl.Int64, pl.Int32])
+    def test_single_chunk_matches_oracle(self, dtype):
+        values = _distinct_values(PAR_ROWS)
+        s = pl.Series("y", values, dtype=pl.Float64).cast(dtype)
+        assert s.n_chunks() == 1
+        result = _arg_min_max(s, n_points=1000).to_list()
+        assert result == _expected_arg_min_max(s.to_list(), 1000)
+
+    @pytest.mark.parametrize("n_points", [4, 1000, 20_001])
+    def test_multi_chunk_matches_single_chunk(self, n_points):
+        """The per-worker chunk cursor must be seeded from its own first window.
+
+        A worker that inherited a cursor starting at row 0 would mis-locate every
+        window it owns; with a single chunk there is nothing to mis-locate, so this
+        pairing is what catches it.
+        """
+        values = _distinct_values(PAR_ROWS)
+        one = pl.Series("y", values, dtype=pl.Float64)
+        # Deliberately uneven, including length-1 chunks, so a worker's first
+        # window can start mid-chunk and the cursor cannot rely on a uniform stride.
+        bounds = [0, 1, 7919, 100_000, 100_001, 233_333, PAR_ROWS]
+        many = pl.concat(
+            [
+                pl.Series("y", values[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert many.n_chunks() == len(bounds) - 1
+        assert many.to_list() == values
+
+        expected = _expected_arg_min_max(values, n_points)
+        assert _arg_min_max(one, n_points=n_points).to_list() == expected
+        assert _arg_min_max(many, n_points=n_points).to_list() == expected
+
+    def test_window_count_below_worker_count_stays_correct(self):
+        """n_points=2 gives one window: below the 2-window floor, so serial."""
+        values = _distinct_values(PAR_ROWS)
+        s = pl.Series("y", values, dtype=pl.Float64)
+        assert _arg_min_max(s, n_points=2).to_list() == _expected_arg_min_max(values, 2)

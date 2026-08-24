@@ -521,13 +521,13 @@ fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx
             if let Ok(ca) = s.$downcast() {
                 if ca.null_count() == 0 {
                     if let Ok(values) = ca.cont_slice() {
-                        return Some(argminmax_contiguous(values, offsets));
+                        return Some(par_by_window(offsets, |o| argminmax_contiguous(values, o)));
                     }
                     let chunks: Vec<_> = ca
                         .downcast_iter()
                         .map(|arr| arr.values().as_slice())
                         .collect();
-                    return Some(argminmax_chunked(&chunks, offsets));
+                    return Some(par_by_window(offsets, |o| argminmax_chunked(&chunks, o)));
                 }
             }
         };
@@ -548,17 +548,61 @@ fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx
         if ca.null_count() == 0 {
             if let Ok(values) = ca.cont_slice() {
                 let values = pf16_as_half_slice(values);
-                return Some(argminmax_contiguous(values, offsets));
+                return Some(par_by_window(offsets, |o| argminmax_contiguous(values, o)));
             }
             let chunks: Vec<_> = ca
                 .downcast_iter()
                 .map(|arr| pf16_as_half_slice(arr.values().as_slice()))
                 .collect();
-            return Some(argminmax_chunked(&chunks, offsets));
+            return Some(par_by_window(offsets, |o| argminmax_chunked(&chunks, o)));
         }
     }
 
     None
+}
+
+/// Run `f` over `offsets` on [`kernel_pool`], split into one contiguous run of
+/// windows per worker.
+///
+/// The split is by *window*, never inside one, so every `argminmax()` call sees
+/// exactly the slice it would have seen serially — the result is bit-identical to
+/// the serial path by construction, with no index merging or tie-break logic.
+///
+/// `par_chunks` rather than a per-window `par_iter`: a few thousand windows as
+/// individual rayon tasks is pure overhead, and neighbouring workers writing
+/// adjacent output slots is false sharing. A contiguous run per worker avoids both.
+fn par_by_window<F>(offsets: &[(usize, usize)], f: F) -> ArgMinMaxIdx
+where
+    F: Fn(&[(usize, usize)]) -> ArgMinMaxIdx + Send + Sync,
+{
+    use rayon::prelude::*;
+
+    // Below this the task and merge overhead exceed the scan. Same knob as the
+    // histogram kernels; measured on the same shape.
+    const MIN_PAR: usize = 1 << 17;
+
+    let total: usize = offsets.iter().map(|&(_, len)| len).sum();
+    if total < MIN_PAR || offsets.len() < 2 {
+        return f(offsets);
+    }
+
+    let pool = kernel_pool();
+    // ponytail: parallelism is capped by window count, so a tiny `n_points` over a
+    // huge frame stays serial. n_points defaults to 1000 (500 windows), so this
+    // only bites on deliberately degenerate input; split within a window if that
+    // ever becomes a real shape.
+    let n_chunks = pool.current_num_threads().max(1).min(offsets.len());
+    let per_chunk = offsets.len().div_ceil(n_chunks);
+
+    let parts: Vec<ArgMinMaxIdx> = pool.install(|| offsets.par_chunks(per_chunk).map(&f).collect());
+
+    let mut min_indices = Vec::with_capacity(offsets.len());
+    let mut max_indices = Vec::with_capacity(offsets.len());
+    for (mins, maxs) in parts {
+        min_indices.extend(mins);
+        max_indices.extend(maxs);
+    }
+    (min_indices, max_indices)
 }
 
 fn argminmax_contiguous<T>(values: &[T], offsets: &[(usize, usize)]) -> ArgMinMaxIdx
@@ -590,8 +634,18 @@ where
     let mut max_indices = Vec::with_capacity(offsets.len());
     // Single monotone cursor — advances only when a chunk is fully consumed by a window.
     // Correct because uniform_offsets produces contiguous, non-overlapping windows in order.
+    //
+    // The cursor is seeded from the *first* window rather than assumed to start at
+    // row 0, which is what makes this correct for any contiguous run of windows and
+    // therefore safe to hand a sub-slice of `offsets` (see `par_by_window`).
+    // ponytail: linear scan, chunk counts are small; binary search if that changes.
+    let first_start = offsets.first().map_or(0, |&(start, _)| start);
     let mut chunk_idx = 0usize;
     let mut chunk_pos = 0usize; // global offset of chunks[chunk_idx][0]
+    while chunk_idx < chunks.len() && chunk_pos + chunks[chunk_idx].len() <= first_start {
+        chunk_pos += chunks[chunk_idx].len();
+        chunk_idx += 1;
+    }
 
     for &(window_start, window_len) in offsets {
         if window_len == 0 {

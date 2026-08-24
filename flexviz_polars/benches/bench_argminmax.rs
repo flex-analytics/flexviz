@@ -57,6 +57,35 @@ fn simd_path(values: &[f64], offsets: &[(usize, usize)]) -> Vec<u32> {
     indices
 }
 
+/// Serial SIMD path — mirrors `argminmax_contiguous` in expressions.rs. That is
+/// what each `par_by_window` worker runs, and what the whole kernel runs below
+/// the MIN_PAR threshold, so its cost is the per-worker floor. `simd_path` above
+/// is the parallel shape; keeping both makes the gap between them visible.
+fn simd_serial_path(values: &[f64], offsets: &[(usize, usize)]) -> Vec<u32> {
+    let mut min_indices = Vec::with_capacity(offsets.len());
+    let mut max_indices = Vec::with_capacity(offsets.len());
+    for &(start, len) in offsets {
+        if len == 0 {
+            min_indices.push(None);
+            max_indices.push(None);
+            continue;
+        }
+        let slice = &values[start..start + len];
+        let (min_i, max_i) = slice.argminmax();
+        min_indices.push(Some((start + min_i) as u64));
+        max_indices.push(Some((start + max_i) as u64));
+    }
+    let mut indices: Vec<u32> = min_indices
+        .into_iter()
+        .chain(max_indices)
+        .flatten()
+        .map(|i| i as u32)
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
 /// Scalar fallback using manual PartialOrd comparisons (previous implementation).
 fn scalar_path(values: &[f64], offsets: &[(usize, usize)]) -> Vec<u32> {
     let pairs: Vec<(Option<u64>, Option<u64>)> = offsets
@@ -115,6 +144,12 @@ fn bench_simd_vs_scalar(c: &mut Criterion) {
         BenchmarkId::new("simd (argminmax crate)", N_ROWS),
         &(&data, &offsets),
         |b, (data, offsets)| b.iter(|| simd_path(black_box(data), black_box(offsets))),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("simd serial (shipped)", N_ROWS),
+        &(&data, &offsets),
+        |b, (data, offsets)| b.iter(|| simd_serial_path(black_box(data), black_box(offsets))),
     );
 
     group.bench_with_input(
