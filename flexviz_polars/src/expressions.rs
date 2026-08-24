@@ -591,10 +591,13 @@ where
     // huge frame stays serial. n_points defaults to 1000 (500 windows), so this
     // only bites on deliberately degenerate input; split within a window if that
     // ever becomes a real shape.
-    let n_chunks = pool.current_num_threads().max(1).min(offsets.len());
-    let per_chunk = offsets.len().div_ceil(n_chunks);
+    // "part" not "chunk": in this file `chunks` already means the Arrow buffers
+    // backing a ChunkedArray, which are a different thing entirely.
+    let n_parts = pool.current_num_threads().max(1).min(offsets.len());
+    let windows_per_part = offsets.len().div_ceil(n_parts);
 
-    let parts: Vec<ArgMinMaxIdx> = pool.install(|| offsets.par_chunks(per_chunk).map(&f).collect());
+    let parts: Vec<ArgMinMaxIdx> =
+        pool.install(|| offsets.par_chunks(windows_per_part).map(&f).collect());
 
     let mut min_indices = Vec::with_capacity(offsets.len());
     let mut max_indices = Vec::with_capacity(offsets.len());
