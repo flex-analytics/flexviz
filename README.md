@@ -1,8 +1,8 @@
 <h1 align="center">
   <a href="https://flexviz.tech/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flexviz-wordmark-dark.png">
-      <img src="docs/assets/flexviz-wordmark-light.png" width="212" alt="FlexViz">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/assets/flexviz-wordmark-dark.png">
+      <img src="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/assets/flexviz-wordmark-light.png" width="212" alt="FlexViz">
     </picture>
   </a>
 </h1>
@@ -27,7 +27,7 @@ the browser.
 
 <p align="center">
   <a href="https://flexviz.tech/demo.html">
-    <img src="docs/crossfilter.gif" width="850" alt="Cross-filter demo: brushing a range on a 100M-point line chart re-aggregates the linked histogram">
+    <img src="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/crossfilter.gif" width="850" alt="Cross-filter demo: brushing a range on a 100M-point line chart re-aggregates the linked histogram">
   </a>
 </p>
 
@@ -83,8 +83,13 @@ dash.show()  # brush one chart to cross-filter the other
 
 ## Install
 
-FlexViz is not on PyPI yet (the `flexviz` name currently holds a placeholder;
-the first release lands soon). 
+```bash
+pip install flexviz
+```
+
+The Rust kernels arrive as a prebuilt wheel (`flexviz-polars`) on Linux
+(x86_64, aarch64), macOS (Intel and Apple silicon), and Windows (x64). Any
+other platform builds them from source and needs a Rust toolchain.
 
 From source:
 
@@ -108,7 +113,7 @@ because neither of those tools has the other chart.
 
 <p align="center">
   <a href="https://flexviz.tech/benchmarks.html">
-    <img src="docs/benchmark-ttfr.png" width="850" alt="Time to first render at 200M rows and 5 traces. Line: flexviz 344 ms, datashader 8,670 ms, mosaic 10,033 ms. Histogram: flexviz 617 ms, vaex 1,304 ms, mosaic 3,009 ms.">
+    <img src="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/benchmark-ttfr.png" width="850" alt="Time to first render at 200M rows and 5 traces. Line: flexviz 344 ms, datashader 8,670 ms, mosaic 10,033 ms. Histogram: flexviz 617 ms, vaex 1,304 ms, mosaic 3,009 ms.">
   </a>
 </p>
 
@@ -123,9 +128,10 @@ correctness gates, per-trial results, and caveats live in
 
 **Pre-1.0**.
 The Python API and the spec wire format may change between minor
-versions; see the compatibility policy in [AGENTS.md](AGENTS.md).
-[Architecture.md](Architecture.md) is the design source of truth.
+versions; see the compatibility policy in the
+[changelog](https://github.com/flex-analytics/flexviz/blob/main/CHANGELOG.md).
+[Architecture.md](https://github.com/flex-analytics/flexviz/blob/main/Architecture.md) is the design source of truth.
 
 ## License
 
-[Apache-2.0](LICENSE) © 2026 [Flex Analytics BV](https://flexviz.tech)
+[Apache-2.0](https://github.com/flex-analytics/flexviz/blob/main/LICENSE) © 2026 [Flex Analytics BV](https://flexviz.tech)

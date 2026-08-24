@@ -76,8 +76,8 @@ jobs:
           actual=$(tar tzf "dist/flexviz-${version}.tar.gz" \
             | sed "s|^flexviz-${version}/||" | cut -d/ -f1 | sort -u | grep -v '^$')
           expected=$(printf '%s\n' \
-            .gitignore Architecture.md LICENSE NOTICE PKG-INFO README.md \
-            SECURITY.md flexviz pyproject.toml tests | sort)
+            .gitignore Architecture.md CHANGELOG.md LICENSE NOTICE PKG-INFO \
+            README.md SECURITY.md flexviz pyproject.toml tests | sort)
           if [ "$actual" != "$expected" ]; then
             echo "::error::sdist contents do not match the allowlist"
             diff <(echo "$expected") <(echo "$actual") || true

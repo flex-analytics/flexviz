@@ -35,6 +35,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://flexviz.tech"
 Repository = "https://github.com/flex-analytics/flexviz"
+Issues = "https://github.com/flex-analytics/flexviz/issues"
+Changelog = "https://github.com/flex-analytics/flexviz/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -83,6 +85,7 @@ include = [
     "/flexviz",
     "/tests",
     "/Architecture.md",
+    "/CHANGELOG.md",
     "/LICENSE",
     "/NOTICE",
     "/README.md",
