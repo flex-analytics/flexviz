@@ -793,6 +793,27 @@ def _read_col(blob: bytes, header: dict, name: str) -> list:
     return list(struct.unpack_from(f"<{n}{code}", blob, start))
 
 
+def _assert_rebuild_equivalent(a: bytes, b: bytes) -> None:
+    """Blobs from two builds of the same cube: byte-exact except f64 partials.
+
+    The streaming engine's morsel boundaries vary between runs and f64
+    addition is not associative, so grouped sum partials (sum/mean/corr) can
+    land on different last bits. The header, row order, and every non-f64
+    buffer ARE deterministic and must match byte for byte.
+    """
+    header = decode_fvcube_header(a)
+    assert a[: _buffer_section_start(a)] == b[: _buffer_section_start(b)]
+    for col in header["columns"]:
+        start = _buffer_section_start(a) + col["offset"]
+        end = start + col["byte_len"]
+        if col["dtype"] == "f64":
+            assert _read_col(a, header, col["name"]) == pytest.approx(
+                _read_col(b, header, col["name"]), rel=1e-9, nan_ok=True
+            ), col["name"]
+        else:
+            assert a[start:end] == b[start:end], col["name"]
+
+
 class TestFVCubeCodec:
     def _reslice(self, blob: bytes, cube: CubeResult, lo: float, hi: float) -> dict:
         """Count per target cell over a snapped free range, read from raw bytes."""
@@ -1069,11 +1090,32 @@ class TestFVCubeCodec:
         blob = encode_fvcube(cube, "k")
         assert self._reslice_agg(blob, cube, 0.0, 100.0) == {(0,): 4.0}
 
-    @pytest.mark.parametrize("agg", ["sum", "mean", "min", "max"])
+    @pytest.mark.parametrize("agg", ["min", "max"])
     def test_deterministic_bytes_measures(self, df, agg):
+        # min/max partials are order-independent, so a rebuild is byte-exact.
         cube = build_cube(df.lazy(), _measure_spec(agg))
         rebuilt = build_cube(df.lazy(), _measure_spec(agg))
         assert encode_fvcube(cube, "k") == encode_fvcube(rebuilt, "k")
+
+    @pytest.mark.parametrize("agg", ["sum", "mean"])
+    def test_rebuilt_sum_partials_equivalent(self, agg):
+        # f64 sums accumulate in morsel order, which the streaming engine
+        # varies between runs, so a rebuild is NOT byte-exact: only the
+        # structure is, with the partials agreeing within tolerance. The
+        # large common offset makes the last-bit jitter real; a benign
+        # fixture passes a byte-equality assert and hides it.
+        rng = np.random.default_rng(0)
+        n = 200_000
+        hostile = pl.DataFrame(
+            {
+                "active": rng.uniform(0.0, 100.0, n),
+                "cat": rng.choice(["a", "b", "c"], n),
+                "val": 1e6 + rng.normal(0.0, 5.0, n),
+            }
+        )
+        a = build_cube(hostile.lazy(), _measure_spec(agg))
+        b = build_cube(hostile.lazy(), _measure_spec(agg))
+        _assert_rebuild_equivalent(encode_fvcube(a, "k"), encode_fvcube(b, "k"))
 
     def test_degenerate_top_bin_survives_round_trip(self):
         df = pl.DataFrame({"active": [0.0, 50.0, 100.0], "cat": ["a", "a", "a"]})
@@ -2443,8 +2485,13 @@ class TestCorrCodec:
 
     def test_deterministic_bytes(self, corr_df):
         a = build_cube(corr_df.lazy(), _corr_spec())
+        blob = encode_fvcube(a, "k")
+        # Same CubeResult: identical bytes. A rebuild reruns the streaming
+        # engine, so the f64 sum partials may differ in their last bits and
+        # only the structure is byte-exact.
+        assert blob == encode_fvcube(a, "k")
         b = build_cube(corr_df.lazy(), _corr_spec())
-        assert encode_fvcube(a, "k") == encode_fvcube(b, "k")
+        _assert_rebuild_equivalent(blob, encode_fvcube(b, "k"))
 
     def test_stable_center_is_reproducible_and_close(self):
         """The corr centering constant must be stable, not exact.

@@ -1378,12 +1378,17 @@ def _line_env_quantized_buffers(
 
 
 def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
-    """Encode a built cube as an FVCube v1 blob (deterministic bytes).
+    """Encode a built cube as an FVCube v1 blob.
 
     Rows are sorted by ``free_bin`` ascending, then by the target group
     columns — so the client can build CSR offsets in one pass and the same
-    cube always encodes to identical bytes (``build_cube``'s group_by order is
-    nondeterministic). Categorical target columns are dictionary-encoded: the
+    ``CubeResult`` always encodes to identical bytes (``build_cube``'s
+    group_by order is nondeterministic). Rebuilding the cube is byte-exact in
+    structure only (header, row order, non-f64 buffers): the streaming
+    engine's morsel boundaries vary between runs and f64 addition is not
+    associative, so ``sum``/``mean``/``corr`` partials can land on different
+    last bits. Do not byte-compare, hash, or ETag blobs across builds.
+    Categorical target columns are dictionary-encoded: the
     header lists typed numeric categories in numeric order, other categories
     in sorted string order, and the column ships u32 codes into that list.
 
