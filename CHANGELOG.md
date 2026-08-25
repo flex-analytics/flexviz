@@ -39,4 +39,20 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `flexviz-polars`, the Rust Polars expression kernels behind the line
   downsampling and fixed-bin histogram and heatmap paths.
 
+### Changed
+
+- The default line downsampling path (`downsample="minmax"`) now runs as one
+  fused `minmax_line` kernel call per trace instead of an `arg_min_max` index
+  expression feeding two gathers. Polars does not common-subexpression-eliminate
+  plugin expressions, so the two-gather form scanned every column twice; the
+  fused call halves kernel work and makes frame times markedly steadier.
+  Output is bit-identical (pinned by a differential test against the two-gather
+  form, which remains available as `pl.Expr.flexviz.arg_min_max`).
+- The `arg_min_max` window scan is parallel across windows on the plugin's
+  kernel thread pool. This trades cross-trace overlap for per-scan speed:
+  measured at 100M rows it is worth ~1.3-1.6x on a single trace and costs at
+  most ~9% when 3-5 traces share a bandwidth-saturated host, fading by 20
+  traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
+  the two are released together.
+
 [Unreleased]: https://github.com/flex-analytics/flexviz/commits/main
