@@ -35,6 +35,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://flexviz.tech"
+Documentation = "https://docs.flexviz.tech"
 Repository = "https://github.com/flex-analytics/flexviz"
 Issues = "https://github.com/flex-analytics/flexviz/issues"
 Changelog = "https://github.com/flex-analytics/flexviz/blob/main/CHANGELOG.md"
@@ -54,6 +55,15 @@ dev = [
     "pytest-randomly>=4.0.1",
     # polars_lf_from() accepts PyArrow tables; tests exercise that path.
     "pyarrow>=22.0.0",
+]
+# Standalone group: docs builds run without the project installed (mkdocstrings
+# reads the source statically), so docs CI needs no Rust toolchain.
+docs = [
+    "mkdocs-material>=9.6",
+    "mkdocstrings[python]>=0.30",
+    # Material is incompatible with the announced MkDocs 2.0 rewrite; keep the
+    # resolver on the 1.x line until the ecosystem settles.
+    "mkdocs>=1.6,<2",
 ]
 
 [tool.black]

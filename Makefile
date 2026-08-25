@@ -16,6 +16,10 @@ test:
 test-browser:
 	uv run pytest -m browser -p no:randomly --override-ini="addopts=" -v -n 6
 
+.PHONY: docs
+docs:
+	uv run --group docs mkdocs serve
+
 .PHONY: build-plugin
 build-plugin:
 	uv run maturin develop --features nightly --manifest-path flexviz_polars/Cargo.toml
