@@ -34,6 +34,22 @@ def _arg_min_max(expr: IntoExprColumn, n_points: int) -> pl.Expr:
     )
 
 
+def _minmax_line(
+    x_expr: "IntoExprColumn",
+    y_expr: "IntoExprColumn",
+    n_points: int,
+    x_name: str | None = None,
+    y_name: str | None = None,
+) -> pl.Expr:
+    return register_plugin_function(
+        args=[x_expr, y_expr],
+        plugin_path=LIB,
+        function_name="minmax_line",
+        kwargs={"n_points": n_points, "x_name": x_name, "y_name": y_name},
+        is_elementwise=False,
+    )
+
+
 def _fpcs_indices(expr: IntoExprColumn, n_points: int) -> pl.Expr:
     return register_plugin_function(
         args=[expr],

@@ -267,17 +267,15 @@ def _plugin_minmax_agg_expr(
     Splits the (filtered) y-column into ``n_points // 2`` equal buckets and
     gathers x and y at the argmin and argmax positions within each bucket.
     Preserves extrema and spikes that uniform-stride subsampling would miss.
+
+    Index selection and both gathers happen in one kernel call: Polars does not
+    CSE opaque plugin expressions, so the two-gather form
+    (``x.gather(idx), y.gather(idx)``) ran the whole argmin/argmax scan twice.
     """
     y_expr = _apply_viewport(pl.col(y_col), vp)
     x_expr = _apply_viewport(pl.col(x_col), vp)
-    indices = y_expr.flexviz.arg_min_max(n_points)
     return (
-        pl.struct(
-            **{
-                x_col: x_expr.gather(indices),
-                y_col: y_expr.gather(indices),
-            }
-        )
+        _fvp._minmax_line(x_expr, y_expr, n_points, x_name=x_col, y_name=y_col)
         .implode()
         .alias(uid)
     )

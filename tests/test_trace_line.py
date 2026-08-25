@@ -266,6 +266,24 @@ class TestLinePlotPlugin:
         assert len(update["x"]) <= 20
         assert 10.0 in update["y"].to_list()
 
+    def test_minmax_agg_expr_runs_kernel_once(self):
+        """Pin the fusion: one minmax_line call, no bare arg_min_max.
+
+        Polars does not CSE opaque plugin expressions, so the two-gather form
+        (x.gather(idx), y.gather(idx)) evaluated the whole argmin/argmax scan
+        twice per trace. Output-based tests are blind to that: reverting to the
+        two-gather form changes no result, only the work. The optimized plan is
+        where the property is visible.
+        """
+        from flexviz.trace.line import _plugin_minmax_agg_expr
+
+        lf = pl.DataFrame({"ts": [1.0, 2.0], "val": [3.0, 4.0]}).lazy()
+        plan = lf.select(_plugin_minmax_agg_expr("ts", "val", None, 100, "u")).explain(
+            optimized=True
+        )
+        assert plan.count("minmax_line") == 1
+        assert "arg_min_max" not in plan
+
     def test_fpcs_preserves_spike(self):
         vals = [0.0] * 499 + [1000.0] + [0.0] * 500
         df = pl.DataFrame({"ts": list(range(1000)), "val": vals})

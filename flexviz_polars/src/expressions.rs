@@ -83,6 +83,13 @@ struct ArgMinMaxKwargs {
     n_points: usize,
 }
 
+#[derive(Deserialize)]
+struct MinmaxLineKwargs {
+    n_points: usize,
+    x_name: Option<String>,
+    y_name: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // fpcs
 // ---------------------------------------------------------------------------
@@ -218,6 +225,46 @@ fn arg_min_max(inputs: &[Series], kwargs: ArgMinMaxKwargs) -> PolarsResult<Serie
     Ok(UInt32Chunked::from_iter_values(s.name().clone(), indices.into_iter()).into_series())
 }
 
+fn minmax_line_output(inputs: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        PlSmallStr::EMPTY,
+        DataType::Struct(vec![inputs[0].clone(), inputs[1].clone()]),
+    ))
+}
+
+/// `arg_min_max` plus both gathers in one call. Exists because Polars does not
+/// CSE opaque plugin expressions: `x.gather(idx)` / `y.gather(idx)` on the same
+/// `arg_min_max` expression runs the whole scan twice (`fpcs_line` predates this
+/// for the same reason).
+#[polars_expr(output_type_func = minmax_line_output)]
+fn minmax_line(inputs: &[Series], kwargs: MinmaxLineKwargs) -> PolarsResult<Series> {
+    polars_ensure!(
+        kwargs.n_points > 0,
+        InvalidOperation: "n_points must be greater than 0"
+    );
+
+    let x = &inputs[0];
+    let y = &inputs[1];
+    polars_ensure!(
+        x.len() == y.len(),
+        ShapeMismatch: "minmax_line: x and y must have the same length"
+    );
+
+    let indices = arg_min_max_indices(y, kwargs.n_points)?;
+    let idx_ca = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, indices.into_iter());
+    let mut x_taken = x.take(&idx_ca)?;
+    let mut y_taken = y.take(&idx_ca)?;
+    let x_name = output_name(kwargs.x_name, x.name(), "x");
+    let y_name = output_name(kwargs.y_name, y.name(), "y");
+    x_taken.rename(x_name);
+    y_taken.rename(y_name);
+    let len = x_taken.len();
+
+    let out =
+        StructChunked::from_series("minmax_line".into(), len, [&x_taken, &y_taken].into_iter())?;
+    Ok(out.into_series())
+}
+
 fn fpcs_indices_output(inputs: &[Field]) -> PolarsResult<Field> {
     Ok(Field::new(inputs[0].name().clone(), DataType::UInt32))
 }
@@ -316,8 +363,12 @@ fn arg_min_max_pairs(s: &Series, n_buckets: usize) -> PolarsResult<Vec<(u32, u32
     }
 
     let offsets = uniform_offsets(s.len(), n_buckets.min(s.len()).max(1));
-    let (arg_min_vec, arg_max_vec) =
-        simd_argminmax(s, &offsets).unwrap_or_else(|| fallback_window_argminmax(s, &offsets));
+    // The fallback is the null path, and nulls are common in real signals: one null
+    // in 20M rows drops the whole column here, costing ~12x. It splits by window
+    // like the SIMD paths — each entry carries an absolute `start`, so no cursor to
+    // seed — so it gets the same treatment for free.
+    let (arg_min_vec, arg_max_vec) = simd_argminmax(s, &offsets)
+        .unwrap_or_else(|| par_by_window(&offsets, |o| fallback_window_argminmax(s, o)));
 
     Ok(arg_min_vec
         .into_iter()
@@ -521,13 +572,13 @@ fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx
             if let Ok(ca) = s.$downcast() {
                 if ca.null_count() == 0 {
                     if let Ok(values) = ca.cont_slice() {
-                        return Some(argminmax_contiguous(values, offsets));
+                        return Some(par_by_window(offsets, |o| argminmax_contiguous(values, o)));
                     }
                     let chunks: Vec<_> = ca
                         .downcast_iter()
                         .map(|arr| arr.values().as_slice())
                         .collect();
-                    return Some(argminmax_chunked(&chunks, offsets));
+                    return Some(par_by_window(offsets, |o| argminmax_chunked(&chunks, o)));
                 }
             }
         };
@@ -548,17 +599,77 @@ fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx
         if ca.null_count() == 0 {
             if let Ok(values) = ca.cont_slice() {
                 let values = pf16_as_half_slice(values);
-                return Some(argminmax_contiguous(values, offsets));
+                return Some(par_by_window(offsets, |o| argminmax_contiguous(values, o)));
             }
             let chunks: Vec<_> = ca
                 .downcast_iter()
                 .map(|arr| pf16_as_half_slice(arr.values().as_slice()))
                 .collect();
-            return Some(argminmax_chunked(&chunks, offsets));
+            return Some(par_by_window(offsets, |o| argminmax_chunked(&chunks, o)));
         }
     }
 
     None
+}
+
+/// Run `f` over `offsets` on [`kernel_pool`], split into one contiguous run of
+/// windows per worker.
+///
+/// The split is by *window*, never inside one, so every `argminmax()` call sees
+/// exactly the slice it would have seen serially — the result is bit-identical to
+/// the serial path by construction, with no index merging or tie-break logic.
+///
+/// `par_chunks` rather than a per-window `par_iter`: a few thousand windows as
+/// individual rayon tasks is pure overhead, and neighbouring workers writing
+/// adjacent output slots is false sharing. A contiguous run per worker avoids both.
+///
+/// This is a trade against the memory-bandwidth ceiling, not a free speedup.
+/// Concurrent callers (N traces batched into one `select`) each take the whole
+/// pool, so their scans queue instead of overlapping; whether that beats N
+/// overlapped serial scans depends on how much faster one pool-wide scan is,
+/// which is a property of the host's per-core vs package bandwidth. Measured
+/// 2026-08-25 (100M f64 rows, n_points=1000, fused kernel): on a
+/// bandwidth-saturated Zen 3 the split is worth ~1.3-1.6x at one trace and
+/// costs at most ~9%, peaking at 3-5 concurrent traces and fading to ~2% by 20
+/// as contended installs degrade toward the caller's own thread; on Apple
+/// M-series it wins at every measured trace count. Do not add an
+/// in-flight-count gate: measured twice (2026-08-24), it recovered nothing,
+/// because the first arrivals still take the whole pool.
+fn par_by_window<F>(offsets: &[(usize, usize)], f: F) -> ArgMinMaxIdx
+where
+    F: Fn(&[(usize, usize)]) -> ArgMinMaxIdx + Send + Sync,
+{
+    use rayon::prelude::*;
+
+    // Below this the task and merge overhead exceed the scan. Same knob as the
+    // histogram kernels; measured on the same shape.
+    const MIN_PAR: usize = 1 << 17;
+
+    let total: usize = offsets.iter().map(|&(_, len)| len).sum();
+    if total < MIN_PAR || offsets.len() < 2 {
+        return f(offsets);
+    }
+
+    let pool = kernel_pool();
+    // ponytail: parallelism is capped by window count, so a tiny `n_points` over a
+    // huge frame stays serial. n_points defaults to 1000 (500 windows), so this
+    // only bites on deliberately degenerate input; split within a window if that
+    // ever becomes a real shape.
+    // "part" not "chunk": in this file `chunks` already means the Arrow buffers
+    // backing a ChunkedArray, which are a different thing entirely.
+    let n_parts = pool.current_num_threads().max(1).min(offsets.len());
+    let windows_per_part = offsets.len().div_ceil(n_parts);
+
+    let parts: Vec<ArgMinMaxIdx> =
+        pool.install(|| offsets.par_chunks(windows_per_part).map(&f).collect());
+
+    let mut min_indices = Vec::with_capacity(offsets.len());
+    let mut max_indices = Vec::with_capacity(offsets.len());
+    for (mins, maxs) in parts {
+        min_indices.extend(mins);
+        max_indices.extend(maxs);
+    }
+    (min_indices, max_indices)
 }
 
 fn argminmax_contiguous<T>(values: &[T], offsets: &[(usize, usize)]) -> ArgMinMaxIdx
@@ -590,8 +701,18 @@ where
     let mut max_indices = Vec::with_capacity(offsets.len());
     // Single monotone cursor — advances only when a chunk is fully consumed by a window.
     // Correct because uniform_offsets produces contiguous, non-overlapping windows in order.
+    //
+    // The cursor is seeded from the *first* window rather than assumed to start at
+    // row 0, which is what makes this correct for any contiguous run of windows and
+    // therefore safe to hand a sub-slice of `offsets` (see `par_by_window`).
+    // ponytail: linear scan, chunk counts are small; binary search if that changes.
+    let first_start = offsets.first().map_or(0, |&(start, _)| start);
     let mut chunk_idx = 0usize;
     let mut chunk_pos = 0usize; // global offset of chunks[chunk_idx][0]
+    while chunk_idx < chunks.len() && chunk_pos + chunks[chunk_idx].len() <= first_start {
+        chunk_pos += chunks[chunk_idx].len();
+        chunk_idx += 1;
+    }
 
     for &(window_start, window_len) in offsets {
         if window_len == 0 {

@@ -1,8 +1,12 @@
 
+# Every Python source tree in the repo. `flexviz_polars` covers both the plugin's
+# namespace module and its tests, which `make test` already runs.
+PY_SOURCES := flexviz tests flexviz_polars
+
 .PHONY: format
 format:
-	uv run black flexviz tests
-	uv run ruff check flexviz tests
+	uv run black $(PY_SOURCES)
+	uv run ruff check $(PY_SOURCES)
 
 .PHONY: test
 test:

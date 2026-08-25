@@ -48,8 +48,8 @@ jobs:
 
       - name: Lint
         run: |
-          uv run --no-sync black --check flexviz tests
-          uv run --no-sync ruff check flexviz tests
+          uv run --no-sync black --check flexviz tests flexviz_polars
+          uv run --no-sync ruff check flexviz tests flexviz_polars
 
       - name: Tests
         run: uv run --no-sync pytest tests flexviz_polars/tests -q

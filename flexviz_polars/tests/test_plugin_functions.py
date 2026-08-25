@@ -32,6 +32,14 @@ def _fpcs_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
     ).to_series()
 
 
+def _minmax_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+    return pl.select(
+        flexviz_polars._minmax_line(
+            pl.lit(x), pl.lit(y), n_points, x_name=x.name, y_name=y.name
+        )
+    ).to_series()
+
+
 def _fixed_hist(
     series: pl.Series,
     lo: float,
@@ -1728,3 +1736,268 @@ class TestKernelThreadPool:
         assert (
             limited < cores
         ), f"{limited} threads under POLARS_MAX_THREADS=2 on a {cores}-core box"
+
+
+# ---------------------------------------------------------------------------
+# arg_min_max — parallel window path
+#
+# `par_by_window` only engages above MIN_PAR (1 << 17) total rows, so every test
+# above this point exercises the serial path only. These run over that threshold.
+# ---------------------------------------------------------------------------
+
+PAR_ROWS = 300_000  # > MIN_PAR (131_072)
+
+
+def _distinct_values(n: int) -> list[float]:
+    """Distinct, non-monotonic values.
+
+    Multiplication by an odd constant mod 2**23 is a bijection, so no two entries
+    tie. Ties matter: SIMD argminmax may pick any index among equal values, so a
+    tie would make the oracle comparison legitimately ambiguous. 2**23 also keeps
+    every value exact in Float32 and in range for Int32.
+    """
+    return [float((i * 2654435761) % (2**23)) for i in range(n)]
+
+
+def _expected_arg_min_max(values: list[float], n_points: int) -> list[int]:
+    """Independent oracle: pure-Python argmin/argmax per uniform window."""
+    n = len(values)
+    n_out = max(min(max(n_points // 2, 1), n), 1)
+    base, remainder = divmod(n, n_out)
+    indices: set[int] = set()
+    start = 0
+    for i in range(n_out):
+        window_len = base + (1 if i < remainder else 0)
+        if window_len:
+            window = values[start : start + window_len]
+            indices.add(start + min(range(window_len), key=window.__getitem__))
+            indices.add(start + max(range(window_len), key=window.__getitem__))
+        start += window_len
+    return sorted(indices)
+
+
+class TestArgMinMaxParallel:
+    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Float32, pl.Int64, pl.Int32])
+    def test_single_chunk_matches_oracle(self, dtype):
+        values = _distinct_values(PAR_ROWS)
+        s = pl.Series("y", values, dtype=pl.Float64).cast(dtype)
+        assert s.n_chunks() == 1
+        result = _arg_min_max(s, n_points=1000).to_list()
+        assert result == _expected_arg_min_max(s.to_list(), 1000)
+
+    @pytest.mark.parametrize("n_points", [4, 1000, 20_001])
+    def test_multi_chunk_matches_single_chunk(self, n_points):
+        """The per-worker chunk cursor must be seeded from its own first window.
+
+        A worker that inherited a cursor starting at row 0 would mis-locate every
+        window it owns; with a single chunk there is nothing to mis-locate, so this
+        pairing is what catches it.
+        """
+        values = _distinct_values(PAR_ROWS)
+        one = pl.Series("y", values, dtype=pl.Float64)
+        # Deliberately uneven, including length-1 chunks, so a worker's first
+        # window can start mid-chunk and the cursor cannot rely on a uniform stride.
+        bounds = [0, 1, 7919, 100_000, 100_001, 233_333, PAR_ROWS]
+        many = pl.concat(
+            [
+                pl.Series("y", values[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert many.n_chunks() == len(bounds) - 1
+        assert many.to_list() == values
+
+        expected = _expected_arg_min_max(values, n_points)
+        assert _arg_min_max(one, n_points=n_points).to_list() == expected
+        assert _arg_min_max(many, n_points=n_points).to_list() == expected
+
+    # -- null fallback -----------------------------------------------------
+    #
+    # `simd_argminmax` requires null_count == 0, so a single null routes the whole
+    # column to `fallback_window_argminmax`. That is also split by window, so these
+    # exercise the parallel fallback rather than the SIMD paths.
+
+    @staticmethod
+    def _expected_with_nulls(values: list[float | None], n_points: int) -> list[int]:
+        n = len(values)
+        n_out = max(min(max(n_points // 2, 1), n), 1)
+        base, remainder = divmod(n, n_out)
+        indices: set[int] = set()
+        start = 0
+        for i in range(n_out):
+            window_len = base + (1 if i < remainder else 0)
+            live = [
+                start + k for k in range(window_len) if values[start + k] is not None
+            ]
+            # An all-null window yields no index at all (both args are None and the
+            # pair is dropped), matching `arg_min_max_pairs`.
+            if live:
+                indices.add(min(live, key=lambda j: values[j]))
+                indices.add(max(live, key=lambda j: values[j]))
+            start += window_len
+        return sorted(indices)
+
+    @pytest.mark.parametrize("n_chunks_in", [1, 5])
+    def test_scattered_nulls_match_oracle(self, n_chunks_in):
+        values: list[float | None] = list(_distinct_values(PAR_ROWS))
+        for i in range(0, PAR_ROWS, 7):  # ~14% nulls, none of them window-aligned
+            values[i] = None
+        if n_chunks_in == 1:
+            s = pl.Series("y", values, dtype=pl.Float64)
+        else:
+            step = PAR_ROWS // n_chunks_in
+            s = pl.concat(
+                [
+                    pl.Series("y", values[a : a + step], dtype=pl.Float64)
+                    for a in range(0, PAR_ROWS, step)
+                ],
+                rechunk=False,
+            )
+        assert s.null_count() > 0 and s.n_chunks() == n_chunks_in
+        assert _arg_min_max(s, n_points=1000).to_list() == self._expected_with_nulls(
+            values, 1000
+        )
+
+    def test_all_null_window_contributes_no_index(self):
+        values: list[float | None] = list(_distinct_values(PAR_ROWS))
+        # 500 windows of 600 rows; blank window 3 entirely.
+        for i in range(3 * 600, 4 * 600):
+            values[i] = None
+        s = pl.Series("y", values, dtype=pl.Float64)
+        result = _arg_min_max(s, n_points=1000).to_list()
+        assert result == self._expected_with_nulls(values, 1000)
+        assert not any(3 * 600 <= i < 4 * 600 for i in result)
+
+    def test_all_null_series(self):
+        s = pl.Series("y", [None] * PAR_ROWS, dtype=pl.Float64)
+        assert _arg_min_max(s, n_points=1000).to_list() == []
+
+    def test_window_count_below_worker_count_stays_correct(self):
+        """n_points=2 gives one window: below the 2-window floor, so serial."""
+        values = _distinct_values(PAR_ROWS)
+        s = pl.Series("y", values, dtype=pl.Float64)
+        assert _arg_min_max(s, n_points=2).to_list() == _expected_arg_min_max(values, 2)
+
+
+# ---------------------------------------------------------------------------
+# minmax_line — differential against the two-gather form
+#
+# `minmax_line` exists because Polars does not CSE opaque plugin expressions:
+# the pre-fusion form `x.gather(idx), y.gather(idx)` ran the whole arg_min_max
+# scan twice per trace. Both formulations are still compiled into the plugin,
+# so the old form is the reference. A differential is stronger than an oracle
+# here: on ties and NaN the SIMD kernel may pick any of several valid indices,
+# which an independent oracle cannot predict, but both formulations run the
+# identical index selection, so equality is exact by construction.
+# ---------------------------------------------------------------------------
+
+
+def _two_gather(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+    """The pre-fusion formulation of the minmax line aggregation."""
+    idx = pl.lit(y).flexviz.arg_min_max(n_points)
+    return pl.select(
+        pl.struct(
+            **{x.name: pl.lit(x).gather(idx), y.name: pl.lit(y).gather(idx)}
+        ).alias("out")
+    ).to_series()
+
+
+def _assert_fused_matches(x: pl.Series, y: pl.Series, n_points: int) -> None:
+    from polars.testing import assert_series_equal
+
+    fused = _minmax_line(x, y, n_points).rename("out")
+    assert_series_equal(fused, _two_gather(x, y, n_points))
+
+
+class TestMinmaxLineDifferential:
+    @pytest.mark.parametrize("n_rows", [1_000, PAR_ROWS])  # serial and parallel paths
+    @pytest.mark.parametrize(
+        "dtype", [pl.Float64, pl.Float32, pl.Float16, pl.Int64, pl.Int32]
+    )
+    def test_dtypes(self, n_rows, dtype):
+        # The f16 cast collapses distinct values into plateaus; for a
+        # differential that is a feature, not a problem (see class comment).
+        y = pl.Series("y", _distinct_values(n_rows), dtype=pl.Float64).cast(dtype)
+        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    @pytest.mark.parametrize("n_points", [1, 2, 3, 1000, 25_000])
+    def test_n_points_extremes(self, n_points):
+        n = 10_000
+        y = pl.Series("y", _distinct_values(n))
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        _assert_fused_matches(x, y, n_points)
+
+    def test_plateaus(self):
+        """Ties everywhere: which index wins is kernel-defined, but both forms
+        must pick the same one."""
+        n = 10_000
+        y = pl.Series("y", [float(i // 500) for i in range(n)])
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 100)
+
+    def test_nan(self):
+        values = _distinct_values(10_000)
+        values[10::100] = [float("nan")] * len(values[10::100])
+        y = pl.Series("y", values)
+        x = pl.Series("x", range(len(values)), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    @pytest.mark.parametrize("n_rows", [10_000, PAR_ROWS])
+    def test_y_nulls_route_to_fallback(self, n_rows):
+        values: list[float | None] = list(_distinct_values(n_rows))
+        for i in range(0, n_rows, 7):
+            values[i] = None
+        y = pl.Series("y", values, dtype=pl.Float64)
+        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    def test_x_nulls_survive_the_gather(self):
+        n = 10_000
+        y = pl.Series("y", _distinct_values(n))
+        x = pl.Series(
+            "x", [None if i % 3 == 0 else float(i) for i in range(n)], dtype=pl.Float64
+        )
+        _assert_fused_matches(x, y, 1000)
+
+    def test_datetime_x(self):
+        from datetime import datetime, timedelta
+
+        n = 10_000
+        t0 = datetime(2026, 1, 1)
+        x = pl.Series("x", [t0 + timedelta(seconds=i) for i in range(n)])
+        y = pl.Series("y", _distinct_values(n))
+        _assert_fused_matches(x, y, 1000)
+
+    def test_multi_chunk(self):
+        values = _distinct_values(PAR_ROWS)
+        bounds = [0, 1, 7919, 100_000, 233_333, PAR_ROWS]
+        y = pl.concat(
+            [
+                pl.Series("y", values[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        x = pl.Series("x", range(PAR_ROWS), dtype=pl.Float64)
+        assert y.n_chunks() == len(bounds) - 1
+        _assert_fused_matches(x, y, 1000)
+
+    def test_empty(self):
+        _assert_fused_matches(
+            pl.Series("x", [], dtype=pl.Float64),
+            pl.Series("y", [], dtype=pl.Float64),
+            1000,
+        )
+
+    def test_single_row(self):
+        _assert_fused_matches(pl.Series("x", [1.0]), pl.Series("y", [2.0]), 1000)
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(Exception, match="same length"):
+            _minmax_line(pl.Series("x", [1.0, 2.0]), pl.Series("y", [1.0]), 10)
+
+    def test_n_points_zero_raises(self):
+        with pytest.raises(Exception, match="greater than 0"):
+            _minmax_line(pl.Series("x", [1.0]), pl.Series("y", [1.0]), 0)
