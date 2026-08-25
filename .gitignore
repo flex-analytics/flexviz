@@ -4,7 +4,9 @@
 .playwright-cli/
 .agents/
 .claude/
-TODD*
+TODO*
+AGENTS.md
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
