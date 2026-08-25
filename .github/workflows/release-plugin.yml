@@ -1,6 +1,6 @@
-# Publishes flexviz-polars. Triggered by a `polars-v*` tag.
+# Publishes flexviz-polars. Triggered by a `flexviz-polars-v*` tag.
 #
-# The tag carries the PEP 440 spelling (e.g. polars-v0.1.0b1); Cargo.toml
+# The tag carries the PEP 440 spelling (e.g. flexviz-polars-v0.1.0b1); Cargo.toml
 # carries the SemVer spelling (0.1.0-beta.1), which maturin normalizes to
 # 0.1.0b1. The gate asserts that mapping against the built sdist filename.
 #
@@ -10,7 +10,7 @@ name: Release plugin
 
 on:
   push:
-    tags: ["polars-v*"]
+    tags: ["flexviz-polars-v*"]
 
 permissions:
   contents: read
@@ -52,7 +52,7 @@ jobs:
       - name: Build sdist and check it matches the tag
         run: |
           uv run --no-sync maturin sdist -m flexviz_polars/Cargo.toml -o dist
-          version="${GITHUB_REF_NAME#polars-v}"
+          version="${GITHUB_REF_NAME#flexviz-polars-v}"
           expected="dist/flexviz_polars-${version}.tar.gz"
           if [ ! -f "$expected" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} expects ${expected}, got: $(ls dist)"
