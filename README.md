@@ -20,6 +20,12 @@
   <a href="https://github.com/flex-analytics/flexviz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0 license"></a>
 </p>
 
+<p align="center">
+  <a href="https://docs.flexviz.tech">Documentation</a> ·
+  <a href="https://flexviz.tech/demo.html">Live demo</a> ·
+  <a href="https://flexviz.tech/benchmarks.html">Benchmarks</a>
+</p>
+
 > [!WARNING]
 > FlexViz is pre-1.0 and under active development. APIs, defaults, and the spec
 > format may change between minor releases, and rough edges remain. Bug reports
@@ -88,6 +94,9 @@ dash.add_figure().add_line(x="timestamp", y="value")
 dash.add_figure().add_histogram(x="value", bins=50)
 dash.show()  # brush one chart to cross-filter the other
 ```
+
+Guides and the full API reference live at
+[docs.flexviz.tech](https://docs.flexviz.tech).
 
 ## Install
 
