@@ -39,6 +39,12 @@ rayon = "1.12"
 default = []
 nightly = ["argminmax/nightly_simd"]
 
+# The debug .so is ~28 MB; there is no reason to ship symbols in wheels.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
