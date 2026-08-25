@@ -83,6 +83,13 @@ struct ArgMinMaxKwargs {
     n_points: usize,
 }
 
+#[derive(Deserialize)]
+struct MinmaxLineKwargs {
+    n_points: usize,
+    x_name: Option<String>,
+    y_name: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // fpcs
 // ---------------------------------------------------------------------------
@@ -216,6 +223,46 @@ fn arg_min_max(inputs: &[Series], kwargs: ArgMinMaxKwargs) -> PolarsResult<Serie
     let s = &inputs[0];
     let indices = arg_min_max_indices(s, kwargs.n_points)?;
     Ok(UInt32Chunked::from_iter_values(s.name().clone(), indices.into_iter()).into_series())
+}
+
+fn minmax_line_output(inputs: &[Field]) -> PolarsResult<Field> {
+    Ok(Field::new(
+        PlSmallStr::EMPTY,
+        DataType::Struct(vec![inputs[0].clone(), inputs[1].clone()]),
+    ))
+}
+
+/// `arg_min_max` plus both gathers in one call. Exists because Polars does not
+/// CSE opaque plugin expressions: `x.gather(idx)` / `y.gather(idx)` on the same
+/// `arg_min_max` expression runs the whole scan twice (`fpcs_line` predates this
+/// for the same reason).
+#[polars_expr(output_type_func = minmax_line_output)]
+fn minmax_line(inputs: &[Series], kwargs: MinmaxLineKwargs) -> PolarsResult<Series> {
+    polars_ensure!(
+        kwargs.n_points > 0,
+        InvalidOperation: "n_points must be greater than 0"
+    );
+
+    let x = &inputs[0];
+    let y = &inputs[1];
+    polars_ensure!(
+        x.len() == y.len(),
+        ShapeMismatch: "minmax_line: x and y must have the same length"
+    );
+
+    let indices = arg_min_max_indices(y, kwargs.n_points)?;
+    let idx_ca = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, indices.into_iter());
+    let mut x_taken = x.take(&idx_ca)?;
+    let mut y_taken = y.take(&idx_ca)?;
+    let x_name = output_name(kwargs.x_name, x.name(), "x");
+    let y_name = output_name(kwargs.y_name, y.name(), "y");
+    x_taken.rename(x_name);
+    y_taken.rename(y_name);
+    let len = x_taken.len();
+
+    let out =
+        StructChunked::from_series("minmax_line".into(), len, [&x_taken, &y_taken].into_iter())?;
+    Ok(out.into_series())
 }
 
 fn fpcs_indices_output(inputs: &[Field]) -> PolarsResult<Field> {
