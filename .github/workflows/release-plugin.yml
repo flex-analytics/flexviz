@@ -1,11 +1,8 @@
 # Publishes flexviz-polars. Triggered by a `polars-v*` tag.
 #
-# Prerequisites that are NOT in place yet (plan phases 0 to 2). Until they land,
-# tagging will stop at the `gate` job, which is the intended behaviour:
-#   - flexviz_polars/pyproject.toml needs a description, license, and its own
-#     `dependencies = ["polars>=..."]` (plan 1.2).
-#   - Cargo.toml must carry the SemVer spelling, `0.1.0-beta.1`, which maturin
-#     normalizes to 0.1.0b1 (plan 0.4).
+# The tag carries the PEP 440 spelling (e.g. polars-v0.1.0b1); Cargo.toml
+# carries the SemVer spelling (0.1.0-beta.1), which maturin normalizes to
+# 0.1.0b1. The gate asserts that mapping against the built sdist filename.
 #
 # Build once, publish twice: TestPyPI first, then the *same* artifacts to PyPI
 # after a human approves the `pypi` environment.

@@ -18,7 +18,7 @@ documented in the release notes below instead.
 `flexviz` and `flexviz-polars` are released together but versioned
 independently. `flexviz` pins a compatible `flexviz-polars` range.
 
-## [Unreleased]
+## [0.1.0b1] - 2026-08-25
 
 ### Added
 
@@ -55,4 +55,4 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
   the two are released together.
 
-[Unreleased]: https://github.com/flex-analytics/flexviz/commits/main
+[0.1.0b1]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b1

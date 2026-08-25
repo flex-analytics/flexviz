@@ -1,11 +1,8 @@
 # Publishes flexviz. Triggered by a `v*` tag.
 #
-# Prerequisites that are NOT in place yet (plan phases 0 to 1). Until they land,
-# tagging will stop at the `gate` job, which is the intended behaviour:
-#   - pyproject.toml needs the sdist allowlist (plan 0.1), numpy and pydantic
-#     declared, and the flexviz-polars pin (plan 0.2).
-#   - flexviz-polars must already be on PyPI, or the smoke install cannot
-#     resolve it. Release the plugin first; see release-plugin.yml.
+# flexviz-polars must already be on PyPI at a version satisfying the pin in
+# pyproject.toml, or the smoke install cannot resolve it. Release the plugin
+# first; see release-plugin.yml.
 #
 # Build once, publish twice: TestPyPI first, then the *same* artifacts to PyPI
 # after a human approves the `pypi` environment.
