@@ -1,0 +1,80 @@
+site_name: FlexViz
+site_url: https://docs.flexviz.tech/
+site_description: Interactive cross-filter dashboards on 100M+ rows, in pure Python. Polars-native.
+repo_url: https://github.com/flex-analytics/flexviz
+repo_name: flex-analytics/flexviz
+edit_uri: edit/main/docs/
+copyright: Apache-2.0 &copy; 2026 Flex Analytics BV
+
+# Internal notes that live in docs/ but are not part of the site.
+exclude_docs: |
+  cube-support-overview.md
+
+theme:
+  name: material
+  logo: logo.svg
+  favicon: favicon.png
+  font:
+    text: DM Sans
+    code: DM Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: numpy
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            show_root_heading: true
+            show_source: false
+
+nav:
+  - Home: index.md
+  - Guides:
+      - Cross-filtering: guides/cross-filtering.md
+      - Grouping: guides/grouping.md
+      - Line downsampling: guides/line-downsampling.md
+      - Caching and live brushing: guides/caching-and-live-brushing.md
+      - Data sources: guides/data-sources.md
+      - Sharing views: guides/sharing.md
+      - Embedding: guides/embedding.md
+  - API reference:
+      - Figure: api/figure.md
+      - Dashboard: api/dashboard.md
+      - Server: api/server.md
