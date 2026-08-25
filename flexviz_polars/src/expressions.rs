@@ -622,6 +622,19 @@ fn simd_argminmax(s: &Series, offsets: &[(usize, usize)]) -> Option<ArgMinMaxIdx
 /// `par_chunks` rather than a per-window `par_iter`: a few thousand windows as
 /// individual rayon tasks is pure overhead, and neighbouring workers writing
 /// adjacent output slots is false sharing. A contiguous run per worker avoids both.
+///
+/// This is a trade against the memory-bandwidth ceiling, not a free speedup.
+/// Concurrent callers (N traces batched into one `select`) each take the whole
+/// pool, so their scans queue instead of overlapping; whether that beats N
+/// overlapped serial scans depends on how much faster one pool-wide scan is,
+/// which is a property of the host's per-core vs package bandwidth. Measured
+/// 2026-08-25 (100M f64 rows, n_points=1000, fused kernel): on a
+/// bandwidth-saturated Zen 3 the split is worth ~1.3-1.6x at one trace and
+/// costs at most ~9%, peaking at 3-5 concurrent traces and fading to ~2% by 20
+/// as contended installs degrade toward the caller's own thread; on Apple
+/// M-series it wins at every measured trace count. Do not add an
+/// in-flight-count gate: measured twice (2026-08-24), it recovered nothing,
+/// because the first arrivals still take the whole pool.
 fn par_by_window<F>(offsets: &[(usize, usize)], f: F) -> ArgMinMaxIdx
 where
     F: Fn(&[(usize, usize)]) -> ArgMinMaxIdx + Send + Sync,

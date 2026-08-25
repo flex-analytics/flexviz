@@ -32,6 +32,14 @@ def _fpcs_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
     ).to_series()
 
 
+def _minmax_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+    return pl.select(
+        flexviz_polars._minmax_line(
+            pl.lit(x), pl.lit(y), n_points, x_name=x.name, y_name=y.name
+        )
+    ).to_series()
+
+
 def _fixed_hist(
     series: pl.Series,
     lo: float,
@@ -1870,3 +1878,126 @@ class TestArgMinMaxParallel:
         values = _distinct_values(PAR_ROWS)
         s = pl.Series("y", values, dtype=pl.Float64)
         assert _arg_min_max(s, n_points=2).to_list() == _expected_arg_min_max(values, 2)
+
+
+# ---------------------------------------------------------------------------
+# minmax_line — differential against the two-gather form
+#
+# `minmax_line` exists because Polars does not CSE opaque plugin expressions:
+# the pre-fusion form `x.gather(idx), y.gather(idx)` ran the whole arg_min_max
+# scan twice per trace. Both formulations are still compiled into the plugin,
+# so the old form is the reference. A differential is stronger than an oracle
+# here: on ties and NaN the SIMD kernel may pick any of several valid indices,
+# which an independent oracle cannot predict, but both formulations run the
+# identical index selection, so equality is exact by construction.
+# ---------------------------------------------------------------------------
+
+
+def _two_gather(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+    """The pre-fusion formulation of the minmax line aggregation."""
+    idx = pl.lit(y).flexviz.arg_min_max(n_points)
+    return pl.select(
+        pl.struct(
+            **{x.name: pl.lit(x).gather(idx), y.name: pl.lit(y).gather(idx)}
+        ).alias("out")
+    ).to_series()
+
+
+def _assert_fused_matches(x: pl.Series, y: pl.Series, n_points: int) -> None:
+    from polars.testing import assert_series_equal
+
+    fused = _minmax_line(x, y, n_points).rename("out")
+    assert_series_equal(fused, _two_gather(x, y, n_points))
+
+
+class TestMinmaxLineDifferential:
+    @pytest.mark.parametrize("n_rows", [1_000, PAR_ROWS])  # serial and parallel paths
+    @pytest.mark.parametrize(
+        "dtype", [pl.Float64, pl.Float32, pl.Float16, pl.Int64, pl.Int32]
+    )
+    def test_dtypes(self, n_rows, dtype):
+        # The f16 cast collapses distinct values into plateaus; for a
+        # differential that is a feature, not a problem (see class comment).
+        y = pl.Series("y", _distinct_values(n_rows), dtype=pl.Float64).cast(dtype)
+        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    @pytest.mark.parametrize("n_points", [1, 2, 3, 1000, 25_000])
+    def test_n_points_extremes(self, n_points):
+        n = 10_000
+        y = pl.Series("y", _distinct_values(n))
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        _assert_fused_matches(x, y, n_points)
+
+    def test_plateaus(self):
+        """Ties everywhere: which index wins is kernel-defined, but both forms
+        must pick the same one."""
+        n = 10_000
+        y = pl.Series("y", [float(i // 500) for i in range(n)])
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 100)
+
+    def test_nan(self):
+        values = _distinct_values(10_000)
+        values[10::100] = [float("nan")] * len(values[10::100])
+        y = pl.Series("y", values)
+        x = pl.Series("x", range(len(values)), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    @pytest.mark.parametrize("n_rows", [10_000, PAR_ROWS])
+    def test_y_nulls_route_to_fallback(self, n_rows):
+        values: list[float | None] = list(_distinct_values(n_rows))
+        for i in range(0, n_rows, 7):
+            values[i] = None
+        y = pl.Series("y", values, dtype=pl.Float64)
+        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
+        _assert_fused_matches(x, y, 1000)
+
+    def test_x_nulls_survive_the_gather(self):
+        n = 10_000
+        y = pl.Series("y", _distinct_values(n))
+        x = pl.Series(
+            "x", [None if i % 3 == 0 else float(i) for i in range(n)], dtype=pl.Float64
+        )
+        _assert_fused_matches(x, y, 1000)
+
+    def test_datetime_x(self):
+        from datetime import datetime, timedelta
+
+        n = 10_000
+        t0 = datetime(2026, 1, 1)
+        x = pl.Series("x", [t0 + timedelta(seconds=i) for i in range(n)])
+        y = pl.Series("y", _distinct_values(n))
+        _assert_fused_matches(x, y, 1000)
+
+    def test_multi_chunk(self):
+        values = _distinct_values(PAR_ROWS)
+        bounds = [0, 1, 7919, 100_000, 233_333, PAR_ROWS]
+        y = pl.concat(
+            [
+                pl.Series("y", values[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        x = pl.Series("x", range(PAR_ROWS), dtype=pl.Float64)
+        assert y.n_chunks() == len(bounds) - 1
+        _assert_fused_matches(x, y, 1000)
+
+    def test_empty(self):
+        _assert_fused_matches(
+            pl.Series("x", [], dtype=pl.Float64),
+            pl.Series("y", [], dtype=pl.Float64),
+            1000,
+        )
+
+    def test_single_row(self):
+        _assert_fused_matches(pl.Series("x", [1.0]), pl.Series("y", [2.0]), 1000)
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(Exception, match="same length"):
+            _minmax_line(pl.Series("x", [1.0, 2.0]), pl.Series("y", [1.0]), 10)
+
+    def test_n_points_zero_raises(self):
+        with pytest.raises(Exception, match="greater than 0"):
+            _minmax_line(pl.Series("x", [1.0]), pl.Series("y", [1.0]), 0)

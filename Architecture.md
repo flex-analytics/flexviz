@@ -17,7 +17,7 @@
 
 => SPEC is key to all of this
 
-- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `arg_min_max`, `fixed_hist`, `fixed_hist2d`, `fixed_hist2d_reduce`, and `fpcs` / `_fpcs_line` kernels via `pl.Expr.flexviz` namespace; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with a scalar fallback that produces identical counts
+- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `arg_min_max`, `minmax_line`, `fixed_hist`, `fixed_hist2d`, `fixed_hist2d_reduce`, and `fpcs` / `_fpcs_line` kernels via `pl.Expr.flexviz` namespace; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and argmin/argmax kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
 - **Grouped traces** — grouped parents stay logical-only, `LFQueryBuilder` batches shared grouped queries, and group→color mapping persists in client-owned spec state
 - **Multi-column labels and group_by** — `BarPlot.labels`, `PiePlot.labels`, and any trace's `group_by` accept either a string or a list of strings.  Multi-column values are stored as JSON-encoded composite strings (e.g. `'["Europe","Germany"]'`) for legend keys, color-domain mapping, and child-uid stability.  Aggregation uses multi-column `group_by(...)` in Polars; cross-filter emission decomposes the composite back into per-column clauses so the wire format remains a list of `ClauseFilter` objects, never a JSON-encoded string.
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
@@ -28,6 +28,7 @@
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
 => EchartsAdapter is currently deprecated. Very distant future we will update this.
+
 Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (Rust + maturin)
 
 ---
@@ -410,7 +411,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - `trace_type = "line"`
 - Three downsampling strategies, selected via `downsample` param:
   - **`"nth"`** — uniform stride: uses the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`) — stride computed inside the kernel, no `len()` expression dependency, enabling N grouped sub-traces to parallelize in one `select()`.
-  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, returns argmin + argmax of y per bucket via the `arg_min_max` Rust kernel, then gathers x and y at those indices. Preserves extrema and spikes.
+  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket and gathers x and y at those indices, all in the single `minmax_line` Rust kernel call. Preserves extrema and spikes. One kernel call on purpose: Polars does not CSE opaque plugin expressions, so the earlier two-gather form (`x.gather(idx), y.gather(idx)` over an `arg_min_max` index expression) ran the whole scan twice per trace.
   - **`"fpcs"`** — Feature-Preserving Compensated Sampling: runs the same MinMax bucket pass as `minmax`, then applies a compensation algorithm to carry forward "deferred" extrema across windows. Uses the `_fpcs_line` combined kernel (index selection + gather in one call). `n_points` is a target, not a hard cap; output can reach up to roughly `2 * n_points`.
 - Viewport restriction, ungrouped lines: when the x column has been asserted sorted (`check_sorted` / `assume_sorted`, surfaced via `LFQueryBuilder.is_sorted`, threaded by the engine as `x_sorted`), the viewport becomes a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`; otherwise a dtype-aware `is_between` mask. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
@@ -664,11 +665,20 @@ flexviz_polars._fpcs_line(x_expr, y_expr, n_points, x_name=None, y_name=None) �
       runs FPCS, gathers both x and y at the selected indices in a single pass.
       Returns Struct{x_name: x_dtype, y_name: y_dtype}. Used by LinePlot with
       downsample="fpcs" to avoid a separate gather step.
+
+flexviz_polars._minmax_line(x_expr, y_expr, n_points, x_name=None, y_name=None) → pl.Expr
+      Combined min-max index-selection + gather kernel, same shape as _fpcs_line.
+      Runs the arg_min_max bucket pass on y, gathers both x and y at the selected
+      indices in one call. Returns Struct{x_name: x_dtype, y_name: y_dtype}. Used
+      by LinePlot with downsample="minmax" (the default). Exists because Polars
+      does not CSE opaque plugin expressions: the two-gather form ran the scan
+      twice per trace. tests/test_trace_line.py pins the one-call plan shape, and
+      TestMinmaxLineDifferential pins bit-identity against the two-gather form.
 ```
 
 **Rust internals** (`src/expressions.rs`):
 - `every_nth` — computes `stride = max(1, len / n_points)`, builds capped gather indices, calls `Series::take()`.
-- `arg_min_max` — reuses internal helpers: `uniform_offsets`,  `simd_argminmax` (SIMD fast path for contiguous numeric types), and `fallback_window_argminmax` (general Series API for non-SIMD/other dtypes). Flattens min+max indices, sorts, deduplicates.
+- `arg_min_max` / `minmax_line` — reuse internal helpers: `uniform_offsets`, `simd_argminmax` (SIMD fast path for contiguous numeric types), and `fallback_window_argminmax` (general Series API for non-SIMD/other dtypes). Flatten min+max indices, sort, deduplicate; `minmax_line` then `take`s x and y at those indices inside the same call. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, worth ~1.3-1.6x at one trace on a bandwidth-saturated host and bounded at ~-9% for 3-5 concurrent traces, fading by 20.
 - `fpcs` / `_fpcs_line` — shares the `arg_min_max` MinMax bucket pass via `arg_min_max_pairs()`; then `fpcs_compensate()` dispatches per dtype, calling `fpcs_compensate_with_values()` which carries deferred extrema across windows with a dedup guard on every push (prevents duplicate index 0 when the first bucket's argmin equals the start point, and prevents endpoint duplication).
 - `fixed_hist` — dispatches on native dtype via `FixedHistValue` trait (avoids full-column cast); maps each value to a bin with `((v - lo) * scale).floor()` (+ round eps), clamps boundaries. **Rayon-parallel**: null-free contiguous runs are split into work units folded into private per-group count tables and merged by add. Falls back to the scalar single-table loop for chunks with nulls, undispatched dtypes, input below `MIN_PAR` (2^17 rows), or when two private tables exceed the byte budget — counts are identical either way (asserted against an independent Python reference in `test_plugin_functions.py`).
 - `fixed_hist2d` — O(n) 2D binning, same parallel/fallback structure as `fixed_hist` (x/y chunks aligned via `align_chunks_binary`); counts (UInt32) stored row-major. `fixed_hist2d_reduce` (Float64 reductions) remains single-threaded.
