@@ -121,7 +121,7 @@ because neither of those tools has the other chart.
 
 <p align="center">
   <a href="https://flexviz.tech/benchmarks.html">
-    <img src="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/benchmark-ttfr.png" width="850" alt="Time to first render at 200M rows and 5 traces. Line: flexviz 344 ms, datashader 8,670 ms, mosaic 10,033 ms. Histogram: flexviz 617 ms, vaex 1,304 ms, mosaic 3,009 ms.">
+    <img src="https://raw.githubusercontent.com/flex-analytics/flexviz/main/docs/benchmark-ttfr.png" width="850" alt="Time to first render at 200M rows and 5 traces: FlexViz against Datashader, Vaex, and Mosaic, fastest in both the line and histogram panels. Latest numbers at flexviz.tech/benchmarks.">
   </a>
 </p>
 
