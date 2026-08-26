@@ -354,13 +354,19 @@ class Histogram(FlexTrace):
             )
 
         domain_cols = self._histogram_domain_cols(histogram_domain_cols)
-        lo_expr = pl.min_horizontal(
-            *[pl.col(f"__hist_lo_{col}__").first() for col in domain_cols]
-        ).fill_null(0.0)
+        # The stats columns are frame-level constants broadcast to every row, so
+        # the horizontal min/max runs full-length and `.first()` reduces after —
+        # `.first()` per input is a length-1 map that grouped agg contexts
+        # reject since Polars 1.44.
+        lo_expr = (
+            pl.min_horizontal(*[pl.col(f"__hist_lo_{col}__") for col in domain_cols])
+            .first()
+            .fill_null(0.0)
+        )
         hi_expr = (
-            pl.max_horizontal(
-                *[pl.col(f"__hist_hi_{col}__").first() for col in domain_cols]
-            ).fill_null(1.0)
+            pl.max_horizontal(*[pl.col(f"__hist_hi_{col}__") for col in domain_cols])
+            .first()
+            .fill_null(1.0)
             + _HIST_BIN_EPSILON
         )
         return lo_expr, hi_expr, domain_cols

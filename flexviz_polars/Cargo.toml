@@ -16,8 +16,8 @@ bench = false
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
 pyo3-polars = { version = "0.28.0", features = ["derive", "dtype-struct", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
-polars = { version = "0.55.1", default-features = false, features = ["dtype-f16", "dtype-struct", "dtype-i8", "dtype-i16", "dtype-u8", "dtype-u16"] }
-polars-arrow = { version = "0.55.1", default-features = false }
+polars = { version = "0.55.2", default-features = false, features = ["dtype-f16", "dtype-struct", "dtype-i8", "dtype-i16", "dtype-u8", "dtype-u16"] }
+polars-arrow = { version = "0.55.2", default-features = false }
 argminmax = { version = "0.6", default-features = false, features = ["float", "half"] }
 half = { version = "2.7", default-features = false }
 # Kernel-internal parallelism. A cdylib plugin statically links its own
