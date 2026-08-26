@@ -2012,6 +2012,188 @@ class TestResidencySeam:
         assert line.get_aggregation_spec({}, scan_source=True).plan is None
 
 
+class TestLineScanFusion:
+    """Same-(x, viewport, n_points) scan-source minmax lines fuse into ONE
+    plan: pass 1 reads only the y columns, pass 2 reads x once for the whole
+    group. Fusion is a scan-count optimization, never a result change — every
+    trace must produce exactly what it produces unfused (and resident).
+    """
+
+    @staticmethod
+    def _deltas(src, traces, event=None, monkeypatch=None, width=None):
+        if monkeypatch is not None and width is not None:
+            monkeypatch.setenv("FLEXVIZ_LINE_FUSE_WIDTH", str(width))
+        lf = LFQueryBuilder(src)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={t.uid: t for t in traces})
+        infos = [
+            TraceInfo(uid=t.uid, axes=("x", "y"), trace_type="line", figure_uid="f1")
+            for t in traces
+        ]
+        event = event or InteractionEvent(type="init", force_update=True)
+        deltas = engine.process(event, infos)
+        by_uid = {d.uid: d for d in deltas}
+        return [by_uid[t.uid] for t in traces]
+
+    @staticmethod
+    def _df(n: int = 20_000) -> pl.DataFrame:
+        # Plateau-heavy quantised columns: the exact case where a wrong pick
+        # formulation silently diverges. One column with nulls and NaNs.
+        return pl.DataFrame(
+            {
+                "ts": [float(i) for i in range(n)],
+                "a": [round(((i * 31) % 97) / 7.0, 1) for i in range(n)],
+                "b": [float((i * 13) % 511) for i in range(n)],
+                "c": [
+                    (
+                        None
+                        if i % 501 == 0
+                        else (float("nan") if i % 307 == 0 else float(i % 89))
+                    )
+                    for i in range(n)
+                ],
+            }
+        )
+
+    def _assert_match(
+        self, tmp_path, traces_maker, event=None, monkeypatch=None, width=None
+    ):
+        df = self._df()
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+        resident = self._deltas(df, traces_maker(), event)
+        scanned = self._deltas(
+            pl.scan_parquet(path), traces_maker(), event, monkeypatch, width
+        )
+        for i, (r, s) in enumerate(zip(resident, scanned)):
+            assert list(s.updates["x"]) == list(r.updates["x"]), i
+            assert [repr(v) for v in s.updates["y"]] == [
+                repr(v) for v in r.updates["y"]
+            ], i
+
+    def test_fused_traces_match_resident(self, tmp_path):
+        self._assert_match(
+            tmp_path,
+            lambda: [
+                LinePlot(x="ts", y="a", n_points=100),
+                LinePlot(x="ts", y="b", n_points=100),
+                LinePlot(x="ts", y="c", n_points=100),
+            ],
+        )
+
+    def test_two_traces_same_y_column(self, tmp_path):
+        self._assert_match(
+            tmp_path,
+            lambda: [
+                LinePlot(x="ts", y="a", n_points=100),
+                LinePlot(x="ts", y="a", n_points=100),
+            ],
+        )
+
+    def test_different_n_points_split_groups(self, tmp_path):
+        """Different n_points cannot share a bucket layout; they fuse into
+        separate groups and each still matches its resident twin."""
+        self._assert_match(
+            tmp_path,
+            lambda: [
+                LinePlot(x="ts", y="a", n_points=100),
+                LinePlot(x="ts", y="b", n_points=64),
+            ],
+        )
+
+    def test_viewport_zoom_fused(self, tmp_path):
+        event = InteractionEvent(
+            type="viewport",
+            axis_ranges={"x": [2_000.0, 15_000.0]},
+            force_update=True,
+        )
+        self._assert_match(
+            tmp_path,
+            lambda: [
+                LinePlot(x="ts", y="a", n_points=100),
+                LinePlot(x="ts", y="b", n_points=100),
+            ],
+            event,
+        )
+
+    def test_fuse_width_chunks_match(self, tmp_path, monkeypatch):
+        """FLEXVIZ_LINE_FUSE_WIDTH=1 (no fusion) must equal the fused result."""
+        self._assert_match(
+            tmp_path,
+            lambda: [
+                LinePlot(x="ts", y="a", n_points=100),
+                LinePlot(x="ts", y="b", n_points=100),
+                LinePlot(x="ts", y="c", n_points=100),
+            ],
+            monkeypatch=monkeypatch,
+            width=1,
+        )
+
+    def test_fusion_shares_the_scan(self, tmp_path, monkeypatch):
+        """3 fused traces run 3 collects (len + two passes), not 9."""
+        df = self._df()
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+        calls: list = []
+        orig = pl.LazyFrame.collect
+
+        def spy(self, *a, **kw):
+            calls.append(kw.get("engine"))
+            return orig(self, *a, **kw)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
+        traces = [
+            LinePlot(x="ts", y="a", n_points=100),
+            LinePlot(x="ts", y="b", n_points=100),
+            LinePlot(x="ts", y="c", n_points=100),
+        ]
+        self._deltas(pl.scan_parquet(path), traces)
+        assert len([c for c in calls if c == "streaming"]) == 3
+
+    def test_mixed_line_and_hist_plans(self, tmp_path):
+        """Fused multi-column planned frames hstack next to single-column hist
+        plans in one aggregate call."""
+        df = self._df()
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+
+        def make():
+            return {
+                "line_a": LinePlot(x="ts", y="a", n_points=100),
+                "line_b": LinePlot(x="ts", y="b", n_points=100),
+                "hist_c": Histogram(x="c", bins=13),
+            }
+
+        def deltas(src):
+            traces = make()
+            lf = LFQueryBuilder(src)
+            engine = FlexEngine(
+                backend_lf=lf,
+                scalable_traces={t.uid: t for t in traces.values()},
+            )
+            infos = [
+                TraceInfo(
+                    uid=t.uid,
+                    axes=("x", "y"),
+                    trace_type=t.trace_type,
+                    figure_uid="f1",
+                )
+                for t in traces.values()
+            ]
+            out = engine.process(
+                InteractionEvent(type="init", force_update=True), infos
+            )
+            by_uid = {d.uid: d for d in out}
+            return [by_uid[t.uid] for t in traces.values()]
+
+        resident = deltas(df)
+        scanned = deltas(pl.scan_parquet(path))
+        for i, (r, s) in enumerate(zip(resident, scanned)):
+            for key in r.updates:
+                assert [repr(v) for v in s.updates[key]] == [
+                    repr(v) for v in r.updates[key]
+                ], (i, key)
+
+
 class TestHistResidencySeam:
     """Scan-source histograms swap the fixed_hist kernel for a streaming plan.
 

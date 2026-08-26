@@ -68,6 +68,11 @@ class AggregationSpec:
     #: own multi-pass plan — the out-of-core line envelope and the scan-source
     #: histogram formulations cannot ride the shared select.
     plan: "Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None" = None
+    #: Every column a fused plan returns, in order. Empty means ``(uid,)``. A
+    #: fused spec stands in for several traces whose scans were merged into one
+    #: plan (the scan-source line envelope); ``uid`` stays the first member so
+    #: uid-keyed consumers (overlay layer policy) see a representative trace.
+    plan_uids: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -353,10 +358,11 @@ class LFQueryBuilder:
             regular_df = pl.DataFrame()
         for spec in plan_specs:
             planned = spec.plan(filtered_ldf, stats_row)
-            if planned.width != 1 or planned.columns[0] != spec.uid:
+            expected = list(spec.plan_uids or (spec.uid,))
+            if planned.columns != expected:
                 raise ValueError(
                     f"AggregationSpec.plan for {spec.uid!r} must return exactly "
-                    f"one column named {spec.uid!r}, got {planned.columns!r}"
+                    f"the columns {expected!r}, got {planned.columns!r}"
                 )
             regular_df = (
                 planned if regular_df.is_empty() else regular_df.hstack(planned)

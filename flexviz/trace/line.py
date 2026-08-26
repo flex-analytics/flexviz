@@ -128,15 +128,16 @@ def _uniform_bucket_expr(ri: pl.Expr, n_rows: int, n_out: int) -> pl.Expr:
 
 def _native_envelope_plan(
     x_col: str,
-    y_col: str,
+    series: "Sequence[tuple[str, str]]",
     n_points: int,
-    uid: str,
     vp_expr: pl.Expr | None,
 ):
-    """Bit-identical `arg_min_max` replacement that streams.
+    """Bit-identical `arg_min_max` replacement that streams, for one or more
+    same-x traces sharing the scan.
 
-    The kernel materializes the whole column, so it OOMs on a scan at every cap
-    tested. This is the same envelope as two bounded passes:
+    ``series`` is ``[(y_col, uid), ...]``. The kernel materializes the whole
+    column, so it OOMs on a scan at every cap tested. This is the same envelope
+    as two bounded passes:
 
     1. per-bucket min/max of y — ``min``/``max`` are order-independent, so the
        result does not depend on how the engine schedules morsels;
@@ -153,77 +154,161 @@ def _native_envelope_plan(
     The bucket extrema are collected between the passes and fed back as literal
     lookups rather than joined: the join builds on the 100M-row side and costs
     ~1.8x the peak (2.76 GB vs 1.51 GB at 100M).
+
+    Fusing k traces keeps both passes at one scan each: pass 1 never reads x
+    (projection pushdown prunes it — the aggs only touch y), and pass 2 reads
+    x once for all traces instead of once per trace. Fusion cannot change any
+    trace's output: the frame-level filter is the union of every trace's
+    extremum rows (a superset of what the trace alone would keep), and every
+    per-trace aggregation re-selects exactly its own rows via its own masks —
+    buckets another trace contributes to yield null picks for this trace, which
+    the assembly's ``drop_nulls`` removes, exactly like an absent bucket row.
+    ``pl.collect_all`` was measured as an alternative and rejected: no wall win
+    (the streaming engine already saturates the cores per query) at 2.5-3x the
+    peak of sequential collects.
     """
+    # Two traces can share one y column; compute each unique y once.
+    ys = list(dict.fromkeys(y for y, _ in series))
 
     def run(
         filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
     ) -> pl.DataFrame:
         src = filtered_ldf if vp_expr is None else filtered_ldf.filter(vp_expr)
-        src = src.select(x_col, y_col)
+        src = src.select(*dict.fromkeys((x_col, *ys)))
         # The bucket layout needs the post-filter row count up front. This is
         # the only blocking step, and it is a count, not a materialization.
         n_rows = int(src.select(pl.len()).collect(engine="streaming").item())
         if n_rows == 0:
             return pl.DataFrame(
-                {uid: [[]]},
-                schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
+                {uid: [[]] for _, uid in series},
+                schema={
+                    uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))
+                    for y_col, uid in series
+                },
             )
         n_out = max(min(n_points // 2, n_rows), 1)
         ri = pl.col("__ri").cast(pl.Int64)
-        y = pl.col(y_col)
         base = src.with_row_index("__ri").with_columns(
             _uniform_bucket_expr(ri, n_rows, n_out).alias("__b")
         )
         ext = (
             base.group_by("__b")
-            .agg(__lo=y.min(), __hi=y.max())
+            .agg(
+                *[
+                    agg
+                    for i, y_col in enumerate(ys)
+                    for agg in (
+                        pl.col(y_col).min().alias(f"__lo{i}"),
+                        pl.col(y_col).max().alias(f"__hi{i}"),
+                    )
+                ]
+            )
             .sort("__b")
             .collect(engine="streaming")
         )
-        lo, hi = pl.lit(ext["__lo"]), pl.lit(ext["__hi"])
         b = pl.col("__b")
-        at_lo, at_hi = y == lo.gather(b), y == hi.gather(b)
         x = pl.col(x_col)
-        # Pass 2: only rows sitting ON a bucket extremum survive the frame-level
-        # filter, so the per-group work below is over a handful of rows. Taking
-        # `min_by(ri)` is safe precisely because row indices are unique — the
-        # tie-break that makes `min_by(y)` thread-dependent cannot arise here.
+        lo_lits = [pl.lit(ext[f"__lo{i}"]) for i in range(len(ys))]
+        hi_lits = [pl.lit(ext[f"__hi{i}"]) for i in range(len(ys))]
+        at_lo = [pl.col(y) == lo_lits[i].gather(b) for i, y in enumerate(ys)]
+        at_hi = [pl.col(y) == hi_lits[i].gather(b) for i, y in enumerate(ys)]
+        keep = at_lo[0] | at_hi[0]
+        for al, ah in zip(at_lo[1:], at_hi[1:]):
+            keep = keep | al | ah
+        # Pass 2: only rows sitting ON some trace's bucket extremum survive the
+        # frame-level filter, so the per-group work below is over a handful of
+        # rows. Taking `min_by(ri)` is safe precisely because row indices are
+        # unique — the tie-break that makes `min_by(y)` thread-dependent cannot
+        # arise here.
         picked = (
-            base.filter(at_lo | at_hi)
+            base.filter(keep)
             .group_by("__b")
             .agg(
-                __imin=ri.filter(at_lo).min(),
-                __imax=ri.filter(at_hi).min(),
-                __xmin=x.filter(at_lo).min_by(ri.filter(at_lo)),
-                __xmax=x.filter(at_hi).min_by(ri.filter(at_hi)),
+                *[
+                    agg
+                    for i in range(len(ys))
+                    for agg in (
+                        ri.filter(at_lo[i]).min().alias(f"__imin{i}"),
+                        ri.filter(at_hi[i]).min().alias(f"__imax{i}"),
+                        x.filter(at_lo[i])
+                        .min_by(ri.filter(at_lo[i]))
+                        .alias(f"__xmin{i}"),
+                        x.filter(at_hi[i])
+                        .min_by(ri.filter(at_hi[i]))
+                        .alias(f"__xmax{i}"),
+                    )
+                ]
             )
             .collect(engine="streaming")
         )
-        # Reassemble into index order: each bucket contributes its argmin and
-        # argmax point, deduplicated where a bucket's extremum is a single row.
-        # `picked` comes out of a group_by, so its bucket order is arbitrary —
-        # look the extrema up by bucket rather than pairing them positionally.
-        pts = pl.concat(
-            [
-                picked.select(i=pl.col("__imin"), xv=pl.col("__xmin"), yv=lo.gather(b)),
-                picked.select(i=pl.col("__imax"), xv=pl.col("__xmax"), yv=hi.gather(b)),
-            ]
-        ).drop_nulls("i")
-        pts = pts.unique(subset=["i"], keep="first").sort("i")
-        # Field names must be the source column names, not "x"/"y" —
-        # `_to_update` looks them up by `self.x_col` / `self.y_col`.
-        return pts.select(
-            pl.struct(
-                **{
-                    x_col: pl.col("xv").alias(x_col),
-                    y_col: pl.col("yv").alias(y_col),
-                }
+        # Reassemble each trace into index order: each bucket contributes its
+        # argmin and argmax point, deduplicated where a bucket's extremum is a
+        # single row. `picked` comes out of a group_by, so its bucket order is
+        # arbitrary — look the extrema up by bucket rather than pairing them
+        # positionally.
+        by_y: dict[str, pl.DataFrame] = {}
+        for i, y_col in enumerate(ys):
+            pts = pl.concat(
+                [
+                    picked.select(
+                        i=pl.col(f"__imin{i}"),
+                        xv=pl.col(f"__xmin{i}"),
+                        yv=lo_lits[i].gather(b),
+                    ),
+                    picked.select(
+                        i=pl.col(f"__imax{i}"),
+                        xv=pl.col(f"__xmax{i}"),
+                        yv=hi_lits[i].gather(b),
+                    ),
+                ]
+            ).drop_nulls("i")
+            pts = pts.unique(subset=["i"], keep="first").sort("i")
+            # Field names must be the source column names, not "x"/"y" —
+            # `_to_update` looks them up by `self.x_col` / `self.y_col`.
+            by_y[y_col] = pts.select(
+                pl.struct(
+                    **{
+                        x_col: pl.col("xv").alias(x_col),
+                        y_col: pl.col("yv").alias(y_col),
+                    }
+                ).implode()
             )
-            .implode()
-            .alias(uid)
+        return pl.concat(
+            [by_y[y_col].select(pl.first().alias(uid)) for y_col, uid in series],
+            how="horizontal",
         )
 
     return run
+
+
+def build_scan_minmax_spec(
+    traces: "Sequence[LinePlot]",
+    x_range: Any,
+    schema: pl.Schema | None,
+) -> AggregationSpec:
+    """One AggregationSpec for 1..k scan-source minmax line traces sharing
+    ``(x_col, viewport, n_points)`` — the engine's fusion unit.
+
+    A single trace produces exactly the spec its ``get_aggregation_spec`` used
+    to build; k traces share one plan so the scan runs once per pass instead of
+    once per trace (see ``_native_envelope_plan``).
+    """
+    first = traces[0]
+    return AggregationSpec(
+        expr=pl.lit(None).alias(first.uid),
+        uid=first.uid,
+        plan_uids=tuple(t.uid for t in traces),
+        plan=_native_envelope_plan(
+            first.x_col,
+            [(t.y_col, t.uid) for t in traces],
+            first.n_points,
+            (
+                _range_filter_expr(first.x_col, x_range, schema=schema)
+                if x_range is not None
+                else None
+            ),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -614,22 +699,10 @@ class LinePlot(FlexTrace):
 
         if scan_source and self.downsample == "minmax":
             # `nth` already streams (a stride needs no state) and `fpcs` has no
-            # streaming formulation at all, so only minmax needs the swap.
-            return AggregationSpec(
-                expr=pl.lit(None).alias(self.uid),
-                uid=self.uid,
-                plan=_native_envelope_plan(
-                    self.x_col,
-                    self.y_col,
-                    self.n_points,
-                    self.uid,
-                    (
-                        _range_filter_expr(self.x_col, x_range, schema=schema)
-                        if x_range is not None
-                        else None
-                    ),
-                ),
-            )
+            # streaming formulation at all, so only minmax needs the swap. The
+            # engine fuses same-(x, viewport, n_points) traces into one spec
+            # via build_scan_minmax_spec; a direct call gets the 1-trace form.
+            return build_scan_minmax_spec([self], x_range, schema)
 
         expr = _plugin_line_agg_expr(
             self.x_col,

@@ -786,10 +786,13 @@ AggregationSpec
 ├── global_stats_cols: Tuple[str, ...] = ()
 │                    ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
 │                       are added on the unfiltered base frame before filtering
-└── plan: Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None = None
-                     ← escape hatch for a multi-pass aggregation that cannot be a
-                        select expression (scan-source line envelope + histograms);
-                        must return a one-row DataFrame with the single column uid
+├── plan: Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None = None
+│                    ← escape hatch for a multi-pass aggregation that cannot be a
+│                       select expression (scan-source line envelope + histograms);
+│                       must return a one-row DataFrame whose columns are plan_uids
+└── plan_uids: Tuple[str, ...] = ()  ← all columns a fused plan returns, in order;
+                        empty means (uid,). A fused spec stands in for several
+                        same-(x, viewport, n_points) scan-source line traces
 ```
 
 `GroupedAggregationSpec` (dataclass):
@@ -831,6 +834,18 @@ Equivalence is asserted per trace family by the `Test*ResidencySeam` classes in
 `tests/test_engine.py`. Stats columns stay broadcast aggregates — resolving them to
 literal columns measured +2.3 GB inside grouped collects because the optimizer
 materializes literal columns full-length while broadcast aggregates stay scalars.
+
+Scan-source minmax line traces sharing `(x_col, viewport, n_points)` are **fused by
+the engine into one plan** (`build_scan_minmax_spec`, `plan_uids`): the envelope's
+pass 1 reads only the y columns and pass 2 reads x once for the whole group instead
+of once per trace. Fusion is a scan-count optimization, never a result change — the
+frame-level pick filter is the union of every trace's extremum rows and each trace's
+aggregations re-select exactly their own rows (`TestLineScanFusion`).
+`FLEXVIZ_LINE_FUSE_WIDTH` caps the group size (0/unset = fuse all). Rejected fusion
+mechanisms, both measured: `pl.collect_all` (no wall win — the streaming engine
+already saturates the cores per query — at 2.5-3x the peak) and `value_counts()`
+histogram expressions in the shared select (3.2x slower, 4.3x the peak; the
+histogram plans stay sequential bounded passes).
 
 `_to_update` receives the result as `df_agg[uid][0]` — a Python dict of `{field: value}` where array fields are Python lists (after `implode()` inside the trace expression).
 

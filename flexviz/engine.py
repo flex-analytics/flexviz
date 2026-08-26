@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -31,6 +32,7 @@ from .trace.base import (
     child_uid_from_group_key,
 )
 from .trace.hist import _HIST_BIN_EPSILON
+from .trace.line import build_scan_minmax_spec
 from .predicates import canonical_passive_key, predicates_to_expr
 
 # Event types whose computation is unfiltered and viewport-free. These are the
@@ -830,6 +832,10 @@ class FlexEngine:
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
         scan_source = self._backend_lf is not None and self._backend_lf.is_scan
+        # Scan-source minmax line traces sharing (x, viewport, n_points) fuse
+        # into one plan so the scan runs once per pass instead of once per
+        # trace; deferred here, emitted after the loop.
+        fusable_lines: Dict[tuple, list] = {}
 
         for item in aggregation_traces:
             ti = item.info
@@ -854,6 +860,19 @@ class FlexEngine:
                     )
                 )
             elif trace.trace_type == "line":
+                x_range = item.update_range.get("x")
+                if (
+                    scan_source
+                    and trace.group_by_cols is None
+                    and trace.downsample == "minmax"
+                ):
+                    key = (
+                        trace.x_col,
+                        tuple(x_range) if x_range is not None else None,
+                        trace.n_points,
+                    )
+                    fusable_lines.setdefault(key, []).append(trace)
+                    continue
                 # TODO: make sorted the default behavior for line traces
                 #       -> I do not like the specific branch here for line traces
                 # Sorted x turns the viewport into a contiguous row range, which
@@ -882,6 +901,17 @@ class FlexEngine:
             logger.info(
                 f"[{ti.uid[:8]}] {ti.trace_type:10s} - agg_spec: {t_e - t_s:.4f}s"
             )
+
+        fuse_width = int(os.environ.get("FLEXVIZ_LINE_FUSE_WIDTH", "0") or 0)
+        for (_, x_key, _), group in fusable_lines.items():
+            x_range = list(x_key) if x_key is not None else None
+            width = fuse_width if fuse_width > 0 else len(group)
+            for i in range(0, len(group), width):
+                agg_specs.append(
+                    build_scan_minmax_spec(
+                        group[i : i + width], x_range, backend_schema
+                    )
+                )
         return agg_specs
 
     # -- cache (Phase 1) -------------------------------------------------------
