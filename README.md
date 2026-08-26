@@ -26,18 +26,13 @@
   <a href="https://flexviz.tech/benchmarks.html">Benchmarks</a>
 </p>
 
-> [!WARNING]
-> FlexViz is pre-1.0 and under active development. APIs, defaults, and the spec
-> format may change between minor releases, and rough edges remain. Bug reports
-> are very welcome.
-
 ---
 
 FlexViz is a visualization library for exploring datasets that are far too big
-for conventional Python dashboarding tools. Charts stay interactive (zoom,
-brush, cross-filter) at 100M+ rows, because every interaction is answered by
-lazy [Polars](https://github.com/pola-rs/polars) aggregations and Rust kernels 
-instead of by shipping raw data to the browser.
+for conventional Python dashboarding tools.  
+Charts stay interactive (zoom, pan, cross-filter) at 100M+ rows because every
+interaction is answered by lazy [Polars](https://github.com/pola-rs/polars)
+aggregations and Rust kernels instead of by shipping raw data to the browser.
 
 <p align="center">
   <a href="https://flexviz.tech/demo.html">
@@ -47,32 +42,47 @@ instead of by shipping raw data to the browser.
 
 <p align="center">
   Brush one chart and every linked chart re-aggregates against the filtered
-  set. Try it yourself on 100M rows in the
+  set. Try it yourself on 2 x 100M rows in the
   <a href="https://flexviz.tech/demo.html">live demo</a>.
 </p>
 
-## How it works
+> [!WARNING]
+> FlexViz is pre-1.0 and under active development. APIs, defaults, and the spec
+> format may change between minor releases, and rough edges remain. Bug reports
+> are very welcome.
 
-- **Polars-native.** Data stays a lazy `LazyFrame` until the last moment;
-  in-memory frames and parquet-backed sources both work, and larger-than-RAM
-  sources stream through Polars' streaming engine (*WIP*).
-- **Rust kernels.** Min/max line downsampling and fixed-bin histogram/heatmap
-  binning run as parallel Polars expression plugins
-  (`flexviz_polars`), at memory-bandwidth speed.
-- **Cube live-brushing.** Dragging a brush is served client-side from a small
-  pre-aggregated cube: zero server round-trips during the drag.
-- **Stateless server.** The client owns all interaction state and every request
-  carries the complete dashboard spec. No sessions, no server affinity, and
-  shareable dashboard URLs fall out for free.
-- **Renderer-agnostic core.** Specs, traces, and the engine know nothing about
-  the renderer; a thin adapter maps updates onto Plotly.js, the default
-  renderer.
+## Install
+
+```bash
+pip install flexviz
+```
+
+The Rust kernels arrive as a prebuilt wheel (`flexviz-polars`) on Linux
+(x86_64, aarch64), macOS (Intel and Apple silicon), and Windows (x64). Any
+other platform builds them from source and needs a Rust toolchain.
+
+## Quickstart
+
+```python
+import polars as pl
+from flexviz import Dashboard
+
+lf = pl.scan_parquet("readings.parquet")  # 100M rows, stays lazy
+
+dash = Dashboard(lf)
+dash.add_figure().add_line(x="timestamp", y="value")
+dash.add_figure().add_histogram(x="value", bins=50)
+dash.show()  # brush one chart to cross-filter the other
+```
+
+Guides and the full API reference live at
+[docs.flexviz.tech](https://docs.flexviz.tech).
 
 ## Features
 
-FlexViz is a library, not a service. 
-The dashboard server **runs where your data lives**, on your laptop or in 
-your own infra, and no rows ever leave it.
+FlexViz is a library, not a (cloud) service. 
+The dashboard server **runs where your data lives**, on your laptop or in your 
+own infra, and rows never leave it.
 
 - **10 trace types**: line, histogram, box, bar, pie, treemap, 2D histogram,
   correlation heatmap, geo 2D histogram, geo line.
@@ -96,44 +106,25 @@ your own infra, and no rows ever leave it.
 - **Embeddable**: mounts into an existing 
   [FastAPI](https://github.com/fastapi/fastapi) app via `mount_into()`.
 
-## Quickstart
 
-```python
-import polars as pl
-from flexviz import Dashboard
+## Why it scales
 
-lf = pl.scan_parquet("readings.parquet")  # 100M rows, stays lazy
-
-dash = Dashboard(lf)
-dash.add_figure().add_line(x="timestamp", y="value")
-dash.add_figure().add_histogram(x="value", bins=50)
-dash.show()  # brush one chart to cross-filter the other
-```
-
-Guides and the full API reference live at
-[docs.flexviz.tech](https://docs.flexviz.tech).
-
-## Install
-
-```bash
-pip install flexviz
-```
-
-The Rust kernels arrive as a prebuilt wheel (`flexviz-polars`) on Linux
-(x86_64, aarch64), macOS (Intel and Apple silicon), and Windows (x64). Any
-other platform builds them from source and needs a Rust toolchain.
-
-From source:
-
-```bash
-git clone https://github.com/flex-analytics/flexviz
-cd flexviz
-uv sync              # installs deps and builds the Rust plugin
-make test
-```
-
-The Rust plugin builds automatically; the toolchain is pinned in
-`rust-toolchain.toml`.
+- **Polars-native.** Data stays a lazy `LazyFrame` until the last moment;
+  in-memory frames and parquet-backed sources both work, and larger-than-RAM
+  sources stream through Polars' streaming engine (*WIP*).
+- **Rust kernels.** Min/max line downsampling and fixed-bin histogram/heatmap
+  binning run as parallel Polars expression plugins
+  (`flexviz_polars`), at memory-bandwidth speed.
+- **Aggregates over the wire.** The browser receives a few thousand points per
+  trace, never the raw rows
+- **Cube live-brushing.** Dragging a brush is served client-side from a small
+  pre-aggregated cube: zero server round-trips during the drag.
+- **Stateless server.** The client owns all interaction state and every request
+  carries the complete dashboard spec. No sessions, no server affinity, and
+  shareable dashboard URLs are a free feature.
+- **Renderer-agnostic core.** Specs, traces, and the engine know nothing about
+  the renderer; a thin adapter maps updates onto Plotly.js, the default
+  renderer.
 
 ## Benchmarks
 
@@ -150,19 +141,30 @@ because neither of those tools has the other chart.
 </p>
 
 Peak backend memory stays at ~25 MB from 1M to 200M rows: FlexViz aggregates
-the caller's frame zero-copy. Interactive charts for the full matrix (1M–200M
-rows, 1/2/5 traces, in-memory and Parquet-backed) are at
+the caller's frame zero-copy.
+
+Charts for the full matrix (1M–200M rows, 1/2/5 traces, in-memory
+and Parquet-backed) are at
 [flexviz.tech/benchmarks](https://flexviz.tech/benchmarks.html); the harness,
 correctness gates, per-trial results, and caveats live in
 [flexviz-benchmarks](https://github.com/flex-analytics/flexviz-benchmarks).
 
-## Status
+## Development
 
-**Pre-1.0**.
-The Python API and the spec wire format may change between minor
-versions; see the compatibility policy in the
-[changelog](https://github.com/flex-analytics/flexviz/blob/main/CHANGELOG.md).
-[Architecture.md](https://github.com/flex-analytics/flexviz/blob/main/Architecture.md) is the design source of truth.
+```bash
+git clone https://github.com/flex-analytics/flexviz
+cd flexviz
+uv sync              # installs deps and builds the Rust plugin
+make test
+```
+
+The Rust plugin builds automatically; the toolchain is pinned in
+`rust-toolchain.toml`.
+
+See the compatibility policy in the
+[changelog](https://github.com/flex-analytics/flexviz/blob/main/CHANGELOG.md).  
+[Architecture.md](https://github.com/flex-analytics/flexviz/blob/main/Architecture.md) 
+is the design source of truth.
 
 ## License
 
