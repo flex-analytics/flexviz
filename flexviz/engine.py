@@ -443,7 +443,13 @@ class FlexEngine:
                 blob = cube_cache.get(key) if cube_cache is not None else None
                 if blob is None:
                     t_start = time.perf_counter()
-                    result = build_cube(build_ldf, spec)
+                    result = build_cube(
+                        build_ldf,
+                        spec,
+                        scan_source=(
+                            self._backend_lf is not None and self._backend_lf.is_scan
+                        ),
+                    )
                     blob = encode_fvcube(result, cube_id=key)
                     if cube_cache is not None:
                         cube_cache.set(key, blob)

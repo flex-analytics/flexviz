@@ -326,9 +326,9 @@ class TestDashboardCubeRequest:
 
         calls = {"n": 0}
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return real_build_cube(ldf, spec)
+            return real_build_cube(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
 
@@ -347,9 +347,9 @@ class TestDashboardCubeRequest:
 
         calls = {"n": 0}
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return real_build_cube(ldf, spec)
+            return real_build_cube(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
 
@@ -1350,9 +1350,9 @@ class TestPassiveBaking:
 
         calls = {"n": 0}
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return real_build_cube(ldf, spec)
+            return real_build_cube(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
 
@@ -1627,9 +1627,9 @@ class TestZoomKeyInterplay:
 
         calls = {"n": 0}
 
-        def counting(ldf, spec):
+        def counting(ldf, spec, **kwargs):
             calls["n"] += 1
-            return real_build_cube(ldf, spec)
+            return real_build_cube(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting)
 
@@ -2179,9 +2179,9 @@ class TestCorrTargetCubeRequest:
         calls = {"n": 0}
         orig = engine_mod.build_cube
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return orig(ldf, spec)
+            return orig(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
         spec = _corr_dashboard(corr_df, columns=["p", "q", "rr"])
@@ -2398,9 +2398,9 @@ class TestHist2dTargetCubeRequest:
         calls = {"n": 0}
         orig = engine_mod.build_cube
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return orig(ldf, spec)
+            return orig(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
         spec = _hist2d_dashboard(hist2d_df)
@@ -2606,9 +2606,9 @@ class TestTreeMapTargetCubeRequest:
         calls = {"n": 0}
         orig = engine_mod.build_cube
 
-        def counting_build_cube(ldf, spec):
+        def counting_build_cube(ldf, spec, **kwargs):
             calls["n"] += 1
-            return orig(ldf, spec)
+            return orig(ldf, spec, **kwargs)
 
         monkeypatch.setattr(engine_mod, "build_cube", counting_build_cube)
         spec = _treemap_dashboard(treemap_df)

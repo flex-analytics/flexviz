@@ -388,3 +388,13 @@ class TestScanCollectEngine:
             ],
         )
         assert calls == ["default"]
+
+    def test_physical_minmax_streams_on_scan(self, tmp_path, monkeypatch):
+        """The cube domain pre-pass must not load full columns on a scan."""
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        res = b.physical_minmax(["val"])
+        assert res == {"val": (0.0, 6.0)}
+        assert calls == ["streaming"]

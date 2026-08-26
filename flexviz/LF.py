@@ -216,7 +216,14 @@ class LFQueryBuilder:
                 val = val.cast(pl.Float64)
                 exprs.append(val.min().alias(f"__cube_min_{c}__"))
                 exprs.append(val.max().alias(f"__cube_max_{c}__"))
-            stats = self._ldf.select(exprs).collect()
+            stats_q = self._ldf.select(exprs)
+            # Streaming on a scan: the default engine would load every
+            # projected column to reduce it (O(rows) for a min/max).
+            stats = (
+                stats_q.collect(engine="streaming")
+                if self.is_scan
+                else stats_q.collect()
+            )
             for c in missing:
                 self._cube_domain_cache[c] = (
                     stats[f"__cube_min_{c}__"].item(),

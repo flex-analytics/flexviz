@@ -827,7 +827,16 @@ geo_hist2d traces swap their kernel expression for an `AggregationSpec.plan` tha
 computes bit-identical output as bounded streaming passes (native `group_by` over
 the kernels' exact bin arithmetic — the bin expressions are shared with the cube in
 `cube.py`; `sum`/`mean` heatmap cells may differ in the last ULP because streaming
-morsels accumulate in a different order). Resident frames keep the kernels
+morsels accumulate in a different order). The `line_env` cube build takes the same
+seam (`build_cube(..., scan_source=)` → `_native_envelope_cells`): two bounded
+streaming passes replacing the `fixed_line_envelope2d` kernel for the numeric-free,
+no-group-dims shape, cell-identical including the first-row-wins tie rule (min row
+index over unique indices) and true-division bin edges — note the streaming engine
+performs true IEEE division while the in-memory engine rewrites division-by-constant
+into reciprocal multiply (1 ulp off at exact bin edges), so those collects are
+streaming-only and the seam tests pin domain-max fixtures. Categorical line_env
+variants (categorical free axis or categorical group dims) keep the materializing
+per-partition kernel on every residency. Resident frames keep the kernels
 unchanged. Grouped traces keep the kernel inside `group_by` on both residencies
 (`streaming_safe=False`); a native grouped scan formulation is future work.
 Equivalence is asserted per trace family by the `Test*ResidencySeam` classes in

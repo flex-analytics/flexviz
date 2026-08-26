@@ -3357,3 +3357,62 @@ class TestCubeBundleCodec:
     def test_bad_magic_rejected(self):
         with pytest.raises(ValueError, match="magic"):
             decode_cube_bundle(b"NOPE" + b"\x00" * 32)
+
+
+class TestLineEnvelopeScanSeam:
+    """Scan-source line_env cubes swap the kernel for two bounded streaming
+    passes (`_native_envelope_cells`); identical cells, identical row order.
+
+    The fixtures pin the kernel's edge semantics: domain-max x and free values
+    (degenerate top bins — exactly where the reciprocal-multiply division
+    rewrite would shift a bin, see the function's division note), out-of-domain
+    rows, null/NaN y, and exact y-plateau ties inside a cell (where a
+    nondeterministic pick formulation silently diverges from the kernel's
+    first-row-wins rule).
+    """
+
+    @staticmethod
+    def _roundtrip(tmp_path, df: pl.DataFrame, spec: CubeSpec) -> None:
+        path = tmp_path / "cube.parquet"
+        df.write_parquet(path)
+        resident = build_cube(df.lazy(), spec)
+        scanned = build_cube(pl.scan_parquet(path), spec, scan_source=True)
+        assert scanned.frame.schema == resident.frame.schema
+        assert scanned.frame.equals(resident.frame)
+        assert scanned.group_cols == resident.group_cols
+        assert scanned.free_key_cols == resident.free_key_cols
+
+    def test_scan_matches_kernel(self, tmp_path, line_df):
+        self._roundtrip(tmp_path, line_df, _line_spec())
+
+    def test_plateau_ties_match(self, tmp_path):
+        """Quantised y puts exact plateaus under cell extrema; the streaming
+        form must pick the same first-in-scan-order row as the kernel."""
+        n = 8_192
+        df = pl.DataFrame(
+            {
+                "x": [float(i % 100) + (i % 5) * 0.01 for i in range(n)],
+                "y": [round(((i * 31) % 13) / 3.0, 1) for i in range(n)],
+                "free": [float((i * 37) % 100) for i in range(n)],
+            }
+        )
+        self._roundtrip(tmp_path, df, _line_spec(bins=16, p=8))
+
+    def test_all_rows_out_of_domain(self, tmp_path, line_df):
+        self._roundtrip(tmp_path, line_df, _line_spec(x_domain=(1000.0, 2000.0)))
+
+    def test_categorical_group_dims_still_match_on_scan(self, tmp_path):
+        """cat group dims keep the materializing partition path on a scan
+        (the per-partition kernel needs resident data) — results must still be
+        identical to the resident build."""
+        n = 4_096
+        df = pl.DataFrame(
+            {
+                "x": [float(i % 100) for i in range(n)],
+                "y": [((i * 2641) % 4096) * 0.001 for i in range(n)],
+                "free": [float((i * 37) % 100) for i in range(n)],
+                "cat": [("g" + str(i % 3)) for i in range(n)],
+            }
+        )
+        spec = _line_spec(extra_dims=(TargetDimSpec(column="cat", kind="categorical"),))
+        self._roundtrip(tmp_path, df, spec)

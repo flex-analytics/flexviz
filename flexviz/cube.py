@@ -850,7 +850,106 @@ def _empty_envelope_frame() -> pl.DataFrame:
     )
 
 
-def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
+def _native_envelope_cells(
+    base: pl.LazyFrame,
+    x_lo: float,
+    x_hi: float,
+    f_lo: float,
+    f_hi: float,
+    n_buckets: int,
+    p: int,
+) -> pl.DataFrame:
+    """Streaming ``fixed_line_envelope2d`` replacement for scan sources.
+
+    ``base`` must already be projected to ``__x``/``__y``/``__f`` (Float64,
+    day remap applied) — the same frame the kernel path collects. The kernel
+    materializes it, which is O(rows) on a scan; this computes identical cells
+    in two bounded passes, the same construction as the line trace's
+    ``_native_envelope_plan``:
+
+    1. per-cell ``y`` min/max — order-independent aggregations;
+    2. rows sitting ON a cell extremum, keeping the FIRST in source order
+       (min row index — unique, so no thread-dependent tie-break) and its x.
+
+    That reproduces the kernel's strict-comparison first-row-wins tie rule
+    exactly. Row semantics mirror ``envelope_scan``: closed-domain
+    ``is_between`` on x and free (NaN fails, null propagates to a dropped
+    row), NaN/null y dropped, natural floor bins with NO epsilon and NO clip,
+    a domain-max value landing in the degenerate top bin.
+
+    Division hazard: the kernel uses true IEEE division; on this Polars
+    version the in-memory engine rewrites division by a constant into
+    multiplication by the reciprocal (1 ulp off at exact bin edges) while the
+    streaming engine does not. Both collects here are ``engine="streaming"``,
+    and the scan-seam tests pin domain-max/bin-edge values so an engine
+    fallback or rewrite change breaks loudly instead of shifting bins
+    silently.
+    """
+    x_span = x_hi - x_lo if x_hi > x_lo else 1.0
+    f_span = f_hi - f_lo if f_hi > f_lo else 1.0
+    stride = n_buckets + 1  # buckets 0..=n_buckets (degenerate top bin)
+    n_cells = stride * (p + 1)
+
+    keep = (
+        pl.col("__x").is_between(x_lo, x_hi)
+        & pl.col("__f").is_between(f_lo, f_hi)
+        & pl.col("__y").is_not_nan()
+    )
+    bx = ((pl.col("__x") - x_lo) / x_span * float(n_buckets)).floor().cast(pl.Int64)
+    bf = ((pl.col("__f") - f_lo) / f_span * float(p)).floor().cast(pl.Int64)
+    binned = base.filter(keep).with_columns((bf * stride + bx).alias("__cell"))
+    y = pl.col("__y")
+    # Pass 1 carries no row index: `with_row_index` is an ordered computation
+    # the streaming engine must serialize, and only the pick pass needs it.
+    ext = (
+        binned.group_by("__cell")
+        .agg(__lo=y.min(), __hi=y.max())
+        .collect(engine="streaming")
+    )
+    if ext.height == 0:
+        return _empty_envelope_frame()
+
+    # Dense per-cell extrema so pass 2 can look them up positionally
+    # (`gather(__cell)`); empty cells stay NaN and are unreachable — every row
+    # belongs to a cell that contains at least itself. 16 bytes/cell: the
+    # cube's own cell-count wall (#47) bounds this long before it matters.
+    lo_arr = np.full(n_cells, np.nan)
+    hi_arr = np.full(n_cells, np.nan)
+    lo_arr[ext["__cell"].to_numpy()] = ext["__lo"].to_numpy()
+    hi_arr[ext["__cell"].to_numpy()] = ext["__hi"].to_numpy()
+    lo_lit = pl.lit(pl.Series("__lo", lo_arr))
+    hi_lit = pl.lit(pl.Series("__hi", hi_arr))
+
+    cell = pl.col("__cell")
+    ri = pl.col("__ri")
+    x = pl.col("__x")
+    at_lo = y == lo_lit.gather(cell)
+    at_hi = y == hi_lit.gather(cell)
+    picked = (
+        binned.with_row_index("__ri")
+        .filter(at_lo | at_hi)
+        .group_by("__cell")
+        .agg(
+            __xlo=x.filter(at_lo).min_by(ri.filter(at_lo)),
+            __xhi=x.filter(at_hi).min_by(ri.filter(at_hi)),
+        )
+        .collect(engine="streaming")
+    )
+    # `__cell = free_bin * stride + bucket`, so sorting by cell IS the
+    # kernel's ascending (free_bin, bucket) compaction order.
+    return picked.sort("__cell").select(
+        (pl.col("__cell") % stride).cast(pl.UInt32).alias("bucket"),
+        (pl.col("__cell") // stride).cast(pl.UInt32).alias("free_bin"),
+        lo_lit.gather(pl.col("__cell")).alias("y_min"),
+        pl.col("__xlo").alias("x_at_ymin"),
+        hi_lit.gather(pl.col("__cell")).alias("y_max"),
+        pl.col("__xhi").alias("x_at_ymax"),
+    )
+
+
+def _build_line_env_cube(
+    ldf: pl.LazyFrame, spec: CubeSpec, scan_source: bool = False
+) -> CubeResult:
     """Build a line-envelope cube via the Rust ``fixed_line_envelope2d``
     kernel (contract J): one pass over (x, y, free) producing per
     (bucket, free_bin) cell the exact argmin/argmax-by-y — no group_by
@@ -858,6 +957,12 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     per partition. Temporal x and free columns run on their physical Float64
     representation (contract G). The kernel returns exact f64; the f32/u16
     quantization happens at encode time only (``_line_env_quantized_buffers``).
+
+    ``scan_source`` is the residency seam: the kernel needs the projected
+    frame in memory, so a scan swaps in ``_native_envelope_cells`` — identical
+    cells from two bounded streaming passes. Only the numeric-free,
+    no-group-dims shape has the streaming form; the categorical variants
+    partition a collected frame and still materialize on a scan.
     """
     import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
@@ -972,12 +1077,12 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
         k_lo, k_hi, k_p = float(f_lo), float(f_hi), free.p
 
     base = ldf.filter(*filters) if filters else ldf
-    df = base.select(
+    proj = base.select(
         *[pl.col(c) for c in cat_cols],
         _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
         pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
         free_expr,
-    ).collect(engine="streaming")
+    )
 
     def _envelope(part: pl.DataFrame) -> pl.DataFrame:
         return (
@@ -997,9 +1102,15 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             .struct.unnest()
         )
 
-    if not cat_cols:
+    if scan_source and not cat_cols:
+        frame = _native_envelope_cells(
+            proj, float(x_lo), float(x_hi), k_lo, k_hi, bucket.bins, k_p
+        )
+    elif not cat_cols:
+        df = proj.collect(engine="streaming")
         frame = _envelope(df) if df.height else _empty_envelope_frame()
     else:
+        df = proj.collect(engine="streaming")
         frames = []
         for key, part in df.partition_by(cat_cols, as_dict=True).items():
             key_t = key if isinstance(key, tuple) else (key,)
@@ -1232,7 +1343,9 @@ def cube_target_buildable(free: FreeAxisSpec, measure: MeasureSpec) -> bool:
     return True
 
 
-def build_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
+def build_cube(
+    ldf: pl.LazyFrame, spec: CubeSpec, scan_source: bool = False
+) -> CubeResult:
     """Build a cube from a (already passive-filtered) LazyFrame.
 
     Rows outside the free-axis domain or any binned target dim's domain are
@@ -1254,10 +1367,13 @@ def build_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     groups), which keeps the payload sparse.
 
     A ``line_env`` measure dispatches to the Rust kernel build path
-    (``_build_line_env_cube``) instead of group_by aggregation.
+    (``_build_line_env_cube``) instead of group_by aggregation; on a scan
+    source (``scan_source=True``, decided by the caller) it swaps in a bounded
+    streaming formulation. All other targets are plain streaming group_bys and
+    need no seam.
     """
     if spec.measure.agg == "line_env":
-        return _build_line_env_cube(ldf, spec)
+        return _build_line_env_cube(ldf, spec, scan_source)
     if spec.measure.agg == "corr":
         return _build_corr_cube(ldf, spec)
     if spec.free.kind == "box2d":
