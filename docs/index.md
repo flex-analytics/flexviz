@@ -9,6 +9,9 @@ instead of shipping raw data to the browser.
 
 [![Cross-filter demo: brushing a range on a 100M-point line chart re-aggregates the linked histogram](crossfilter.gif)](https://flexviz.tech/demo.html)
 
+Try it yourself on 2 x 100M rows in the
+[live demo](https://flexviz.tech/demo.html).
+
 !!! warning "Pre-1.0"
     FlexViz is under active development. APIs, defaults, and the spec format
     may change between minor releases. Bug reports are very welcome on
@@ -72,6 +75,9 @@ fig.show(port="auto")
 - **Stateless server.** The client owns all interaction state and every
   request carries the complete dashboard spec. No sessions, no server
   affinity, and shareable URLs fall out for free.
+
+Latest benchmark results:
+[flexviz.tech/benchmarks](https://flexviz.tech/benchmarks.html).
 
 ## Trace types
 

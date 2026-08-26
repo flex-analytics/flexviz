@@ -36,8 +36,8 @@
 FlexViz is a visualization library for exploring datasets that are far too big
 for conventional Python dashboarding tools. Charts stay interactive (zoom,
 brush, cross-filter) at 100M+ rows, because every interaction is answered by
-lazy Polars aggregations and Rust kernels instead of by shipping raw data to
-the browser.
+lazy [Polars](https://github.com/pola-rs/polars) aggregations and Rust kernels 
+instead of by shipping raw data to the browser.
 
 <p align="center">
   <a href="https://flexviz.tech/demo.html">
@@ -51,11 +51,11 @@ the browser.
   <a href="https://flexviz.tech/demo.html">live demo</a>.
 </p>
 
-## Why it's fast
+## How it works
 
 - **Polars-native.** Data stays a lazy `LazyFrame` until the last moment;
   in-memory frames and parquet-backed sources both work, and larger-than-RAM
-  sources stream through Polars' streaming engine.
+  sources stream through Polars' streaming engine (*WIP*).
 - **Rust kernels.** Min/max line downsampling and fixed-bin histogram/heatmap
   binning run as parallel Polars expression plugins
   (`flexviz_polars`), at memory-bandwidth speed.
@@ -64,22 +64,37 @@ the browser.
 - **Stateless server.** The client owns all interaction state and every request
   carries the complete dashboard spec. No sessions, no server affinity, and
   shareable dashboard URLs fall out for free.
+- **Renderer-agnostic core.** Specs, traces, and the engine know nothing about
+  the renderer; a thin adapter maps updates onto Plotly.js, the default
+  renderer.
 
 ## Features
 
-- **10 trace types.** Line, histogram, box, bar, pie, treemap, 2D histogram,
+FlexViz is a library, not a service. 
+The dashboard server **runs where your data lives**, on your laptop or in 
+your own infra, and no rows ever leave it.
+
+- **10 trace types**: line, histogram, box, bar, pie, treemap, 2D histogram,
   correlation heatmap, geo 2D histogram, geo line.
-- **Native cross-filtering.** Brush one figure to filter the others (update or
-  overlay mode), with grouped traces and linked hover.
-- **Shareable URLs.** Every view — viewport, selections, cross-filter mode, and
-  layout — encodes into a single URL. Send the link and a teammate opens the
+- **Bring any DataFrame**: Polars DataFrames/LazyFrames, pandas DataFrames,
+  and PyArrow tables.
+- **Interactivity**:
+  - **Zoom re-aggregation**: zooming recomputes a figure for its viewport, so
+    a line re-downsamples and a histogram re-bins; detail appears as you dive.
+  - **Native cross-filtering**: brush or click one figure to filter the
+    others, either replacing their view (update mode) or drawing the filtered
+    aggregate on top of the totals (overlay mode).
+  - **Linked hover**: hovering one figure highlights the matching position in
+    every figure that shares its columns, fully client-side.
+- **Grouped traces**: `group_by` splits a trace into per-category series with
+  stable colors, computed in a single grouped Polars query.
+- **Shareable URLs**: every view (viewport, selections, cross-filter mode, and
+  layout) encodes into a single URL. Send the link and a teammate opens the
   exact live view; the server stores nothing.
-- **Drag-and-drop dashboard grid.** Rearrange and resize panels in the browser
+- **Draggable dashboard grid**: rearrange and resize panels in the browser
   and lock the layout when it's done; the arrangement also travels with the URL.
-- **Bring any DataFrame.** Polars DataFrames/LazyFrames, pandas DataFrames, and
-  PyArrow tables.
-- **Plotly.js rendering.** The renderer sits behind a clean adapter boundary.
-- **Embeddable.** Mounts into an existing FastAPI app via `mount_into()`.
+- **Embeddable**: mounts into an existing 
+  [FastAPI](https://github.com/fastapi/fastapi) app via `mount_into()`.
 
 ## Quickstart
 
