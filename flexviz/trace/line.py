@@ -155,7 +155,9 @@ def _native_envelope_plan(
     ~1.8x the peak (2.76 GB vs 1.51 GB at 100M).
     """
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
         src = filtered_ldf if vp_expr is None else filtered_ldf.filter(vp_expr)
         src = src.select(x_col, y_col)
         # The bucket layout needs the post-filter row count up front. This is
@@ -607,6 +609,7 @@ class LinePlot(FlexTrace):
                     ("x_range", tuple(x_range)) if x_range is not None else None
                 ),
                 batch_key=batch_key,
+                streaming_safe=False,  # line downsample kernel inside the agg
             )
 
         if scan_source and self.downsample == "minmax":

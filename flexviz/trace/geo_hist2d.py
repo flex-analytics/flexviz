@@ -32,6 +32,7 @@ from typing import Any, Dict, Literal
 
 import polars as pl
 
+from ..cube import _fixed_hist2d_bin_expr
 from ..LF import AggregationSpec
 from ..spec import TraceHoverSpec, TraceSelectionSpec, TraceSpec
 from .base import FlexTrace, TraceResult, _typed_range_bounds
@@ -236,8 +237,30 @@ class GeoHistogram2D(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        scan_source: bool = False,
     ) -> AggregationSpec:
         lat_range, lon_range = self._extract_lat_lon_range(update_range)
+        if scan_source:
+            # The kernels materialize both columns; a scan swaps in a streaming
+            # plan computing the same cells (see _native_geo_hist2d_plan).
+            return AggregationSpec(
+                expr=pl.lit(None).alias(self.uid),
+                uid=self.uid,
+                plan=_native_geo_hist2d_plan(
+                    self.lat_col,
+                    self.lon_col,
+                    self.lat_bins,
+                    self.lon_bins,
+                    lat_range,
+                    lon_range,
+                    self.uid,
+                    self.histfunc,
+                    self.z_col,
+                    self.bin_boundaries,
+                    schema,
+                ),
+            )
         expr = _geo_hist2d_expr(
             self.lat_col,
             self.lon_col,
@@ -423,6 +446,120 @@ def _geo_hist2d_expr(
             lon_expr, z_expr, lat_lo, lat_hi, lon_lo, lon_hi, nb_lat, nb_lon, histfunc
         )
     return expr.alias(uid)
+
+
+def _native_geo_hist2d_plan(
+    lat_col: str,
+    lon_col: str,
+    nb_lat: int,
+    nb_lon: int,
+    lat_range: tuple | None,
+    lon_range: tuple | None,
+    uid: str,
+    histfunc: str | None,
+    z_col: str | None,
+    bin_boundaries: str,
+    schema: pl.Schema | None,
+):
+    """Streaming replacement of ``_geo_hist2d_expr`` for scan sources.
+
+    Same cells as the kernels via a bounded streaming ``group_by`` over the
+    two bin indices (see ``_native_hist2d_plan`` in ``hist2d.py`` for the
+    equivalence argument; lat maps to kernel x, lon to kernel y, so
+    ``z_flat[lon_bin * nb_lat + lat_bin]`` keeps the lon-major order).
+
+    ``"data"`` bin boundaries need the filtered lat/lon extent before binning,
+    which on a scan is one extra bounded pass; the bounds come from the same
+    ``min``/``max`` expressions the kernel path evaluates, computed *before*
+    the NaN drop so both paths see identical extents.
+    """
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        has_viewport = lat_range is not None and lon_range is not None
+        src = filtered_ldf
+        if has_viewport:
+            lat_bounds = _typed_range_bounds(
+                lat_col, (lat_range[0], lat_range[1]), schema
+            )
+            lon_bounds = _typed_range_bounds(
+                lon_col, (lon_range[0], lon_range[1]), schema
+            )
+            src = src.filter(
+                pl.col(lat_col).is_between(*lat_bounds)
+                & pl.col(lon_col).is_between(*lon_bounds)
+            )
+        proj = [
+            pl.col(lat_col).cast(pl.Float64).alias("__lat"),
+            pl.col(lon_col).cast(pl.Float64).alias("__lon"),
+        ]
+        keep = pl.col("__lat").is_not_nan() & pl.col("__lon").is_not_nan()
+        if z_col is None:
+            agg = pl.len().alias("__agg")
+        else:
+            assert histfunc is not None
+            proj.append(pl.col(z_col).cast(pl.Float64).alias("__z"))
+            keep = keep & pl.col("__z").is_not_nan()
+            agg = getattr(pl.col("__z"), histfunc)().alias("__agg")
+        base = src.select(*proj)
+
+        if bin_boundaries == "viewport" and has_viewport:
+            lat_lo, lat_hi = float(lat_range[0]), float(lat_range[1])
+            lon_lo, lon_hi = float(lon_range[0]), float(lon_range[1])
+        else:
+            bounds = base.select(
+                pl.col("__lat").min().alias("lat_lo"),
+                pl.col("__lat").max().alias("lat_hi"),
+                pl.col("__lon").min().alias("lon_lo"),
+                pl.col("__lon").max().alias("lon_hi"),
+            ).collect(engine="streaming")
+
+            def _b(name: str, default: float) -> float:
+                val = bounds[name][0]
+                return default if val is None else float(val)
+
+            lat_lo, lat_hi = _b("lat_lo", 0.0), _b("lat_hi", 1.0)
+            lon_lo, lon_hi = _b("lon_lo", 0.0), _b("lon_hi", 1.0)
+
+        rows = (
+            base.filter(keep)
+            .group_by(
+                _fixed_hist2d_bin_expr(pl.col("__lat"), lat_lo, lat_hi, nb_lat, "__ba"),
+                _fixed_hist2d_bin_expr(pl.col("__lon"), lon_lo, lon_hi, nb_lon, "__bo"),
+            )
+            .agg(agg)
+            .collect(engine="streaming")
+        )
+        n_cells = nb_lat * nb_lon
+        z_flat: list = [0] * n_cells if z_col is None else [None] * n_cells
+        for ba, bo, val in rows.iter_rows():
+            z_flat[bo * nb_lat + ba] = val
+        out_schema = pl.Struct(
+            {
+                "z_flat": pl.List(pl.UInt32 if z_col is None else pl.Float64),
+                "x_lo": pl.Float64,
+                "x_hi": pl.Float64,
+                "y_lo": pl.Float64,
+                "y_hi": pl.Float64,
+            }
+        )
+        return pl.DataFrame(
+            {
+                uid: [
+                    {
+                        "z_flat": z_flat,
+                        "x_lo": lat_lo,
+                        "x_hi": lat_hi,
+                        "y_lo": lon_lo,
+                        "y_hi": lon_hi,
+                    }
+                ]
+            },
+            schema={uid: out_schema},
+        )
+
+    return run
 
 
 # ---------------------------------------------------------------------------

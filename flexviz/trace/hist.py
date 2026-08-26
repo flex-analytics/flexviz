@@ -23,7 +23,13 @@ import polars as pl
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
+from ..cube import (
+    CubeTargetSpec,
+    FreeAxisSpec,
+    MeasureSpec,
+    TargetDimSpec,
+    _fixed_hist_bin_expr,
+)
 from ..LF import AggregationSpec, GroupedAggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
@@ -55,6 +61,93 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 #: Small offset added to the upper bound so the maximum data point always
 #: falls inside the last bin and bin edges are never degenerate.
 _HIST_BIN_EPSILON: float = 1e-10
+
+
+def _native_hist_plan(
+    data_col: str,
+    bins: int,
+    uid: str,
+    axis_range: Any,
+    temporal_dtype: pl.DataType | None,
+    domain_cols: Sequence[str],
+    filter_expr: pl.Expr | None,
+):
+    """Streaming ``fixed_hist`` replacement for scan sources.
+
+    The kernel materializes its whole input column, which is O(rows) memory on
+    a scan. This computes identical counts as a bounded streaming ``group_by``
+    over the bin index: ``_fixed_hist_bin_expr`` reproduces the kernel's
+    arithmetic bit-exactly (same operation order, same round epsilon, same
+    clamp of out-of-range values into the edge bins, same all-into-bin-0
+    degenerate ``hi <= lo`` case), and ``lo + (i+1) * step`` is the kernel's
+    exact breakpoint formula in the same IEEE operations.
+
+    Bounds resolution mirrors ``_histogram_bounds_exprs``: viewport literals
+    when zoomed (physical units for temporal columns), otherwise the hoisted
+    global stats (``stats_row``, resolved once per request by
+    ``LFQueryBuilder.aggregate`` from the unfiltered base frame) reduced with
+    the same horizontal min/max, fill-null defaults, and upper epsilon.
+    """
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        if axis_range is not None:
+            if temporal_dtype is not None:
+                lo = pl.select(
+                    _physical_bound_expr(axis_range[0], temporal_dtype)
+                ).item()
+                hi = (
+                    pl.select(
+                        _physical_bound_expr(axis_range[1], temporal_dtype)
+                    ).item()
+                    + _HIST_BIN_EPSILON
+                )
+            else:
+                lo = float(axis_range[0])
+                hi = float(axis_range[1]) + _HIST_BIN_EPSILON
+        else:
+            assert stats_row is not None, (
+                "scan-source histogram without a viewport needs the hoisted "
+                "global stats row"
+            )
+            los = [stats_row[f"__hist_lo_{c}__"][0] for c in domain_cols]
+            his = [stats_row[f"__hist_hi_{c}__"][0] for c in domain_cols]
+            los = [float(x) for x in los if x is not None]
+            his = [float(x) for x in his if x is not None]
+            lo = min(los) if los else 0.0
+            hi = (max(his) if his else 1.0) + _HIST_BIN_EPSILON
+
+        v = (
+            pl.col(data_col).to_physical()
+            if temporal_dtype is not None
+            else pl.col(data_col)
+        )
+        src = filtered_ldf
+        if filter_expr is not None:
+            src = src.filter(filter_expr)
+        # One mask drops exactly what the kernel skips: the cast keeps NaN a
+        # NaN and null a null, and `filter` drops both False and null rows.
+        src = src.select(v.cast(pl.Float64).alias("__v")).filter(
+            pl.col("__v").is_not_nan()
+        )
+        agg = (
+            src.group_by(_fixed_hist_bin_expr(pl.col("__v"), lo, hi, bins, "__b"))
+            .agg(pl.len().alias("__c"))
+            .collect(engine="streaming")
+        )
+        counts = [0] * bins
+        for b, c in agg.iter_rows():
+            counts[b] = c
+        step = (hi - lo) / bins if hi > lo else 0.0
+        breakpoints = [lo + (i + 1.0) * step for i in range(bins)]
+        out = pl.DataFrame(
+            {"breakpoint": breakpoints, "count": counts},
+            schema={"breakpoint": pl.Float64, "count": pl.UInt32},
+        )
+        return out.select(pl.struct(pl.all()).implode().alias(uid))
+
+    return run
 
 
 class Histogram(FlexTrace):
@@ -240,6 +333,7 @@ class Histogram(FlexTrace):
         schema: pl.Schema | None = None,
         *,
         histogram_domain_cols: Sequence[str] | None = None,
+        scan_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 
@@ -312,6 +406,7 @@ class Histogram(FlexTrace):
                 ),
                 batch_key=batch_key,
                 global_stats_cols=global_stats_cols,
+                streaming_safe=False,  # fixed_hist kernel inside the agg
             )
 
         # ----------------------------------------------------------------------
@@ -320,6 +415,26 @@ class Histogram(FlexTrace):
         lo_expr, hi_expr, global_stats = self._histogram_bounds_exprs(
             axis_range, histogram_domain_cols, temporal
         )
+
+        if scan_source:
+            # The kernel needs the whole column in memory, so a scan swaps in a
+            # streaming plan computing the same counts (see _native_hist_plan).
+            # The grouped path above keeps the kernel and the broadcast stats
+            # columns; the plan gets the same stats as scalars via stats_row.
+            return AggregationSpec(
+                expr=pl.lit(None).alias(self.uid),
+                uid=self.uid,
+                global_stats_cols=global_stats,
+                plan=_native_hist_plan(
+                    data_col=self.data_col,
+                    bins=self.bins,
+                    uid=self.uid,
+                    axis_range=axis_range,
+                    temporal_dtype=temporal,
+                    domain_cols=global_stats,
+                    filter_expr=filter_expr,
+                ),
+            )
 
         data_expr = data_col_expr
         if filter_expr is not None:

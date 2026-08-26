@@ -761,13 +761,19 @@ LFQueryBuilder
 ├── _sorted_cols: Set[str]
 │
 ├── schema                      ← cached property
+├── is_scan                     ← cached; True when the unoptimized plan roots at
+│                                  "SCAN [" (file source) rather than "DF" (resident)
 ├── check_sorted(col)           ← verifies with collect() — O(n)
 ├── assume_sorted(col)          ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       base_ldf = _ldf (+ with_columns(col.min(), col.max()) for any global_stats_cols)
       filtered_ldf = base_ldf if not filter_exprs else base_ldf.filter(*filter_exprs)
       regular specs  → one batched select(...).collect()
+      plan specs     → spec.plan(filtered_ldf, stats_row) each, hstacked back
       grouped specs  → fused group_by(...).agg(...).sort(...).collect() per batch
+      on a scan: the batched select and streaming-safe grouped batches collect
+      with engine="streaming"; plan specs get global stats resolved as one
+      bounded streaming pass (stats_row)
 ```
 
 `AggregationSpec` (dataclass):
@@ -777,9 +783,13 @@ AggregationSpec
 ├── expr: pl.Expr    ← evaluated in the shared filtered LazyFrame context;
 │                       output column aliased to trace uid; yields a Struct series
 ├── uid: str = ""    ← trace uid; used by engine for overlay_style dispatch
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
-                        are added on the unfiltered base frame before filtering
+├── global_stats_cols: Tuple[str, ...] = ()
+│                    ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
+│                       are added on the unfiltered base frame before filtering
+└── plan: Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None = None
+                     ← escape hatch for a multi-pass aggregation that cannot be a
+                        select expression (scan-source line envelope + histograms);
+                        must return a one-row DataFrame with the single column uid
 ```
 
 `GroupedAggregationSpec` (dataclass):
@@ -793,14 +803,34 @@ GroupedAggregationSpec
 ├── pre_group_filters: Tuple[pl.Expr, ...]
 ├── pre_group_filter_key: Any            ← semantic key for grouped fusion safety
 ├── batch_key: Tuple[Any, ...]
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← same semantics as AggregationSpec.global_stats_cols
+├── global_stats_cols: Tuple[str, ...] = ()
+│                    ← same semantics as AggregationSpec.global_stats_cols
+└── streaming_safe: bool = True          ← False when agg_exprs carry a plugin
+                        kernel: those batches stay on the default engine even on
+                        scans (the streaming fallback costs ~1.75x the peak)
 ```
 
 Grouped specs with identical `(group_cols, sort_cols, batch_key)` are fused into one
 Polars grouped query. If `pre_group_filters` are present, every fused spec must also
 provide the same `pre_group_filter_key`; otherwise fusion is rejected. The collected
 grouped `DataFrame` is then shared back to each logical parent uid in that batch.
+
+### Residency seam
+
+The Rust kernels materialize their whole input, which is O(rows) memory when the
+source is a file scan. `is_scan` selects a *formulation*, never a result: on a scan
+the engine passes `scan_source=True` and the line (`minmax`), histogram, hist2d and
+geo_hist2d traces swap their kernel expression for an `AggregationSpec.plan` that
+computes bit-identical output as bounded streaming passes (native `group_by` over
+the kernels' exact bin arithmetic — the bin expressions are shared with the cube in
+`cube.py`; `sum`/`mean` heatmap cells may differ in the last ULP because streaming
+morsels accumulate in a different order). Resident frames keep the kernels
+unchanged. Grouped traces keep the kernel inside `group_by` on both residencies
+(`streaming_safe=False`); a native grouped scan formulation is future work.
+Equivalence is asserted per trace family by the `Test*ResidencySeam` classes in
+`tests/test_engine.py`. Stats columns stay broadcast aggregates — resolving them to
+literal columns measured +2.3 GB inside grouped collects because the optimizer
+materializes literal columns full-length while broadcast aggregates stay scalars.
 
 `_to_update` receives the result as `df_agg[uid][0]` — a Python dict of `{field: value}` where array fields are Python lists (after `implode()` inside the trace expression).
 

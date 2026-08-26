@@ -25,7 +25,13 @@ from typing import Any, Dict
 
 import polars as pl
 
-from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
+from ..cube import (
+    CubeTargetSpec,
+    FreeAxisSpec,
+    MeasureSpec,
+    TargetDimSpec,
+    _fixed_hist2d_bin_expr,
+)
 from ..LF import AggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
@@ -306,6 +312,8 @@ class Histogram2D(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        scan_source: bool = False,
     ) -> AggregationSpec:
         x_range = update_range.get("x")
         y_range = update_range.get("y")
@@ -313,6 +321,29 @@ class Histogram2D(FlexTrace):
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
+        if scan_source:
+            # The kernels materialize both columns, so a scan swaps in a
+            # streaming plan computing the same cells (_native_hist2d_plan).
+            # Same stats rule as _hist2d_bounds: the engine supplies both
+            # ranges or neither, and only the no-viewport case needs stats.
+            has_viewport = x_range is not None and y_range is not None
+            return AggregationSpec(
+                expr=pl.lit(None).alias(self.uid),
+                uid=self.uid,
+                global_stats_cols=() if has_viewport else (self.x_col, self.y_col),
+                plan=_native_hist2d_plan(
+                    self.x_col,
+                    self.y_col,
+                    self.z_col,
+                    self.histfunc,
+                    self.x_bins,
+                    self.y_bins,
+                    x_range,
+                    y_range,
+                    self.uid,
+                    schema,
+                ),
+            )
         if self.z_col is None:
             expr, global_stats_cols = _hist2d_count_expr(
                 self.x_col,
@@ -616,3 +647,126 @@ def _hist2d_reduce_expr(
         histfunc,
     ).alias(uid)
     return expr, global_stats_cols
+
+
+def _native_hist2d_plan(
+    x_col: str,
+    y_col: str,
+    z_col: str | None,
+    histfunc: str | None,
+    nb_x: int,
+    nb_y: int,
+    x_range: tuple | None,
+    y_range: tuple | None,
+    uid: str,
+    schema: pl.Schema | None,
+):
+    """Streaming ``fixed_hist2d`` / ``fixed_hist2d_reduce`` replacement for
+    scan sources.
+
+    Identical cell values as a bounded streaming ``group_by`` over the two bin
+    indices: ``_fixed_hist2d_bin_expr`` reproduces the kernel's arithmetic
+    bit-exactly per axis (span epsilon in the scale denominator, round epsilon,
+    clamp into edge bins), rows are dropped exactly when the kernel skips them
+    (null or NaN x/y, plus null or NaN z for the reduce case), and empty cells
+    come out as 0 (count) / null (reduce) like the kernel's dense output.
+
+    ``mean``/``sum`` accumulate in a different order than the sequential kernel
+    (streaming morsels vs row order), so those cells can differ in the last
+    ULP; counts and ``min``/``max`` are exact. Bounds mirror ``_hist2d_bounds``:
+    viewport literals when zoomed, else the hoisted global stats row with the
+    same fill-null defaults.
+    """
+    x_dtype = _temporal_dtype_for_col(x_col, schema)
+    y_dtype = _temporal_dtype_for_col(y_col, schema)
+
+    def _scalar_bound(value: Any, dtype: pl.DataType | None) -> float:
+        if dtype is not None:
+            return float(pl.select(_physical_bound_expr(value, dtype)).item())
+        return float(value)
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        if x_range is not None and y_range is not None:
+            x_filter = _typed_range_bounds(x_col, (x_range[0], x_range[1]), schema)
+            y_filter = _typed_range_bounds(y_col, (y_range[0], y_range[1]), schema)
+            mask = pl.col(x_col).is_between(*x_filter) & pl.col(y_col).is_between(
+                *y_filter
+            )
+            x_lo, x_hi = (
+                _scalar_bound(x_range[0], x_dtype),
+                _scalar_bound(x_range[1], x_dtype),
+            )
+            y_lo, y_hi = (
+                _scalar_bound(y_range[0], y_dtype),
+                _scalar_bound(y_range[1], y_dtype),
+            )
+        else:
+            mask = None
+            assert stats_row is not None, (
+                "scan-source hist2d without a viewport needs the hoisted "
+                "global stats row"
+            )
+
+            def stat(name: str, default: float) -> float:
+                val = stats_row[name][0]
+                return default if val is None else float(val)
+
+            x_lo = stat(f"__hist_lo_{x_col}__", 0.0)
+            x_hi = stat(f"__hist_hi_{x_col}__", 1.0)
+            y_lo = stat(f"__hist_lo_{y_col}__", 0.0)
+            y_hi = stat(f"__hist_hi_{y_col}__", 1.0)
+
+        src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
+        proj = [
+            _hist2d_phys_col(x_col, schema).cast(pl.Float64).alias("__x"),
+            _hist2d_phys_col(y_col, schema).cast(pl.Float64).alias("__y"),
+        ]
+        keep = pl.col("__x").is_not_nan() & pl.col("__y").is_not_nan()
+        if z_col is None:
+            agg = pl.len().alias("__agg")
+        else:
+            assert histfunc is not None
+            proj.append(pl.col(z_col).cast(pl.Float64).alias("__z"))
+            keep = keep & pl.col("__z").is_not_nan()
+            agg = getattr(pl.col("__z"), histfunc)().alias("__agg")
+        rows = (
+            src.select(*proj)
+            .filter(keep)
+            .group_by(
+                _fixed_hist2d_bin_expr(pl.col("__x"), x_lo, x_hi, nb_x, "__bx"),
+                _fixed_hist2d_bin_expr(pl.col("__y"), y_lo, y_hi, nb_y, "__by"),
+            )
+            .agg(agg)
+            .collect(engine="streaming")
+        )
+        n_cells = nb_x * nb_y
+        z_flat: list = [0] * n_cells if z_col is None else [None] * n_cells
+        for bx, by, val in rows.iter_rows():
+            z_flat[by * nb_x + bx] = val
+        out_schema = pl.Struct(
+            {
+                "z_flat": pl.List(pl.UInt32 if z_col is None else pl.Float64),
+                "x_lo": pl.Float64,
+                "x_hi": pl.Float64,
+                "y_lo": pl.Float64,
+                "y_hi": pl.Float64,
+            }
+        )
+        return pl.DataFrame(
+            {
+                uid: [
+                    {
+                        "z_flat": z_flat,
+                        "x_lo": x_lo,
+                        "x_hi": x_hi,
+                        "y_lo": y_lo,
+                        "y_hi": y_hi,
+                    }
+                ]
+            },
+            schema={uid: out_schema},
+        )
+
+    return run

@@ -2012,6 +2012,456 @@ class TestResidencySeam:
         assert line.get_aggregation_spec({}, scan_source=True).plan is None
 
 
+class TestHistResidencySeam:
+    """Scan-source histograms swap the fixed_hist kernel for a streaming plan.
+
+    Same contract as the line seam above: a formulation change, never a result
+    change. The fixtures deliberately cover the kernel's edge semantics — null
+    and NaN rows are skipped, out-of-viewport values clamp into the edge bins,
+    an all-identical column keeps the epsilon-padded non-degenerate path, and
+    a constant column at 1e20 underflows the epsilon into the kernel's
+    degenerate everything-into-bin-0 path.
+    """
+
+    @staticmethod
+    def _deltas(src, traces: list, event: InteractionEvent | None = None):
+        lf = LFQueryBuilder(src)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={t.uid: t for t in traces})
+        infos = [
+            TraceInfo(
+                uid=t.uid, axes=("x", "y"), trace_type=t.trace_type, figure_uid="f1"
+            )
+            for t in traces
+        ]
+        event = event or InteractionEvent(type="init", force_update=True)
+        deltas = engine.process(event, infos)
+        by_uid = {d.uid: d for d in deltas}
+        # Order by construction order: each side builds its own trace
+        # instances, so uids never match across sides — positions do.
+        return [by_uid[t.uid] for t in traces], lf.is_scan
+
+    @staticmethod
+    def _roundtrip(tmp_path, df: pl.DataFrame, traces_maker, event=None):
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+        resident, res_scan = TestHistResidencySeam._deltas(df, traces_maker(), event)
+        scanned, scan_scan = TestHistResidencySeam._deltas(
+            pl.scan_parquet(path), traces_maker(), event
+        )
+        assert res_scan is False and scan_scan is True
+        return resident, scanned
+
+    @pytest.mark.parametrize(
+        "name,values",
+        [
+            ("random", [((i * 7919) % 1009) / 7.0 for i in range(20_011)]),
+            (
+                "nulls_and_nan",
+                [
+                    (
+                        None
+                        if i % 501 == 0
+                        else (float("nan") if i % 307 == 0 else float(i % 89))
+                    )
+                    for i in range(20_000)
+                ],
+            ),
+            ("constant", [3.0] * 5_000),
+            # 1e20 + _HIST_BIN_EPSILON == 1e20: the kernel's hi <= lo
+            # degenerate branch, everything lands in bin 0.
+            ("degenerate_eps_underflow", [1e20] * 5_000),
+        ],
+    )
+    def test_scan_matches_resident(self, tmp_path, name, values):
+        df = pl.DataFrame({"val": values}, schema={"val": pl.Float64})
+
+        def make():
+            return [Histogram(x="val", bins=13)]
+
+        resident, scanned = self._roundtrip(tmp_path, df, make)
+        (r,) = resident
+        (s,) = scanned
+        assert s.updates.keys() == r.updates.keys()
+        for key in r.updates:
+            assert list(s.updates[key]) == list(r.updates[key]), key
+
+    def test_integer_dtype_matches(self, tmp_path):
+        df = pl.DataFrame(
+            {"val": [(i * 13) % 257 for i in range(10_000)]},
+            schema={"val": pl.Int32},
+        )
+        resident, scanned = self._roundtrip(
+            tmp_path, df, lambda: [Histogram(x="val", bins=16)]
+        )
+        (r,), (s,) = resident, scanned
+        for key in r.updates:
+            assert list(s.updates[key]) == list(r.updates[key]), key
+
+    def test_temporal_dtype_matches(self, tmp_path):
+        base = dt.datetime(2024, 1, 1)
+        df = pl.DataFrame(
+            {
+                "when": [
+                    base + dt.timedelta(minutes=(i * 37) % 999) for i in range(5_000)
+                ]
+            }
+        )
+        resident, scanned = self._roundtrip(
+            tmp_path, df, lambda: [Histogram(x="when", bins=10)]
+        )
+        (r,), (s,) = resident, scanned
+        for key in r.updates:
+            assert list(s.updates[key]) == list(r.updates[key]), key
+
+    def test_viewport_zoom_matches(self, tmp_path):
+        """Zoomed bounds are literals; values outside the viewport are dropped
+        by the filter on both paths, and boundary values clamp identically."""
+        df = pl.DataFrame({"val": [float(i % 977) for i in range(20_000)]})
+        event = InteractionEvent(
+            type="viewport", axis_ranges={"x": [100.0, 500.0]}, force_update=True
+        )
+        resident, scanned = self._roundtrip(
+            tmp_path, df, lambda: [Histogram(x="val", bins=17)], event
+        )
+        (r,), (s,) = resident, scanned
+        for key in r.updates:
+            assert list(s.updates[key]) == list(r.updates[key]), key
+
+    def test_sibling_histograms_share_domain_on_scan(self, tmp_path):
+        """Same-figure histogram siblings share one min/max domain
+        (histogram_domain_cols). The hoisted stats row must preserve that."""
+        df = pl.DataFrame(
+            {
+                "a": [float(i % 100) for i in range(10_000)],
+                "b": [float(i % 700) for i in range(10_000)],
+            }
+        )
+
+        def make():
+            return [Histogram(x="a", bins=12), Histogram(x="b", bins=12)]
+
+        resident, scanned = self._roundtrip(tmp_path, df, make)
+        assert len(resident) == len(scanned) == 2
+        for i, (r, s) in enumerate(zip(resident, scanned)):
+            for key in r.updates:
+                assert list(s.updates[key]) == list(r.updates[key]), (i, key)
+
+    def test_grouped_hist_matches_on_scan(self, tmp_path):
+        """The grouped path keeps the kernel on scans; its bin bounds now come
+        from the constant stats columns LFQueryBuilder injects. Same children,
+        same bins, either residency."""
+        df = pl.DataFrame(
+            {
+                "val": [float(i % 89) for i in range(10_000)],
+                "g": [("g" + str(i % 3)) for i in range(10_000)],
+            }
+        )
+
+        def make():
+            return [Histogram(x="val", bins=9, group_by="g")]
+
+        resident, scanned = self._roundtrip(tmp_path, df, make)
+        (r,), (s,) = resident, scanned
+        # Child uids derive from the (per-instance) parent uid; the group value
+        # key is the residency-independent identity.
+        r_children = {c.group_value_key: c for c in r.group_results or []}
+        s_children = {c.group_value_key: c for c in s.group_results or []}
+        assert r_children.keys() == s_children.keys() and r_children
+        for gv, rc in r_children.items():
+            sc = s_children[gv]
+            for key in rc.updates:
+                assert list(sc.updates[key]) == list(rc.updates[key]), (gv, key)
+
+    def test_cross_filtered_matches(self, tmp_path):
+        """The streaming plan runs on the cross-filtered frame while its bins
+        stay derived from the unfiltered stats — identical to the kernel path."""
+        df = pl.DataFrame(
+            {
+                "ts": [float(i) for i in range(10_000)],
+                "val": [float(i % 89) for i in range(10_000)],
+            }
+        )
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+        event = InteractionEvent(
+            type="selection",
+            force_update=True,
+            selections=[
+                SelectionState(
+                    source_figure_uid="fig_src",
+                    predicates=[
+                        SelectionPredicate(
+                            clauses=[ClauseFilter(column="ts", range=(1000, 4000))]
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        def deltas(src):
+            lf = LFQueryBuilder(src)
+            hist = Histogram(x="val", bins=11)
+            engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
+            infos = [
+                TraceInfo(
+                    uid=hist.uid,
+                    axes=("x", "y"),
+                    trace_type="histogram",
+                    figure_uid="fig_target",
+                )
+            ]
+            return engine.process(event, infos)[0].updates
+
+        resident = deltas(df)
+        scanned = deltas(pl.scan_parquet(path))
+        for key in resident:
+            assert list(scanned[key]) == list(resident[key]), key
+
+    def test_empty_source_matches(self, tmp_path):
+        df = pl.DataFrame({"val": []}, schema={"val": pl.Float64})
+        resident, scanned = self._roundtrip(
+            tmp_path, df, lambda: [Histogram(x="val", bins=5)]
+        )
+        (r,), (s,) = resident, scanned
+        for key in r.updates:
+            assert list(s.updates[key]) == list(r.updates[key]), key
+
+    def test_scan_selects_the_streaming_plan(self):
+        hist = Histogram(x="val", bins=10)
+        assert hist.get_aggregation_spec({}, scan_source=False).plan is None
+        assert hist.get_aggregation_spec({}, scan_source=True).plan is not None
+
+    def test_grouped_spec_keeps_the_kernel(self):
+        from flexviz.LF import GroupedAggregationSpec
+
+        hist = Histogram(x="val", bins=10, group_by="g")
+        schema = pl.Schema({"val": pl.Float64, "g": pl.String})
+        spec = hist.get_aggregation_spec({}, schema=schema, scan_source=True)
+        assert isinstance(spec, GroupedAggregationSpec)
+
+
+class TestHist2DResidencySeam:
+    """Scan-source 2D histograms swap fixed_hist2d(_reduce) for a streaming
+    plan. Counts and min/max must match exactly; sum/mean accumulate in a
+    different order, so the fixtures use integer-valued z where every partial
+    sum is exactly representable and equality stays exact.
+    """
+
+    @staticmethod
+    def _deltas(src, trace, event=None):
+        from flexviz.trace.hist2d import Histogram2D  # noqa: F401
+
+        lf = LFQueryBuilder(src)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid,
+                axes=("x", "y"),
+                trace_type=trace.trace_type,
+                figure_uid="f1",
+            )
+        ]
+        event = event or InteractionEvent(type="init", force_update=True)
+        deltas = engine.process(event, infos)
+        return deltas[0].updates, lf.is_scan
+
+    @classmethod
+    def _roundtrip(cls, tmp_path, df, trace_maker, event=None):
+        path = tmp_path / "data.parquet"
+        df.write_parquet(path)
+        resident, res_scan = cls._deltas(df, trace_maker(), event)
+        scanned, scan_scan = cls._deltas(pl.scan_parquet(path), trace_maker(), event)
+        assert res_scan is False and scan_scan is True
+        assert scanned.keys() == resident.keys()
+        for key in resident:
+            assert scanned[key] == resident[key], key
+
+    @staticmethod
+    def _df(n: int = 20_000) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "px": [
+                    (
+                        None
+                        if i % 501 == 0
+                        else (float("nan") if i % 307 == 0 else ((i * 13) % 199) / 3.0)
+                    )
+                    for i in range(n)
+                ],
+                "py": [
+                    None if i % 401 == 0 else float((i * 29) % 173) for i in range(n)
+                ],
+                # Integer-valued floats: sums are exact in any accumulation order.
+                "pz": [None if i % 703 == 0 else float((i * 7) % 50) for i in range(n)],
+            }
+        )
+
+    def test_count_matches(self, tmp_path):
+        from flexviz.trace.hist2d import Histogram2D
+
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: Histogram2D(x="px", y="py", x_bins=15, y_bins=11),
+        )
+
+    @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
+    def test_reduce_matches(self, tmp_path, histfunc):
+        from flexviz.trace.hist2d import Histogram2D
+
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: Histogram2D(
+                x="px", y="py", x_bins=9, y_bins=7, z="pz", histfunc=histfunc
+            ),
+        )
+
+    def test_viewport_zoom_matches(self, tmp_path):
+        from flexviz.trace.hist2d import Histogram2D
+
+        event = InteractionEvent(
+            type="viewport",
+            axis_ranges={"x": [10.0, 50.0], "y": [20.0, 120.0]},
+            force_update=True,
+        )
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: Histogram2D(x="px", y="py", x_bins=8, y_bins=8),
+            event,
+        )
+
+    def test_temporal_axis_matches(self, tmp_path):
+        from flexviz.trace.hist2d import Histogram2D
+
+        base = dt.datetime(2024, 3, 1)
+        df = pl.DataFrame(
+            {
+                "when": [
+                    base + dt.timedelta(minutes=(i * 37) % 999) for i in range(5_000)
+                ],
+                "py": [float((i * 29) % 173) for i in range(5_000)],
+            }
+        )
+        self._roundtrip(
+            tmp_path,
+            df,
+            lambda: Histogram2D(x="when", y="py", x_bins=6, y_bins=6),
+        )
+
+    def test_scan_selects_the_streaming_plan(self):
+        from flexviz.trace.hist2d import Histogram2D
+
+        h = Histogram2D(x="px", y="py")
+        assert h.get_aggregation_spec({}, scan_source=False).plan is None
+        assert h.get_aggregation_spec({}, scan_source=True).plan is not None
+
+
+class TestGeoHist2DResidencySeam:
+    """Scan-source geo heatmaps swap the kernels for a streaming plan; the
+    "data" bin-boundaries mode additionally derives its bounds from the
+    filtered extent in an extra bounded pass."""
+
+    @staticmethod
+    def _deltas(src, trace, viewports=None):
+        lf = LFQueryBuilder(src)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid,
+                axes=("coordinates",),
+                trace_type=trace.trace_type,
+                figure_uid="f1",
+            )
+        ]
+        deltas = engine.process(
+            InteractionEvent(type="init", force_update=True),
+            infos,
+            viewports_by_figure={"f1": viewports or {}},
+        )
+        return deltas[0].updates, lf.is_scan
+
+    @classmethod
+    def _roundtrip(cls, tmp_path, df, trace_maker, viewports=None):
+        path = tmp_path / "geo.parquet"
+        df.write_parquet(path)
+        resident, res_scan = cls._deltas(df, trace_maker(), viewports)
+        scanned, scan_scan = cls._deltas(
+            pl.scan_parquet(path), trace_maker(), viewports
+        )
+        assert res_scan is False and scan_scan is True
+        assert scanned.keys() == resident.keys()
+        for key in resident:
+            assert scanned[key] == resident[key], key
+
+    @staticmethod
+    def _df(n: int = 10_000) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "lat": [
+                    None if i % 401 == 0 else 40.0 + ((i * 13) % 100) / 10.0
+                    for i in range(n)
+                ],
+                "lon": [3.0 + ((i * 29) % 140) / 20.0 for i in range(n)],
+                "zv": [float((i * 7) % 30) for i in range(n)],
+            }
+        )
+
+    def test_data_mode_count_matches(self, tmp_path):
+        from flexviz.trace.geo_hist2d import GeoHistogram2D
+
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: GeoHistogram2D(lat="lat", lon="lon", lat_bins=9, lon_bins=7),
+        )
+
+    @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
+    def test_data_mode_reduce_matches(self, tmp_path, histfunc):
+        from flexviz.trace.geo_hist2d import GeoHistogram2D
+
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: GeoHistogram2D(
+                lat="lat",
+                lon="lon",
+                lat_bins=6,
+                lon_bins=6,
+                z="zv",
+                histfunc=histfunc,
+            ),
+        )
+
+    @pytest.mark.parametrize("bin_boundaries", ["data", "viewport"])
+    def test_map_viewport_matches(self, tmp_path, bin_boundaries):
+        from flexviz.trace.geo_hist2d import GeoHistogram2D
+
+        viewports = {
+            "coordinates": [[3.5, 41.0], [9.0, 41.0], [9.0, 48.5], [3.5, 48.5]]
+        }
+        self._roundtrip(
+            tmp_path,
+            self._df(),
+            lambda: GeoHistogram2D(
+                lat="lat",
+                lon="lon",
+                lat_bins=8,
+                lon_bins=8,
+                bin_boundaries=bin_boundaries,
+            ),
+            viewports,
+        )
+
+    def test_scan_selects_the_streaming_plan(self):
+        from flexviz.trace.geo_hist2d import GeoHistogram2D
+
+        g = GeoHistogram2D(lat="lat", lon="lon")
+        assert g.get_aggregation_spec({}, scan_source=False).plan is None
+        assert g.get_aggregation_spec({}, scan_source=True).plan is not None
+
+
 # ---- descending viewport ranges ---------------------------------------------
 
 

@@ -258,3 +258,133 @@ class TestPhysicalMinMax:
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 4.0], "b": [2.0, 8.0]}).lazy())
         out = b.physical_minmax(["a", "a", "b", "a"])
         assert out == {"a": (1.0, 4.0), "b": (2.0, 8.0)}
+
+
+# ---- scan-source collect engine --------------------------------------------
+
+
+class TestScanCollectEngine:
+    """On a scan, aggregate() must run on the streaming engine and resolve the
+    global stats in one hoisted pass; a resident frame must keep the default
+    engine. Polars falls back to the in-memory engine silently, so the engine
+    choice is only observable white-box: capture the collect() kwargs."""
+
+    @staticmethod
+    def _capture(monkeypatch):
+        calls: list[str] = []
+        orig = pl.LazyFrame.collect
+
+        def spy(self, *args, **kwargs):
+            calls.append(kwargs.get("engine", "default"))
+            return orig(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
+        return calls
+
+    @staticmethod
+    def _df() -> pl.DataFrame:
+        return pl.DataFrame(
+            {"val": [float(i % 7) for i in range(100)], "g": ["a", "b"] * 50}
+        )
+
+    def test_scan_select_streams(self, tmp_path, monkeypatch):
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        out, _ = b.aggregate([], [AggregationSpec(pl.col("val").sum().alias("t"))])
+        assert out["t"][0] == self._df()["val"].sum()
+        assert calls == ["streaming"]
+
+    def test_resident_select_keeps_default_engine(self, monkeypatch):
+        b = LFQueryBuilder(self._df())
+        calls = self._capture(monkeypatch)
+        b.aggregate([], [AggregationSpec(pl.col("val").sum().alias("t"))])
+        assert calls == ["default"]
+
+    def test_scan_grouped_streams(self, tmp_path, monkeypatch):
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        _, grouped = b.aggregate(
+            [],
+            [
+                GroupedAggregationSpec(
+                    uid="u",
+                    group_cols=("g",),
+                    sort_cols=("g",),
+                    agg_exprs=(pl.col("val").sum().alias("u"),),
+                )
+            ],
+        )
+        assert grouped["u"]["g"].to_list() == ["a", "b"]
+        assert calls == ["streaming"]
+
+    def test_plan_specs_get_hoisted_stats_row(self, tmp_path, monkeypatch):
+        """A plan spec with global_stats_cols on a scan receives the resolved
+        stats as one row (from a single extra streaming pass); expression
+        specs keep reading the broadcast columns — pre-resolving those into
+        literal columns costs +2.3 GB in a grouped collect (measured)."""
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        seen: dict = {}
+
+        def plan(filtered_ldf, stats_row=None):
+            seen["stats"] = stats_row
+            return pl.DataFrame({"u": [1.0]})
+
+        b.aggregate(
+            [],
+            [
+                AggregationSpec(
+                    pl.lit(None), uid="u", global_stats_cols=("val",), plan=plan
+                )
+            ],
+        )
+        assert seen["stats"]["__hist_lo_val__"][0] == 0.0
+        assert seen["stats"]["__hist_hi_val__"][0] == 6.0
+        assert calls == ["streaming"]  # exactly one hoisted stats pass
+
+    def test_plan_specs_without_stats_skip_the_stats_pass(self, tmp_path, monkeypatch):
+        """A zoomed plan (literal bounds, no global_stats_cols) must not pay a
+        stats scan."""
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        b.aggregate(
+            [],
+            [
+                AggregationSpec(
+                    pl.lit(None),
+                    uid="u",
+                    plan=lambda ldf, stats_row=None: pl.DataFrame({"u": [1.0]}),
+                )
+            ],
+        )
+        assert calls == []
+
+    def test_kernel_grouped_batch_keeps_default_engine(self, tmp_path, monkeypatch):
+        """A grouped batch flagged streaming_safe=False (kernel agg) must stay
+        on the default engine even on a scan: the streaming fallback costs
+        ~1.75x the in-memory engine's peak on kernel aggs (measured)."""
+        path = tmp_path / "d.parquet"
+        self._df().write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(path))
+        calls = self._capture(monkeypatch)
+        b.aggregate(
+            [],
+            [
+                GroupedAggregationSpec(
+                    uid="u",
+                    group_cols=("g",),
+                    sort_cols=("g",),
+                    agg_exprs=(pl.col("val").sum().alias("u"),),
+                    streaming_safe=False,
+                )
+            ],
+        )
+        assert calls == ["default"]

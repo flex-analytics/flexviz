@@ -60,12 +60,14 @@ class AggregationSpec:
     uid: str = ""
     global_stats_cols: Tuple[str, ...] = ()
     #: Optional escape hatch for an aggregation that cannot be a select
-    #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is named ``uid``, i.e. exactly the column
-    #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own multi-pass plan — the out-of-core line envelope needs two passes
-    #: over the scan and cannot ride the shared select.
-    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+    #: expression. Called as ``plan(filtered_ldf, stats_row)`` and must return
+    #: a one-row DataFrame whose single column is named ``uid``, i.e. exactly
+    #: the column the batched ``select`` would have produced. ``stats_row`` is
+    #: the one-row DataFrame of resolved global stats (see ``aggregate``), or
+    #: ``None`` when no spec requested stats. Set only when a spec needs its
+    #: own multi-pass plan — the out-of-core line envelope and the scan-source
+    #: histogram formulations cannot ride the shared select.
+    plan: "Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None" = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,12 @@ class GroupedAggregationSpec:
     pre_group_filter_key: Any = None
     batch_key: Tuple[Any, ...] = ()
     global_stats_cols: Tuple[str, ...] = ()
+    #: Whether the streaming engine may run this batch on a scan source. Set
+    #: False by specs whose agg_exprs carry a plugin kernel: the streaming
+    #: engine cannot stream those, and its fallback costs ~1.75x the in-memory
+    #: engine's peak (measured, grouped hist 100M), so kernel batches stay on
+    #: the default engine.
+    streaming_safe: bool = True
 
 
 class LFQueryBuilder:
@@ -293,10 +301,11 @@ class LFQueryBuilder:
         for spec in agg_specs:
             all_stats_cols.update(getattr(spec, "global_stats_cols", ()))
 
+        is_scan = self.is_scan
         base_ldf = self._ldf
+        stats_exprs: list[pl.Expr] = []
         if all_stats_cols:
             schema = self.schema
-            stats_exprs: list[pl.Expr] = []
             for col_name in sorted(all_stats_cols):
                 col = pl.col(col_name)
                 # The only consumers of these stats are the numeric histogram
@@ -308,6 +317,9 @@ class LFQueryBuilder:
                     col = col.to_physical()
                 stats_exprs.append(col.min().alias(f"__hist_lo_{col_name}__"))
                 stats_exprs.append(col.max().alias(f"__hist_hi_{col_name}__"))
+            # Broadcast aggregates, NOT pre-resolved literals: the optimizer
+            # keeps these as scalars, while a full-length literal column gets
+            # materialized inside a grouped collect (measured +2.3 GB at 100M).
             base_ldf = base_ldf.with_columns(stats_exprs)
 
         filtered_ldf = base_ldf if not filter_exprs else base_ldf.filter(*filter_exprs)
@@ -320,12 +332,27 @@ class LFQueryBuilder:
         expr_specs = [s for s in regular_specs if s.plan is None]
         plan_specs = [s for s in regular_specs if s.plan is not None]
 
+        # Scan-source plans need the stats as Python scalars before they can
+        # build their bin arithmetic; resolve them in one bounded streaming
+        # pass. Only plans consume this — expression and grouped consumers read
+        # the broadcast columns above, exactly as on a resident frame.
+        stats_row: pl.DataFrame | None = None
+        if is_scan and any(s.global_stats_cols for s in plan_specs):
+            stats_row = self._ldf.select(stats_exprs).collect(engine="streaming")
+
+        # On a scan the batched select runs on the streaming engine so plain
+        # expression traces stay memory-bounded; plans the streaming engine
+        # cannot run (e.g. a kernel expression) silently fall back to the
+        # in-memory engine, which is exactly today's behavior. Resident frames
+        # keep the default engine (streaming there only costs time and float
+        # summation jitter).
         if expr_specs:
-            regular_df = filtered_ldf.select(*[s.expr for s in expr_specs]).collect()
+            sel = filtered_ldf.select(*[s.expr for s in expr_specs])
+            regular_df = sel.collect(engine="streaming") if is_scan else sel.collect()
         else:
             regular_df = pl.DataFrame()
         for spec in plan_specs:
-            planned = spec.plan(filtered_ldf)
+            planned = spec.plan(filtered_ldf, stats_row)
             if planned.width != 1 or planned.columns[0] != spec.uid:
                 raise ValueError(
                     f"AggregationSpec.plan for {spec.uid!r} must return exactly "
@@ -376,11 +403,14 @@ class LFQueryBuilder:
             for spec in batch_specs:
                 agg_exprs.extend(spec.agg_exprs)
 
-            batch_df = (
+            batch_q = (
                 batch_ldf.group_by(list(first.group_cols))
                 .agg(*agg_exprs)
                 .sort(list(first.sort_cols))
-                .collect()
+            )
+            stream = is_scan and all(s.streaming_safe for s in batch_specs)
+            batch_df = (
+                batch_q.collect(engine="streaming") if stream else batch_q.collect()
             )
             for spec in batch_specs:
                 grouped_dfs[spec.uid] = batch_df
