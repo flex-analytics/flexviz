@@ -4,6 +4,7 @@
 .playwright-cli/
 .agents/
 .claude/
+.DS_Store
 TODO*
 notes/
 AGENTS.md

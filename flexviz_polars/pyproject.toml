@@ -27,7 +27,7 @@ classifiers = [
 # than on flexviz because this is the package with the ABI coupling: the
 # compiled plugin is built against pyo3-polars 0.28 / polars-rs 0.55, and a
 # mismatch is a call-time error. The weekly canary says when to raise it.
-dependencies = ["polars>=1.43.2,<1.50"]
+dependencies = ["polars>=1.44.1,<1.50"]
 dynamic = ["version"]
 
 [project.urls]
