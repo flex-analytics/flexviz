@@ -568,9 +568,9 @@ class LinePlot(FlexTrace):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan the
-        minmax envelope switches to a streaming plan that computes the *same*
-        points (see ``_native_envelope_plan``). Output is identical either way
-        — there is a test that asserts it — so this only picks a formulation.
+        minmax envelope switches to a streaming plan (``_streaming_envelope_plan``)
+        that uses equal-width buckets in x with ``min_by``/``max_by``. The output
+        is a valid envelope but not bit-identical to the kernel on exact plateaus.
         """
         x_range = update_range.get("x")
 
