@@ -174,14 +174,31 @@ def _streaming_envelope_plan(
             return empty
 
         span = x_hi - x_lo
-        bsz = -(-span // n_out) if span > 0 else 1
+        # `-(-a // b)` is INTEGER ceiling division, and integral x needs it: it
+        # keeps the width whole so the top value stays inside bucket n_out - 1.
+        # A float span must use true division instead — the ceil rounds a width
+        # below 1 up to 1.0 (0.99995 / 500 -> 1.0), collapsing every row into
+        # one bucket and returning a 2-point line at any n_points.
+        if span <= 0:
+            bsz = 1
+        elif isinstance(span, float):
+            bsz = span / n_out
+        else:
+            bsz = -(-span // n_out)
 
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
 
         x, y = pl.col(x_col), pl.col(y_col)
         result = (
-            src.group_by(((phys_expr - lo_lit) // bsz_lit).alias("__b"))
+            src.group_by(
+                # True division lands x_hi exactly on n_out; fold that lone
+                # top row back into the last bucket instead of letting it open
+                # an n_out + 1-th one and overrun the n_points budget.
+                ((phys_expr - lo_lit) // bsz_lit)
+                .clip(upper_bound=n_out - 1)
+                .alias("__b")
+            )
             .agg(
                 y.min().alias("__lo"),
                 y.max().alias("__hi"),

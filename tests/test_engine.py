@@ -1974,6 +1974,34 @@ class TestResidencySeam:
             assert min(finite_ys) in y_out, "global min must be preserved"
             assert max(finite_ys) in y_out, "global max must be preserved"
 
+    def test_float_x_uses_the_full_bucket_budget(self, tmp_path):
+        """A float x span must size the buckets by true division.
+
+        ``-(-span // n_out)`` is INTEGER ceiling division. On a float span it
+        rounds the bucket width up to a whole unit (0.99995 / 500 -> 1.0), so
+        every row lands in bucket 0 and the envelope collapses to the global
+        min and max — a 2-point line at any ``n_points``. Integral x hides it:
+        the ceil is correct there, which is why every other case in this class
+        passes with the bug in place.
+        """
+        n = 20_000
+        xs = [i / n for i in range(n)]  # span < 1: the collapsing case
+        ys = [((i * 7919) % 1000) / 7.0 for i in range(n)]
+        df = pl.DataFrame(
+            {"ts": xs, "val": ys}, schema={"ts": pl.Float64, "val": pl.Float64}
+        )
+        path = tmp_path / "float_x.parquet"
+        df.write_parquet(path)
+
+        scanned, is_scan = self._line_deltas(pl.scan_parquet(path), n_points=1000)
+        assert is_scan is True, "must take the streaming path"
+
+        out_x = list(scanned["x"])
+        assert len(out_x) <= 1000, "output must not exceed n_points"
+        # 500 buckets each contribute a min and a max, so a resolved envelope
+        # sits near the budget. The integer-ceil bug returns 2.
+        assert len(out_x) >= 900, f"envelope collapsed to {len(out_x)} points"
+
     def test_nulls_and_nan(self, tmp_path):
         n = 20_000
         y = [
