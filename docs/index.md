@@ -5,7 +5,10 @@
 FlexViz keeps charts interactive (zoom, brush, cross-filter) on datasets far
 too big for conventional Python dashboarding tools. Every interaction is
 answered by lazy [Polars](https://pola.rs) aggregations and Rust kernels
-instead of shipping raw data to the browser.
+instead of shipping raw data to the browser. The same engine serves a coding
+agent: it builds the dashboard, hands you the URL, and reads back what you
+zoomed and brushed. You explore the data together, and neither of you loads
+it.
 
 [![Cross-filter demo: brushing a range on a 100M-point line chart re-aggregates the linked histogram](crossfilter.gif)](https://flexviz.tech/demo.html)
 
@@ -63,6 +66,39 @@ fig.title("Sensor data")
 fig.show(port="auto")
 ```
 
+## Agents
+
+FlexViz is built as an AI-native tool: a coding agent hands you a live
+dashboard instead of a static plot, then keeps working from what you find in
+it.
+
+Today, agents can already write plotting code. The trouble starts after that.
+Plotting libraries cannot draw 100M points, so the figure comes out slow,
+unreadable, or not at all. What does arrive is a static image. You cannot zoom
+into the part that looks odd. And the agent cannot see what you did with the
+figure, short of a screenshot and a guess at the pixels.
+
+FlexViz removes all three limits. The agent writes a spec instead of plotting
+code. The engine answers every zoom, brush, and cross-filter against the raw
+rows, so the chart stays interactive at full size. And your interactions
+travel back as a spec, not as pixels: the agent reads your exact viewport and
+selections.
+
+Install the packaged agent skill into your project:
+
+```bash
+flexviz skill install
+```
+
+Then ask your agent to explore `readings.parquet`. It reads the schema, serves
+the file, and gives you the URL. From there you explore together: you zoom and
+brush, and the agent reads your viewport and selections back through
+`window.flexvizState()` or the **Share** button. It can discuss what you have
+in front of you, compute statistics on exactly the rows you brushed, and build
+a new view when you ask for one.
+
+See [Agents](guides/ai-agents.md) for the full loop and the privacy notes.
+
 ## Why it scales
 
 - **Polars-native.** Your data stays a lazy `LazyFrame` until the moment a
@@ -96,3 +132,5 @@ and `add_geo_line`. See the [Figure API](api/figure.md) for every parameter.
   caching for static data and zero-latency brushing.
 - [Embedding](guides/embedding.md): mount FlexViz into an existing FastAPI
   app.
+- [Agents](guides/ai-agents.md): drive FlexViz from a coding agent and read
+  back what the human explored.

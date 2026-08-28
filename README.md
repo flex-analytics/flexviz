@@ -9,7 +9,7 @@
 
 <p align="center">
   <b>Interactive visualization at scale.</b><br>
-  Python &nbsp;·&nbsp; Polars-native &nbsp;·&nbsp; stateless server &nbsp;·&nbsp; Rust-accelerated &nbsp;·&nbsp; agent-ready
+  Python &nbsp;·&nbsp; Polars-native &nbsp;·&nbsp; stateless server &nbsp;·&nbsp; Rust-accelerated &nbsp;·&nbsp; AI-native
 </p>
 
 <p align="center">
@@ -33,7 +33,10 @@ FlexViz is a visualization library for exploring datasets that are far too big
 for conventional Python dashboarding tools.  
 Charts stay interactive (zoom, pan, cross-filter) at 100M+ rows because every
 interaction is answered by lazy [Polars](https://github.com/pola-rs/polars)
-aggregations and Rust kernels instead of by shipping raw data to the browser.
+aggregations and Rust kernels instead of by shipping raw data to the browser.  
+The same engine serves a coding agent: it builds the dashboard, hands you the
+URL, and reads back what you zoomed and brushed. You explore the data
+together, and neither of you loads it.
 
 <p align="center">
   <a href="https://flexviz.tech/demo.html">
@@ -81,19 +84,36 @@ Guides and the full API reference live at
 
 ## Agents
 
-Give a coding agent a data file and it hands back a live dashboard, not a
-static plot. The wheel ships an [Agent Skill](https://agentskills.io) that
-teaches the workflow:
+FlexViz is built as an AI-native tool: a coding agent hands you a live
+dashboard instead of a static plot, on which you can both co-explore the
+full data at scale.
+
+Today, agents can already write plotting code. The trouble starts after that.
+Plotting libraries cannot draw 100M points, so the figure comes out slow,
+unreadable, or not at all. What does arrive is a static image. You cannot zoom
+into the part that looks odd. And the agent cannot see what you did with the
+figure, short of a screenshot and a guess at the pixels.
+
+FlexViz removes all three limits. The agent writes a spec instead of plotting
+code. The engine answers every zoom, pan, and cross-filter against the raw
+rows, so the chart stays interactive at full size. And your interactions
+travel back as a spec, not as pixels: the agent only needs to reads your exact 
+viewport and selections to know what your looking at.
+
+The wheel ships an [Agent Skill](https://agentskills.io) that teaches your
+agent the workflow:
 
 ```bash
 flexviz skill install   # writes SKILL.md into .agents/skills/ and .claude/skills/
 ```
 
-Then ask your agent to explore `readings.parquet`. It reads the schema, serves
-the file, and gives you a dashboard URL. You zoom and brush in the browser. The
-agent reads your viewport and selections back through `window.flexvizState()`,
-or from the URL that the **Share** button copies, and continues from that
-state. The rows stay in the query engine. Only specs and URLs travel.
+Then ask it to explore `readings.parquet`. It reads the schema, serves the
+file, and gives you the URL.
+
+From there you explore together. You zoom and brush. The agent reads your
+viewport and selections back. It can discuss what you have in front of
+you, compute statistics on exactly the rows you brushed, and build a new view
+when you ask for one. With browser tooling it can even drive the dashboard itself.
 
 See the [agent guide](https://docs.flexviz.tech/guides/ai-agents/).
 
