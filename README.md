@@ -9,7 +9,7 @@
 
 <p align="center">
   <b>Interactive visualization at scale.</b><br>
-  Python &nbsp;·&nbsp; Polars-native &nbsp;·&nbsp; stateless server &nbsp;·&nbsp; Rust-accelerated
+  Python &nbsp;·&nbsp; Polars-native &nbsp;·&nbsp; stateless server &nbsp;·&nbsp; Rust-accelerated &nbsp;·&nbsp; agent-ready
 </p>
 
 <p align="center">
@@ -23,7 +23,8 @@
 <p align="center">
   <a href="https://docs.flexviz.tech">Documentation</a> ·
   <a href="https://flexviz.tech/demo.html">Live demo</a> ·
-  <a href="https://flexviz.tech/benchmarks.html">Benchmarks</a>
+  <a href="https://flexviz.tech/benchmarks.html">Benchmarks</a> ·
+  <a href="https://docs.flexviz.tech/guides/ai-agents/">Agents</a>
 </p>
 
 ---
@@ -77,6 +78,24 @@ dash.show()  # brush one chart to cross-filter the other
 
 Guides and the full API reference live at
 [docs.flexviz.tech](https://docs.flexviz.tech).
+
+## Agents
+
+Give a coding agent a data file and it hands back a live dashboard, not a
+static plot. The wheel ships an [Agent Skill](https://agentskills.io) that
+teaches the workflow:
+
+```bash
+flexviz skill install   # writes SKILL.md into .agents/skills/ and .claude/skills/
+```
+
+Then ask your agent to explore `readings.parquet`. It reads the schema, serves
+the file, and gives you a dashboard URL. You zoom and brush in the browser. The
+agent reads your viewport and selections back through `window.flexvizState()`,
+or from the URL that the **Share** button copies, and continues from that
+state. The rows stay in the query engine. Only specs and URLs travel.
+
+See the [agent guide](https://docs.flexviz.tech/guides/ai-agents/).
 
 ## Features
 
