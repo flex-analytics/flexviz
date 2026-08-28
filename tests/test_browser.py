@@ -3530,6 +3530,55 @@ class TestShareUrlState:
         assert restored["b"]["max"] <= 200
 
 
+class TestAgentReadback:
+    """The agent watch loop: a human brush must be readable through the stable
+    ``window.flexvizState()`` accessor, and the same spec must round-trip
+    through /share + decode_spec (the Share-button fallback path)."""
+
+    def test_brush_visible_via_flexviz_state_and_share_decode(
+        self, page: Page, server_port: int
+    ):
+        from flexviz.spec import decode_spec
+
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").click()
+        page.wait_for_timeout(300)
+
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.2, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        # 1. The stable accessor exposes the brushed state.
+        state = page.evaluate("window.flexvizState()")
+        selections = state["state"]["selections"]
+        assert len(selections) == 1, state["state"]
+        assert selections[0]["predicates"][0]["clauses"][0]["range"] is not None
+
+        # 2. Share-button fallback: the same spec round-trips via /share.
+        share_url = page.evaluate("""async () => {
+            const resp = await fetch(SERVER_URL + '/share', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({spec: window.flexvizState(),
+                                      server_url: SERVER_URL}),
+            });
+            const data = await resp.json();
+            return new URL(data.url, window.location.href).href;
+        }""")
+        decoded = decode_spec(share_url.split("spec=", 1)[1])
+        clause = decoded.state.selections[0].predicates[0].clauses[0]
+        assert clause.range is not None
+
+
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)
 # ---------------------------------------------------------------------------

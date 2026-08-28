@@ -1,6 +1,12 @@
 // === FlexViz shared runtime — state initialisation ===
 // Requires: DASHBOARD_SPEC (set by Python init block)
 
+// Agent-readback contract: external automation (Playwright, browser
+// extensions) reads the live spec through this stable accessor rather than
+// the raw DASHBOARD_SPEC binding. Returns persistent serialized state only;
+// transient hover/cursor visuals are not part of the spec.
+window.flexvizState = () => DASHBOARD_SPEC;
+
 const _fvPalette = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
 let _resetTreemapLevel = false;
 if (!DASHBOARD_SPEC.state) DASHBOARD_SPEC.state = {};
