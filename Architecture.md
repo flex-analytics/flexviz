@@ -269,10 +269,45 @@ Dashboard
 ├── add_figure(**layout_kw) → Figure      ← points new Figure at shared _backend_lf
 ├── to_spec(source=None)    → DashboardSpec
 ├── save_spec(path) / load_spec(path)
+├── share_url(server_url, source_name, …) → str   ← /view URL for a running server
 └── show(renderer, port, layout, notebook)
 ```
 
 `Dashboard` currently assumes one shared data source for all figures. The server supports multiple sources per `DashboardSpec`, but the `Dashboard` builder does not expose this.
+
+`share_url()` encodes a finalized spec into a `/view` URL for an
+already-running server: no server start, no source registration, no browser.
+`show()` and `share_url()` share one spec-finalization path
+(`_finalized_spec`), so a shared URL and a local `show()` produce identical
+specs.
+
+---
+
+## Agent interface
+
+Coding agents drive FlexViz through the same stateless surface humans use.
+
+- **CLI** (`flexviz/cli.py`): `serve` registers Parquet/CSV files as sources
+  named by file stem and runs the server. It binds loopback by default;
+  non-loopback binds print a warning because the endpoints are
+  unauthenticated and CORS is open. `schema` prints columns and dtypes as
+  JSON. `decode` turns a `/view` URL back into its spec. `skill install`
+  copies the packaged skill (`flexviz/skills/flexviz-explore/SKILL.md`) into
+  a project's `.agents/skills/` and `.claude/skills/`.
+- **Readback contract**: the shared runtime exposes `window.flexvizState()`,
+  which returns the live `DashboardSpec` (persistent serialized state only,
+  no transient hover visuals). An agent with browser tooling opens a share
+  URL, lets the human explore, and reads viewport and selections through
+  this accessor at any time. Without browser tooling, the human clicks
+  **Share** and the agent decodes the copied URL. The address bar does not
+  track interactions.
+
+Watch-along stays client-side by design: the server keeps no interaction
+state, so "what is the human looking at" lives only in the browser tab.
+Server-side snapshot mailboxes and agent-side listeners were considered and
+rejected. A hosted watch broker and MCP Apps `updateModelContext`
+publication are possible future phases; neither changes the aggregation
+server's statelessness.
 
 ---
 
