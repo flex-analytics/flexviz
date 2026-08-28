@@ -174,14 +174,15 @@ def _streaming_envelope_plan(
             return empty
 
         span = x_hi - x_lo
-        # `-(-a // b)` is INTEGER ceiling division, and integral x needs it: it
-        # keeps the width whole so the top value stays inside bucket n_out - 1.
-        # A float span must use true division instead — the ceil rounds a width
-        # below 1 up to 1.0 (0.99995 / 500 -> 1.0), collapsing every row into
-        # one bucket and returning a 2-point line at any n_points.
+        # Float columns need true division: integer ceiling division rounds a
+        # sub-1 width up to 1 (0.002 / 500 -> 1), collapsing every row into
+        # one bucket. Integer and temporal columns use ceiling division to keep
+        # the width whole. The check is on the column dtype, not the Python
+        # type of span, because JSON deserializes 100.0 as int.
+        use_float_div = dtype is not None and dtype.is_float()
         if span <= 0:
             bsz = 1
-        elif isinstance(span, float):
+        elif use_float_div:
             bsz = span / n_out
         else:
             bsz = -(-span // n_out)
