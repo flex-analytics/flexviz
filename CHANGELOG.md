@@ -18,6 +18,39 @@ documented in the release notes below instead.
 `flexviz` and `flexviz-polars` are released together but versioned
 independently. `flexviz` pins a compatible `flexviz-polars` range.
 
+## [0.1.0b2] - 2026-08-28
+
+### Added
+
+- Agent interface. A coding agent can serve a dataset, mint a dashboard URL,
+  and read back the viewport and selections a person leaves behind.
+  - `flexviz` command line: `serve` registers files as named sources and runs
+    the server, `schema` prints columns and dtypes as JSON, `decode` turns a
+    `/view` URL back into its spec, and `skill install` copies the packaged
+    agent skill into a project.
+  - `Dashboard.share_url()` builds a `/view` URL from a spec without opening a
+    browser.
+  - `window.flexvizState()` returns a detached snapshot of the current spec,
+    including viewport and selections.
+  - The wheel ships the `flexviz-explore` Agent Skill. `flexviz skill install`
+    writes it into `.agents/skills/` and `.claude/skills/`.
+- Agent guide at docs.flexviz.tech, and a documented security model.
+
+### Changed
+
+- Line downsampling builds the out-of-core min/max envelope in one streaming
+  collect instead of two passes.
+- The polars floor is now 1.44.1.
+
+### Fixed
+
+- Histogram bounds are aggregated after the horizontal reduction, so grouped
+  histograms bin against the correct range.
+- Line bucket width divides on the column dtype instead of the range dtype,
+  which keeps float x values at full envelope resolution.
+- `flexviz skill install` does not overwrite an unrelated file, and CSV sources
+  parse dates instead of reading timestamps as strings.
+
 ## [0.1.0b1] - 2026-08-25
 
 ### Added
@@ -55,4 +88,5 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
   the two are released together.
 
+[0.1.0b2]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b1

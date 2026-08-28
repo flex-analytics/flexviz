@@ -279,7 +279,7 @@ wheels = [
 
 [[package]]
 name = "flexviz"
-version = "0.1.0b1"
+version = "0.1.0b2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
