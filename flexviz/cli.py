@@ -17,7 +17,8 @@ import polars as pl
 
 _SCANNERS = {
     ".parquet": pl.scan_parquet,
-    ".csv": pl.scan_csv,
+    # try_parse_dates: CSV timestamps otherwise infer as strings and plot wrong.
+    ".csv": lambda p: pl.scan_csv(p, try_parse_dates=True),
 }
 
 
@@ -123,6 +124,8 @@ def _cmd_skill(args: argparse.Namespace) -> None:
 
     ``.agents/skills`` is the cross-agent repository convention (Codex and
     friends); ``.claude/skills`` is Claude Code's project location.
+    A destination file with different content is refused unless ``--force``
+    is given, so user customizations survive reinstalls.
     """
     from importlib.resources import files
 
@@ -130,11 +133,25 @@ def _cmd_skill(args: argparse.Namespace) -> None:
         encoding="utf-8"
     )
     base = Path(args.dir)
+    refused: list[Path] = []
     for target in _SKILL_TARGET_DIRS:
         dest = base / target / _SKILL_NAME / "SKILL.md"
+        if dest.exists():
+            if dest.read_text(encoding="utf-8") == content:
+                print(f"unchanged {dest}")
+                continue
+            if not args.force:
+                refused.append(dest)
+                continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
         print(f"installed {dest}")
+    if refused:
+        listing = "\n  ".join(str(p) for p in refused)
+        raise SystemExit(
+            f"not overwriting modified skill file(s):\n  {listing}\n"
+            "re-run with --force to replace them"
+        )
 
 
 def _cmd_decode(args: argparse.Namespace) -> None:
@@ -194,6 +211,11 @@ def main(argv: list[str] | None = None) -> None:
         "--dir",
         default=".",
         help="project root to install into (default: current directory)",
+    )
+    skill.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an installed skill file whose content differs",
     )
     skill.set_defaults(func=_cmd_skill)
 

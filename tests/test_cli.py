@@ -87,12 +87,52 @@ def test_schema_command_emits_json(capsys, tmp_path):
     assert {"name": "v", "dtype": "Float64"} in out[0]["columns"]
 
 
-def test_skill_install(capsys, tmp_path):
+def _skill_paths(base):
+    return [
+        base / target / "flexviz-explore" / "SKILL.md"
+        for target in (".agents/skills", ".claude/skills")
+    ]
+
+
+def test_skill_install_fresh(capsys, tmp_path):
     main(["skill", "install", "--dir", str(tmp_path)])
-    for target in (".agents/skills", ".claude/skills"):
-        skill = tmp_path / target / "flexviz-explore" / "SKILL.md"
+    for skill in _skill_paths(tmp_path):
         assert skill.exists(), skill
         assert skill.read_text().startswith("---\nname: flexviz-explore")
+    assert capsys.readouterr().out.count("installed") == 2
+
+
+def test_skill_install_identical_is_noop(capsys, tmp_path):
+    main(["skill", "install", "--dir", str(tmp_path)])
+    capsys.readouterr()
+    main(["skill", "install", "--dir", str(tmp_path)])
+    assert capsys.readouterr().out.count("unchanged") == 2
+
+
+def test_skill_install_refuses_modified_without_force(capsys, tmp_path):
+    main(["skill", "install", "--dir", str(tmp_path)])
+    modified = _skill_paths(tmp_path)[0]
+    modified.write_text("my customized skill")
+    with pytest.raises(SystemExit, match="not overwriting"):
+        main(["skill", "install", "--dir", str(tmp_path)])
+    assert modified.read_text() == "my customized skill"
+
+
+def test_skill_install_force_replaces(capsys, tmp_path):
+    main(["skill", "install", "--dir", str(tmp_path)])
+    modified = _skill_paths(tmp_path)[0]
+    modified.write_text("my customized skill")
+    main(["skill", "install", "--dir", str(tmp_path), "--force"])
+    assert modified.read_text().startswith("---\nname: flexviz-explore")
+
+
+def test_csv_dates_are_parsed(capsys, tmp_path):
+    path = tmp_path / "events.csv"
+    path.write_text("ts,val\n2026-01-01 10:00:00,1.5\n2026-01-01 10:00:02,2.5\n")
+    main(["schema", str(path)])
+    out = json.loads(capsys.readouterr().out)
+    dtypes = {c["name"]: c["dtype"] for c in out[0]["columns"]}
+    assert dtypes["ts"].startswith("Datetime"), dtypes
 
 
 # ---------------------------------------------------------------------------
