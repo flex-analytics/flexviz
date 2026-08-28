@@ -75,3 +75,94 @@ def test_register_files_rejects_missing_and_unknown(tmp_path):
     bad.write_text("x")
     with pytest.raises(SystemExit, match="unsupported file type"):
         _register_files([str(bad)], cache=False)
+
+
+def test_schema_command_emits_json(capsys, tmp_path):
+    path = tmp_path / "readings.parquet"
+    pl.DataFrame({"t": [1, 2], "v": [1.0, 2.0]}).write_parquet(path)
+    main(["schema", str(path)])
+    out = json.loads(capsys.readouterr().out)
+    assert out[0]["source_name"] == "readings"
+    assert {"name": "t", "dtype": "Int64"} in out[0]["columns"]
+    assert {"name": "v", "dtype": "Float64"} in out[0]["columns"]
+
+
+# ---------------------------------------------------------------------------
+# Boundary tests: the installed command, as a real process
+# ---------------------------------------------------------------------------
+
+
+def _run_module(*argv: str, **kw):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-m", "flexviz", *argv],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        **kw,
+    )
+
+
+def test_module_help_and_decode_subprocess():
+    assert _run_module("--help").returncode == 0
+
+    url = _demo_dashboard().share_url(source_name="demo")
+    proc = _run_module("decode", url)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert len(payload["figures"]) == 2
+
+
+def test_serve_lifecycle_subprocess(tmp_path):
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    import requests
+
+    path = tmp_path / "life.parquet"
+    pl.DataFrame({"x": [1, 2, 3]}).write_parquet(path)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "flexviz", "serve", str(path), "--port", str(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 30
+        sources = None
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(f"serve exited early: {proc.communicate()}")
+            try:
+                sources = requests.get(
+                    f"http://127.0.0.1:{port}/sources", timeout=1
+                ).json()
+                break
+            except requests.RequestException:
+                time.sleep(0.2)
+        assert sources == ["life"]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_serve_fails_fast_on_busy_port(tmp_path):
+    import socket
+
+    path = tmp_path / "busy.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        port = blocker.getsockname()[1]
+        proc = _run_module("serve", str(path), "--port", str(port))
+        assert proc.returncode != 0
+        assert "cannot bind" in proc.stderr

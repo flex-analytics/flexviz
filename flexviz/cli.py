@@ -1,6 +1,7 @@
 """Command-line entry points.
 
 ``flexviz serve``  registers data files as named sources and runs the server.
+``flexviz schema`` prints file schemas as JSON so an agent can pick columns.
 ``flexviz decode`` turns a ``/view`` share URL back into its JSON spec, so a
 script or agent can read the viewport and selections a person left behind.
 """
@@ -50,17 +51,66 @@ def _register_files(files: list[str], cache: bool) -> list[str]:
     return names
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _check_port_free(host: str, port: int) -> None:
+    """Fail fast with a clear message instead of a uvicorn traceback.
+
+    ponytail: bind-probe has a small race with the real bind; acceptable.
+    """
+    import socket
+
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+    except OSError as exc:
+        raise SystemExit(f"cannot bind {host}:{port}: {exc}") from exc
+
+
 def _cmd_serve(args: argparse.Namespace) -> None:
+    import sys
+
     names = _register_files(args.files, cache=args.cache)
 
     import uvicorn
 
     from flexviz.server import app
 
+    if args.host not in _LOOPBACK_HOSTS:
+        print(
+            f"WARNING: binding {args.host} exposes unauthenticated data endpoints "
+            "(open CORS, no auth) to the network. Use a loopback host unless you "
+            "understand the exposure.",
+            file=sys.stderr,
+        )
+    _check_port_free(args.host, args.port)
     url = f"http://{args.host}:{args.port}"
-    print(f"serving {url} with sources: {', '.join(repr(n) for n in names)}")
-    print(f"build a link with Dashboard.share_url(server_url={url!r}, source_name=...)")
+    print(f"starting {url} with sources: {', '.join(repr(n) for n in names)}")
+    print(f"poll GET {url}/sources until it responds to confirm readiness")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+
+
+def _cmd_schema(args: argparse.Namespace) -> None:
+    import json
+
+    out = []
+    for raw in args.files:
+        path = Path(raw)
+        schema = _scan(path).collect_schema()
+        out.append(
+            {
+                "file": str(path),
+                "source_name": path.stem,
+                "columns": [
+                    {"name": name, "dtype": str(dtype)}
+                    for name, dtype in schema.items()
+                ],
+            }
+        )
+    print(json.dumps(out, indent=2))
 
 
 def _cmd_decode(args: argparse.Namespace) -> None:
@@ -101,6 +151,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     serve.add_argument("--log-level", default="warning")
     serve.set_defaults(func=_cmd_serve)
+
+    schema = sub.add_parser(
+        "schema", help="print file schemas (columns and dtypes) as JSON"
+    )
+    schema.add_argument("files", nargs="+", help="parquet/csv files to inspect")
+    schema.set_defaults(func=_cmd_schema)
 
     decode = sub.add_parser(
         "decode", help="decode a /view share URL (or raw spec string) to JSON"
