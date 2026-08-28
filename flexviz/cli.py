@@ -4,6 +4,7 @@
 ``flexviz schema`` prints file schemas as JSON so an agent can pick columns.
 ``flexviz decode`` turns a ``/view`` share URL back into its JSON spec, so a
 script or agent can read the viewport and selections a person left behind.
+``flexviz skill install`` copies the packaged agent skill into a project.
 """
 
 from __future__ import annotations
@@ -113,6 +114,29 @@ def _cmd_schema(args: argparse.Namespace) -> None:
     print(json.dumps(out, indent=2))
 
 
+_SKILL_NAME = "flexviz-explore"
+_SKILL_TARGET_DIRS = (".agents/skills", ".claude/skills")
+
+
+def _cmd_skill(args: argparse.Namespace) -> None:
+    """Copy the packaged agent skill into a project's skill directories.
+
+    ``.agents/skills`` is the cross-agent repository convention (Codex and
+    friends); ``.claude/skills`` is Claude Code's project location.
+    """
+    from importlib.resources import files
+
+    content = (files("flexviz") / "skills" / _SKILL_NAME / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    base = Path(args.dir)
+    for target in _SKILL_TARGET_DIRS:
+        dest = base / target / _SKILL_NAME / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+        print(f"installed {dest}")
+
+
 def _cmd_decode(args: argparse.Namespace) -> None:
     from flexviz.spec import decode_spec
 
@@ -163,6 +187,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     decode.add_argument("url", help="share URL, or the bare encoded spec value")
     decode.set_defaults(func=_cmd_decode)
+
+    skill = sub.add_parser("skill", help="manage the flexviz-explore agent skill")
+    skill.add_argument("action", choices=["install"])
+    skill.add_argument(
+        "--dir",
+        default=".",
+        help="project root to install into (default: current directory)",
+    )
+    skill.set_defaults(func=_cmd_skill)
 
     args = parser.parse_args(argv)
     args.func(args)

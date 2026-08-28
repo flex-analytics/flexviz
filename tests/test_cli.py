@@ -87,6 +87,14 @@ def test_schema_command_emits_json(capsys, tmp_path):
     assert {"name": "v", "dtype": "Float64"} in out[0]["columns"]
 
 
+def test_skill_install(capsys, tmp_path):
+    main(["skill", "install", "--dir", str(tmp_path)])
+    for target in (".agents/skills", ".claude/skills"):
+        skill = tmp_path / target / "flexviz-explore" / "SKILL.md"
+        assert skill.exists(), skill
+        assert skill.read_text().startswith("---\nname: flexviz-explore")
+
+
 # ---------------------------------------------------------------------------
 # Boundary tests: the installed command, as a real process
 # ---------------------------------------------------------------------------
