@@ -85,14 +85,41 @@ print(dash.share_url(server_url="http://127.0.0.1:8077", source_name="data"))
   The serve process answers all interactions.
 - `source_name` must match the served stem; `cache=True` must match
   `--cache`.
-- Trace builders: `add_line`, `add_histogram`, `add_bar`, `add_boxplot`,
-  `add_pie`, `add_treemap`, `add_histogram2d`, `add_corr_heatmap`,
-  `add_geo_histogram2d`, `add_geo_line`. Grouped traces take
-  `group_by="col"`. Full API: https://docs.flexviz.tech
 - No categorical column to `group_by`? Split related metrics across
   figures instead (one figure per metric family), and consider
   `add_corr_heatmap` or `add_histogram2d` to surface relationships
   between the numeric columns.
+
+API cheat-sheet — write calls from this, do not read the source
+(defaults shown; full reference: https://docs.flexviz.tech):
+
+```python
+Dashboard(data, cache=False)     # data: pl.LazyFrame/DataFrame, pandas, pyarrow
+                                 # cache=True enables cross-filter cubes (live brushing)
+dash.add_figure(title=...)       # -> Figure; chainable builders below
+dash.share_url(server_url, source_name, rows=None, cols=None, cache=None)
+
+fig.add_line(x, y, name=None, color=None, n_points=1000,
+             downsample="minmax",          # or "fpcs" | "nth"
+             assume_sorted_x=False, group_by=None)
+fig.add_histogram(x=None, y=None, bins=20, histnorm="count",
+                  name=None, group_by=None)
+fig.add_bar(labels, values=None,
+            agg="sum",                     # "mean"|"median"|"min"|"max"|"n_unique"
+            orientation="v", bar_mode="group", group_by=None)
+fig.add_boxplot(x=None, y=None, name=None, group_by=None)
+fig.add_pie(labels, values=None, agg="sum", hole=0.0)
+fig.add_treemap(path=[...], values=None, agg="sum")   # path: hierarchy columns
+fig.add_histogram2d(x, y, x_bins=20, y_bins=20, z=None, histfunc=None)
+fig.add_corr_heatmap(columns=None, method="pearson", triangular=False)
+fig.add_geo_histogram2d(lat, lon, lat_bins=64, lon_bins=64, z=None)
+fig.add_geo_line(lat, lon, n_points=1000)
+
+fig.title(text); fig.xlabel(text); fig.ylabel(text); fig.legend(show=True)
+```
+
+Every builder returns the `Figure`, so calls chain. `group_by="col"`
+splits a trace into one child per group value with stable colors.
 
 ### 4. Watch along (preferred when you control a browser)
 
