@@ -40,7 +40,13 @@ from .figure import (
     _start_server_thread,
 )
 from .LF import LFQueryBuilder, polars_lf_from
-from .spec import DashboardSpec, InteractionState, LayoutSpec, _auto_grid_items
+from .spec import (
+    DashboardSpec,
+    InteractionState,
+    LayoutSpec,
+    _auto_grid_items,
+    encode_spec,
+)
 
 
 class Dashboard:
@@ -212,6 +218,70 @@ class Dashboard:
     # Rendering
     # ------------------------------------------------------------------
 
+    def _finalized_spec(
+        self,
+        source_name: str | None,
+        rows: int | None,
+        cols: int | None,
+        draggable: bool,
+        effective_cache: bool,
+        live_brush: Literal["auto", "off"] | None,
+    ) -> DashboardSpec:
+        """Build the spec with the client state a renderer needs."""
+        spec = self.to_spec(source_name=source_name)
+        spec.client_state.live_brush = _effective_live_brush(
+            live_brush, effective_cache
+        )
+        spec.layout.draggable = draggable
+        # TODO allow user to specify / pass layout
+        spec.layout.grid_items = _auto_grid_items(spec.figures, rows=rows, cols=cols)
+        return spec
+
+    def share_url(
+        self,
+        server_url: str = "http://127.0.0.1:8000",
+        source_name: str = "data",
+        rows: int | None = None,
+        cols: int | None = None,
+        draggable: bool = True,
+        cache: bool | None = None,
+        live_brush: Literal["auto", "off"] | None = None,
+    ) -> str:
+        """Encode this dashboard as a ``/view`` URL for a running server.
+
+        Unlike :meth:`show`, this neither starts a server nor registers the
+        data source, and it does not open a browser.  The server at
+        ``server_url`` must already serve a source named ``source_name``
+        (for example one started with ``flexviz serve``).  This is the
+        primitive for agents and scripts that hand a human a live dashboard
+        link instead of rendering locally.
+
+        Parameters
+        ----------
+        server_url:
+            Base URL of the running flexviz server.
+        source_name:
+            Source name as registered on that server (``flexviz serve``
+            registers each file under its stem).
+        rows, cols, draggable, live_brush:
+            Same meaning as in :meth:`show`.
+        cache:
+            Resolves ``live_brush`` exactly as in :meth:`show`; pass the
+            same value the server used when registering the source.
+
+        Returns
+        -------
+        str
+            A ``{server_url}/view?spec=...`` URL carrying the complete
+            spec.  Opening it needs a running server with ``source_name``
+            registered.
+        """
+        effective_cache = self._cache_enabled if cache is None else cache
+        spec = self._finalized_spec(
+            source_name, rows, cols, draggable, effective_cache, live_brush
+        )
+        return f"{server_url.rstrip('/')}/view?spec={encode_spec(spec)}"
+
     def show(
         self,
         renderer: str = "plotly",
@@ -270,11 +340,7 @@ class Dashboard:
         effective_cache = self._cache_enabled if cache is None else cache
         _register_source_if_needed(source_name, self._backend_lf, cache=effective_cache)
         _start_server_thread(host, port)
-        spec = self.to_spec(source_name=source_name)
-        spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+        spec = self._finalized_spec(
+            source_name, rows, cols, draggable, effective_cache, live_brush
         )
-        spec.layout.draggable = draggable
-        # TODO allow user to specify / pass layout
-        spec.layout.grid_items = _auto_grid_items(spec.figures, rows=rows, cols=cols)
         _render_dashboard(renderer, spec, f"http://{host}:{port}", **kwargs)

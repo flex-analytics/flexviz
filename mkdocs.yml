@@ -74,6 +74,7 @@ nav:
       - Data sources: guides/data-sources.md
       - Sharing views: guides/sharing.md
       - Embedding: guides/embedding.md
+      - Agents: guides/ai-agents.md
   - API reference:
       - Figure: api/figure.md
       - Dashboard: api/dashboard.md

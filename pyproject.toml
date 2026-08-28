@@ -33,6 +33,9 @@ dependencies = [
     "flexviz-polars>=0.1.0b1,<0.2",
 ]
 
+[project.scripts]
+flexviz = "flexviz.cli:main"
+
 [project.urls]
 Homepage = "https://flexviz.tech"
 Documentation = "https://docs.flexviz.tech"
