@@ -110,6 +110,35 @@ def _viewport_window(
 # ---------------------------------------------------------------------------
 
 
+def _envelope_empty(x_col: str, y_col: str, uid: str) -> pl.DataFrame:
+    return pl.DataFrame(
+        {uid: [[]]},
+        schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
+    )
+
+
+def _envelope_points(
+    result: pl.DataFrame, x_col: str, y_col: str, uid: str
+) -> pl.DataFrame:
+    """Reassemble a per-trace envelope from the group_by result columns."""
+    lo_c, hi_c = f"__lo_{uid}", f"__hi_{uid}"
+    xlo_c, xhi_c = f"__xlo_{uid}", f"__xhi_{uid}"
+    pts = pl.concat(
+        [
+            result.select(pl.col(xlo_c).alias("__x"), pl.col(lo_c).alias("__y")),
+            result.select(pl.col(xhi_c).alias("__x"), pl.col(hi_c).alias("__y")),
+        ]
+    ).drop_nulls("__x")
+    pts = pts.unique(subset=["__x", "__y"]).sort("__x")
+    return pts.select(
+        pl.struct(
+            **{x_col: pl.col("__x").alias(x_col), y_col: pl.col("__y").alias(y_col)}
+        )
+        .implode()
+        .alias(uid)
+    )
+
+
 def _streaming_envelope_plan(
     x_col: str,
     y_col: str,
@@ -121,8 +150,10 @@ def _streaming_envelope_plan(
 ):
     """Streaming min-max envelope using equal-width buckets in x.
 
-    Replaces the two-pass ``_native_envelope_plan``. One streaming collect, no
-    intermediate collects.
+    One streaming collect per call, no intermediate collects. When called with
+    ``batch_args`` (a list of ``(uid, y_col)`` tuples from sibling traces),
+    all y columns are aggregated in a single ``group_by`` — one scan for N
+    traces.
 
     Buckets partition the x range into ``n_points // 2`` equal-width bins.
     ``min_by``/``max_by`` locate the x value at each y extremum in a single
@@ -134,26 +165,22 @@ def _streaming_envelope_plan(
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
-    point. This is a deliberate trade: the previous two-pass plan paid 2.9x
-    runtime and 39x memory for deterministic tie-breaking.
+    point.
     """
     import math
 
     n_out = max(n_points // 2, 1)
-    empty = pl.DataFrame(
-        {uid: [[]]},
-        schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
-    )
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+    def run(filtered_ldf: pl.LazyFrame, batch_args=None) -> pl.DataFrame:
+        traces = batch_args if batch_args is not None else [(uid, y_col)]
+        y_cols = list(dict.fromkeys(yc for _, yc in traces))
+
         src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
-        src = src.select(x_col, y_col)
+        src = src.select(x_col, *y_cols)
 
         dtype = schema.get(x_col) if schema else None
         is_temporal = dtype is not None and dtype.is_temporal()
 
-        # Bucket arithmetic runs on the physical representation so that
-        # temporal columns reduce to plain integer division.
         phys_expr = pl.col(x_col).to_physical() if is_temporal else pl.col(x_col)
         if x_range is not None:
             x_lo, x_hi = x_range[0], x_range[1]
@@ -171,14 +198,12 @@ def _streaming_envelope_plan(
             x_hi = domain["__hi"].item()
 
         if x_lo is None or x_hi is None:
-            return empty
+            return pl.concat(
+                [_envelope_empty(x_col, yc, u) for u, yc in traces],
+                how="horizontal_extend",
+            )
 
         span = x_hi - x_lo
-        # Float columns need true division: integer ceiling division rounds a
-        # sub-1 width up to 1 (0.002 / 500 -> 1), collapsing every row into
-        # one bucket. Integer and temporal columns use ceiling division to keep
-        # the width whole. The check is on the column dtype, not the Python
-        # type of span, because JSON deserializes 100.0 as int.
         use_float_div = dtype is not None and dtype.is_float()
         if span <= 0:
             bsz = 1
@@ -189,53 +214,31 @@ def _streaming_envelope_plan(
 
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
+        bkt = ((phys_expr - lo_lit) // bsz_lit).clip(upper_bound=n_out - 1).alias("__b")
 
-        x, y = pl.col(x_col), pl.col(y_col)
-        result = (
-            src.group_by(
-                # True division lands x_hi exactly on n_out; fold that lone
-                # top row back into the last bucket instead of letting it open
-                # an n_out + 1-th one and overrun the n_points budget.
-                ((phys_expr - lo_lit) // bsz_lit)
-                .clip(upper_bound=n_out - 1)
-                .alias("__b")
+        agg_exprs = []
+        x = pl.col(x_col)
+        for u, yc in traces:
+            y = pl.col(yc)
+            agg_exprs.extend(
+                [
+                    y.min().alias(f"__lo_{u}"),
+                    y.max().alias(f"__hi_{u}"),
+                    x.min_by(y).alias(f"__xlo_{u}"),
+                    x.max_by(y).alias(f"__xhi_{u}"),
+                ]
             )
-            .agg(
-                y.min().alias("__lo"),
-                y.max().alias("__hi"),
-                x.min_by(y).alias("__xlo"),
-                x.max_by(y).alias("__xhi"),
-            )
-            .collect(engine="streaming")
-        )
+
+        result = src.group_by(bkt).agg(*agg_exprs).collect(engine="streaming")
 
         if result.is_empty():
-            return empty
-
-        pts = pl.concat(
-            [
-                result.select(
-                    pl.col("__xlo").alias("__x"),
-                    pl.col("__lo").alias("__y"),
-                ),
-                result.select(
-                    pl.col("__xhi").alias("__x"),
-                    pl.col("__hi").alias("__y"),
-                ),
-            ]
-        ).drop_nulls("__x")
-        pts = pts.unique(subset=["__x", "__y"]).sort("__x")
-
-        return pts.select(
-            pl.struct(
-                **{
-                    x_col: pl.col("__x").alias(x_col),
-                    y_col: pl.col("__y").alias(y_col),
-                }
+            return pl.concat(
+                [_envelope_empty(x_col, yc, u) for u, yc in traces],
+                how="horizontal_extend",
             )
-            .implode()
-            .alias(uid)
-        )
+
+        parts = [_envelope_points(result, x_col, yc, u) for u, yc in traces]
+        return pl.concat(parts, how="horizontal_extend")
 
     return run
 
@@ -628,6 +631,8 @@ class LinePlot(FlexTrace):
         if scan_source and self.downsample == "minmax":
             # `nth` already streams (a stride needs no state) and `fpcs` has no
             # streaming formulation at all, so only minmax needs the swap.
+            # Traces sharing the same x column and viewport batch into one scan.
+            vp_key = tuple(x_range) if x_range is not None else None
             return AggregationSpec(
                 expr=pl.lit(None).alias(self.uid),
                 uid=self.uid,
@@ -644,6 +649,8 @@ class LinePlot(FlexTrace):
                     x_range,
                     schema,
                 ),
+                plan_batch_key=("streaming_envelope", self.x_col, vp_key),
+                plan_batch_args=(self.uid, self.y_col),
             )
 
         expr = _plugin_line_agg_expr(

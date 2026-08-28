@@ -60,12 +60,17 @@ class AggregationSpec:
     uid: str = ""
     global_stats_cols: Tuple[str, ...] = ()
     #: Optional escape hatch for an aggregation that cannot be a select
-    #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is named ``uid``, i.e. exactly the column
-    #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own plan — the out-of-core line envelope uses a streaming group_by
-    #: that cannot ride the shared select.
-    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+    #: expression. Called as ``plan(filtered_ldf)`` or, when batched,
+    #: ``plan(filtered_ldf, batch_args_list)`` — see ``plan_batch_key``.
+    #: Must return a DataFrame whose columns are named after the uid(s).
+    plan: "Callable[..., pl.DataFrame] | None" = None
+    #: Hashable key for plan batching. Plans with the same non-None key are
+    #: fused into one call: ``plan(filtered_ldf, [spec.plan_batch_args ...])``
+    #: returning one column per spec. Used by the streaming line envelope to
+    #: run one scan for N traces sharing the same x column and viewport.
+    plan_batch_key: Any = None
+    #: Per-trace arguments passed to a batched plan callback.
+    plan_batch_args: Any = None
 
 
 @dataclass(frozen=True)
@@ -324,16 +329,44 @@ class LFQueryBuilder:
             regular_df = filtered_ldf.select(*[s.expr for s in expr_specs]).collect()
         else:
             regular_df = pl.DataFrame()
-        for spec in plan_specs:
+
+        # Group plan specs by batch key: specs sharing a key run as one call
+        # (one scan for N traces). Specs without a key run individually.
+        unbatched = [s for s in plan_specs if s.plan_batch_key is None]
+        plan_batches: dict[Any, list[AggregationSpec]] = {}
+        for s in plan_specs:
+            if s.plan_batch_key is not None:
+                plan_batches.setdefault(s.plan_batch_key, []).append(s)
+
+        def _hstack(planned: pl.DataFrame) -> None:
+            nonlocal regular_df
+            regular_df = (
+                planned if regular_df.is_empty() else regular_df.hstack(planned)
+            )
+
+        for spec in unbatched:
             planned = spec.plan(filtered_ldf)
             if planned.width != 1 or planned.columns[0] != spec.uid:
                 raise ValueError(
                     f"AggregationSpec.plan for {spec.uid!r} must return exactly "
                     f"one column named {spec.uid!r}, got {planned.columns!r}"
                 )
-            regular_df = (
-                planned if regular_df.is_empty() else regular_df.hstack(planned)
-            )
+            _hstack(planned)
+
+        for batch in plan_batches.values():
+            if len(batch) == 1:
+                planned = batch[0].plan(filtered_ldf)
+            else:
+                planned = batch[0].plan(
+                    filtered_ldf, [s.plan_batch_args for s in batch]
+                )
+            expected = {s.uid for s in batch}
+            got = set(planned.columns)
+            if got != expected:
+                raise ValueError(
+                    f"Batched plan must return columns {expected!r}, got {got!r}"
+                )
+            _hstack(planned)
 
         grouped_dfs: dict[str, pl.DataFrame] = {}
         grouped_batches: dict[tuple, list[GroupedAggregationSpec]] = {}

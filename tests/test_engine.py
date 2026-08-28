@@ -2038,6 +2038,57 @@ class TestResidencySeam:
         line = LinePlot(x="ts", y="val", n_points=1000, downsample=downsample)
         assert line.get_aggregation_spec({}, scan_source=True).plan is None
 
+    def test_multi_trace_scan_batches_into_one_plan(self, tmp_path):
+        """Multiple minmax line traces sharing x on a scan source fuse into
+        one streaming group_by instead of N sequential scans."""
+        n = 20_000
+        ys1 = [((i * 7919) % 1000) / 7.0 for i in range(n)]
+        ys2 = [((i * 4001) % 1000) / 5.0 for i in range(n)]
+        ys3 = [float(i % 89) for i in range(n)]
+        df = pl.DataFrame(
+            {"ts": list(range(n)), "v1": ys1, "v2": ys2, "v3": ys3},
+            schema={
+                "ts": pl.Int64,
+                "v1": pl.Float64,
+                "v2": pl.Float64,
+                "v3": pl.Float64,
+            },
+        )
+        path = tmp_path / "multi.parquet"
+        df.write_parquet(path)
+
+        traces = [
+            LinePlot(x="ts", y="v1", n_points=1000),
+            LinePlot(x="ts", y="v2", n_points=1000),
+            LinePlot(x="ts", y="v3", n_points=1000),
+        ]
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        engine = FlexEngine(
+            backend_lf=lf,
+            scalable_traces={t.uid: t for t in traces},
+        )
+        infos = [
+            TraceInfo(uid=t.uid, axes=("x", "y"), trace_type="line") for t in traces
+        ]
+        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        assert len(deltas) == 3
+
+        src_v1 = set(df["v1"].to_list())
+        src_v2 = set(df["v2"].to_list())
+        src_v3 = set(df["v3"].to_list())
+        for delta, src_ys in zip(deltas, [src_v1, src_v2, src_v3]):
+            xs = list(delta.updates["x"])
+            ys = list(delta.updates["y"])
+            assert len(xs) > 0
+            assert len(xs) <= 1000
+            for yi in ys:
+                assert yi in src_ys
+
+        # The specs must share a batch key so the engine fuses them.
+        specs = [t.get_aggregation_spec({}, scan_source=True) for t in traces]
+        keys = {s.plan_batch_key for s in specs}
+        assert len(keys) == 1, f"expected one batch key, got {keys}"
+
 
 # ---- descending viewport ranges ---------------------------------------------
 
