@@ -272,7 +272,9 @@ class Dashboard:
         Returns
         -------
         str
-            A self-contained ``{server_url}/view?spec=...`` URL.
+            A ``{server_url}/view?spec=...`` URL carrying the complete
+            spec.  Opening it needs a running server with ``source_name``
+            registered.
         """
         effective_cache = self._cache_enabled if cache is None else cache
         spec = self._finalized_spec(

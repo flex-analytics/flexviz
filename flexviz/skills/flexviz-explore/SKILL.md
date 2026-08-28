@@ -15,16 +15,23 @@ description: >
 # Explore large data with FlexViz
 
 FlexViz serves interactive cross-filter dashboards from lazy Polars queries.
-Only small aggregates travel to the browser, so interactions stay fast at
-100M+ rows on a typical workstation (benchmarked for the built-in traces;
-larger-than-RAM Parquet streams through Polars' streaming engine). Every
-dashboard view is a self-contained URL. The loop: you mint a URL, the human
-explores, you read back exactly what they zoomed and selected.
+The full dataset stays server-side; the browser receives bounded aggregates
+and small representative samples (min/max line points are real data values).
+Interaction speed is benchmarked for the built-in traces (see 
+flexviz.tech/benchmarks.html); larger-than-RAM Parquet streaming is work in
+progress. Every dashboard view is a URL carrying the complete spec — opening
+one needs a running server with the same source registered. 
+The loop: you mint a URL, the human explores, you read back exactly what they
+zoomed and selected.
 
 ## Privacy: know what leaves the data
 
-- Raw rows stay in the server's lazy query engine. They enter your context
-  only if you sample them yourself, so don't collect the frame.
+- The full dataset stays in the server's lazy query engine. The browser
+  receives bounded aggregates plus small representative samples of real
+  values (downsampled line points, bin edges). Rows enter YOUR context only
+  if you sample them yourself, so don't collect the frame.
+- `flexvizState()` exposes the spec and interaction state, not rendered
+  trace payloads.
 - Schema, any samples you take, and the human's selected ranges or category
   values DO enter your context. That is usually fine; be deliberate.
 - A share URL embeds the complete spec: column names, filters, selections.
@@ -82,6 +89,10 @@ print(dash.share_url(server_url="http://127.0.0.1:8077", source_name="data"))
   `add_pie`, `add_treemap`, `add_histogram2d`, `add_corr_heatmap`,
   `add_geo_histogram2d`, `add_geo_line`. Grouped traces take
   `group_by="col"`. Full API: https://docs.flexviz.tech
+- No categorical column to `group_by`? Split related metrics across
+  figures instead (one figure per metric family), and consider
+  `add_corr_heatmap` or `add_histogram2d` to surface relationships
+  between the numeric columns.
 
 ### 4. Watch along (preferred when you control a browser)
 

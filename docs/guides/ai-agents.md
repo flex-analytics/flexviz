@@ -2,8 +2,13 @@
 
 FlexViz is built so a coding agent (Claude Code, Codex, Cursor) can hand you
 a live dashboard instead of a static plot, and read back what you zoomed and
-selected. Data stays in the lazy query engine; the agent exchanges only
-specs and URLs.
+selected. The dataset stays in the lazy query engine; the agent exchanges
+only specs and URLs.
+
+This workflow assumes: the data file is on the machine the agent runs on,
+flexviz is installed in the project environment, and your browser can reach
+that machine. An agent in a cloud or remote sandbox cannot hand you a
+working loopback URL.
 
 ## Install the skill
 
