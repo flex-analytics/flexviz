@@ -171,6 +171,11 @@ class TestPlotlyHtml:
         assert "window.fvSetSelectionState = function(selections)" in html
         assert "_fvFormatSummaryIsoDatetime" in html
 
+    def test_agent_readback_accessor_present(self, html):
+        assert (
+            "window.flexvizState" in html
+        ), "shared runtime must expose the flexvizState() agent-readback accessor"
+
     def test_panel_bar_buttons_have_accessible_labels(self, html):
         for label in (
             "Zoom mode",

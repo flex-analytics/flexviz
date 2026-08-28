@@ -3563,20 +3563,56 @@ class TestAgentReadback:
         assert len(selections) == 1, state["state"]
         assert selections[0]["predicates"][0]["clauses"][0]["range"] is not None
 
-        # 2. Share-button fallback: the same spec round-trips via /share.
-        share_url = page.evaluate("""async () => {
-            const resp = await fetch(SERVER_URL + '/share', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({spec: window.flexvizState(),
-                                      server_url: SERVER_URL}),
-            });
-            const data = await resp.json();
-            return new URL(data.url, window.location.href).href;
-        }""")
+        # 2. The real Share button posts the current spec to /share and the
+        #    returned URL decodes to the brushed state (clipboard/alert
+        #    behavior after the POST is irrelevant to the contract).
+        page.on("dialog", lambda dialog: dialog.dismiss())
+        with page.expect_response("**/share") as share_response:
+            page.click("#fv-btn-share")
+        share_url = share_response.value.json()["url"]
         decoded = decode_spec(share_url.split("spec=", 1)[1])
         clause = decoded.state.selections[0].predicates[0].clauses[0]
         assert clause.range is not None
+
+    def test_zoom_viewport_visible_via_flexviz_state(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        # Default mode is zoom: a drag zooms and must land in the viewport.
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.7, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        viewport = page.evaluate("window.flexvizState()['state']['viewport']")
+        assert any("/x" in key for key in viewport), viewport
+
+    def test_flexviz_state_returns_detached_snapshot(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        original_uid = page.evaluate("DASHBOARD_SPEC.figures[0].uid")
+        mutated_view = page.evaluate("""() => {
+            const snap = window.flexvizState();
+            snap.figures[0].uid = 'clobbered';
+            snap.state.selections = [{bogus: true}];
+            return window.flexvizState().figures[0].uid;
+        }""")
+        assert mutated_view == original_uid
+        assert page.evaluate("DASHBOARD_SPEC.figures[0].uid") == original_uid
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
 
 
 # ---------------------------------------------------------------------------
