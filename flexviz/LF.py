@@ -63,8 +63,8 @@ class AggregationSpec:
     #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
     #: DataFrame whose single column is named ``uid``, i.e. exactly the column
     #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own multi-pass plan — the out-of-core line envelope needs two passes
-    #: over the scan and cannot ride the shared select.
+    #: its own plan — the out-of-core line envelope uses a streaming group_by
+    #: that cannot ride the shared select.
     plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
 
 

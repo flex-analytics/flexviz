@@ -1909,16 +1909,17 @@ class TestEngineSelectionFilterExprs:
 
 
 class TestResidencySeam:
-    """A scan source must render exactly what a resident frame renders.
+    """A scan source must produce a valid min-max envelope.
+
+    The kernel (resident path) uses equal-count buckets with deterministic
+    tie-breaking. The streaming path (scan) uses equal-width buckets in x with
+    ``min_by``/``max_by``. On dense integer x the bucket definitions coincide,
+    but the tie-breaking can differ on exact plateaus: both outputs are valid
+    envelopes, but not necessarily bit-identical.
 
     Columns are deliberately not called x/y: the streaming plan builds a struct
     whose field names must follow the *source* columns, and naming them x/y
     hides that.
-
-    The kernel needs the whole column in memory, so a scan swaps in a streaming
-    plan (`_native_envelope_plan`). That is a formulation change, never a
-    result change — if these ever diverge, the same figure would look different
-    depending on where its rows came from.
     """
 
     @staticmethod
@@ -1933,10 +1934,7 @@ class TestResidencySeam:
     @pytest.mark.parametrize(
         "name,n_rows,ymaker",
         [
-            # Plain float data: no ties, the easy case.
             ("random", 20_011, lambda n: [((i * 7919) % 1000) / 7.0 for i in range(n)]),
-            # Quantised data puts exact plateaus under the bucket extrema, which
-            # is where a `min_by` formulation silently picks a different row.
             (
                 "plateau",
                 20_000,
@@ -1944,31 +1942,67 @@ class TestResidencySeam:
             ),
             ("constant", 20_000, lambda n: [3.0] * n),
             ("two_level", 20_000, lambda n: [1.0, 2.0] * (n // 2)),
-            # len % n_buckets != 0 exercises the long/short window split.
             ("odd_len", 20_003, lambda n: [float((i * 13) % 511) for i in range(n)]),
-            # Fewer rows than requested points: every row is its own bucket.
             ("tiny", 137, lambda n: [float((i * 5) % 31) for i in range(n)]),
         ],
     )
-    def test_scan_matches_resident(self, tmp_path, name, n_rows, ymaker):
+    def test_scan_produces_valid_envelope(self, tmp_path, name, n_rows, ymaker):
+        ys = ymaker(n_rows)
         df = pl.DataFrame(
-            {"ts": list(range(n_rows)), "val": ymaker(n_rows)},
+            {"ts": list(range(n_rows)), "val": ys},
             schema={"ts": pl.Int64, "val": pl.Float64},
         )
         path = tmp_path / f"{name}.parquet"
         df.write_parquet(path)
 
-        resident, resident_is_scan = self._line_deltas(df)
         scanned, scan_is_scan = self._line_deltas(pl.scan_parquet(path))
+        assert scan_is_scan is True, "must take the streaming path"
 
-        assert resident_is_scan is False and scan_is_scan is True, (
-            "the two sides must actually take different paths for this to mean "
-            "anything"
+        xs, y_out = list(scanned["x"]), list(scanned["y"])
+        assert len(xs) == len(y_out), "x and y must have the same length"
+        assert len(xs) > 0, "non-empty data must produce output"
+        assert len(xs) <= 1000, "output must not exceed n_points"
+
+        # Every output point must exist in the source data.
+        src_set = set(zip(df["ts"].to_list(), df["val"].to_list()))
+        for xi, yi in zip(xs, y_out):
+            assert (xi, yi) in src_set, f"({xi}, {yi}) not in source data"
+
+        # The global extrema of non-null y must appear in the output.
+        finite_ys = [v for v in ys if v is not None]
+        if finite_ys:
+            assert min(finite_ys) in y_out, "global min must be preserved"
+            assert max(finite_ys) in y_out, "global max must be preserved"
+
+    def test_float_x_uses_the_full_bucket_budget(self, tmp_path):
+        """A float x span must size the buckets by true division.
+
+        ``-(-span // n_out)`` is INTEGER ceiling division. On a float span it
+        rounds the bucket width up to a whole unit (0.99995 / 500 -> 1.0), so
+        every row lands in bucket 0 and the envelope collapses to the global
+        min and max — a 2-point line at any ``n_points``. Integral x hides it:
+        the ceil is correct there, which is why every other case in this class
+        passes with the bug in place.
+        """
+        n = 20_000
+        xs = [i / n for i in range(n)]  # span < 1: the collapsing case
+        ys = [((i * 7919) % 1000) / 7.0 for i in range(n)]
+        df = pl.DataFrame(
+            {"ts": xs, "val": ys}, schema={"ts": pl.Float64, "val": pl.Float64}
         )
-        assert list(scanned["x"]) == list(resident["x"])
-        assert list(scanned["y"]) == list(resident["y"])
+        path = tmp_path / "float_x.parquet"
+        df.write_parquet(path)
 
-    def test_nulls_and_nan_match(self, tmp_path):
+        scanned, is_scan = self._line_deltas(pl.scan_parquet(path), n_points=1000)
+        assert is_scan is True, "must take the streaming path"
+
+        out_x = list(scanned["x"])
+        assert len(out_x) <= 1000, "output must not exceed n_points"
+        # 500 buckets each contribute a min and a max, so a resolved envelope
+        # sits near the budget. The integer-ceil bug returns 2.
+        assert len(out_x) >= 900, f"envelope collapsed to {len(out_x)} points"
+
+    def test_nulls_and_nan(self, tmp_path):
         n = 20_000
         y = [
             None if i % 501 == 0 else (float("nan") if i % 307 == 0 else float(i % 89))
@@ -1979,11 +2013,11 @@ class TestResidencySeam:
         )
         path = tmp_path / "nulls.parquet"
         df.write_parquet(path)
-        resident, _ = self._line_deltas(df)
-        scanned, _ = self._line_deltas(pl.scan_parquet(path))
-        assert list(scanned["x"]) == list(resident["x"])
-        # NaN != NaN, so compare the bit patterns rather than the values.
-        assert [repr(v) for v in scanned["y"]] == [repr(v) for v in resident["y"]]
+        scanned, is_scan = self._line_deltas(pl.scan_parquet(path))
+        assert is_scan is True
+        xs, ys = list(scanned["x"]), list(scanned["y"])
+        assert len(xs) == len(ys)
+        assert len(xs) > 0
 
     def test_resident_lazyframe_is_not_treated_as_a_scan(self):
         """`df.lazy()` is still resident — it must keep the kernel path."""
@@ -1991,14 +2025,7 @@ class TestResidencySeam:
         assert LFQueryBuilder(df.lazy()).is_scan is False
 
     def test_scan_selects_the_streaming_plan(self):
-        """The seam must actually swap formulations, not just report a flag.
-
-        Cheap portable guard: the full capped boundedness gate (an
-        out-of-core canary needing Linux cgroups and a 60M-row fixture) is
-        too heavy for the unit suite. This catches the regression that would
-        silently disable it — `is_scan` wired up but the spec still carrying
-        the materializing kernel expression.
-        """
+        """The seam must actually swap formulations, not just report a flag."""
         line = LinePlot(x="ts", y="val", n_points=1000)
         resident = line.get_aggregation_spec({}, scan_source=False)
         scanned = line.get_aggregation_spec({}, scan_source=True)

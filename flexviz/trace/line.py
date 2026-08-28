@@ -106,115 +106,131 @@ def _viewport_window(
 
 
 # ---------------------------------------------------------------------------
-# Out-of-core envelope (native Polars, no kernel)
+# Out-of-core envelope (streaming, single collect)
 # ---------------------------------------------------------------------------
 
 
-def _uniform_bucket_expr(ri: pl.Expr, n_rows: int, n_out: int) -> pl.Expr:
-    """Row index -> bucket, matching the kernel's ``uniform_offsets`` exactly.
-
-    The kernel splits ``n_rows`` into ``n_out`` windows whose first ``n_rows %
-    n_out`` are one element longer. The naive ``ri * n_out // n_rows`` does
-    *not* reproduce that (it drifts whenever the remainder is > 1), so invert
-    the window layout directly: rows below ``split`` sit in the long windows,
-    the rest in the short ones.
-    """
-    base, rem = divmod(n_rows, n_out)
-    split = rem * (base + 1)
-    return (
-        pl.when(ri < split).then(ri // (base + 1)).otherwise(rem + (ri - split) // base)
-    )
-
-
-def _native_envelope_plan(
+def _streaming_envelope_plan(
     x_col: str,
     y_col: str,
     n_points: int,
     uid: str,
-    vp_expr: pl.Expr | None,
+    vp_filter: pl.Expr | None,
+    x_range: tuple | None,
+    schema: pl.Schema | None,
 ):
-    """Bit-identical `arg_min_max` replacement that streams.
+    """Streaming min-max envelope using equal-width buckets in x.
 
-    The kernel materializes the whole column, so it OOMs on a scan at every cap
-    tested. This is the same envelope as two bounded passes:
+    Replaces the two-pass ``_native_envelope_plan``. One streaming collect, no
+    intermediate collects.
 
-    1. per-bucket min/max of y — ``min``/``max`` are order-independent, so the
-       result does not depend on how the engine schedules morsels;
-    2. keep only rows sitting *on* a bucket extremum, then take the **first**
-       row index of each — ``min`` over indices is order-independent too.
+    Buckets partition the x range into ``n_points // 2`` equal-width bins.
+    ``min_by``/``max_by`` locate the x value at each y extremum in a single
+    associative pass, so the group never buffers.
 
-    Both properties matter. The obvious one-pass form, ``ri.min_by(y)``, breaks
-    them: on an exact plateau it picks an arbitrary member, and *which* member
-    changes with `POLARS_MAX_THREADS` — so the same data would render
-    differently on machines with different core counts. The other one-pass
-    form, ``ri.filter(y == y.min()).min()``, is correct but buffers each group
-    and OOMs at every cap.
+    When zoomed, the viewport provides the x bounds. When unzoomed, the x
+    domain is read from parquet statistics (metadata-only on an unfiltered
+    scan, streaming count on a cross-filtered scan).
 
-    The bucket extrema are collected between the passes and fed back as literal
-    lookups rather than joined: the join builds on the 100M-row side and costs
-    ~1.8x the peak (2.76 GB vs 1.51 GB at 100M).
+    On an exact y plateau, ``min_by`` picks an arbitrary member, and which
+    member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
+    point. This is a deliberate trade: the previous two-pass plan paid 2.9x
+    runtime and 39x memory for deterministic tie-breaking.
     """
+    import math
+
+    n_out = max(n_points // 2, 1)
+    empty = pl.DataFrame(
+        {uid: [[]]},
+        schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
+    )
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        src = filtered_ldf if vp_expr is None else filtered_ldf.filter(vp_expr)
+        src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
         src = src.select(x_col, y_col)
-        # The bucket layout needs the post-filter row count up front. This is
-        # the only blocking step, and it is a count, not a materialization.
-        n_rows = int(src.select(pl.len()).collect(engine="streaming").item())
-        if n_rows == 0:
-            return pl.DataFrame(
-                {uid: [[]]},
-                schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
+
+        dtype = schema.get(x_col) if schema else None
+        is_temporal = dtype is not None and dtype.is_temporal()
+
+        # Bucket arithmetic runs on the physical representation so that
+        # temporal columns reduce to plain integer division.
+        phys_expr = pl.col(x_col).to_physical() if is_temporal else pl.col(x_col)
+        if x_range is not None:
+            x_lo, x_hi = x_range[0], x_range[1]
+            if dtype is not None and dtype.is_integer():
+                x_lo = math.ceil(x_lo) if isinstance(x_lo, float) else x_lo
+                x_hi = math.floor(x_hi) if isinstance(x_hi, float) else x_hi
+            elif is_temporal:
+                x_lo, x_hi = int(x_lo), int(x_hi)
+        else:
+            domain = src.select(
+                phys_expr.min().alias("__lo"),
+                phys_expr.max().alias("__hi"),
+            ).collect(engine="streaming")
+            x_lo = domain["__lo"].item()
+            x_hi = domain["__hi"].item()
+
+        if x_lo is None or x_hi is None:
+            return empty
+
+        span = x_hi - x_lo
+        # Float columns need true division: integer ceiling division rounds a
+        # sub-1 width up to 1 (0.002 / 500 -> 1), collapsing every row into
+        # one bucket. Integer and temporal columns use ceiling division to keep
+        # the width whole. The check is on the column dtype, not the Python
+        # type of span, because JSON deserializes 100.0 as int.
+        use_float_div = dtype is not None and dtype.is_float()
+        if span <= 0:
+            bsz = 1
+        elif use_float_div:
+            bsz = span / n_out
+        else:
+            bsz = -(-span // n_out)
+
+        lo_lit = pl.lit(x_lo)
+        bsz_lit = pl.lit(bsz)
+
+        x, y = pl.col(x_col), pl.col(y_col)
+        result = (
+            src.group_by(
+                # True division lands x_hi exactly on n_out; fold that lone
+                # top row back into the last bucket instead of letting it open
+                # an n_out + 1-th one and overrun the n_points budget.
+                ((phys_expr - lo_lit) // bsz_lit)
+                .clip(upper_bound=n_out - 1)
+                .alias("__b")
             )
-        n_out = max(min(n_points // 2, n_rows), 1)
-        ri = pl.col("__ri").cast(pl.Int64)
-        y = pl.col(y_col)
-        base = src.with_row_index("__ri").with_columns(
-            _uniform_bucket_expr(ri, n_rows, n_out).alias("__b")
-        )
-        ext = (
-            base.group_by("__b")
-            .agg(__lo=y.min(), __hi=y.max())
-            .sort("__b")
-            .collect(engine="streaming")
-        )
-        lo, hi = pl.lit(ext["__lo"]), pl.lit(ext["__hi"])
-        b = pl.col("__b")
-        at_lo, at_hi = y == lo.gather(b), y == hi.gather(b)
-        x = pl.col(x_col)
-        # Pass 2: only rows sitting ON a bucket extremum survive the frame-level
-        # filter, so the per-group work below is over a handful of rows. Taking
-        # `min_by(ri)` is safe precisely because row indices are unique — the
-        # tie-break that makes `min_by(y)` thread-dependent cannot arise here.
-        picked = (
-            base.filter(at_lo | at_hi)
-            .group_by("__b")
             .agg(
-                __imin=ri.filter(at_lo).min(),
-                __imax=ri.filter(at_hi).min(),
-                __xmin=x.filter(at_lo).min_by(ri.filter(at_lo)),
-                __xmax=x.filter(at_hi).min_by(ri.filter(at_hi)),
+                y.min().alias("__lo"),
+                y.max().alias("__hi"),
+                x.min_by(y).alias("__xlo"),
+                x.max_by(y).alias("__xhi"),
             )
             .collect(engine="streaming")
         )
-        # Reassemble into index order: each bucket contributes its argmin and
-        # argmax point, deduplicated where a bucket's extremum is a single row.
-        # `picked` comes out of a group_by, so its bucket order is arbitrary —
-        # look the extrema up by bucket rather than pairing them positionally.
+
+        if result.is_empty():
+            return empty
+
         pts = pl.concat(
             [
-                picked.select(i=pl.col("__imin"), xv=pl.col("__xmin"), yv=lo.gather(b)),
-                picked.select(i=pl.col("__imax"), xv=pl.col("__xmax"), yv=hi.gather(b)),
+                result.select(
+                    pl.col("__xlo").alias("__x"),
+                    pl.col("__lo").alias("__y"),
+                ),
+                result.select(
+                    pl.col("__xhi").alias("__x"),
+                    pl.col("__hi").alias("__y"),
+                ),
             ]
-        ).drop_nulls("i")
-        pts = pts.unique(subset=["i"], keep="first").sort("i")
-        # Field names must be the source column names, not "x"/"y" —
-        # `_to_update` looks them up by `self.x_col` / `self.y_col`.
+        ).drop_nulls("__x")
+        pts = pts.unique(subset=["__x", "__y"]).sort("__x")
+
         return pts.select(
             pl.struct(
                 **{
-                    x_col: pl.col("xv").alias(x_col),
-                    y_col: pl.col("yv").alias(y_col),
+                    x_col: pl.col("__x").alias(x_col),
+                    y_col: pl.col("__y").alias(y_col),
                 }
             )
             .implode()
@@ -570,9 +586,9 @@ class LinePlot(FlexTrace):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan the
-        minmax envelope switches to a streaming plan that computes the *same*
-        points (see ``_native_envelope_plan``). Output is identical either way
-        — there is a test that asserts it — so this only picks a formulation.
+        minmax envelope switches to a streaming plan (``_streaming_envelope_plan``)
+        that uses equal-width buckets in x with ``min_by``/``max_by``. The output
+        is a valid envelope but not bit-identical to the kernel on exact plateaus.
         """
         x_range = update_range.get("x")
 
@@ -615,7 +631,7 @@ class LinePlot(FlexTrace):
             return AggregationSpec(
                 expr=pl.lit(None).alias(self.uid),
                 uid=self.uid,
-                plan=_native_envelope_plan(
+                plan=_streaming_envelope_plan(
                     self.x_col,
                     self.y_col,
                     self.n_points,
@@ -625,6 +641,8 @@ class LinePlot(FlexTrace):
                         if x_range is not None
                         else None
                     ),
+                    x_range,
+                    schema,
                 ),
             )
 
