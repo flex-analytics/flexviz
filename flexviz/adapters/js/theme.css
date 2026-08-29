@@ -54,6 +54,7 @@
   --fv-font-size-sm:         10px; /* Compact control/button text size */
   --fv-font-size-base:       13px; /* Default toolbar button and UI text size */
   --fv-font-size-lg:         14px; /* Brand/header text size */
+  --fv-brand-image:          url("data:image/png;base64,{{WORDMARK_LIGHT}}"); /* Header wordmark artwork */
 
   /* Shape */
   --fv-radius:               7px; /* Default corner radius for shared buttons and control groups */
@@ -121,6 +122,9 @@
     /* Borders */
     --fv-border:             rgba(255, 245, 235, 0.12); /* Standard divider/border tone for layout chrome */
     --fv-border-btn:         rgba(255, 245, 235, 0.18); /* Default border for top-toolbar buttons */
+
+    /* Typography */
+    --fv-brand-image:        url("data:image/png;base64,{{WORDMARK_DARK}}"); /* Header wordmark artwork, light ink */
     --fv-border-soft:        rgba(255, 245, 235, 0.14); /* Soft UI borders such as buttons and bar separators */
     --fv-panel-border:       rgba(255, 245, 235, 0.12); /* Outer panel border color */
     --fv-panel-border-editing: rgba(255, 245, 235, 0.20); /* Outer panel border color in grid edit mode */

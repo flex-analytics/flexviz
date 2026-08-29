@@ -1619,3 +1619,38 @@ class TestThemeCss:
     def test_echarts_toolbar_css_uses_var_references(self, echarts_html):
         assert "var(--fv-accent)" in echarts_html
         assert "var(--fv-border)" in echarts_html
+
+
+class TestPageHead:
+    """A page with no icon link makes the browser probe /favicon.ico, which
+    404s on the HTTP-hosted pages: /view and an app mounted under a prefix."""
+
+    @pytest.fixture()
+    def plotly_html(self, two_fig_spec):
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        return PlotlyAdapter()._build_dashboard_html(
+            two_fig_spec, server_url="http://localhost:9999"
+        )
+
+    @pytest.fixture()
+    def echarts_html(self, two_fig_spec):
+        from flexviz.adapters.echarts_adapter import EChartsAdapter
+
+        return EChartsAdapter()._build_dashboard_html(
+            two_fig_spec, server_url="http://localhost:9999"
+        )
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_head_has_title_and_inline_icon(self, renderer, request):
+        html = request.getfixturevalue(renderer)
+        assert "<title>FlexViz</title>" in html
+        assert 'rel="icon" type="image/png" href="data:image/png;base64,' in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_artwork_is_substituted(self, renderer, request):
+        # An unsubstituted placeholder would ship a blank header wordmark.
+        html = request.getfixturevalue(renderer)
+        assert "{{WORDMARK" not in html
+        assert "--fv-brand-image:" in html
+        assert 'aria-label="FlexViz"' in html
