@@ -49,7 +49,11 @@ async function restoreDashboardFromSpec() {
       selections: savedSelections, force_update: true, figure_uid: figUid,
     });
   }
-  _fvAllFigUids.forEach(figUid => _fvRenderFigure(figUid));
+  // The init update above already renders every figure. Only a restored viewport
+  // needs a second pass, for the syncLayoutViewport inside _fvRenderFigure.
+  for (const [figUid, axRanges] of Object.entries(figViewports)) {
+    if (Object.keys(axRanges).length) _fvRenderFigure(figUid);
+  }
   window.fvRefreshSelectionSummary?.();
 }
 window.fvRestoreFromSpec = async function() {
