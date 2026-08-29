@@ -357,7 +357,8 @@ class AbstractAdapter(ABC):
         return (
             '<header id="fv-header">\n'
             '  <div id="fv-header-main">\n'
-            '    <span id="fv-brand" role="img" aria-label="FlexViz"></span>\n'
+            '    <a id="fv-brand" href="https://flexviz.tech" target="_blank"'
+            ' rel="noopener noreferrer" aria-label="FlexViz"></a>\n'
             '    <div id="fv-toolbar">\n' + inner + "    </div>\n"
             "  </div>\n"
             "</header>"

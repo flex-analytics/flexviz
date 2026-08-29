@@ -1654,3 +1654,12 @@ class TestPageHead:
         assert "{{WORDMARK" not in html
         assert "--fv-brand-image:" in html
         assert 'aria-label="FlexViz"' in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_links_out_without_losing_the_dashboard(self, renderer, request):
+        # target=_blank keeps the open dashboard alive; noopener is required
+        # with it, and the anchor must keep its link role for screen readers.
+        html = request.getfixturevalue(renderer)
+        assert '<a id="fv-brand" href="https://flexviz.tech" target="_blank"' in html
+        assert 'rel="noopener noreferrer"' in html
+        assert 'id="fv-brand"' in html and 'role="img"' not in html
