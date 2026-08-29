@@ -1622,8 +1622,7 @@ class TestThemeCss:
 
 
 class TestPageHead:
-    """A page with no icon link makes the browser probe /favicon.ico, which
-    404s on the HTTP-hosted pages: /view and an app mounted under a prefix."""
+    """Head content that stops the browser probing /favicon.ico."""
 
     @pytest.fixture()
     def plotly_html(self, two_fig_spec):
@@ -1657,9 +1656,17 @@ class TestPageHead:
 
     @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
     def test_brand_links_out_without_losing_the_dashboard(self, renderer, request):
-        # target=_blank keeps the open dashboard alive; noopener is required
-        # with it, and the anchor must keep its link role for screen readers.
+        # A same-tab jump would discard the dashboard's unsaved state.
         html = request.getfixturevalue(renderer)
-        assert '<a id="fv-brand" href="https://flexviz.tech" target="_blank"' in html
+        assert '<a id="fv-brand" href="https://flexviz.tech/' in html
         assert 'rel="noopener noreferrer"' in html
+        assert 'target="_blank"' in html
         assert 'id="fv-brand"' in html and 'role="img"' not in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_link_carries_campaign_tags(self, renderer, request):
+        # With no referrer, these tags are the only attribution signal.
+        html = request.getfixturevalue(renderer)
+        assert "utm_source=flexviz_dashboard&amp;" in html
+        # Umami buckets as Referral only on medium referral/app/link.
+        assert "utm_medium=app" in html

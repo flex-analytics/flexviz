@@ -138,11 +138,8 @@ def echarts_bundle_js() -> str:
 def page_head_html() -> str:
     """Return the page title and inline favicon link for a dashboard page.
 
-    A page with no icon link makes the browser probe ``GET /favicon.ico``.
-    That 404s on both HTTP-hosted pages: ``/view`` and an app mounted under a
-    prefix. Under a prefix the browser asks the host root, not the mount
-    point, so a route on this app cannot answer it. An inline icon stops the
-    probe. The notebook ``data:`` iframe has an opaque origin and never
-    probes; it gets the title and the icon anyway.
+    An inline icon stops the browser probing ``GET /favicon.ico``, which 404s
+    under ``/view`` and under a mount prefix, where the browser asks the host
+    root and not the mount point.
     """
     return _PAGE_HEAD_HTML

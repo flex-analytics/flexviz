@@ -98,6 +98,11 @@ class _DashboardMarkup(NamedTuple):
     head_html: str
 
 
+# ``noreferrer`` strips the origin, so these tags are the only attribution
+# signal. Umami buckets as Referral only on medium referral/app/link.
+_BRAND_URL = "https://flexviz.tech/?utm_source=flexviz_dashboard&amp;utm_medium=app"
+
+
 class AbstractAdapter(ABC):
     """Base class for all flexviz rendering adapters."""
 
@@ -357,7 +362,7 @@ class AbstractAdapter(ABC):
         return (
             '<header id="fv-header">\n'
             '  <div id="fv-header-main">\n'
-            '    <a id="fv-brand" href="https://flexviz.tech" target="_blank"'
+            f'    <a id="fv-brand" href="{_BRAND_URL}" target="_blank"'
             ' rel="noopener noreferrer" aria-label="FlexViz"></a>\n'
             '    <div id="fv-toolbar">\n' + inner + "    </div>\n"
             "  </div>\n"
