@@ -84,10 +84,20 @@ rows, so the chart stays interactive at full size. And your interactions
 travel back as a spec, not as pixels: the agent reads your exact viewport and
 selections.
 
-Install the packaged agent skill into your project:
+Install the packaged agent skill into your project, or under `$HOME` for
+every project:
 
 ```bash
 flexviz skill install
+flexviz skill install --user
+```
+
+Claude Code can install the skill as a plugin instead, before the package is
+in the project:
+
+```
+/plugin marketplace add flex-analytics/flexviz
+/plugin install flexviz@flex-analytics
 ```
 
 Then ask your agent to explore `readings.parquet`. It reads the schema, serves
