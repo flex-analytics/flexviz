@@ -1,0 +1,14 @@
+{
+  "name": "flexviz",
+  "displayName": "FlexViz",
+  "description": "Explore large local Parquet/CSV files as live interactive dashboards, and read back the zooms and selections the human makes.",
+  "author": {
+    "name": "Flex Analytics",
+    "url": "https://github.com/flex-analytics"
+  },
+  "homepage": "https://flexviz.tech",
+  "repository": "https://github.com/flex-analytics/flexviz",
+  "license": "Apache-2.0",
+  "keywords": ["data", "visualization", "parquet", "polars", "dashboard", "cross-filter"],
+  "skills": "./flexviz/skills/"
+}

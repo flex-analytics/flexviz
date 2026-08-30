@@ -1,6 +1,7 @@
 """CLI and share_url tests: URL round-trip, file registration, error paths."""
 
 import json
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -214,3 +215,16 @@ def test_serve_fails_fast_on_busy_port(tmp_path):
         proc = _run_module("serve", str(path), "--port", str(port))
         assert proc.returncode != 0
         assert "cannot bind" in proc.stderr
+
+
+def test_skill_install_user_scope(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    main(["skill", "install", "--user"])
+    for skill in _skill_paths(tmp_path):
+        assert skill.exists(), skill
+    assert capsys.readouterr().out.count("installed") == 2
+
+
+def test_skill_install_scope_flags_are_exclusive():
+    with pytest.raises(SystemExit):
+        main(["skill", "install", "--user", "--dir", "."])
