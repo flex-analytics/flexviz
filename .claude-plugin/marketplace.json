@@ -1,0 +1,15 @@
+{
+  "name": "flex-analytics",
+  "owner": {
+    "name": "Flex Analytics",
+    "url": "https://github.com/flex-analytics"
+  },
+  "description": "FlexViz plugins for coding agents.",
+  "plugins": [
+    {
+      "name": "flexviz",
+      "source": "./",
+      "description": "Explore large local Parquet/CSV files as live interactive dashboards, and read back the zooms and selections the human makes."
+    }
+  ]
+}

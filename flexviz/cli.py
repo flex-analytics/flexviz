@@ -122,8 +122,10 @@ _SKILL_TARGET_DIRS = (".agents/skills", ".claude/skills")
 def _cmd_skill(args: argparse.Namespace) -> None:
     """Copy the packaged agent skill into a project's skill directories.
 
-    ``.agents/skills`` is the cross-agent repository convention (Codex and
-    friends); ``.claude/skills`` is Claude Code's project location.
+    ``.agents/skills`` is the cross-agent convention (Codex and friends);
+    ``.claude/skills`` is Claude Code's location. Both names hold project
+    skills under a project root and, with ``--user``, personal skills under
+    ``$HOME`` for every project.
     A destination file with different content is refused unless ``--force``
     is given, so user customizations survive reinstalls.
     """
@@ -132,7 +134,7 @@ def _cmd_skill(args: argparse.Namespace) -> None:
     content = (files("flexviz") / "skills" / _SKILL_NAME / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    base = Path(args.dir)
+    base = Path.home() if args.user else Path(args.dir)
     refused: list[Path] = []
     for target in _SKILL_TARGET_DIRS:
         dest = base / target / _SKILL_NAME / "SKILL.md"
@@ -207,10 +209,16 @@ def main(argv: list[str] | None = None) -> None:
 
     skill = sub.add_parser("skill", help="manage the flexviz-explore agent skill")
     skill.add_argument("action", choices=["install"])
-    skill.add_argument(
+    scope = skill.add_mutually_exclusive_group()
+    scope.add_argument(
         "--dir",
         default=".",
         help="project root to install into (default: current directory)",
+    )
+    scope.add_argument(
+        "--user",
+        action="store_true",
+        help="install into $HOME instead, for use in every project",
     )
     skill.add_argument(
         "--force",

@@ -104,7 +104,16 @@ The wheel ships an [Agent Skill](https://agentskills.io) that teaches your
 agent the workflow:
 
 ```bash
-flexviz skill install   # writes SKILL.md into .agents/skills/ and .claude/skills/
+flexviz skill install          # into .agents/skills/ and .claude/skills/
+flexviz skill install --user   # or once under $HOME, for every project
+```
+
+Claude Code can install the skill as a plugin instead, before the package is
+in the project:
+
+```
+/plugin marketplace add flex-analytics/flexviz
+/plugin install flexviz@flex-analytics
 ```
 
 Then ask it to explore `readings.parquet`. It reads the schema, serves the

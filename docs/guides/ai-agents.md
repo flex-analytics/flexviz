@@ -23,6 +23,28 @@ This writes `SKILL.md` into `.agents/skills/` (the cross-agent convention,
 read by Codex and others) and `.claude/skills/` (Claude Code). After that,
 asking your agent to "explore readings.parquet" triggers the workflow below.
 
+To install the skill once for every project, use `--user`:
+
+```bash
+flexviz skill install --user
+```
+
+This writes the same two directories under your home directory. Agents read
+personal skills in all projects, so you do not repeat the install. An
+existing file with different content is kept unless you add `--force`.
+
+## Install as a Claude Code plugin
+
+Claude Code can install the skill from the FlexViz marketplace, before the
+package is in the project:
+
+```
+/plugin marketplace add flex-analytics/flexviz
+/plugin install flexviz@flex-analytics
+```
+
+The skill then asks to install the `flexviz` package when a task needs it.
+
 ## What the agent does
 
 ```bash

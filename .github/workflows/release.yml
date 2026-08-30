@@ -54,7 +54,7 @@ jobs:
       - name: Build sdist and wheel
         run: uv build --out-dir dist
 
-      - name: Artifacts match the tag
+      - name: Artifacts and the plugin manifest match the tag
         run: |
           version="${GITHUB_REF_NAME#v}"
           for expected in "dist/flexviz-${version}.tar.gz" "dist/flexviz-${version}-py3-none-any.whl"; do
@@ -63,6 +63,13 @@ jobs:
               exit 1
             fi
           done
+          # pyproject.toml owns the version. This keeps the copy the Claude Code
+          # marketplace serves from drifting behind it.
+          plugin=$(jq -r .version .claude-plugin/plugin.json)
+          if [ "$plugin" != "$version" ]; then
+            echo "::error::.claude-plugin/plugin.json says ${plugin}, tag says ${version}"
+            exit 1
+          fi
 
       # The last automated thing standing between the private working notes and
       # a permanent public upload. An allowlist, so a new private file at the

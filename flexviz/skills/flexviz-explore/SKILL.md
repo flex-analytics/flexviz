@@ -47,7 +47,9 @@ flexviz schema data.parquet
 ```
 
 If `flexviz` is not on PATH, look for a project venv. Run `.venv/bin/flexviz`
-or `uv run flexviz`, and keep that form in every command that follows.
+or `uv run flexviz`, and keep that form in every command that follows. If the
+package is absent, ask the human before you install it (`uv add flexviz`, or
+`pip install flexviz`).
 
 Stable JSON: file, source name, columns with dtypes. Pick an x column
 (usually time) and the numeric/categorical columns worth plotting. A
