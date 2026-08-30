@@ -2,7 +2,7 @@
 .benchmarks/
 .playwright-mcp/
 .playwright-cli/
-.agents/
+.agents/skills/
 .claude/
 .DS_Store
 TODO*

@@ -1,0 +1,28 @@
+{
+  "name": "flexviz",
+  "version": "0.1.0b2",
+  "description": "Explore large local Parquet/CSV files as live interactive dashboards, and read back the zooms and selections the human makes.",
+  "author": {
+    "name": "Flex Analytics",
+    "url": "https://github.com/flex-analytics"
+  },
+  "homepage": "https://flexviz.tech",
+  "repository": "https://github.com/flex-analytics/flexviz",
+  "license": "Apache-2.0",
+  "keywords": ["data", "visualization", "parquet", "polars", "dashboard", "cross-filter"],
+  "skills": "./flexviz/skills/",
+  "interface": {
+    "displayName": "FlexViz",
+    "shortDescription": "Interactive dashboards over large local datasets",
+    "longDescription": "Serve a Parquet or CSV file as a live cross-filter dashboard the human explores in their browser. The data stays in a lazy Polars query engine; only bounded aggregates reach the browser, and the agent reads back the exact viewport and selections.",
+    "developerName": "Flex Analytics",
+    "category": "Productivity",
+    "capabilities": ["Instructions"],
+    "websiteURL": "https://flexviz.tech",
+    "defaultPrompt": [
+      "Explore readings.parquet as an interactive dashboard.",
+      "What did I just select on the dashboard?",
+      "Build a cross-filter view of this dataset."
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "flex-analytics",
+  "interface": {
+    "displayName": "Flex Analytics"
+  },
+  "plugins": [
+    {
+      "name": "flexviz",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

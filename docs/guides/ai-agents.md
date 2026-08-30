@@ -33,17 +33,28 @@ This writes the same two directories under your home directory. Agents read
 personal skills in all projects, so you do not repeat the install. An
 existing file with different content is kept unless you add `--force`.
 
-## Install as a Claude Code plugin
+## Install as a plugin
 
-Claude Code can install the skill from the FlexViz marketplace, before the
-package is in the project:
+Claude Code and Codex both read the FlexViz plugin marketplace. A plugin
+install gives the agent the skill before the package is in the project.
+
+In Claude Code:
 
 ```
 /plugin marketplace add flex-analytics/flexviz
 /plugin install flexviz@flex-analytics
 ```
 
-The skill then asks to install the `flexviz` package when a task needs it.
+In Codex:
+
+```bash
+codex plugin marketplace add flex-analytics/flexviz
+codex plugin add flexviz@flex-analytics
+```
+
+Both read the same `SKILL.md` that the wheel ships, so the three install
+paths give the same skill. The skill then asks to install the `flexviz`
+package when a task needs it.
 
 ## What the agent does
 

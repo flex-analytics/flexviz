@@ -92,12 +92,17 @@ flexviz skill install
 flexviz skill install --user
 ```
 
-Claude Code can install the skill as a plugin instead, before the package is
-in the project:
+Claude Code and Codex can install the skill as a plugin instead, before the
+package is in the project:
 
 ```
 /plugin marketplace add flex-analytics/flexviz
 /plugin install flexviz@flex-analytics
+```
+
+```bash
+codex plugin marketplace add flex-analytics/flexviz
+codex plugin add flexviz@flex-analytics
 ```
 
 Then ask your agent to explore `readings.parquet`. It reads the schema, serves
