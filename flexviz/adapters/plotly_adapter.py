@@ -28,6 +28,7 @@ from .base import (
 )
 from .runtime import (
     gridstack_bridge_js,
+    page_head_html,
     plotly_bundle_js,
     shared_runtime_js,
     theme_css,
@@ -522,6 +523,7 @@ class PlotlyAdapter(AbstractAdapter):
 <html>
 <head>
   <meta charset="utf-8">
+  {page_head_html()}
   <script src="https://cdn.plot.ly/plotly-3.0.0.min.js"></script>
   {dashboard.head_html}
   <style>

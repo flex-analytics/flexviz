@@ -19,21 +19,10 @@
       min-width: 0;
     }
     #fv-brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
       flex: 0 0 auto;
-      font-weight: bold;
-      font-size: var(--fv-font-size-lg);
-      letter-spacing: 0.5px;
-      color: var(--fv-text);
-    }
-    #fv-brand::before {
-      content: "";
-      width: 25px;
+      width: 95px;
       height: 25px;
-      /* Encode the flexviz logo here as base64 */
-      background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAMKADAAQAAAABAAAAMAAAAADbN2wMAAABKklEQVRoBe1aSw6EIAwdyVyAlZn7H8644ggaJlPS6aZtoIGaulGk1PcpYKLbixw554vcWqpZStkwoL/G6uABOCbRCGDw53lA7FLnff80PEDiSwDArwq8of5dAJFKIgF4GuShXbEnAOpF/YoXY20EgIi3cxCY7Vg4MNuBtxYArMHacdJ4vMJIxkQJSVSyjAkHLNWV5A4HJCpZxrh3QL0PcGpq13EuH9fv3oEgwFls3T98DmjelUbMlygh6xLh8ocDnELW/eGAtcJcfvcODN8HRqztnOq4fzgBnFxyTTc+rQDuSygISMrEMmb6HNDWPBXDfQmpHehVjCrY23bvQBDoLYHe8c9xgG7pvcpYjsdYE3zxtnygVe6K/Rm/GoBCXr7a46ppDnghgcFXzDe8wEdMEVmA2AAAAABJRU5ErkJggg==") center / contain no-repeat;
+      background: var(--fv-brand-image) left center / contain no-repeat;
     }
     #fv-toolbar {
       display: flex;

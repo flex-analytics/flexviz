@@ -687,6 +687,61 @@ def _layer_traces(rendered: list[dict], layer: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _dashboard_url_saved_viewport(
+    port: int, renderer: str = "plotly", x_range: tuple[float, float] = (120.0, 260.0)
+) -> tuple[str, tuple[float, float]]:
+    """A one-figure dashboard whose spec carries a saved x viewport.
+
+    Returns (url, x_range) so a test can assert the range was applied.
+    """
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import AxisRange, encode_spec
+
+    df = pl.DataFrame({"ts": list(range(500)), "val": [float(i) for i in range(500)]})
+    register_source("_browser_test", df)
+
+    dash = Dashboard(df)
+    f = dash.add_figure(title="Fig0")
+    f.add_line(x="ts", y="val", name="L0", n_points=200)
+    spec = dash.to_spec(source_name="_browser_test")
+    fig_uid = spec.figures[0].uid
+    spec.state.viewport[f"{fig_uid}/x"] = AxisRange(min=x_range[0], max=x_range[1])
+
+    encoded = encode_spec(spec)
+    return (
+        f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}",
+        x_range,
+    )
+
+
+# Counts every Plotly render that carries data. Installed before any page script
+# runs, via defineProperty on window.Plotly, because the adapter's own functions
+# are closure-scoped and cannot be wrapped from the outside.
+_COUNT_RENDERS_JS = """
+window.__renders = [];
+(function () {
+  var wrap = function (plotly) {
+    ['react', 'newPlot'].forEach(function (m) {
+      var orig = plotly[m].bind(plotly);
+      plotly[m] = function (gd, data) {
+        var pts = Array.isArray(data) ? data.reduce(function (a, t) {
+          return a + ((t && t.x && t.x.length) || 0); }, 0) : 0;
+        if (pts > 0) window.__renders.push(m);
+        return orig.apply(this, arguments);
+      };
+    });
+  };
+  var held;
+  Object.defineProperty(window, 'Plotly', {
+    configurable: true,
+    get: function () { return held; },
+    set: function (v) { held = v; if (v && v.react) wrap(v); }
+  });
+})();
+"""
+
+
 @pytest.fixture(scope="module")
 def server_port() -> Generator[int, None, None]:
     port = _free_port()
@@ -732,6 +787,59 @@ class TestPlotlyBrowser:
         page.wait_for_selector(".js-plotly-plot", timeout=15_000)
         charts = page.query_selector_all(".js-plotly-plot")
         assert len(charts) >= 2, f"Expected >=2 Plotly charts, found {len(charts)}"
+
+    def test_open_renders_each_figure_once(self, page: Page, server_port: int):
+        """Opening a dashboard must draw each figure once, not twice.
+
+        restoreDashboardFromSpec awaits an 'init' update, and delta.js marks EVERY
+        figure dirty for 'init' -- so the figures are already drawn when it returns.
+        A second unconditional pass over all of them redraws identical data inside
+        the window a user waits on.
+        """
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        page.add_init_script(_COUNT_RENDERS_JS)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        renders = page.evaluate("() => window.__renders")
+        assert (
+            len(renders) == 2
+        ), f"expected one data render per figure, got {len(renders)}: {renders}"
+
+    def test_saved_viewport_is_applied_on_open(self, page: Page, server_port: int):
+        """A saved viewport must reach Plotly's axes in one request and one render.
+
+        The request carries the complete spec, so the 'init' update already
+        aggregates inside state.viewport and renders every figure with
+        syncLayoutViewport. Replaying the viewport as its own event, or sweeping
+        the figures a second time, repeats that work inside the window a user
+        waits on.
+        """
+        url, x_range = _dashboard_url_saved_viewport(server_port, "plotly")
+        events: list[str] = []
+        page.on(
+            "request",
+            lambda r: (
+                events.append(r.post_data_json["event"]["type"])
+                if r.url.endswith("/dashboard/update")
+                else None
+            ),
+        )
+        page.add_init_script(_COUNT_RENDERS_JS)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        applied = page.evaluate("""() => {
+                const gd = document.querySelector('.js-plotly-plot');
+                return gd && gd._fullLayout && gd._fullLayout.xaxis
+                    ? gd._fullLayout.xaxis.range : null;
+            }""")
+        assert applied is not None, "no Plotly x-axis found"
+        assert applied[0] == pytest.approx(x_range[0], rel=1e-6), applied
+        assert applied[1] == pytest.approx(x_range[1], rel=1e-6), applied
+        assert events == ["init"], events
+        renders = page.evaluate("() => window.__renders")
+        assert len(renders) == 1, f"expected one data render, got {renders}"
 
     def test_toolbar_buttons_present(self, page: Page, server_port: int):
         url = _dashboard_url(server_port, "plotly")

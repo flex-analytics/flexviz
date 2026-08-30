@@ -54,6 +54,7 @@
   --fv-font-size-sm:         10px; /* Compact control/button text size */
   --fv-font-size-base:       13px; /* Default toolbar button and UI text size */
   --fv-font-size-lg:         14px; /* Brand/header text size */
+  --fv-brand-image:          url("data:image/png;base64,{{WORDMARK_LIGHT}}"); /* Header wordmark artwork */
 
   /* Shape */
   --fv-radius:               7px; /* Default corner radius for shared buttons and control groups */
@@ -142,6 +143,9 @@
     --fv-shadow-xs:          0 1px 2px rgba(0, 0, 0, 0.24); /* Extra-light shadow available for compact surfaces */
     --fv-panel-shadow:       none; /* Shadow applied to each figure panel in normal mode */
     --fv-panel-shadow-editing: none; /* Shadow applied to each figure panel while grid editing is enabled */
+
+    /* Typography */
+    --fv-brand-image:        url("data:image/png;base64,{{WORDMARK_DARK}}"); /* Header wordmark artwork, light ink */
 
     /* Toolbar */
     --fv-panel-bar-bg:       rgba(36, 32, 28, 0.92); /* Dark-mode-only control bar surface */

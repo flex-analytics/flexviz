@@ -39,6 +39,7 @@ from .base import (
 from .runtime import (
     echarts_bundle_js,
     gridstack_bridge_js,
+    page_head_html,
     shared_runtime_js,
     theme_css,
 )
@@ -574,6 +575,7 @@ class EChartsAdapter(AbstractAdapter):
 <html>
 <head>
   <meta charset="utf-8">
+  {page_head_html()}
   <script src="{_ECHARTS_JS}"></script>
   {dashboard.head_html}
   <style>

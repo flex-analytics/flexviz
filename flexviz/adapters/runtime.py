@@ -22,6 +22,7 @@ runtime is included:
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 _JS_DIR = Path(__file__).parent / "js"
@@ -60,6 +61,11 @@ def _read(rel: str) -> str:
     return (_JS_DIR / rel).read_text(encoding="utf-8")
 
 
+def _b64(rel: str) -> str:
+    """Return an asset next to this module as base64, for a ``data:`` URI."""
+    return base64.b64encode((Path(__file__).parent / rel).read_bytes()).decode("ascii")
+
+
 def _concat(sources: list[str]) -> str:
     parts: list[str] = []
     for rel in sources:
@@ -69,12 +75,21 @@ def _concat(sources: list[str]) -> str:
 
 
 # Assembled once at import; the accessors below hand back these cached strings.
-_THEME_CSS = _read("theme.css")
+_THEME_CSS = (
+    _read("theme.css")
+    .replace("{{WORDMARK_LIGHT}}", _b64("wordmark-light.png"))
+    .replace("{{WORDMARK_DARK}}", _b64("wordmark-dark.png"))
+)
 _TOOLBAR_CSS = _read("toolbar.css")
 _GRIDSTACK_BRIDGE_JS = _read("gridstack-bridge.js")
 _SHARED_RUNTIME_JS = _concat(_SHARED_SOURCES)
 _PLOTLY_BUNDLE_JS = _concat(_PLOTLY_SOURCES)
 _ECHARTS_BUNDLE_JS = _concat(_ECHARTS_SOURCES)
+_FAVICON_B64 = _b64("favicon.png")
+_PAGE_HEAD_HTML = (
+    "<title>FlexViz</title>\n"
+    f'  <link rel="icon" type="image/png" href="data:image/png;base64,{_FAVICON_B64}">'
+)
 
 
 def theme_css() -> str:
@@ -118,3 +133,13 @@ def plotly_bundle_js() -> str:
 def echarts_bundle_js() -> str:
     """Return the ECharts-specific JS bundle."""
     return _ECHARTS_BUNDLE_JS
+
+
+def page_head_html() -> str:
+    """Return the page title and inline favicon link for a dashboard page.
+
+    An inline icon stops the browser probing ``GET /favicon.ico``, which 404s
+    under ``/view`` and under a mount prefix, where the browser asks the host
+    root and not the mount point.
+    """
+    return _PAGE_HEAD_HTML

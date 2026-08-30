@@ -1619,3 +1619,54 @@ class TestThemeCss:
     def test_echarts_toolbar_css_uses_var_references(self, echarts_html):
         assert "var(--fv-accent)" in echarts_html
         assert "var(--fv-border)" in echarts_html
+
+
+class TestPageHead:
+    """Head content that stops the browser probing /favicon.ico."""
+
+    @pytest.fixture()
+    def plotly_html(self, two_fig_spec):
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        return PlotlyAdapter()._build_dashboard_html(
+            two_fig_spec, server_url="http://localhost:9999"
+        )
+
+    @pytest.fixture()
+    def echarts_html(self, two_fig_spec):
+        from flexviz.adapters.echarts_adapter import EChartsAdapter
+
+        return EChartsAdapter()._build_dashboard_html(
+            two_fig_spec, server_url="http://localhost:9999"
+        )
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_head_has_title_and_inline_icon(self, renderer, request):
+        html = request.getfixturevalue(renderer)
+        assert "<title>FlexViz</title>" in html
+        assert 'rel="icon" type="image/png" href="data:image/png;base64,' in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_artwork_is_substituted(self, renderer, request):
+        # An unsubstituted placeholder would ship a blank header wordmark.
+        html = request.getfixturevalue(renderer)
+        assert "{{WORDMARK" not in html
+        assert "--fv-brand-image:" in html
+        assert 'aria-label="FlexViz"' in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_links_out_without_losing_the_dashboard(self, renderer, request):
+        # A same-tab jump would discard the dashboard's unsaved state.
+        html = request.getfixturevalue(renderer)
+        assert '<a id="fv-brand" href="https://flexviz.tech/' in html
+        assert 'rel="noopener noreferrer"' in html
+        assert 'target="_blank"' in html
+        assert 'id="fv-brand"' in html and 'role="img"' not in html
+
+    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
+    def test_brand_link_carries_campaign_tags(self, renderer, request):
+        # With no referrer, these tags are the only attribution signal.
+        html = request.getfixturevalue(renderer)
+        assert "utm_source=flexviz_dashboard&amp;" in html
+        # Umami buckets as Referral only on medium referral/app/link.
+        assert "utm_medium=app" in html
