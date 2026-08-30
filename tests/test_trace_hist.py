@@ -9,6 +9,8 @@ import polars as pl
 import pytest
 
 from flexviz.LF import LFQueryBuilder
+from flexviz.engine import FlexEngine, TraceInfo
+from flexviz.events import InteractionEvent
 from flexviz.spec import TraceSpec
 from flexviz.trace.hist import Histogram
 
@@ -58,6 +60,63 @@ class TestHistogramBinCount:
     def test_bin_count_30(self, small_df: pl.DataFrame):
         update = _aggregate_hist(small_df, bins=30)
         assert len(update["x"]) == 30
+
+
+class TestHistogramScanSource:
+    @staticmethod
+    def _update(source: pl.DataFrame | pl.LazyFrame, group_by: str | None = None):
+        trace = Histogram(x="val", bins=7, group_by=group_by)
+        engine = FlexEngine(
+            backend_lf=LFQueryBuilder(source), scalable_traces={trace.uid: trace}
+        )
+        return engine.process(
+            InteractionEvent(type="init", force_update=True),
+            [
+                TraceInfo(
+                    uid=trace.uid,
+                    axes=("x", "y"),
+                    trace_type="histogram",
+                    figure_uid="figure",
+                )
+            ],
+        )[0]
+
+    def test_scan_matches_resident_for_ungrouped_and_grouped(self, tmp_path):
+        df = pl.DataFrame(
+            {
+                "val": [
+                    None
+                    if i % 23 == 0
+                    else float("nan")
+                    if i % 19 == 0
+                    else float(i % 31)
+                    for i in range(1_000)
+                ],
+                "group": ["a" if i % 2 else "b" for i in range(1_000)],
+            }
+        )
+        path = tmp_path / "hist.parquet"
+        df.write_parquet(path)
+
+        resident = self._update(df)
+        scanned = self._update(pl.scan_parquet(path))
+        assert scanned.updates == resident.updates
+
+        resident = self._update(df, group_by="group")
+        scanned = self._update(pl.scan_parquet(path), group_by="group")
+        resident_children = {
+            c.group_value_key: c.updates for c in resident.group_results or []
+        }
+        scanned_children = {
+            c.group_value_key: c.updates for c in scanned.group_results or []
+        }
+        assert scanned_children == resident_children
+
+    def test_scan_handles_an_infinite_domain(self, tmp_path):
+        path = tmp_path / "infinite.parquet"
+        pl.DataFrame({"val": [float("inf"), float("inf")]}).write_parquet(path)
+        scanned = self._update(pl.scan_parquet(path))
+        assert sum(scanned.updates["y"]) == 2
 
 
 # ---- viewport filter -------------------------------------------------------
@@ -150,6 +209,10 @@ class TestHistogramValidation:
     def test_invalid_histnorm(self):
         with pytest.raises(ValueError, match="histnorm"):
             Histogram(x="a", histnorm="invalid")
+
+    def test_zero_bins_raises(self):
+        with pytest.raises(ValueError, match="bins"):
+            Histogram(x="a", bins=0)
 
 
 # ---- from_trace_spec round-trip --------------------------------------------
