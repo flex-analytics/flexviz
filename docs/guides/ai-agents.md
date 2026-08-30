@@ -32,7 +32,8 @@ flexviz serve readings.parquet --cache --port 8077   # background server
 
 Each file becomes a source named by its stem. `--cache` enables cross-filter
 cubes and live brushing for files that do not change while serving. The
-server is ready when `GET /sources` answers.
+server is ready when `GET /sources` names your source. A bare "it answered"
+check is not enough, because another server can already own the port.
 
 The agent then builds a dashboard spec and mints a URL without opening a
 browser:
