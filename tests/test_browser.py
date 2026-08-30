@@ -803,9 +803,9 @@ class TestPlotlyBrowser:
         _wait_for_init(page, "plotly")
 
         renders = page.evaluate("() => window.__renders")
-        assert len(renders) == 2, (
-            f"expected one data render per figure, got {len(renders)}: {renders}"
-        )
+        assert (
+            len(renders) == 2
+        ), f"expected one data render per figure, got {len(renders)}: {renders}"
 
     def test_saved_viewport_is_applied_on_open(self, page: Page, server_port: int):
         """A restored viewport must reach Plotly's axes.
@@ -818,13 +818,11 @@ class TestPlotlyBrowser:
         page.goto(url)
         _wait_for_init(page, "plotly")
 
-        applied = page.evaluate(
-            """() => {
+        applied = page.evaluate("""() => {
                 const gd = document.querySelector('.js-plotly-plot');
                 return gd && gd._fullLayout && gd._fullLayout.xaxis
                     ? gd._fullLayout.xaxis.range : null;
-            }"""
-        )
+            }""")
         assert applied is not None, "no Plotly x-axis found"
         assert applied[0] == pytest.approx(x_range[0], rel=1e-6), applied
         assert applied[1] == pytest.approx(x_range[1], rel=1e-6), applied

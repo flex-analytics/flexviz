@@ -190,7 +190,7 @@ def _streaming_envelope_plan(
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
 
-        x, y = pl.col(x_col), pl.col(y_col)
+        y = pl.col(y_col)
         result = (
             src.group_by(
                 # True division lands x_hi exactly on n_out; fold that lone
@@ -201,10 +201,8 @@ def _streaming_envelope_plan(
                 .alias("__b")
             )
             .agg(
-                y.min().alias("__lo"),
-                y.max().alias("__hi"),
-                x.min_by(y).alias("__xlo"),
-                x.max_by(y).alias("__xhi"),
+                pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
+                pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
             )
             .collect(engine="streaming")
         )
@@ -215,16 +213,16 @@ def _streaming_envelope_plan(
         pts = pl.concat(
             [
                 result.select(
-                    pl.col("__xlo").alias("__x"),
-                    pl.col("__lo").alias("__y"),
+                    pl.col(f"__lo_{x_col}").alias("__x"),
+                    pl.col(f"__lo_{y_col}").alias("__y"),
                 ),
                 result.select(
-                    pl.col("__xhi").alias("__x"),
-                    pl.col("__hi").alias("__y"),
+                    pl.col(f"__hi_{x_col}").alias("__x"),
+                    pl.col(f"__hi_{y_col}").alias("__y"),
                 ),
             ]
         ).drop_nulls("__x")
-        pts = pts.unique(subset=["__x", "__y"]).sort("__x")
+        pts = pts.unique().sort("__x")
 
         return pts.select(
             pl.struct(
