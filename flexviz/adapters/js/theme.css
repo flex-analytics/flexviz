@@ -122,9 +122,6 @@
     /* Borders */
     --fv-border:             rgba(255, 245, 235, 0.12); /* Standard divider/border tone for layout chrome */
     --fv-border-btn:         rgba(255, 245, 235, 0.18); /* Default border for top-toolbar buttons */
-
-    /* Typography */
-    --fv-brand-image:        url("data:image/png;base64,{{WORDMARK_DARK}}"); /* Header wordmark artwork, light ink */
     --fv-border-soft:        rgba(255, 245, 235, 0.14); /* Soft UI borders such as buttons and bar separators */
     --fv-panel-border:       rgba(255, 245, 235, 0.12); /* Outer panel border color */
     --fv-panel-border-editing: rgba(255, 245, 235, 0.20); /* Outer panel border color in grid edit mode */
@@ -146,6 +143,9 @@
     --fv-shadow-xs:          0 1px 2px rgba(0, 0, 0, 0.24); /* Extra-light shadow available for compact surfaces */
     --fv-panel-shadow:       none; /* Shadow applied to each figure panel in normal mode */
     --fv-panel-shadow-editing: none; /* Shadow applied to each figure panel while grid editing is enabled */
+
+    /* Typography */
+    --fv-brand-image:        url("data:image/png;base64,{{WORDMARK_DARK}}"); /* Header wordmark artwork, light ink */
 
     /* Toolbar */
     --fv-panel-bar-bg:       rgba(36, 32, 28, 0.92); /* Dark-mode-only control bar surface */
