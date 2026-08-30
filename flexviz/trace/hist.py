@@ -57,6 +57,92 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 _HIST_BIN_EPSILON: float = 1e-10
 
 
+def _streaming_bin_expr(
+    value: pl.Expr, lo: float | pl.Expr, hi: float | pl.Expr, bins: int, alias: str
+) -> pl.Expr:
+    """Match ``fixed_hist`` without materializing the input column."""
+    lo_expr = pl.lit(lo) if isinstance(lo, (int, float)) else lo
+    hi_expr = pl.lit(hi) if isinstance(hi, (int, float)) else hi
+    scale = pl.when(hi_expr > lo_expr).then(bins / (hi_expr - lo_expr)).otherwise(0.0)
+    binned = (
+        ((value.cast(pl.Float64) - lo_expr) * scale + 1e-9)
+        .floor()
+        .fill_nan(0)
+        .clip(0, bins - 1)
+        .cast(pl.Int32)
+    )
+    return (
+        pl.when(value.is_null() | value.is_nan())
+        .then(None)
+        .otherwise(binned)
+        .alias(alias)
+    )
+
+
+def _streaming_hist_plan(
+    data_col: str,
+    bins: int,
+    uid: str,
+    axis_range: Any,
+    temporal_dtype: pl.DataType | None,
+    domain_cols: Sequence[str],
+    filter_expr: pl.Expr | None,
+):
+    """Stream a scan-source histogram as a bounded bin-count group-by."""
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        if axis_range is not None:
+            if temporal_dtype is not None:
+                lo = pl.select(
+                    _physical_bound_expr(axis_range[0], temporal_dtype)
+                ).item()
+                hi = (
+                    pl.select(
+                        _physical_bound_expr(axis_range[1], temporal_dtype)
+                    ).item()
+                    + _HIST_BIN_EPSILON
+                )
+            else:
+                lo, hi = float(axis_range[0]), float(axis_range[1]) + _HIST_BIN_EPSILON
+        else:
+            assert stats_row is not None
+            los = [stats_row[f"__hist_lo_{col}__"][0] for col in domain_cols]
+            his = [stats_row[f"__hist_hi_{col}__"][0] for col in domain_cols]
+            lo = min((float(v) for v in los if v is not None), default=0.0)
+            hi = (
+                max((float(v) for v in his if v is not None), default=1.0)
+                + _HIST_BIN_EPSILON
+            )
+
+        value = (
+            pl.col(data_col).to_physical()
+            if temporal_dtype is not None
+            else pl.col(data_col)
+        )
+        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
+        rows = (
+            src.group_by(_streaming_bin_expr(value, lo, hi, bins, "__hist_bin"))
+            .agg(pl.len().alias("__hist_count"))
+            .collect(engine="streaming")
+        )
+        counts = [0] * bins
+        for bin_index, count in rows.iter_rows():
+            if bin_index is not None:
+                counts[bin_index] = count
+        step = (hi - lo) / bins if hi > lo else 0.0
+        return pl.DataFrame(
+            {
+                "breakpoint": [lo + (i + 1.0) * step for i in range(bins)],
+                "count": counts,
+            },
+            schema={"breakpoint": pl.Float64, "count": pl.UInt32},
+        ).select(pl.struct(pl.all()).implode().alias(uid))
+
+    return run
+
+
 class Histogram(FlexTrace):
     """Scalable 1-D histogram trace backed by a Polars LazyFrame.
 
@@ -100,6 +186,8 @@ class Histogram(FlexTrace):
     ) -> None:
         if (x is None) == (y is None):
             raise ValueError("Provide either x or y, not both (or neither).")
+        if bins < 1:
+            raise ValueError("bins must be greater than zero.")
         if histnorm not in _HISTNORM_OPTIONS:
             raise ValueError(f"histnorm must be one of {_HISTNORM_OPTIONS}.")
         group_cols = (
@@ -240,6 +328,7 @@ class Histogram(FlexTrace):
         schema: pl.Schema | None = None,
         *,
         histogram_domain_cols: Sequence[str] | None = None,
+        scan_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 
@@ -282,19 +371,47 @@ class Histogram(FlexTrace):
                 axis_range, histogram_domain_cols, temporal
             )
 
-            hist_expr = (
-                data_col_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
-                .implode()
-                .alias(self.uid)
-            )
             batch_key = (
                 self.prop_key,
                 self.data_col,
+                self.bins,
                 (
                     tuple(update_range.get(self.prop_key))
                     if update_range.get(self.prop_key) is not None
                     else None
                 ),
+            )
+            if scan_source:
+                bin_col = "__hist_bin"
+                return GroupedAggregationSpec(
+                    uid=self.uid,
+                    group_cols=group_by_cols,
+                    sort_cols=group_by_cols,
+                    group_by_exprs=(
+                        _streaming_bin_expr(
+                            data_col_expr, lo_expr, hi_expr, self.bins, bin_col
+                        ),
+                    ),
+                    agg_exprs=(
+                        pl.len().alias(self.uid),
+                        lo_expr.first().alias(f"__hist_lo_{self.uid}"),
+                        hi_expr.first().alias(f"__hist_hi_{self.uid}"),
+                    ),
+                    pre_group_filters=(filter_expr,) if filter_expr is not None else (),
+                    pre_group_filter_key=(
+                        (self.prop_key, tuple(update_range.get(self.prop_key)))
+                        if update_range.get(self.prop_key) is not None
+                        else None
+                    ),
+                    batch_key=batch_key,
+                    global_stats_cols=global_stats_cols,
+                    streaming_safe=True,
+                )
+
+            hist_expr = (
+                data_col_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
+                .implode()
+                .alias(self.uid)
             )
             return GroupedAggregationSpec(
                 uid=self.uid,
@@ -320,6 +437,22 @@ class Histogram(FlexTrace):
         lo_expr, hi_expr, global_stats = self._histogram_bounds_exprs(
             axis_range, histogram_domain_cols, temporal
         )
+
+        if scan_source:
+            return AggregationSpec(
+                expr=pl.lit(None).alias(self.uid),
+                uid=self.uid,
+                global_stats_cols=global_stats,
+                plan=_streaming_hist_plan(
+                    self.data_col,
+                    self.bins,
+                    self.uid,
+                    axis_range,
+                    temporal,
+                    global_stats,
+                    filter_expr,
+                ),
+            )
 
         data_expr = data_col_expr
         if filter_expr is not None:
@@ -473,10 +606,45 @@ class Histogram(FlexTrace):
         """Unpack grouped histogram output into one child result per group."""
         group_by_cols = self.group_by_cols
         assert group_by_cols is not None, "Grouped histogram requires group_by"
+        if "__hist_bin" in df_grouped.columns:
+            return self._streaming_grouped_update(df_grouped, group_by_cols)
         group_results: list[GroupedChildResult] = []
         for i, gv in enumerate(_group_values_from_frame(df_grouped, group_by_cols)):
             child_df = df_grouped.select(pl.col(self.uid).slice(i, 1))
             child_result = self._to_update(child_df)
+            group_results.append(
+                GroupedChildResult(
+                    child_uid=_child_uid_for_group(self.uid, gv),
+                    group_value_key=_group_value_key(gv),
+                    updates=child_result.updates,
+                )
+            )
+        return TraceResult(group_results=group_results)
+
+    def _streaming_grouped_update(
+        self, df_grouped: pl.DataFrame, group_by_cols: tuple[str, ...]
+    ) -> TraceResult:
+        """Densify the small streamed ``(group, bin, count)`` result."""
+        group_results: list[GroupedChildResult] = []
+        for gv in _group_values_from_frame(df_grouped, group_by_cols):
+            child = df_grouped
+            for col, value in zip(group_by_cols, gv):
+                child = child.filter(pl.col(col) == value)
+            lo = child[f"__hist_lo_{self.uid}"][0]
+            hi = child[f"__hist_hi_{self.uid}"][0]
+            counts = [0] * self.bins
+            for bin_index, count in child.select("__hist_bin", self.uid).iter_rows():
+                if bin_index is not None:
+                    counts[bin_index] = count
+            step = (hi - lo) / self.bins if hi > lo else 0.0
+            hist = pl.DataFrame(
+                {
+                    "breakpoint": [lo + (i + 1.0) * step for i in range(self.bins)],
+                    "count": counts,
+                },
+                schema={"breakpoint": pl.Float64, "count": pl.UInt32},
+            ).select(pl.struct(pl.all()).implode().alias(self.uid))
+            child_result = self._to_update(hist)
             group_results.append(
                 GroupedChildResult(
                     child_uid=_child_uid_for_group(self.uid, gv),

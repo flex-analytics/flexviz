@@ -145,7 +145,9 @@ def _streaming_envelope_plan(
         schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
     )
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
         src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
         src = src.select(x_col, y_col)
 
