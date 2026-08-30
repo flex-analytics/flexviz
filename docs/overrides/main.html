@@ -15,9 +15,22 @@
     https://gateway.umami.is and only override it from this attribute.
     data-domains keeps `mkdocs serve` previews and PR builds out of production stats.
   #}
+  <script>
+    // flexviz.tech and these docs share one website ID, so both homepages report `url: "/"`
+    // and merge into a single row in Umami's Pages report. Prefix every docs path here --
+    // `data-before-send` names a global that gets (type, payload) and returns the payload to
+    // send (or a false-y value to drop it). The hostname travels in its own header
+    // (`x-umami-hostname`), so the dashboard's hostname filter is unaffected by this.
+    // `/docs` is free on flexviz.tech: the page that serves it is a redirect and is untracked.
+    function umamiDocsPath(type, payload) {
+      if (payload.url && !payload.url.startsWith('/docs/')) payload.url = '/docs' + payload.url;
+      return payload;
+    }
+  </script>
   <script defer
           src="https://flexviz.tech/ok/script.js"
           data-host-url="https://flexviz.tech/ok"
           data-website-id="d310ab56-167b-49e8-bc4d-860ca13e5d4d"
-          data-domains="docs.flexviz.tech"></script>
+          data-domains="docs.flexviz.tech"
+          data-before-send="umamiDocsPath"></script>
 {% endblock %}
