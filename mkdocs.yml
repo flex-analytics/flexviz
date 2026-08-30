@@ -7,11 +7,15 @@ edit_uri: edit/main/docs/
 copyright: Apache-2.0 &copy; 2026 Flex Analytics BV
 
 # Internal notes that live in docs/ but are not part of the site.
+# `overrides/` is the theme's custom_dir, not content -- without this line mkdocs copies
+# main.html into the built site and publishes it at /overrides/main.html.
 exclude_docs: |
   cube-support-overview.md
+  overrides/
 
 theme:
   name: material
+  custom_dir: docs/overrides
   logo: logo.svg
   favicon: favicon.png
   font:

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block analytics %}
+  {{ super() }}
+  {#
+    Umami, cookieless. Same website ID as flexviz.tech, so sessions stitch across both
+    properties; split the two with the hostname filter in the dashboard.
+
+    The tracker is proxied first-party by the site repo's Cloudflare Worker
+    (flexviz_site/worker.js, /ok/* -> cloud.umami.is + gateway.umami.is), because ad
+    blockers drop Umami's own hostnames by name. From here that proxy is cross-origin,
+    which is fine: the gateway answers the POST preflight with `access-control-allow-origin: *`.
+
+    data-host-url must be the absolute proxy URL -- current trackers default to
+    https://gateway.umami.is and only override it from this attribute.
+    data-domains keeps `mkdocs serve` previews and PR builds out of production stats.
+  #}
+  <script defer
+          src="https://flexviz.tech/ok/script.js"
+          data-host-url="https://flexviz.tech/ok"
+          data-website-id="d310ab56-167b-49e8-bc4d-860ca13e5d4d"
+          data-domains="docs.flexviz.tech"></script>
+{% endblock %}
