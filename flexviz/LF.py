@@ -60,12 +60,19 @@ class AggregationSpec:
     uid: str = ""
     global_stats_cols: Tuple[str, ...] = ()
     #: Optional escape hatch for an aggregation that cannot be a select
-    #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is named ``uid``, i.e. exactly the column
-    #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own plan — the out-of-core line envelope uses a streaming group_by
-    #: that cannot ride the shared select.
-    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+    #: expression. Called as ``plan(filtered_ldf, stats_row)`` and must return
+    #: a one-row DataFrame whose single column is named ``uid``, i.e. exactly
+    #: the column the batched ``select`` would have produced. Set only when a
+    #: spec needs its own plan — the out-of-core line envelope and histogram
+    #: both use a streaming group_by that cannot ride the shared select.
+    #:
+    #: ``stats_row`` is a one-row frame holding the ``global_stats_cols`` this
+    #: spec asked for, resolved to values, or ``None`` when no plan spec asked
+    #: for any. A plan cannot derive those bounds itself: it only receives the
+    #: *filtered* frame, and histogram bin edges have to stay stable across
+    #: cross-filter updates. Hoisting the pass here also means N plans share
+    #: one scan of the stats rather than one each.
+    plan: "Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None" = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,10 @@ class GroupedAggregationSpec:
     pre_group_filter_key: Any = None
     batch_key: Tuple[Any, ...] = ()
     global_stats_cols: Tuple[str, ...] = ()
+    #: Same escape hatch as ``AggregationSpec.plan``. Must return a DataFrame
+    #: shaped like the ``group_by().agg().sort()`` result. When set,
+    #: ``agg_exprs`` is ignored.
+    plan: "Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None" = None
 
 
 class LFQueryBuilder:
@@ -294,9 +305,9 @@ class LFQueryBuilder:
             all_stats_cols.update(getattr(spec, "global_stats_cols", ()))
 
         base_ldf = self._ldf
+        stats_exprs: list[pl.Expr] = []
         if all_stats_cols:
             schema = self.schema
-            stats_exprs: list[pl.Expr] = []
             for col_name in sorted(all_stats_cols):
                 col = pl.col(col_name)
                 # The only consumers of these stats are the numeric histogram
@@ -320,12 +331,24 @@ class LFQueryBuilder:
         expr_specs = [s for s in regular_specs if s.plan is None]
         plan_specs = [s for s in regular_specs if s.plan is not None]
 
+        # A plan gets only the filtered frame, so it cannot read the broadcast
+        # stats columns without binding its bin edges to the cross-filter.
+        # Resolve them once, on the unfiltered frame, and hand the row over.
+        stats_row: pl.DataFrame | None = None
+        _needs_stats = any(s.global_stats_cols for s in plan_specs) or any(
+            s.global_stats_cols and s.plan is not None for s in grouped_specs
+        )
+        if stats_exprs and _needs_stats:
+            stats_row = self._ldf.select(stats_exprs).collect(
+                engine="streaming" if self.is_scan else "auto"
+            )
+
         if expr_specs:
             regular_df = filtered_ldf.select(*[s.expr for s in expr_specs]).collect()
         else:
             regular_df = pl.DataFrame()
         for spec in plan_specs:
-            planned = spec.plan(filtered_ldf)
+            planned = spec.plan(filtered_ldf, stats_row)
             if planned.width != 1 or planned.columns[0] != spec.uid:
                 raise ValueError(
                     f"AggregationSpec.plan for {spec.uid!r} must return exactly "
@@ -336,8 +359,21 @@ class LFQueryBuilder:
             )
 
         grouped_dfs: dict[str, pl.DataFrame] = {}
+        # Grouped specs carrying their own plan run individually (like regular
+        # plan specs). The rest go through the batched group_by().agg() path.
+        grouped_plan_specs = [s for s in grouped_specs if s.plan is not None]
+        grouped_expr_specs = [s for s in grouped_specs if s.plan is None]
+
+        for spec in grouped_plan_specs:
+            batch_ldf = (
+                filtered_ldf
+                if not spec.pre_group_filters
+                else filtered_ldf.filter(*spec.pre_group_filters)
+            )
+            grouped_dfs[spec.uid] = spec.plan(batch_ldf, stats_row)
+
         grouped_batches: dict[tuple, list[GroupedAggregationSpec]] = {}
-        for spec in grouped_specs:
+        for spec in grouped_expr_specs:
             batch_id = (spec.group_cols, spec.sort_cols, spec.batch_key)
             grouped_batches.setdefault(batch_id, []).append(spec)
 
@@ -380,7 +416,7 @@ class LFQueryBuilder:
                 batch_ldf.group_by(list(first.group_cols))
                 .agg(*agg_exprs)
                 .sort(list(first.sort_cols))
-                .collect()
+                .collect(engine="streaming" if self.is_scan else "auto")
             )
             for spec in batch_specs:
                 grouped_dfs[spec.uid] = batch_df

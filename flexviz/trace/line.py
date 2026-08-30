@@ -145,7 +145,12 @@ def _streaming_envelope_plan(
         schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
     )
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        # stats_row is unused: this plan reads its own x domain from Parquet
+        # statistics, and that domain is allowed to follow the cross-filter.
+        del stats_row
         src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
         src = src.select(x_col, y_col)
 
@@ -233,6 +238,111 @@ def _streaming_envelope_plan(
             )
             .implode()
             .alias(uid)
+        )
+
+    return run
+
+
+def _streaming_grouped_envelope_plan(
+    x_col: str,
+    y_col: str,
+    n_points: int,
+    uid: str,
+    group_cols: tuple[str, ...],
+    vp_filter: pl.Expr | None,
+    x_range: tuple | None,
+    schema: pl.Schema | None,
+):
+    """Grouped min-max envelope via ``group_by(group, bucket)`` on the streaming engine.
+
+    Replaces the plugin kernel inside ``group_by(group).agg(...)`` on scan
+    sources. The plugin path forces per-group list materialization because the
+    expression is opaque; a flat multi-level group_by streams.
+
+    Returns ``group_cols`` plus the uid column (one imploded struct per group).
+    """
+    import math
+
+    n_out = max(n_points // 2, 1)
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        del stats_row
+        src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
+        src = src.select(*group_cols, x_col, y_col)
+
+        dtype = schema.get(x_col) if schema else None
+        is_temporal = dtype is not None and dtype.is_temporal()
+        phys_expr = pl.col(x_col).to_physical() if is_temporal else pl.col(x_col)
+
+        if x_range is not None:
+            x_lo, x_hi = x_range[0], x_range[1]
+            if dtype is not None and dtype.is_integer():
+                x_lo = math.ceil(x_lo) if isinstance(x_lo, float) else x_lo
+                x_hi = math.floor(x_hi) if isinstance(x_hi, float) else x_hi
+            elif is_temporal:
+                x_lo, x_hi = int(x_lo), int(x_hi)
+        else:
+            domain = src.select(
+                phys_expr.min().alias("__lo"),
+                phys_expr.max().alias("__hi"),
+            ).collect(engine="streaming")
+            x_lo = domain["__lo"].item()
+            x_hi = domain["__hi"].item()
+
+        empty_struct = pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))
+        if x_lo is None or x_hi is None:
+            return pl.DataFrame(schema={**{c: pl.Utf8 for c in group_cols}, uid: empty_struct})
+
+        span = x_hi - x_lo
+        use_float_div = dtype is not None and dtype.is_float()
+        if span <= 0:
+            bsz = 1
+        elif use_float_div:
+            bsz = span / n_out
+        else:
+            bsz = -(-span // n_out)
+
+        lo_lit = pl.lit(x_lo)
+        bsz_lit = pl.lit(bsz)
+        y = pl.col(y_col)
+
+        result = (
+            src.group_by(
+                *[pl.col(c) for c in group_cols],
+                ((phys_expr - lo_lit) // bsz_lit)
+                .clip(upper_bound=n_out - 1)
+                .alias("__b"),
+            )
+            .agg(
+                pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
+                pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
+            )
+            .collect(engine="streaming")
+        )
+
+        if result.is_empty():
+            return pl.DataFrame(schema={**{c: pl.Utf8 for c in group_cols}, uid: empty_struct})
+
+        # Interleave lo/hi points, deduplicate per group, implode.
+        lo_cols = {f"__lo_{x_col}": "__x", f"__lo_{y_col}": "__y"}
+        hi_cols = {f"__hi_{x_col}": "__x", f"__hi_{y_col}": "__y"}
+        pts = pl.concat([
+            result.select(*group_cols, **{v: pl.col(k) for k, v in lo_cols.items()}),
+            result.select(*group_cols, **{v: pl.col(k) for k, v in hi_cols.items()}),
+        ]).drop_nulls("__x")
+        pts = pts.unique().sort(*group_cols, "__x")
+
+        return (
+            pts.group_by(*group_cols, maintain_order=True)
+            .agg(
+                pl.struct(**{
+                    x_col: pl.col("__x"),
+                    y_col: pl.col("__y"),
+                }).implode().alias(uid)
+            )
+            .sort(*group_cols)
         )
 
     return run
@@ -592,8 +702,6 @@ class LinePlot(FlexTrace):
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
-            # Grouped lines restrict the frame *before* grouping, and a
-            # frame-level filter is not a slice, so this path keeps the mask.
             vp_expr = (
                 _range_filter_expr(self.x_col, x_range, schema=schema)
                 if x_range is not None
@@ -603,6 +711,30 @@ class LinePlot(FlexTrace):
                 self.x_col,
                 tuple(x_range) if x_range is not None else None,
             )
+
+            if scan_source and self.downsample == "minmax":
+                # The plugin expression is opaque, so group_by().agg() must
+                # materialize per-group value lists. A flat group_by(group,
+                # bucket) on the streaming engine avoids this.
+                return GroupedAggregationSpec(
+                    uid=self.uid,
+                    group_cols=group_by_cols,
+                    sort_cols=group_by_cols,
+                    agg_exprs=(),
+                    pre_group_filters=(),
+                    batch_key=batch_key,
+                    plan=_streaming_grouped_envelope_plan(
+                        self.x_col,
+                        self.y_col,
+                        self.n_points,
+                        self.uid,
+                        group_by_cols,
+                        vp_expr,
+                        x_range,
+                        schema,
+                    ),
+                )
+
             grouped_expr = _plugin_line_agg_expr(
                 self.x_col,
                 self.y_col,
