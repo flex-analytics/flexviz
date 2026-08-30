@@ -1,6 +1,4 @@
-# mkdocs generates sitemap.xml from `site_url`; this line is how crawlers find it.
-# Cloudflare prepends its managed content-signals block to whatever we serve here,
-# so the two `User-agent: *` groups merge -- same as flexviz.tech/robots.txt.
+# mkdocs generates sitemap.xml from `site_url`; Cloudflare prepends its managed block to this.
 User-agent: *
 Allow: /
 

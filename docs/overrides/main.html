@@ -3,27 +3,23 @@
 {% block analytics %}
   {{ super() }}
   {#
-    Umami, cookieless. Same website ID as flexviz.tech, so sessions stitch across both
-    properties; split the two with the hostname filter in the dashboard.
-
-    The tracker is proxied first-party by the site repo's Cloudflare Worker
-    (flexviz_site/worker.js, /ok/* -> cloud.umami.is + gateway.umami.is), because ad
-    blockers drop Umami's own hostnames by name. From here that proxy is cross-origin,
-    which is fine: the gateway answers the POST preflight with `access-control-allow-origin: *`.
-
-    data-host-url must be the absolute proxy URL -- current trackers default to
-    https://gateway.umami.is and only override it from this attribute.
-    data-domains keeps `mkdocs serve` previews and PR builds out of production stats.
+    Umami, cookieless, proxied by the site repo's Worker (flexviz_site/worker.js) because ad
+    blockers drop umami.is by name. Cross-origin from here, which the gateway's CORS allows.
+    data-host-url must be absolute: the tracker defaults to gateway.umami.is and overrides it
+    from that attribute alone. data-domains keeps `mkdocs serve` out of production stats.
   #}
   <script>
-    // flexviz.tech and these docs share one website ID, so both homepages report `url: "/"`
-    // and merge into a single row in Umami's Pages report. Prefix every docs path here --
-    // `data-before-send` names a global that gets (type, payload) and returns the payload to
-    // send (or a false-y value to drop it). The hostname travels in its own header
-    // (`x-umami-hostname`), so the dashboard's hostname filter is unaffected by this.
-    // `/docs` is free on flexviz.tech: the page that serves it is a redirect and is untracked.
+    // Same website ID as flexviz.tech, so both homepages land on `/`; prefix the docs paths.
+    // payload.url is the full absolute URL and Umami strips the origin when storing, so rewrite
+    // pathname -- concatenating writes `/docshttps://docs.flexviz.tech/...` into the report.
     function umamiDocsPath(type, payload) {
-      if (payload.url && !payload.url.startsWith('/docs/')) payload.url = '/docs' + payload.url;
+      try {
+        const u = new URL(payload.url);
+        if (!u.pathname.startsWith('/docs/')) {
+          u.pathname = '/docs' + u.pathname;
+          payload.url = u.toString();
+        }
+      } catch (e) { /* never corrupt the payload */ }
       return payload;
     }
   </script>
