@@ -225,6 +225,13 @@ def test_skill_install_user_scope(capsys, monkeypatch, tmp_path):
     assert capsys.readouterr().out.count("installed") == 2
 
 
+def test_skill_install_defaults_to_cwd(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    main(["skill", "install"])
+    for skill in _skill_paths(tmp_path):
+        assert skill.exists(), skill
+
+
 def test_skill_install_scope_flags_are_exclusive():
     with pytest.raises(SystemExit):
         main(["skill", "install", "--user", "--dir", "."])

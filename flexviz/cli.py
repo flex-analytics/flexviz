@@ -134,7 +134,7 @@ def _cmd_skill(args: argparse.Namespace) -> None:
     content = (files("flexviz") / "skills" / _SKILL_NAME / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    base = Path.home() if args.user else Path(args.dir)
+    base = Path.home() if args.user else Path(args.dir or ".")
     refused: list[Path] = []
     for target in _SKILL_TARGET_DIRS:
         dest = base / target / _SKILL_NAME / "SKILL.md"
@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> None:
     scope = skill.add_mutually_exclusive_group()
     scope.add_argument(
         "--dir",
-        default=".",
+        default=None,
         help="project root to install into (default: current directory)",
     )
     scope.add_argument(
