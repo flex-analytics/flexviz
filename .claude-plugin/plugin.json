@@ -1,6 +1,7 @@
 {
   "name": "flexviz",
   "displayName": "FlexViz",
+  "version": "0.1.0b2",
   "description": "Explore large local Parquet/CSV files as live interactive dashboards, and read back the zooms and selections the human makes.",
   "author": {
     "name": "Flex Analytics",
