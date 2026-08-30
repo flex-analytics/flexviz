@@ -689,10 +689,10 @@ def _layer_traces(rendered: list[dict], layer: str) -> list[dict]:
 
 def _dashboard_url_saved_viewport(
     port: int, renderer: str = "plotly", x_range: tuple[float, float] = (120.0, 260.0)
-) -> tuple[str, str, tuple[float, float]]:
+) -> tuple[str, tuple[float, float]]:
     """A one-figure dashboard whose spec carries a saved x viewport.
 
-    Returns (url, figure_uid, x_range) so a test can assert the range was applied.
+    Returns (url, x_range) so a test can assert the range was applied.
     """
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -711,7 +711,6 @@ def _dashboard_url_saved_viewport(
     encoded = encode_spec(spec)
     return (
         f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}",
-        fig_uid,
         x_range,
     )
 
@@ -808,13 +807,25 @@ class TestPlotlyBrowser:
         ), f"expected one data render per figure, got {len(renders)}: {renders}"
 
     def test_saved_viewport_is_applied_on_open(self, page: Page, server_port: int):
-        """A restored viewport must reach Plotly's axes.
+        """A saved viewport must reach Plotly's axes in one request and one render.
 
-        This is what the render pass at the end of restoreDashboardFromSpec is for:
-        syncLayoutViewport runs inside _fvRenderFigure, and the figure's own viewport
-        update renders it only if the server returned deltas for it.
+        The request carries the complete spec, so the 'init' update already
+        aggregates inside state.viewport and renders every figure with
+        syncLayoutViewport. Replaying the viewport as its own event, or sweeping
+        the figures a second time, repeats that work inside the window a user
+        waits on.
         """
-        url, _fig_uid, x_range = _dashboard_url_saved_viewport(server_port, "plotly")
+        url, x_range = _dashboard_url_saved_viewport(server_port, "plotly")
+        events: list[str] = []
+        page.on(
+            "request",
+            lambda r: (
+                events.append(r.post_data_json["event"]["type"])
+                if r.url.endswith("/dashboard/update")
+                else None
+            ),
+        )
+        page.add_init_script(_COUNT_RENDERS_JS)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -826,6 +837,9 @@ class TestPlotlyBrowser:
         assert applied is not None, "no Plotly x-axis found"
         assert applied[0] == pytest.approx(x_range[0], rel=1e-6), applied
         assert applied[1] == pytest.approx(x_range[1], rel=1e-6), applied
+        assert events == ["init"], events
+        renders = page.evaluate("() => window.__renders")
+        assert len(renders) == 1, f"expected one data render, got {renders}"
 
     def test_toolbar_buttons_present(self, page: Page, server_port: int):
         url = _dashboard_url(server_port, "plotly")

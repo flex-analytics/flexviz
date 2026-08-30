@@ -31,9 +31,9 @@ async function restoreDashboardFromSpec() {
   window.fvSyncHoverDropdown?.();
   window.fvRefreshSelectionSummary?.();
   const savedSelections = (DASHBOARD_SPEC.state && DASHBOARD_SPEC.state.selections) || [];
-  const figViewports = Object.fromEntries(
-    DASHBOARD_SPEC.figures.map(fig => [fig.uid, figureViewportRanges(fig.uid)])
-  );
+  // One init also restores the viewport. The request carries the complete spec,
+  // so the server aggregates within state.viewport; init marks every figure
+  // dirty, so each figure's render applies that viewport to its layout.
   await postDashboardUpdate({
     type: 'init', axis_ranges: {}, selections: savedSelections, force_update: true,
   });
@@ -41,18 +41,6 @@ async function restoreDashboardFromSpec() {
     await postDashboardUpdate({
       type: 'selection', axis_ranges: {}, selections: savedSelections, force_update: true,
     });
-  }
-  for (const [figUid, axRanges] of Object.entries(figViewports)) {
-    if (!Object.keys(axRanges).length) continue;
-    await postDashboardUpdate({
-      type: 'viewport', axis_ranges: axRanges,
-      selections: savedSelections, force_update: true, figure_uid: figUid,
-    });
-  }
-  // The init update above already renders every figure. Only a restored viewport
-  // needs a second pass, for the syncLayoutViewport inside _fvRenderFigure.
-  for (const [figUid, axRanges] of Object.entries(figViewports)) {
-    if (Object.keys(axRanges).length) _fvRenderFigure(figUid);
   }
   window.fvRefreshSelectionSummary?.();
 }
