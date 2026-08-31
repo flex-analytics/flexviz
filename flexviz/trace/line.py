@@ -142,6 +142,16 @@ def _streaming_envelope_plan(
     n_out = max(n_points // 2, 1)
     gcols = group_cols or ()
 
+    def empty() -> pl.DataFrame:
+        """The no-rows result, in the shape the caller's spec kind expects."""
+        struct = pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))
+        if not gcols:
+            return pl.DataFrame({uid: [[]]}, schema={uid: struct})
+        # Group dtypes come from the schema: an Int group column must not come
+        # back as Utf8 just because the frame happens to be empty.
+        gschema = {c: (schema.get(c) if schema else None) or pl.Utf8 for c in gcols}
+        return pl.DataFrame(schema={**gschema, uid: struct})
+
     def run(
         filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
     ) -> pl.DataFrame:
@@ -170,13 +180,8 @@ def _streaming_envelope_plan(
             x_lo = domain["__lo"].item()
             x_hi = domain["__hi"].item()
 
-        empty_struct = pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))
         if x_lo is None or x_hi is None:
-            if gcols:
-                return pl.DataFrame(
-                    schema={**{c: pl.Utf8 for c in gcols}, uid: empty_struct}
-                )
-            return pl.DataFrame({uid: [[]]}, schema={uid: empty_struct})
+            return empty()
 
         span = x_hi - x_lo
         # Float columns need true division: integer ceiling division rounds a
@@ -207,11 +212,7 @@ def _streaming_envelope_plan(
         )
 
         if result.is_empty():
-            if gcols:
-                return pl.DataFrame(
-                    schema={**{c: pl.Utf8 for c in gcols}, uid: empty_struct}
-                )
-            return pl.DataFrame({uid: [[]]}, schema={uid: empty_struct})
+            return empty()
 
         # Interleave lo/hi points, deduplicate, sort by x.
         lo_cols = {f"__lo_{x_col}": "__x", f"__lo_{y_col}": "__y"}

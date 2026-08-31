@@ -43,6 +43,7 @@ from .base import (
     _range_filter_expr,
 )
 from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
+from ._hist_helpers import kernel_bin_index
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -56,55 +57,18 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 #: falls inside the last bin and bin edges are never degenerate.
 _HIST_BIN_EPSILON: float = 1e-10
 
-#: The Rust kernel adds this *inside* the bin index, before truncating, so a
-#: value sitting a hair below a bin boundary lands in the bin above rather
-#: than the one below (``FIXED_HIST_ROUND_EPS`` in
-#: ``flexviz_polars/src/expressions.rs``). Nothing on the Python side needed
-#: to know about it until the streaming plan had to reproduce it exactly.
-#:
-#: Not the same constant as ``_HIST_BIN_EPSILON`` above and not
-#: interchangeable with it: that one widens ``hi`` so the maximum value stays
-#: inside the last bin, this one decides which side of a boundary a value
-#: falls on. ``tests/test_trace_hist_streaming.py`` pins the behaviour.
-_FIXED_HIST_ROUND_EPS: float = 1e-9
-
 
 def _streaming_bin_expr(value: pl.Expr, lo: float, hi: float, bins: int) -> pl.Expr:
-    """The kernel's bin arithmetic as an expression, for scan sources.
+    """The 1D kernel's bin index for a scan source.
 
-    Mirrors ``count_value`` in ``expressions.rs``::
-
-        counts[(((v - lo) * scale + FIXED_HIST_ROUND_EPS) as usize).min(max_idx)] += 1
-
-    Returns the bin index, or null for a value the kernel skips. The caller
-    drops the null group and zero-fills the bins nothing landed in.
-
-    Three choices here are deliberate.
-
-    **Clip before the cast, not after.** Both orders agree on in-range data --
-    truncation and floor differ only for negatives, and the clip maps those to
-    0 either way -- but clipping first also bounds the value before it reaches
-    ``Int32``, which matters when a narrow viewport and a far outlier make
-    ``(v - lo) * scale`` overflow it.
-
-    **No ``.floor()``.** It is redundant in front of a clip and a truncating
-    cast. It is not a performance question either: the two forms measure
-    within 0.5 percent of each other at 500M rows.
-
-    **Nulls and NaNs map to a null bin.** The kernel skips both. ``is_nan`` is
-    safe on integer columns in Polars 1.44 -- it does not raise.
-
-    ``hi == lo`` gives ``scale = 0``, so every value lands in bin 0, which is
-    what the kernel's ``count_degenerate`` does. ``hi < lo`` is rejected by
-    the kernel and must be rejected before reaching here.
+    Only the scale is 1D-specific: ``hi == lo`` gives ``scale = 0``, so every
+    value lands in bin 0, which is what the kernel's ``count_degenerate`` does.
+    ``hi < lo`` is rejected by the kernel and must be rejected before reaching
+    here. The rest is ``kernel_bin_index``, shared with the 2D plan so the two
+    cannot drift.
     """
     scale = bins / (hi - lo) if hi > lo else 0.0
-    idx = (
-        ((value.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
-        .clip(0.0, float(bins - 1))
-        .cast(pl.Int32)
-    )
-    return pl.when(value.is_null() | value.is_nan()).then(None).otherwise(idx)
+    return kernel_bin_index(value, lo, scale, bins)
 
 
 def _resolve_hist_bounds(
@@ -181,17 +145,13 @@ def _streaming_hist_plan(
         bin_expr = _streaming_bin_expr(value, lo, hi, bins).alias("__bin")
 
         if group_cols is None:
-            counted = (
-                src.group_by(bin_expr)
-                .agg(pl.len().alias("count"))
-                .collect(engine="streaming")
-            )
+            counted = src.group_by(bin_expr).len("count").collect(engine="streaming")
             return _densify_and_format(counted, lo, hi, bins, uid)
 
         counted = (
             src.select(*[pl.col(c) for c in group_cols], bin_expr)
             .group_by(*group_cols, "__bin")
-            .len()
+            .len("count")
             .collect(engine="streaming")
         )
         return _densify_grouped(counted, group_cols, lo, hi, bins, uid)
@@ -233,14 +193,17 @@ def _densify_grouped(
     all_bins = pl.DataFrame({"__bin": range(bins)}, schema={"__bin": pl.Int32})
     dense = (
         groups.join(all_bins, how="cross")
-        .join(counted, on=[*group_cols, "__bin"], how="left")
-        .with_columns(pl.col("len").fill_null(0).cast(pl.UInt32).alias("count"))
+        # nulls_equal: a null group value is a real group the kernel counted,
+        # and a left join drops it by default.
+        .join(counted, on=[*group_cols, "__bin"], how="left", nulls_equal=True)
+        .with_columns(pl.col("count").fill_null(0).cast(pl.UInt32))
         .sort(*group_cols, "__bin")
     )
     step = (hi - lo) / bins if hi > lo else 0.0
-    breakpoints = [lo + (i + 1.0) * step for i in range(bins)]
+    # Derived from __bin rather than positionally, so the result does not
+    # depend on the join emitting rows group-major and bin-ascending.
     dense = dense.with_columns(
-        pl.Series("breakpoint", breakpoints * groups.height, dtype=pl.Float64)
+        (lo + (pl.col("__bin") + 1.0) * step).cast(pl.Float64).alias("breakpoint")
     )
     return (
         dense.group_by(*group_cols, maintain_order=True)
@@ -458,18 +421,13 @@ class Histogram(FlexTrace):
         # numeric kernel rejects temporal dtypes); _to_update restores datetimes.
         self._data_temporal_dtype = _temporal_dtype_for_col(self.data_col, schema)
         temporal = self._data_temporal_dtype
-        data_col_expr = (
-            pl.col(self.data_col).to_physical()
-            if temporal is not None
-            else pl.col(self.data_col)
-        )
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
             # ------------------------------------------------------------------
-            # Grouped path: viewport filter applied via pre_group_filters so it
-            # runs before the group_by split.  The hist expression uses shared
-            # bin edges so all groups align.
+            # Grouped path: a streaming plan, on every source kind. The
+            # viewport filter runs inside the plan, before the group_by split.
+            # Bin edges are shared across groups so all groups align.
             # ------------------------------------------------------------------
             lo_expr, hi_expr, global_stats_cols = self._histogram_bounds_exprs(
                 axis_range, histogram_domain_cols, temporal
@@ -533,7 +491,11 @@ class Histogram(FlexTrace):
                 ),
             )
 
-        data_expr = data_col_expr
+        data_expr = (
+            pl.col(self.data_col).to_physical()
+            if temporal is not None
+            else pl.col(self.data_col)
+        )
         if filter_expr is not None:
             data_expr = data_expr.filter(filter_expr)
         hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)

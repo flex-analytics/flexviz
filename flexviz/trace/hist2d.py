@@ -41,8 +41,10 @@ from .base import (
 )
 from ._hist_helpers import (
     HeatmapColorRange,
+    _FIXED_HIST2D_SPAN_EPS,
     _HISTNORM_OPTIONS,
     apply_histnorm,
+    kernel_bin_index,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
@@ -622,10 +624,6 @@ def _streaming_hist2d_spec(
         x_col, y_col, x_range, y_range, schema
     )
 
-    # The Rust kernel adds 1e-10 to the span before computing scale. Match it.
-    _HIST2D_SPAN_EPS = 1e-10
-    _HIST2D_ROUND_EPS = 1e-9
-
     def _resolve_bounds(stats_row):
         """Evaluate bound expressions against the stats row or a carrier."""
         if global_stats_cols:
@@ -652,8 +650,15 @@ def _streaming_hist2d_spec(
     ) -> pl.DataFrame:
         xlo, xhi, ylo, yhi = _resolve_bounds(stats_row)
 
-        x_span = xhi - xlo + _HIST2D_SPAN_EPS
-        y_span = yhi - ylo + _HIST2D_SPAN_EPS
+        if xhi < xlo or yhi < ylo:
+            raise ValueError(
+                f"hist2d bounds are inverted: x=({xlo}, {xhi}) y=({ylo}, {yhi})"
+            )
+
+        # The kernel widens the span before computing the scale so a value
+        # exactly at hi lands in the top bin.
+        x_span = xhi - xlo + _FIXED_HIST2D_SPAN_EPS
+        y_span = yhi - ylo + _FIXED_HIST2D_SPAN_EPS
         x_scale = nb_x / x_span
         y_scale = nb_y / y_span
 
@@ -664,16 +669,10 @@ def _streaming_hist2d_spec(
         if mask is not None:
             src = src.filter(mask)
 
-        xb = (
-            ((x_phys - xlo) * x_scale + _HIST2D_ROUND_EPS)
-            .clip(0.0, float(nb_x - 1))
-            .cast(pl.Int32)
-        )
-        yb = (
-            ((y_phys - ylo) * y_scale + _HIST2D_ROUND_EPS)
-            .clip(0.0, float(nb_y - 1))
-            .cast(pl.Int32)
-        )
+        xb = kernel_bin_index(x_phys, xlo, x_scale, nb_x)
+        yb = kernel_bin_index(y_phys, ylo, y_scale, nb_y)
+        # A null from either axis nulls the key, which the densify join drops.
+        # That is how null and NaN rows get skipped, as the kernel skips them.
         combined = (xb + yb * nb_x).alias("__key")
 
         counted = (
@@ -693,9 +692,9 @@ def _streaming_hist2d_spec(
                     {
                         "z_flat": z_flat,
                         "x_lo": xlo,
-                        "x_hi": xlo + x_span,
+                        "x_hi": xhi,
                         "y_lo": ylo,
-                        "y_hi": ylo + y_span,
+                        "y_hi": yhi,
                     }
                 ]
             }

@@ -23,11 +23,8 @@ import pytest
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.LF import GroupedAggregationSpec, LFQueryBuilder
-from flexviz.trace.hist import (
-    Histogram,
-    _FIXED_HIST_ROUND_EPS,
-    _streaming_bin_expr,
-)
+from flexviz.trace._hist_helpers import _FIXED_HIST_ROUND_EPS
+from flexviz.trace.hist import Histogram, _streaming_bin_expr
 
 # The epsilon hist.py adds to `hi` so the maximum value stays in the last bin.
 # Different constant, different job -- see hist.py.
@@ -317,3 +314,295 @@ class TestScanMatchesResident:
         resident, scanned = self._both(tmp_path, df, "intbins", bins=100)
         self._same(resident, scanned)
         assert list(scanned["y"]) == [1] * 100, "each integer needs its own bin"
+
+
+# ---- grouped ---------------------------------------------------------------
+
+
+def _grouped_rows(src, col, bins, group_cols, **kw):
+    """Run a grouped histogram and return ``{group_value: [struct, ...]}``."""
+    trace = Histogram(x=col, bins=bins, group_by=list(group_cols))
+    lf = LFQueryBuilder(src if isinstance(src, pl.LazyFrame) else src.lazy())
+    spec = trace.get_aggregation_spec(
+        kw.pop("update_range", {}), schema=lf.schema, **kw
+    )
+    _, grouped = lf.aggregate([], [spec])
+    out = {}
+    for row in grouped[trace.uid].iter_rows(named=True):
+        key = tuple(row[c] for c in group_cols)
+        out[key if len(group_cols) > 1 else key[0]] = list(row[trace.uid])
+    return out
+
+
+def _grouped_counts(src, col, bins, group_cols, **kw):
+    """``{group_value: counts}`` -- the bin heights alone."""
+    return {
+        g: [d["count"] for d in structs]
+        for g, structs in _grouped_rows(src, col, bins, group_cols, **kw).items()
+    }
+
+
+def _grouped_breakpoints(src, col, bins, group_cols, **kw):
+    """``{group_value: breakpoints}`` -- the bin edges alone."""
+    return {
+        g: [d["breakpoint"] for d in structs]
+        for g, structs in _grouped_rows(src, col, bins, group_cols, **kw).items()
+    }
+
+
+def _kernel_breakpoints(df, col, bins, **kw):
+    """Bin edges from the ungrouped kernel over the whole frame."""
+    trace = Histogram(x=col, bins=bins)
+    spec = trace.get_aggregation_spec(
+        kw.pop("update_range", {}), schema=df.schema, **kw
+    )
+    regular, _ = LFQueryBuilder(df.lazy()).aggregate([], [spec])
+    return [d["breakpoint"] for d in regular[trace.uid][0]]
+
+
+def _kernel_counts_for_group(df, col, bins, group_cols, key, **kw):
+    """The oracle: the ungrouped *kernel* restricted to one group.
+
+    Global stats are computed on the unfiltered base frame, so a cross-filter
+    narrows the rows without moving the bin edges. That is exactly grouped
+    semantics, expressed with the production kernel path instead of a
+    reimplementation of it.
+    """
+    keys = key if isinstance(key, tuple) else (key,)
+    predicate = None
+    for gcol, value in zip(group_cols, keys):
+        clause = pl.col(gcol).is_null() if value is None else pl.col(gcol) == value
+        predicate = clause if predicate is None else predicate & clause
+    trace = Histogram(x=col, bins=bins)
+    lf = LFQueryBuilder(df.lazy())
+    spec = trace.get_aggregation_spec(
+        kw.pop("update_range", {}), schema=df.schema, **kw
+    )
+    regular, _ = lf.aggregate([predicate], [spec])
+    return [d["count"] for d in regular[trace.uid][0]]
+
+
+def _assert_groups_match_kernel(df, col="val", bins=8, group_cols=("cat",), **kw):
+    got = _grouped_counts(df, col, bins, group_cols, **kw)
+    assert got, "the grouped path returned no groups"
+    for key, counts in got.items():
+        expected = _kernel_counts_for_group(df, col, bins, group_cols, key, **kw)
+        assert counts == expected, f"group {key!r} differs from the kernel"
+    return got
+
+
+def _mixed(n=2_000, nulls=True):
+    cats = ["a", "b", "c"]
+    return pl.DataFrame(
+        {
+            "val": [((i * 7919) % 997) / 7.0 for i in range(n)],
+            "cat": [None if (nulls and i % 11 == 0) else cats[i % 3] for i in range(n)],
+        }
+    )
+
+
+class TestGroupedMatchesTheKernel:
+    """The grouped path is a streaming plan on every source, so the kernel is
+    no longer reachable through it. The oracle is the *ungrouped* kernel with
+    a cross-filter, which shares the bin edges by construction."""
+
+    def test_the_null_group_is_counted(self):
+        """Regression: the densify join dropped null group keys, so a null
+        category came back as all zeros on every source kind.
+
+        Asserts the answer, not just agreement with itself: a path that drops
+        the group would be self-consistent and still wrong.
+        """
+        df = _mixed()
+        got = _assert_groups_match_kernel(df)
+        assert None in got, "the null group must be present"
+        expected_rows = df.filter(pl.col("cat").is_null()).height
+        assert sum(got[None]) == expected_rows, "null-group rows must be counted"
+        assert expected_rows > 0, "sanity: the fixture must have null-group rows"
+
+    @pytest.mark.parametrize(
+        "name,df",
+        [
+            ("with_nulls", _mixed()),
+            ("no_nulls", _mixed(nulls=False)),
+            (
+                "one_group",
+                pl.DataFrame(
+                    {"val": [float(i % 31) for i in range(500)], "cat": ["x"] * 500}
+                ),
+            ),
+            (
+                "sparse_group",
+                pl.DataFrame(
+                    {
+                        "val": [float(i % 97) for i in range(500)],
+                        "cat": ["rare" if i == 0 else "common" for i in range(500)],
+                    }
+                ),
+            ),
+            (
+                "value_nulls_and_nans",
+                pl.DataFrame(
+                    {
+                        "val": [
+                            (
+                                None
+                                if i % 53 == 0
+                                else (float("nan") if i % 31 == 0 else float(i % 89))
+                            )
+                            for i in range(2_000)
+                        ],
+                        "cat": [
+                            None if i % 7 == 0 else "ab"[i % 2] for i in range(2_000)
+                        ],
+                    }
+                ),
+            ),
+        ],
+    )
+    def test_every_group_matches(self, name, df):
+        _assert_groups_match_kernel(df)
+
+    def test_multi_column_group_by(self):
+        """The densify join is on every group column, not just the first."""
+        df = pl.DataFrame(
+            {
+                "val": [float(i % 89) for i in range(1_500)],
+                "cat": [None if i % 13 == 0 else "ab"[i % 2] for i in range(1_500)],
+                "site": [None if i % 17 == 0 else "xy"[i % 2] for i in range(1_500)],
+            }
+        )
+        got = _assert_groups_match_kernel(df, group_cols=("cat", "site"))
+        assert (None, None) in got, "the all-null group must survive the join"
+
+    def test_identical_under_a_viewport(self):
+        _assert_groups_match_kernel(_mixed(), update_range={"x": [10.0, 90.0]})
+
+    def test_identical_on_a_temporal_column(self):
+        stamps = pl.datetime_range(
+            dt.datetime(2020, 1, 1), dt.datetime(2020, 2, 1), interval="1h", eager=True
+        )
+        df = pl.DataFrame(
+            {
+                "val": stamps,
+                "cat": [
+                    None if i % 9 == 0 else "ab"[i % 2] for i in range(len(stamps))
+                ],
+            }
+        )
+        _assert_groups_match_kernel(df, bins=12)
+
+    @pytest.mark.parametrize("bins", [1, 2, 7, 100])
+    def test_identical_across_bin_counts(self, bins):
+        _assert_groups_match_kernel(_mixed(), bins=bins)
+
+
+class TestGroupedBinEdges:
+    """Bin edges reach the client as ``breakpoint`` and become bin centres and
+    hover bounds. Counts alone do not pin them."""
+
+    @pytest.mark.parametrize("bins", [1, 2, 8, 100])
+    def test_edges_match_the_ungrouped_kernel(self, bins):
+        df = _mixed()
+        expected = _kernel_breakpoints(df, "val", bins)
+        for group, got in _grouped_breakpoints(df, "val", bins, ("cat",)).items():
+            assert got == expected, f"group {group!r} has different bin edges"
+
+    def test_edges_match_under_a_viewport(self):
+        df = _mixed()
+        kw = {"update_range": {"x": [10.0, 90.0]}}
+        expected = _kernel_breakpoints(df, "val", 8, **kw)
+        for group, got in _grouped_breakpoints(df, "val", 8, ("cat",), **kw).items():
+            assert got == expected, f"group {group!r} has different bin edges"
+
+    def test_edges_are_ascending_within_every_group(self):
+        """The client reads the struct list positionally, so bin order inside
+        a group is part of the contract."""
+        for group, edges in _grouped_breakpoints(_mixed(), "val", 16, ("cat",)).items():
+            assert edges == sorted(edges), f"group {group!r} bins are out of order"
+
+    def test_multi_column_groups_keep_the_same_edges(self):
+        df = pl.DataFrame(
+            {
+                "val": [float(i % 89) for i in range(1_500)],
+                "cat": [None if i % 13 == 0 else "ab"[i % 2] for i in range(1_500)],
+                "site": [None if i % 17 == 0 else "xy"[i % 2] for i in range(1_500)],
+            }
+        )
+        expected = _kernel_breakpoints(df, "val", 8)
+        for group, got in _grouped_breakpoints(df, "val", 8, ("cat", "site")).items():
+            assert got == expected, f"group {group!r} has different bin edges"
+
+
+class TestGroupedInvariants:
+    def test_every_row_is_counted_exactly_once_across_groups(self):
+        df = _mixed()
+        got = _grouped_counts(df, "val", 8, ("cat",))
+        total = sum(sum(counts) for counts in got.values())
+        assert total == df.height, "rows must not be dropped or double counted"
+
+    def test_all_groups_share_the_same_bin_edges(self):
+        """Bins come from the whole-frame domain, so every child must have the
+        same number of bins in the same order."""
+        got = _grouped_counts(_mixed(), "val", 8, ("cat",))
+        assert {len(c) for c in got.values()} == {8}
+
+    def test_bin_edges_do_not_move_under_a_cross_filter(self):
+        """The domain is read off the unfiltered frame. If it were not, the
+        bars would shift every time a selection changed."""
+        df = _mixed()
+        trace = Histogram(x="val", bins=8, group_by="cat")
+        lf = LFQueryBuilder(df.lazy())
+        spec = trace.get_aggregation_spec({}, schema=df.schema)
+
+        def edges(filters):
+            _, grouped = lf.aggregate(filters, [spec])
+            row = grouped[trace.uid].row(0, named=True)
+            return [d["breakpoint"] for d in row[trace.uid]]
+
+        assert edges([]) == edges([pl.col("val") < 20.0])
+
+    def test_empty_after_a_cross_filter(self):
+        df = _mixed()
+        trace = Histogram(x="val", bins=8, group_by="cat")
+        lf = LFQueryBuilder(df.lazy())
+        spec = trace.get_aggregation_spec({}, schema=df.schema)
+        _, grouped = lf.aggregate([pl.col("val") > 10_000.0], [spec])
+        assert grouped[trace.uid].height == 0
+
+    def test_scan_and_resident_agree(self, tmp_path):
+        """Grouped takes the streaming plan on both source kinds, so this pins
+        that the source kind is not observable in the output."""
+        df = _mixed()
+        path = tmp_path / "grouped.parquet"
+        df.write_parquet(path)
+        assert LFQueryBuilder(pl.scan_parquet(path)).is_scan is True
+        assert _grouped_counts(df, "val", 8, ("cat",)) == _grouped_counts(
+            pl.scan_parquet(path), "val", 8, ("cat",)
+        )
+
+
+class TestGroupedThroughTheEngine:
+    """The child deltas the client actually receives."""
+
+    def test_children_carry_per_group_counts_including_null(self):
+        df = _mixed()
+        hist = Histogram(x="val", bins=8, group_by="cat")
+        engine = FlexEngine(
+            backend_lf=LFQueryBuilder(df.lazy()), scalable_traces={hist.uid: hist}
+        )
+        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        children = {c.group_value_key: c for c in (deltas[0].group_results or [])}
+        assert set(children) == {"null", "a", "b", "c"}
+
+        expected = _grouped_counts(df, "val", 8, ("cat",))
+        first = children["a"].updates
+        for key, child in children.items():
+            group = None if key == "null" else key
+            assert list(child.updates["y"]) == expected[group]
+            # Every child shares one set of bins, so centres and hover bounds
+            # must be identical across children, not merely the right length.
+            assert list(child.updates["x"]) == list(first["x"])
+            assert child.updates["hover_bounds"] == first["hover_bounds"]
+            assert len(child.updates["x"]) == 8, "bin centres per child"

@@ -408,6 +408,57 @@ class TestLinePlotGrouped:
         }
 
 
+class TestGroupedLineEmptyResult:
+    """The streaming envelope builds its own empty frame, so its schema is
+    hand-written rather than derived from the data."""
+
+    @staticmethod
+    def _empty_grouped(df, group_by="sensor"):
+        lf = LFQueryBuilder(df)
+        trace = LinePlot(x="ts", y="val", n_points=100, group_by=group_by)
+        spec = trace.get_aggregation_spec({}, schema=lf.schema)
+        # A filter nothing survives, so the plan takes its empty branch.
+        _, grouped = lf.aggregate([pl.col("ts") > 10**9], [spec])
+        return trace, grouped[trace.uid]
+
+    def test_group_column_keeps_its_dtype_when_empty(self):
+        """An Int group column must not come back as Utf8 just because the
+        result has no rows."""
+        df = pl.DataFrame(
+            {
+                "ts": list(range(20)),
+                "val": [float(i) for i in range(20)],
+                "sensor": [i % 2 for i in range(20)],
+            }
+        )
+        _, out = self._empty_grouped(df)
+        assert out.height == 0
+        assert out.schema["sensor"] == pl.Int64
+
+    def test_string_group_column_is_unchanged(self):
+        df = pl.DataFrame(
+            {
+                "ts": list(range(20)),
+                "val": [float(i) for i in range(20)],
+                "sensor": ["A", "B"] * 10,
+            }
+        )
+        _, out = self._empty_grouped(df)
+        assert out.height == 0
+        assert out.schema["sensor"] == pl.String
+
+    def test_empty_result_yields_no_children(self):
+        df = pl.DataFrame(
+            {
+                "ts": list(range(20)),
+                "val": [float(i) for i in range(20)],
+                "sensor": [i % 2 for i in range(20)],
+            }
+        )
+        trace, out = self._empty_grouped(df)
+        assert (trace._to_grouped_update(out).group_results or []) == []
+
+
 class TestLinePlotHoverSpec:
     def test_line_has_axis_source_mode(self):
         from flexviz.trace.line import LinePlot
