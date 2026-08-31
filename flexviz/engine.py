@@ -862,6 +862,14 @@ class FlexEngine:
                         scan_source=scan_source,
                     )
                 )
+            elif trace.trace_type == "histogram2d":
+                agg_specs.append(
+                    trace.get_aggregation_spec(
+                        update_range=item.update_range,
+                        schema=backend_schema,
+                        scan_source=scan_source,
+                    )
+                )
             else:
                 agg_specs.append(
                     trace.get_aggregation_spec(

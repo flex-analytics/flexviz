@@ -147,29 +147,28 @@ def _streaming_hist_plan(
     uid: str,
     lo_expr: pl.Expr,
     hi_expr: pl.Expr,
+    *,
     needs_stats: bool,
-    temporal_dtype: pl.DataType | None,
-    filter_expr: pl.Expr | None,
+    temporal_dtype: pl.DataType | None = None,
+    filter_expr: pl.Expr | None = None,
+    group_cols: tuple[str, ...] | None = None,
 ):
-    """Bounded scan-source histogram: bin index, group, count.
+    """Streaming histogram for scan sources, ungrouped or grouped.
 
-    Replaces the ``fixed_hist`` kernel on scan sources. The kernel takes a
-    whole ``Series``, so a plugin expression cannot stream and Polars
-    materializes the column first -- 4.0 GiB at 500M rows against 131 MiB for
-    this plan, for 1.6x the wall time. Peak memory here does not grow with the
+    The plugin kernel takes a contiguous ``Series`` and cannot stream. This
+    plan uses ``group_by(bin).len()`` (or ``group_by(group, bin).len()`` when
+    grouped) on the streaming engine, so peak memory does not grow with the
     file.
 
-    Output is exactly the kernel's: one imploded struct column of
-    ``{breakpoint, count}``, ``bins`` rows, so ``_to_update`` and every
-    ``histnorm`` work unchanged.
+    When ``group_cols`` is ``None``, returns a one-column imploded struct
+    (for ``AggregationSpec``). When set, returns ``group_cols`` plus the uid
+    column (for ``GroupedAggregationSpec``).
     """
 
     def run(
         filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
     ) -> pl.DataFrame:
         lo, hi = _resolve_hist_bounds(lo_expr, hi_expr, needs_stats, stats_row)
-        # The kernel refuses this rather than silently returning zeros
-        # (polars_ensure!(lo <= hi) in expressions.rs). Match it.
         if lo > hi:
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
@@ -179,13 +178,23 @@ def _streaming_hist_plan(
             else pl.col(data_col)
         )
         src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
+        bin_expr = _streaming_bin_expr(value, lo, hi, bins).alias("__bin")
+
+        if group_cols is None:
+            counted = (
+                src.group_by(bin_expr)
+                .agg(pl.len().alias("count"))
+                .collect(engine="streaming")
+            )
+            return _densify_and_format(counted, lo, hi, bins, uid)
+
         counted = (
-            src.group_by(_streaming_bin_expr(value, lo, hi, bins).alias("__bin"))
-            .agg(pl.len().alias("count"))
+            src.select(*[pl.col(c) for c in group_cols], bin_expr)
+            .group_by(*group_cols, "__bin")
+            .len()
             .collect(engine="streaming")
         )
-
-        return _densify_and_format(counted, lo, hi, bins, uid)
+        return _densify_grouped(counted, group_cols, lo, hi, bins, uid)
 
     return run
 
@@ -193,10 +202,7 @@ def _streaming_hist_plan(
 def _densify_and_format(
     counted: pl.DataFrame, lo: float, hi: float, bins: int, uid: str
 ) -> pl.DataFrame:
-    """Turn sparse bin counts into the kernel's imploded struct format.
-
-    Shared by the ungrouped and grouped streaming histogram plans.
-    """
+    """Sparse bin counts -> the kernel's imploded struct format."""
     counts = (
         pl.DataFrame({"__bin": range(bins)}, schema={"__bin": pl.Int32})
         .join(counted, on="__bin", how="left")
@@ -214,73 +220,33 @@ def _densify_and_format(
     ).select(pl.struct("breakpoint", "count").implode().alias(uid))
 
 
-def _streaming_grouped_hist_plan(
-    data_col: str,
+def _densify_grouped(
+    counted: pl.DataFrame,
+    group_cols: tuple[str, ...],
+    lo: float,
+    hi: float,
     bins: int,
     uid: str,
-    group_cols: tuple[str, ...],
-    lo_expr: pl.Expr,
-    hi_expr: pl.Expr,
-    needs_stats: bool,
-    temporal_dtype: pl.DataType | None,
-    filter_expr: pl.Expr | None,
-):
-    """Grouped histogram via ``group_by(group, bin).len()`` on the streaming engine.
-
-    Replaces the plugin kernel inside ``group_by(group).agg(fixed_hist(...))``
-    on scan sources. The plugin path forces per-group list materialization
-    because the expression is opaque; a flat two-level group_by streams.
-
-    Returns ``group_cols`` plus the uid column (one imploded struct per group).
-    """
-
-    def run(
-        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
-    ) -> pl.DataFrame:
-        lo, hi = _resolve_hist_bounds(lo_expr, hi_expr, needs_stats, stats_row)
-        if lo > hi:
-            raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
-
-        value = (
-            pl.col(data_col).to_physical()
-            if temporal_dtype is not None
-            else pl.col(data_col)
-        )
-        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
-        counted = (
-            src.select(
-                *[pl.col(c) for c in group_cols],
-                _streaming_bin_expr(value, lo, hi, bins).alias("__bin"),
-            )
-            .group_by(*group_cols, "__bin")
-            .len()
-            .collect(engine="streaming")
-        )
-
-        # Densify: every (group, bin) must be present, even when empty.
-        groups = counted.select(*group_cols).unique().sort(*group_cols)
-        all_bins = pl.DataFrame({"__bin": range(bins)}, schema={"__bin": pl.Int32})
-        dense = (
-            groups.join(all_bins, how="cross")
-            .join(counted, on=[*group_cols, "__bin"], how="left")
-            .with_columns(pl.col("len").fill_null(0).cast(pl.UInt32).alias("count"))
-            .sort(*group_cols, "__bin")
-        )
-
-        # Attach breakpoints (same for every group) and implode per group.
-        step = (hi - lo) / bins if hi > lo else 0.0
-        breakpoints = [lo + (i + 1.0) * step for i in range(bins)]
-        n_groups = groups.height
-        dense = dense.with_columns(
-            pl.Series("breakpoint", breakpoints * n_groups, dtype=pl.Float64)
-        )
-        return (
-            dense.group_by(*group_cols, maintain_order=True)
-            .agg(pl.struct("breakpoint", "count").implode().alias(uid))
-            .sort(*group_cols)
-        )
-
-    return run
+) -> pl.DataFrame:
+    """Sparse (group, bin) counts -> per-group imploded struct format."""
+    groups = counted.select(*group_cols).unique().sort(*group_cols)
+    all_bins = pl.DataFrame({"__bin": range(bins)}, schema={"__bin": pl.Int32})
+    dense = (
+        groups.join(all_bins, how="cross")
+        .join(counted, on=[*group_cols, "__bin"], how="left")
+        .with_columns(pl.col("len").fill_null(0).cast(pl.UInt32).alias("count"))
+        .sort(*group_cols, "__bin")
+    )
+    step = (hi - lo) / bins if hi > lo else 0.0
+    breakpoints = [lo + (i + 1.0) * step for i in range(bins)]
+    dense = dense.with_columns(
+        pl.Series("breakpoint", breakpoints * groups.height, dtype=pl.Float64)
+    )
+    return (
+        dense.group_by(*group_cols, maintain_order=True)
+        .agg(pl.struct("breakpoint", "count").implode().alias(uid))
+        .sort(*group_cols)
+    )
 
 
 class Histogram(FlexTrace):
@@ -519,52 +485,28 @@ class Histogram(FlexTrace):
                 ),
             )
 
-            if scan_source:
-                # The plugin expression is opaque, so group_by().agg() must
-                # materialize per-group value lists. A flat group_by(group, bin)
-                # on the streaming engine avoids this.
-                return GroupedAggregationSpec(
-                    uid=self.uid,
-                    group_cols=group_by_cols,
-                    sort_cols=group_by_cols,
-                    agg_exprs=(),
-                    pre_group_filters=(),
-                    batch_key=batch_key,
-                    global_stats_cols=global_stats_cols,
-                    plan=_streaming_grouped_hist_plan(
-                        self.data_col,
-                        self.bins,
-                        self.uid,
-                        group_by_cols,
-                        lo_expr,
-                        hi_expr,
-                        bool(global_stats_cols),
-                        temporal,
-                        filter_expr,
-                    ),
-                )
-
-            hist_expr = (
-                data_col_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
-                .implode()
-                .alias(self.uid)
-            )
+            # The plugin expression is opaque, so group_by().agg() must
+            # materialize per-group value lists. A flat group_by(group, bin)
+            # on the streaming engine avoids this on both source kinds.
             return GroupedAggregationSpec(
                 uid=self.uid,
                 group_cols=group_by_cols,
                 sort_cols=group_by_cols,
-                agg_exprs=(hist_expr,),
-                pre_group_filters=(filter_expr,) if filter_expr is not None else (),
-                pre_group_filter_key=(
-                    (
-                        self.prop_key,
-                        tuple(update_range.get(self.prop_key)),
-                    )
-                    if update_range.get(self.prop_key) is not None
-                    else None
-                ),
+                agg_exprs=(),
+                pre_group_filters=(),
                 batch_key=batch_key,
                 global_stats_cols=global_stats_cols,
+                plan=_streaming_hist_plan(
+                    self.data_col,
+                    self.bins,
+                    self.uid,
+                    lo_expr,
+                    hi_expr,
+                    needs_stats=bool(global_stats_cols),
+                    temporal_dtype=temporal,
+                    filter_expr=filter_expr,
+                    group_cols=group_by_cols,
+                ),
             )
 
         # ----------------------------------------------------------------------
@@ -585,9 +527,9 @@ class Histogram(FlexTrace):
                     self.uid,
                     lo_expr,
                     hi_expr,
-                    bool(global_stats),
-                    temporal,
-                    filter_expr,
+                    needs_stats=bool(global_stats),
+                    temporal_dtype=temporal,
+                    filter_expr=filter_expr,
                 ),
             )
 
