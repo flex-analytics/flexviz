@@ -118,42 +118,52 @@ def _streaming_envelope_plan(
     vp_filter: pl.Expr | None,
     x_range: tuple | None,
     schema: pl.Schema | None,
+    *,
+    group_cols: tuple[str, ...] | None = None,
 ):
     """Streaming min-max envelope using equal-width buckets in x.
 
-    Replaces the two-pass ``_native_envelope_plan``. One streaming collect, no
-    intermediate collects.
+    One streaming collect, no intermediate collects. ``min_by``/``max_by``
+    locate the x value at each y extremum in a single associative pass, so
+    the group never buffers.
 
-    Buckets partition the x range into ``n_points // 2`` equal-width bins.
-    ``min_by``/``max_by`` locate the x value at each y extremum in a single
-    associative pass, so the group never buffers.
-
-    When zoomed, the viewport provides the x bounds. When unzoomed, the x
-    domain is read from parquet statistics (metadata-only on an unfiltered
-    scan, streaming count on a cross-filtered scan).
+    When ``group_cols`` is ``None``, returns a one-column imploded struct
+    (for ``AggregationSpec``). When set, returns ``group_cols`` plus the uid
+    column (for ``GroupedAggregationSpec``). The grouped path avoids the
+    plugin kernel's per-group list materialization by using a flat
+    multi-level group_by that the streaming engine handles directly.
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
-    member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
-    point. This is a deliberate trade: the previous two-pass plan paid 2.9x
-    runtime and 39x memory for deterministic tie-breaking.
+    member can vary with ``POLARS_MAX_THREADS``. Any member is a valid
+    envelope point.
     """
     import math
 
     n_out = max(n_points // 2, 1)
-    empty = pl.DataFrame(
-        {uid: [[]]},
-        schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
-    )
+    gcols = group_cols or ()
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+    def empty() -> pl.DataFrame:
+        """The no-rows result, in the shape the caller's spec kind expects."""
+        struct = pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))
+        if not gcols:
+            return pl.DataFrame({uid: [[]]}, schema={uid: struct})
+        # Group dtypes come from the schema: an Int group column must not come
+        # back as Utf8 just because the frame happens to be empty.
+        gschema = {c: (schema.get(c) if schema else None) or pl.Utf8 for c in gcols}
+        return pl.DataFrame(schema={**gschema, uid: struct})
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        del stats_row
         src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
-        src = src.select(x_col, y_col)
+        src = src.select(*gcols, x_col, y_col)
 
         dtype = schema.get(x_col) if schema else None
         is_temporal = dtype is not None and dtype.is_temporal()
 
-        # Bucket arithmetic runs on the physical representation so that
-        # temporal columns reduce to plain integer division.
+        # Bucket arithmetic on the physical representation so temporal
+        # columns reduce to plain integer division.
         phys_expr = pl.col(x_col).to_physical() if is_temporal else pl.col(x_col)
         if x_range is not None:
             x_lo, x_hi = x_range[0], x_range[1]
@@ -171,14 +181,12 @@ def _streaming_envelope_plan(
             x_hi = domain["__hi"].item()
 
         if x_lo is None or x_hi is None:
-            return empty
+            return empty()
 
         span = x_hi - x_lo
         # Float columns need true division: integer ceiling division rounds a
         # sub-1 width up to 1 (0.002 / 500 -> 1), collapsing every row into
-        # one bucket. Integer and temporal columns use ceiling division to keep
-        # the width whole. The check is on the column dtype, not the Python
-        # type of span, because JSON deserializes 100.0 as int.
+        # one bucket.
         use_float_div = dtype is not None and dtype.is_float()
         if span <= 0:
             bsz = 1
@@ -189,17 +197,13 @@ def _streaming_envelope_plan(
 
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
-
         y = pl.col(y_col)
+        bucket_expr = (
+            ((phys_expr - lo_lit) // bsz_lit).clip(upper_bound=n_out - 1).alias("__b")
+        )
+
         result = (
-            src.group_by(
-                # True division lands x_hi exactly on n_out; fold that lone
-                # top row back into the last bucket instead of letting it open
-                # an n_out + 1-th one and overrun the n_points budget.
-                ((phys_expr - lo_lit) // bsz_lit)
-                .clip(upper_bound=n_out - 1)
-                .alias("__b")
-            )
+            src.group_by(*[pl.col(c) for c in gcols], bucket_expr)
             .agg(
                 pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
                 pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
@@ -208,32 +212,35 @@ def _streaming_envelope_plan(
         )
 
         if result.is_empty():
-            return empty
+            return empty()
 
+        # Interleave lo/hi points, deduplicate, sort by x.
+        lo_cols = {f"__lo_{x_col}": "__x", f"__lo_{y_col}": "__y"}
+        hi_cols = {f"__hi_{x_col}": "__x", f"__hi_{y_col}": "__y"}
         pts = pl.concat(
             [
-                result.select(
-                    pl.col(f"__lo_{x_col}").alias("__x"),
-                    pl.col(f"__lo_{y_col}").alias("__y"),
-                ),
-                result.select(
-                    pl.col(f"__hi_{x_col}").alias("__x"),
-                    pl.col(f"__hi_{y_col}").alias("__y"),
-                ),
+                result.select(*gcols, **{v: pl.col(k) for k, v in lo_cols.items()}),
+                result.select(*gcols, **{v: pl.col(k) for k, v in hi_cols.items()}),
             ]
         ).drop_nulls("__x")
-        pts = pts.unique().sort("__x")
+        pts = pts.unique().sort(*gcols, "__x")
 
-        return pts.select(
+        struct_expr = (
             pl.struct(
                 **{
-                    x_col: pl.col("__x").alias(x_col),
-                    y_col: pl.col("__y").alias(y_col),
+                    x_col: pl.col("__x"),
+                    y_col: pl.col("__y"),
                 }
             )
             .implode()
             .alias(uid)
         )
+
+        if gcols:
+            return (
+                pts.group_by(*gcols, maintain_order=True).agg(struct_expr).sort(*gcols)
+            )
+        return pts.select(struct_expr)
 
     return run
 
@@ -592,8 +599,6 @@ class LinePlot(FlexTrace):
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
-            # Grouped lines restrict the frame *before* grouping, and a
-            # frame-level filter is not a slice, so this path keeps the mask.
             vp_expr = (
                 _range_filter_expr(self.x_col, x_range, schema=schema)
                 if x_range is not None
@@ -603,6 +608,31 @@ class LinePlot(FlexTrace):
                 self.x_col,
                 tuple(x_range) if x_range is not None else None,
             )
+
+            if self.downsample == "minmax":
+                # The plugin expression is opaque, so group_by().agg() must
+                # materialize per-group value lists. A flat group_by(group,
+                # bucket) on the streaming engine avoids this on both source
+                # kinds.
+                return GroupedAggregationSpec(
+                    uid=self.uid,
+                    group_cols=group_by_cols,
+                    sort_cols=group_by_cols,
+                    agg_exprs=(),
+                    pre_group_filters=(),
+                    batch_key=batch_key,
+                    plan=_streaming_envelope_plan(
+                        self.x_col,
+                        self.y_col,
+                        self.n_points,
+                        self.uid,
+                        vp_expr,
+                        x_range,
+                        schema,
+                        group_cols=group_by_cols,
+                    ),
+                )
+
             grouped_expr = _plugin_line_agg_expr(
                 self.x_col,
                 self.y_col,

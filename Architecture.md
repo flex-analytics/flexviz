@@ -446,7 +446,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - `trace_type = "line"`
 - Three downsampling strategies, selected via `downsample` param:
   - **`"nth"`** — uniform stride: uses the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`) — stride computed inside the kernel, no `len()` expression dependency, enabling N grouped sub-traces to parallelize in one `select()`.
-  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket and gathers x and y at those indices. On a resident frame this uses the single `minmax_line` Rust kernel call (one kernel call on purpose: Polars does not CSE opaque plugin expressions, so the earlier two-gather form ran the whole scan twice per trace). On a scan source the kernel would materialise the whole column, so the engine swaps in `_streaming_envelope_plan`: a single streaming `group_by` with equal-width buckets in x and `min_by`/`max_by` for the x at each extremum. Preserves extrema and spikes on both paths.
+  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket and gathers x and y at those indices. Ungrouped on a resident frame this uses the single `minmax_line` Rust kernel call (one kernel call on purpose: Polars does not CSE opaque plugin expressions, so the earlier two-gather form ran the whole scan twice per trace). Ungrouped on a scan source the kernel would materialise the whole column, so the engine swaps in `_streaming_envelope_plan`: a single streaming `group_by` with equal-width buckets in x and `min_by`/`max_by` for the x at each extremum. **Grouped always uses `_streaming_envelope_plan`, on both source kinds**, because `group_by().agg()` around the opaque kernel has to materialise a per-group value list. Buckets are then cut on the x domain shared by every group, so a group covering part of the domain gets a proportional share of `n_points` rather than its own budget. Preserves extrema and spikes on all paths.
   - **`"fpcs"`** — Feature-Preserving Compensated Sampling: runs the same MinMax bucket pass as `minmax`, then applies a compensation algorithm to carry forward "deferred" extrema across windows. Uses the `_fpcs_line` combined kernel (index selection + gather in one call). `n_points` is a target, not a hard cap; output can reach up to roughly `2 * n_points`.
 - Viewport restriction, ungrouped lines: when the x column has been asserted sorted (`check_sorted` / `assume_sorted`, surfaced via `LFQueryBuilder.is_sorted`, threaded by the engine as `x_sorted`), the viewport becomes a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`; otherwise a dtype-aware `is_between` mask. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
@@ -464,6 +464,17 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
 - Uses the `fixed_hist` Rust plugin with explicit bin bounds.
+- **Source-dependent formulation.** The kernel takes a contiguous `Series`, so
+  on a scan it materialises the whole column: measured at 1738 MiB over 200M
+  rows against 273 MiB for the streaming plan. Ungrouped on a scan therefore
+  swaps in `_streaming_hist_plan`, a `group_by(bin).len()` on the streaming
+  engine, and grouped uses it on *every* source (`group_by().agg()` around the
+  opaque kernel has to materialise a per-group value list: 9886 MiB against
+  1176 MiB at 200M rows). Both reproduce the kernel's arithmetic exactly,
+  including `FIXED_HIST_ROUND_EPS`, via `kernel_bin_index` in `_hist_helpers.py`;
+  `tests/test_trace_hist_streaming.py` is the equivalence gate. The streaming
+  form trades roughly 2x wall time for the memory when the domain is unknown,
+  because it needs one pass for min/max before it can bin.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the injected global min/max
@@ -558,8 +569,8 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 
 - `trace_type = "histogram2d"` · `axes = ("x", "y")` · `recompute_axes = ("x", "y")` · `overlay_style = "filtered_only"`
 - `z` is optional — when `None`, rows are counted per bin (implicit count). When given, `histfunc` is required.
-- Count-only `Histogram2D` uses the `flexviz_polars` `fixed_hist2d` Rust kernel when available.
-- z-column `Histogram2D` supports `histfunc in {"sum", "mean", "min", "max"}` and uses `fixed_hist2d_reduce` when available.
+- Count-only `Histogram2D` uses the `flexviz_polars` `fixed_hist2d` Rust kernel on a resident frame. On a scan it swaps in a streaming plan that encodes `(x_bin, y_bin)` as one `Int32` key and runs `group_by(key).len()`, for the same reason as the 1-D histogram: the kernel materialises both columns (3292 MiB against 364 MiB at 200M rows, for roughly 2.7x the wall time). `tests/test_trace_hist2d_streaming.py` is the equivalence gate — counts *and* the packed `x_lo`/`x_hi`/`y_lo`/`y_hi`, which `_to_update` turns into cell centres and hover edges.
+- z-column `Histogram2D` supports `histfunc in {"sum", "mean", "min", "max"}` and uses `fixed_hist2d_reduce` when available. It keeps the kernel on every source: the streaming aggregate cannot reproduce the per-cell reducer.
 - A temporal x and/or y axis is binned on its `to_physical()` representation (the kernel is numeric-only) with physical bin edges; `_to_update` restores datetime centers on that axis (date axis) and emits epoch-ms hover bounds — same scheme as the 1-D `Histogram`.
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The current viewport path still prefilters x/y/z before calling the Rust kernel. A later viewport-aware kernel can fuse range rejection into the Rust loop.
@@ -801,8 +812,14 @@ LFQueryBuilder
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       base_ldf = _ldf (+ with_columns(col.min(), col.max()) for any global_stats_cols)
       filtered_ldf = base_ldf if not filter_exprs else base_ldf.filter(*filter_exprs)
-      regular specs  → one batched select(...).collect()
-      grouped specs  → fused group_by(...).agg(...).sort(...).collect() per batch
+      stats_row      → collected once from the unfiltered frame when any spec
+                       with a plan asks for global_stats_cols (metadata-only on
+                       a parquet scan); a plan cannot read the broadcast
+                       columns without binding its bin edges to the cross-filter
+      regular specs  → one batched select(...).collect(); specs carrying a plan
+                       run individually and are hstacked back on
+      grouped specs  → fused group_by(...).agg(...).sort(...).collect() per batch;
+                       specs carrying a plan run individually and do not fuse
 ```
 
 `AggregationSpec` (dataclass):
@@ -811,10 +828,18 @@ LFQueryBuilder
 AggregationSpec
 ├── expr: pl.Expr    ← evaluated in the shared filtered LazyFrame context;
 │                       output column aliased to trace uid; yields a Struct series
+│                       (a placeholder when plan is set — the select skips it)
 ├── uid: str = ""    ← trace uid; used by engine for overlay_style dispatch
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
-                        are added on the unfiltered base frame before filtering
+├── global_stats_cols: Tuple[str, ...] = ()
+│                    ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
+│                       are added on the unfiltered base frame before filtering
+└── plan: Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None
+                     ← escape hatch for an aggregation that cannot be a select
+                        expression. Called as plan(filtered_ldf, stats_row) and
+                        must return a one-row, one-column frame named uid. Used
+                        by the out-of-core line envelope, the scan-source
+                        histogram and the scan-source count-only hist2d, which
+                        all stream a group_by the shared select cannot carry.
 ```
 
 `GroupedAggregationSpec` (dataclass):
@@ -828,8 +853,16 @@ GroupedAggregationSpec
 ├── pre_group_filters: Tuple[pl.Expr, ...]
 ├── pre_group_filter_key: Any            ← semantic key for grouped fusion safety
 ├── batch_key: Tuple[Any, ...]
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← same semantics as AggregationSpec.global_stats_cols
+├── global_stats_cols: Tuple[str, ...] = ()
+│                    ← same semantics as AggregationSpec.global_stats_cols
+└── plan: Callable[[pl.LazyFrame, pl.DataFrame | None], pl.DataFrame] | None
+                     ← same escape hatch, returning a frame shaped like the
+                        group_by().agg().sort() result. When set, agg_exprs is
+                        ignored and the spec does not fuse. Grouped histograms
+                        and grouped min-max lines always carry one: the plugin
+                        expression is opaque, so group_by().agg() has to
+                        materialise per-group value lists, while a flat
+                        group_by(group, bin) streams.
 ```
 
 Grouped specs with identical `(group_cols, sort_cols, batch_key)` are fused into one

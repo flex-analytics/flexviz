@@ -829,6 +829,7 @@ class FlexEngine:
         histogram_domains: Dict[str, tuple[str, ...]],
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
+        scan_source = self._backend_lf is not None and self._backend_lf.is_scan
 
         for item in aggregation_traces:
             ti = item.info
@@ -841,6 +842,7 @@ class FlexEngine:
                         update_range=item.update_range,
                         schema=backend_schema,
                         histogram_domain_cols=histogram_domains.get(ti.uid),
+                        scan_source=scan_source,
                     )
                 )
             elif trace.trace_type == "line":
@@ -857,9 +859,15 @@ class FlexEngine:
                             self._backend_lf is not None
                             and self._backend_lf.is_sorted(trace.x_col)
                         ),
-                        scan_source=(
-                            self._backend_lf is not None and self._backend_lf.is_scan
-                        ),
+                        scan_source=scan_source,
+                    )
+                )
+            elif trace.trace_type == "histogram2d":
+                agg_specs.append(
+                    trace.get_aggregation_spec(
+                        update_range=item.update_range,
+                        schema=backend_schema,
+                        scan_source=scan_source,
                     )
                 )
             else:

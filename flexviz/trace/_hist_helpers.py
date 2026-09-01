@@ -18,6 +18,21 @@ import polars as pl
 
 _EPSILON = 1e-10  # prevents off-by-one when a data point equals the range maximum
 
+#: The Rust kernels add this *inside* the bin index, before truncating, so a
+#: value sitting a hair below a bin boundary lands in the bin above rather than
+#: the one below (``FIXED_HIST_ROUND_EPS`` in ``flexviz_polars/src/expressions.rs``,
+#: shared by ``fixed_hist`` and ``fixed_hist2d``). The streaming plans have to
+#: reproduce it exactly, so it lives here rather than once per trace module.
+#: ``tests/test_trace_hist_streaming.py`` pins the behaviour.
+_FIXED_HIST_ROUND_EPS: float = 1e-9
+
+#: The 2D kernels widen the span before computing the scale, so a value exactly
+#: at ``hi`` lands in the top bin (``FIXED_HIST2D_SPAN_EPS`` in
+#: ``expressions.rs``). The 1D kernel has no equivalent: ``hist.py`` widens
+#: ``hi`` itself with ``_HIST_BIN_EPSILON``. Not the same job as ``_EPSILON``
+#: above, which belongs to the pure-Polars ``bin_2d`` path.
+_FIXED_HIST2D_SPAN_EPS: float = 1e-10
+
 _AGG_FUNCTIONS: dict[str, Any] = {
     "sum": lambda col: pl.col(col).sum(),
     "mean": lambda col: pl.col(col).mean(),
@@ -35,6 +50,55 @@ _HISTNORM_OPTIONS = (
     "density",  # count / bin_width
     "probability density",  # count / (total * bin_width)
 )
+
+# ---------------------------------------------------------------------------
+# Streaming bin index (mirrors the Rust kernels)
+# ---------------------------------------------------------------------------
+
+
+def kernel_bin_index(value: pl.Expr, lo: float, scale: float, n_bins: int) -> pl.Expr:
+    """The kernels' bin arithmetic as an expression, for streaming plans.
+
+    Mirrors ``count_value`` / ``count_2d_slices`` in ``expressions.rs``::
+
+        counts[(((v - lo) * scale + FIXED_HIST_ROUND_EPS) as usize).min(max_idx)] += 1
+
+    Returns the bin index, or null for a value the kernels skip. Callers drop
+    the null group and zero-fill the bins nothing landed in. *scale* differs
+    between 1D and 2D (the 2D kernels widen the span first), so it is the
+    caller's to compute; everything after it must not.
+
+    Three choices here are deliberate.
+
+    **Clip before the cast, not after.** Both orders agree on in-range data --
+    truncation and floor differ only for negatives, and the clip maps those to
+    0 either way -- but clipping first also bounds the value before it reaches
+    ``Int32``, which matters when a narrow viewport and a far outlier make
+    ``(v - lo) * scale`` overflow it.
+
+    **No ``.floor()``.** It is redundant in front of a clip and a truncating
+    cast. It is not a performance question either: the two forms measure
+    within 0.5 percent of each other at 500M rows.
+
+    **A non-strict cast is the null/NaN guard.** The kernels skip both, and a
+    strict cast of NaN raises, so a guard is not optional. The clip has already
+    bounded the value into ``Int32`` range, so NaN is the only conversion this
+    cast can fail on: ``strict=False`` nulls exactly those rows and nothing
+    else. Nulls reach here as nulls on their own, because the arithmetic
+    propagates them. This costs nothing measurable, where an explicit
+    ``fill_nan``/``is_nan`` pass costs about 6 percent of the scan at 200M rows.
+
+    **The cast to Float64 is load-bearing, not decoration.** Polars keeps
+    ``Float32 - <python float>`` in Float32, and the kernels widen to f64
+    before doing any arithmetic. Without the cast, a Float32 column bins at
+    Float32 precision and drifts from the kernel.
+    """
+    return (
+        ((value.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
+        .clip(0.0, float(n_bins - 1))
+        .cast(pl.Int32, strict=False)
+    )
+
 
 # ---------------------------------------------------------------------------
 # Type aliases

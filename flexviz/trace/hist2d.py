@@ -41,8 +41,10 @@ from .base import (
 )
 from ._hist_helpers import (
     HeatmapColorRange,
+    _FIXED_HIST2D_SPAN_EPS,
     _HISTNORM_OPTIONS,
     apply_histnorm,
+    kernel_bin_index,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
@@ -306,6 +308,8 @@ class Histogram2D(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        scan_source: bool = False,
     ) -> AggregationSpec:
         x_range = update_range.get("x")
         y_range = update_range.get("y")
@@ -313,6 +317,19 @@ class Histogram2D(FlexTrace):
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
+
+        if scan_source and self.z_col is None:
+            return _streaming_hist2d_spec(
+                self.x_col,
+                self.y_col,
+                self.x_bins,
+                self.y_bins,
+                x_range,
+                y_range,
+                self.uid,
+                schema,
+            )
+
         if self.z_col is None:
             expr, global_stats_cols = _hist2d_count_expr(
                 self.x_col,
@@ -581,6 +598,114 @@ def _hist2d_count_expr(
         nb_y,
     ).alias(uid)
     return expr, global_stats_cols
+
+
+def _streaming_hist2d_spec(
+    x_col: str,
+    y_col: str,
+    nb_x: int,
+    nb_y: int,
+    x_range: tuple | None,
+    y_range: tuple | None,
+    uid: str,
+    schema: pl.Schema | None,
+) -> AggregationSpec:
+    """Streaming count-only 2D histogram using a combined key.
+
+    Encodes ``(xbin, ybin)`` as a single Int32 key (``xbin + ybin * nb_x``)
+    to halve the hash cost. This is Mosaic's approach for raster queries.
+    The plugin kernel is faster but materializes both columns (~5 GiB at
+    500M rows); this plan's memory does not grow with the file.
+
+    Only count mode — ``histfunc`` (z-reduce) keeps the plugin kernel
+    because the streaming aggregate cannot reproduce its per-cell reducer.
+    """
+    x_lo, x_hi, y_lo, y_hi, mask, global_stats_cols = _hist2d_bounds(
+        x_col, y_col, x_range, y_range, schema
+    )
+
+    def _resolve_bounds(stats_row):
+        """Evaluate bound expressions against the stats row or a carrier."""
+        if global_stats_cols:
+            if stats_row is None:
+                raise ValueError("streaming hist2d needs global stats")
+            frame = stats_row
+        else:
+            frame = pl.DataFrame({"__unused": [0]})
+        row = frame.select(
+            x_lo.alias("__xlo"),
+            x_hi.alias("__xhi"),
+            y_lo.alias("__ylo"),
+            y_hi.alias("__yhi"),
+        )
+        return (
+            float(row["__xlo"][0]),
+            float(row["__xhi"][0]),
+            float(row["__ylo"][0]),
+            float(row["__yhi"][0]),
+        )
+
+    def run(
+        filtered_ldf: pl.LazyFrame, stats_row: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        xlo, xhi, ylo, yhi = _resolve_bounds(stats_row)
+
+        if xhi < xlo or yhi < ylo:
+            raise ValueError(
+                f"hist2d bounds are inverted: x=({xlo}, {xhi}) y=({ylo}, {yhi})"
+            )
+
+        # The kernel widens the span before computing the scale so a value
+        # exactly at hi lands in the top bin.
+        x_span = xhi - xlo + _FIXED_HIST2D_SPAN_EPS
+        y_span = yhi - ylo + _FIXED_HIST2D_SPAN_EPS
+        x_scale = nb_x / x_span
+        y_scale = nb_y / y_span
+
+        x_phys = _hist2d_phys_col(x_col, schema)
+        y_phys = _hist2d_phys_col(y_col, schema)
+
+        src = filtered_ldf
+        if mask is not None:
+            src = src.filter(mask)
+
+        xb = kernel_bin_index(x_phys, xlo, x_scale, nb_x)
+        yb = kernel_bin_index(y_phys, ylo, y_scale, nb_y)
+        # A null from either axis nulls the key, which the densify join drops.
+        # That is how null and NaN rows get skipped, as the kernel skips them.
+        combined = (xb + yb * nb_x).alias("__key")
+
+        counted = (
+            src.select(combined).group_by("__key").len().collect(engine="streaming")
+        )
+
+        # Densify: every cell must be present (kernel returns nb_x * nb_y values).
+        total = nb_x * nb_y
+        all_keys = pl.DataFrame({"__key": range(total)}, schema={"__key": pl.Int32})
+        dense = all_keys.join(counted, on="__key", how="left").sort("__key")
+        z_flat = dense["len"].fill_null(0).cast(pl.UInt32).to_list()
+
+        # Package as the kernel's output format: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}
+        return pl.DataFrame(
+            {
+                uid: [
+                    {
+                        "z_flat": z_flat,
+                        "x_lo": xlo,
+                        "x_hi": xhi,
+                        "y_lo": ylo,
+                        "y_hi": yhi,
+                    }
+                ]
+            }
+        )
+
+    return AggregationSpec(
+        expr=pl.lit(None).alias(uid),
+        uid=uid,
+        global_stats_cols=global_stats_cols,
+        plan=run,
+    )
 
 
 def _hist2d_reduce_expr(
