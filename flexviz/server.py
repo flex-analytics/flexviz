@@ -44,6 +44,7 @@ from __future__ import annotations
 import gzip
 import logging
 import threading
+import warnings
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
@@ -105,9 +106,20 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         static for the process lifetime** — there is no data-change
         invalidation yet (see issue #27).  Re-registering an existing name
         clears the cache (its data may have changed); registering a *new*
-        name leaves other sources' entries intact.
+        name leaves other sources' entries intact.  Re-registering with the
+        same ``LFQueryBuilder`` object already under that name keeps that
+        builder's own cached data and emits a ``UserWarning`` since those
+        caches go stale if the underlying data changed.
     """
     is_reregistration = name in _sources
+    if is_reregistration and data is _sources[name]:
+        warnings.warn(
+            f"source {name!r} re-registered with the same LFQueryBuilder "
+            "object; all its caches / state are kept. Pass raw data or a "
+            "new builder if the source data changed.",
+            UserWarning,
+            stacklevel=2,
+        )
     if isinstance(data, LFQueryBuilder):
         _sources[name] = data
     else:

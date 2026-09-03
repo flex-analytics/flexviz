@@ -179,8 +179,9 @@ class LFQueryBuilder:
         ``memoize`` keeps the result for the builder's lifetime. Only a
         ``cache=True`` source may set it — the same static-data contract that
         governs schema caching — because otherwise a reset must be able to see
-        changed source data. Re-registering a source replaces the builder and
-        drops the memo.
+        changed source data. Re-registering a source with raw data or a new
+        builder replaces the builder and drops the memo; re-registering with
+        the same builder keeps the memo, and the server warns about it.
         """
         memo = self._minmax_memo if memoize else {}
         sch = schema if schema is not None else self.schema

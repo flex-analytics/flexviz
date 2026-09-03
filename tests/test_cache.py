@@ -472,6 +472,30 @@ def test_reregister_clears_cache(client):
     assert cache_mod.get_cache().stats()["entries"] == 0
 
 
+def test_reregister_same_builder_keeps_memo_and_warns(client):
+    """Re-registering the same builder object keeps its min/max memo, but
+    warns because stale bounds could hide changed underlying data."""
+    from flexviz.server import get_source, register_source
+
+    lf = LFQueryBuilder(pl.DataFrame({"x": [1, 2], "y": [1, 2]}).lazy())
+    register_source("_same_builder_src", lf, cache=True)
+    lf.physical_minmax(["x"], memoize=True)
+    assert "x" in lf._minmax_memo
+
+    with pytest.warns(UserWarning, match="same LFQueryBuilder"):
+        register_source("_same_builder_src", lf, cache=True)
+    assert "x" in lf._minmax_memo
+    assert get_source("_same_builder_src") is lf
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        register_source(
+            "_same_builder_src", pl.DataFrame({"x": [3, 4], "y": [3, 4]}), cache=True
+        )
+
+
 def test_reregister_clears_cube_cache(client):
     """Source re-registration invalidates BOTH caches (delta + cube blobs)."""
     from flexviz.server import register_source
