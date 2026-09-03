@@ -1,8 +1,8 @@
 """Shared helpers for 2D histogram traces (Histogram2D, GeoHistogram2D, CorrHeatmap).
 
-Provides constants, type aliases, aggregation expression builders, color-normalization
-helpers, and a pure-Polars grid generator — used by the heatmap trace classes to
-avoid duplication.
+Provides histfunc/histnorm constants and type aliases, the ``apply_histnorm``
+normalization function, and color-scale/color-range validation helpers. The
+heatmap trace classes share them to avoid duplication.
 """
 
 from __future__ import annotations

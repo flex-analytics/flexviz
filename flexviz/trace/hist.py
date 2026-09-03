@@ -262,6 +262,9 @@ class Histogram(FlexTrace):
           the engine resolved for this trace. It holds one entry per
           same-figure sibling column, so related histograms bin over one
           shared domain.
+
+        An unzoomed trace requires ``data_col`` in ``domains``; a
+        ``(None, None)`` entry means an empty or all-null column.
         """
         filter_expr = _range_filter_expr(
             self.data_col, update_range.get(self.prop_key), schema=schema
@@ -352,9 +355,15 @@ class Histogram(FlexTrace):
                 pl.lit(float(axis_range[1]) + _HIST_BIN_EPSILON),
             )
 
+        # The trace's own column must be a resolved key; a missing key means
+        # the caller violated the unzoomed-domains contract.
+        resolved = domains or {}
+        if self.data_col not in resolved:
+            raise KeyError(self.data_col)
+
         # Siblings sharing a domain widen it: the lowest low and the highest
         # high across every column the engine resolved for this trace.
-        bounds = (domains or {}).values()
+        bounds = resolved.values()
         los = [lo for lo, _ in bounds if lo is not None]
         his = [hi for _, hi in bounds if hi is not None]
         lo = min(los) if los else 0.0

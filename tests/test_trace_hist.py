@@ -343,7 +343,9 @@ class TestHistogramGroupedBinAlignment:
         lf = LFQueryBuilder(df)
         trace = Histogram(x="val", bins=5, group_by="cat")
         update_range = {"x": list(x_range)} if x_range is not None else {}
-        spec = trace.get_aggregation_spec(update_range, schema=lf.schema)
+        spec = trace.get_aggregation_spec(
+            update_range, schema=lf.schema, domains=_domains(lf, trace, update_range)
+        )
         _, grouped_dfs = lf.aggregate([], [spec])
         results = trace._to_grouped_update(grouped_dfs[trace.uid]).group_results
         return [list(cr.updates["x"]) for cr in results]
@@ -623,7 +625,9 @@ class TestHistogramHoverBounds:
         df = pl.DataFrame({"val": list(range(20))})
         lf = LFQueryBuilder(df.lazy())
         schema = df.schema
-        agg_spec = t.get_aggregation_spec(update_range={}, schema=schema)
+        agg_spec = t.get_aggregation_spec(
+            update_range={}, schema=schema, domains=_domains(lf, t, {})
+        )
         result_df, _ = lf.aggregate(filter_exprs=[], agg_specs=[agg_spec])
         tr = t._to_update(result_df)
         assert "hover_bounds" in tr.updates, "hover_bounds must be in updates"
@@ -640,7 +644,9 @@ class TestHistogramHoverBounds:
         df = pl.DataFrame({"val": list(range(16))})
         lf = LFQueryBuilder(df.lazy())
         schema = df.schema
-        agg_spec = t.get_aggregation_spec(update_range={}, schema=schema)
+        agg_spec = t.get_aggregation_spec(
+            update_range={}, schema=schema, domains=_domains(lf, t, {})
+        )
         result_df, _ = lf.aggregate(filter_exprs=[], agg_specs=[agg_spec])
         tr = t._to_update(result_df)
         bounds = tr.updates["hover_bounds"]
@@ -657,7 +663,10 @@ class TestHistogramHoverBounds:
         df = pl.DataFrame({"val": list(range(12))})
         lf = LFQueryBuilder(df.lazy())
         result_df, _ = lf.aggregate(
-            filter_exprs=[], agg_specs=[t.get_aggregation_spec({}, df.schema)]
+            filter_exprs=[],
+            agg_specs=[
+                t.get_aggregation_spec({}, df.schema, domains=_domains(lf, t, {}))
+            ],
         )
         tr = t._to_update(result_df)
         assert "x" in tr.updates, "x must still be present"
@@ -670,7 +679,10 @@ class TestHistogramHoverBounds:
         df = pl.DataFrame({"val": [1.0, 2.0, 3.0]})
         lf = LFQueryBuilder(df.lazy())
         result_df, _ = lf.aggregate(
-            filter_exprs=[], agg_specs=[t.get_aggregation_spec({}, df.schema)]
+            filter_exprs=[],
+            agg_specs=[
+                t.get_aggregation_spec({}, df.schema, domains=_domains(lf, t, {}))
+            ],
         )
         tr = t._to_update(result_df)
         x_len = len(tr.updates["x"])

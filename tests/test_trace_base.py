@@ -395,7 +395,10 @@ class TestTraceResult:
         df = pl.DataFrame({"val": [float(i) for i in range(100)]})
         lf = LFQueryBuilder(df)
         trace = Histogram(x="val", bins=10)
-        agg = trace.get_aggregation_spec({}, schema=lf.schema)
+        domains = lf.physical_minmax(
+            list(trace.domain_cols({})), lf.schema, memoize=False
+        )
+        agg = trace.get_aggregation_spec({}, schema=lf.schema, domains=domains)
         df_agg, _ = lf.aggregate([], [agg])
         result = trace._to_update(df_agg)
         assert isinstance(result, TraceResult)
@@ -433,7 +436,15 @@ class TestGroupValueKeyConsistency:
         from flexviz.LF import GroupedAggregationSpec, LFQueryBuilder
 
         lf = LFQueryBuilder(df)
-        spec = trace.get_aggregation_spec({}, schema=lf.schema)
+        cols = trace.domain_cols({})
+        # Only Histogram/Histogram2D/LinePlot accept `domains`; box and bar
+        # never need it (domain_cols is always empty for them).
+        kwargs = (
+            {"domains": lf.physical_minmax(list(cols), lf.schema, memoize=False)}
+            if cols
+            else {}
+        )
+        spec = trace.get_aggregation_spec({}, schema=lf.schema, **kwargs)
 
         if isinstance(spec, GroupedAggregationSpec):
             _, grouped = lf.aggregate([], [spec])
@@ -528,7 +539,7 @@ class TestAggregationSpecUid:
         from flexviz.trace.hist import Histogram
 
         trace = Histogram(x="val")
-        spec = trace.get_aggregation_spec({}, schema=None)
+        spec = trace.get_aggregation_spec({}, schema=None, domains={"val": (0.0, 1.0)})
         assert spec.uid == trace.uid
 
     def test_box_agg_spec_has_uid(self):

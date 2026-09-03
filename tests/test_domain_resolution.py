@@ -363,3 +363,34 @@ class TestFilterStableEdges:
             )
         ]
         assert self._edges(df, trace, []) == self._edges(df, trace, selection)
+
+
+# ---- domains contract: unzoomed traces require their columns ----------------
+
+
+class TestDomainsContract:
+    """An unzoomed trace must fail loudly when ``domains`` lacks its column."""
+
+    @staticmethod
+    def _schema() -> pl.Schema:
+        return pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]}).schema
+
+    def test_histogram_missing_domain_raises(self):
+        trace = Histogram(x="a", bins=4)
+        with pytest.raises(KeyError, match="a"):
+            trace.get_aggregation_spec({}, schema=self._schema(), domains={})
+
+    def test_histogram2d_missing_domain_raises(self):
+        trace = Histogram2D(x="a", y="b", x_bins=2, y_bins=2)
+        with pytest.raises(KeyError, match="b"):
+            trace.get_aggregation_spec(
+                {}, schema=self._schema(), domains={"a": (0.0, 1.0)}
+            )
+
+    def test_line_missing_domain_raises(self):
+        df = pl.DataFrame({"k": [1.0, 2.0], "a": [3.0, 4.0]})
+        trace = LinePlot(x="k", y="a", n_points=10)
+        with pytest.raises(KeyError, match="k"):
+            trace.get_aggregation_spec(
+                {}, schema=df.schema, scan_source=True, domains={}
+            )

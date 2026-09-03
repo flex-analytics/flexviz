@@ -357,8 +357,13 @@ FlexTrace (ABC)
 ├── group_by: str | list[str] | None     ← raw value from _params["group_by"]
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
-├── get_aggregation_spec(update_range, schema)
+├── domain_cols(update_range, *, scan_source=False) → tuple[str, ...]
+│     ← columns whose unfiltered (min, max) the spec needs; () when the
+│       viewport supplies bounds
+├── get_aggregation_spec(update_range, schema, *, domains=None)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
+│     ← histogram, histogram2d, and line (streaming envelope) require their
+│       unzoomed domain_cols as keys in domains
 ├── _to_update(df_agg) → TraceResult                              [abstract]
 ├── _to_grouped_update(df_grouped) → TraceResult                  [grouped parents]
 ├── _range_filter_exprs(col, range_, schema) → List[pl.Expr]      [convenience]

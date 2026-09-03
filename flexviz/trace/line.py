@@ -599,6 +599,9 @@ class LinePlot(FlexTrace):
         minmax envelope switches to a streaming plan (``_streaming_envelope_plan``)
         that uses equal-width buckets in x with ``min_by``/``max_by``. The output
         is a valid envelope but not bit-identical to the kernel on exact plateaus.
+
+        An unzoomed streaming-envelope trace requires ``x_col`` in ``domains``;
+        a ``(None, None)`` entry means an empty or all-null column.
         """
         x_range = update_range.get("x")
 
@@ -652,7 +655,7 @@ class LinePlot(FlexTrace):
                         else None
                     ),
                     x_range,
-                    (domains or {}).get(self.x_col),
+                    (domains or {})[self.x_col] if x_range is None else None,
                     schema,
                 ),
             )

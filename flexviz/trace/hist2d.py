@@ -319,6 +319,12 @@ class Histogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
     ) -> AggregationSpec:
+        """Return the 2-D histogram aggregation spec.
+
+        An unzoomed trace requires both ``x_col`` and ``y_col`` in
+        ``domains``; a ``(None, None)`` entry means an empty or all-null
+        column.
+        """
         x_range = update_range.get("x")
         y_range = update_range.get("y")
         # Temporal axes bin on their physical representation; _to_update restores
@@ -560,7 +566,7 @@ def _hist2d_bounds(
 def _domain_lits(
     domains: Mapping[str, tuple[Any, Any]] | None, col: str
 ) -> tuple[pl.Expr, pl.Expr]:
-    lo, hi = (domains or {}).get(col, (None, None))
+    lo, hi = (domains or {})[col]
     return pl.lit(0.0 if lo is None else lo), pl.lit(1.0 if hi is None else hi)
 
 
