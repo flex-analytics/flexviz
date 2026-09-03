@@ -180,8 +180,8 @@ class LFQueryBuilder:
         ``cache=True`` source may set it — the same static-data contract that
         governs schema caching — because otherwise a reset must be able to see
         changed source data. Re-registering a source with raw data or a new
-        builder replaces the builder and drops the memo; re-registering with
-        the same builder keeps the memo, and the server warns about it.
+        builder replaces the builder and drops the memo. Re-registering the
+        same builder object keeps it, and the server warns.
         """
         memo = self._minmax_memo if memoize else {}
         sch = schema if schema is not None else self.schema

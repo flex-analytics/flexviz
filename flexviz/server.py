@@ -105,21 +105,22 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         of the initial (unfiltered) load.  Setting it **asserts the data is
         static for the process lifetime** — there is no data-change
         invalidation yet (see issue #27).  Re-registering an existing name
-        clears the cache (its data may have changed); registering a *new*
-        name leaves other sources' entries intact.  Re-registering with the
-        same ``LFQueryBuilder`` object already under that name keeps that
-        builder's own cached data and emits a ``UserWarning`` since those
-        caches go stale if the underlying data changed.
+        with raw data or a new builder replaces the builder and clears both
+        caches (its data may have changed). Re-registering with the same
+        ``LFQueryBuilder`` object already under that name invalidates
+        nothing and emits a ``UserWarning``; use it only to flip ``cache``.
     """
     is_reregistration = name in _sources
     if is_reregistration and data is _sources[name]:
         warnings.warn(
             f"source {name!r} re-registered with the same LFQueryBuilder "
-            "object; all its caches / state are kept. Pass raw data or a "
-            "new builder if the source data changed.",
+            "object; nothing was invalidated. Pass raw data or a new "
+            "builder if the source data changed.",
             UserWarning,
             stacklevel=2,
         )
+        set_source_cacheable(name, cache)
+        return
     if isinstance(data, LFQueryBuilder):
         _sources[name] = data
     else:

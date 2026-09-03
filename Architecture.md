@@ -360,10 +360,11 @@ FlexTrace (ABC)
 ├── domain_cols(update_range, *, scan_source=False) → tuple[str, ...]
 │     ← columns whose unfiltered (min, max) the spec needs; () when the
 │       viewport supplies bounds
-├── get_aggregation_spec(update_range, schema, *, domains=None)
+├── get_aggregation_spec(update_range, schema)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
-│     ← histogram, histogram2d, and line (streaming envelope) require their
-│       unzoomed domain_cols as keys in domains
+│     ← histogram, histogram2d and line also take a `domains` keyword with
+│       the resolved bounds of their unzoomed domain_cols; the engine passes
+│       it per trace type, like `x_sorted` and `scan_source` for line
 ├── _to_update(df_agg) → TraceResult                              [abstract]
 ├── _to_grouped_update(df_grouped) → TraceResult                  [grouped parents]
 ├── _range_filter_exprs(col, range_, schema) → List[pl.Expr]      [convenience]
@@ -882,7 +883,7 @@ Phase 1 (issue #26) caches only the **unfiltered *and* viewport-free** computati
 
 In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (issue #28 adds Redis/disk), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
 
-A `cache=True` source also memoizes each column's resolved unfiltered min/max (`LFQueryBuilder.physical_minmax`) on the builder for the source's lifetime, so a cached request never re-scans the data to resolve bin-edge domains. A `cache=False` source recomputes those bounds on every request that needs them, so an uncached reset always sees the current source data. Re-registering a source with raw data or a new builder replaces the builder and drops the memo; re-registering with the same builder keeps the memo, and the server warns about it.
+A `cache=True` source also memoizes each column's resolved unfiltered min/max (`LFQueryBuilder.physical_minmax`) on the builder for the source's lifetime, so a cached request never re-scans the data to resolve bin-edge domains. A `cache=False` source recomputes those bounds on every request that needs them, so an uncached reset always sees the current source data. Re-registering a source with raw data or a new builder replaces the builder and drops the memo. Re-registering the same builder object invalidates nothing, and the server warns.
 
 ### Routes
 
