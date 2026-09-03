@@ -15,6 +15,12 @@ from flexviz.trace.hist import Histogram
 # ---- helpers ---------------------------------------------------------------
 
 
+def _domains(lf: LFQueryBuilder, trace, update_range: dict) -> dict:
+    """Resolve a trace's unfiltered bounds the way ``FlexEngine`` does."""
+    cols = trace.domain_cols(update_range)
+    return lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+
+
 def _aggregate_hist(
     df: pl.DataFrame,
     bins: int = 20,
@@ -28,7 +34,9 @@ def _aggregate_hist(
     trace = Histogram(x=x, y=y, bins=bins, histnorm=histnorm)
     vp_key = "x" if x is not None else "y"
     update_range = {vp_key: x_range} if x_range else {}
-    agg_spec = trace.get_aggregation_spec(update_range, schema=lf.schema)
+    agg_spec = trace.get_aggregation_spec(
+        update_range, schema=lf.schema, domains=_domains(lf, trace, update_range)
+    )
     df_agg, _ = lf.aggregate([], [agg_spec])
     return trace._to_update(df_agg).updates
 
@@ -41,7 +49,9 @@ def _aggregate_grouped_hist(
     lf = LFQueryBuilder(df)
     trace = Histogram(x="val", bins=10, histnorm="count", group_by=group_by)
     update_range = {"x": x_range} if x_range is not None else {}
-    agg_spec = trace.get_aggregation_spec(update_range, schema=lf.schema)
+    agg_spec = trace.get_aggregation_spec(
+        update_range, schema=lf.schema, domains=_domains(lf, trace, update_range)
+    )
     _, grouped_dfs = lf.aggregate([], [agg_spec])
     return trace._to_grouped_update(grouped_dfs[trace.uid]).group_results or []
 
@@ -187,15 +197,16 @@ class TestHistogramBinAlignment:
         bins = 10
         t1 = Histogram(x="val", bins=bins)
         t2 = Histogram(x="val", bins=bins)
-        spec1 = t1.get_aggregation_spec({}, schema=lf.schema)
-        spec2 = t2.get_aggregation_spec({}, schema=lf.schema)
+        domains = _domains(lf, t1, {})
+        spec1 = t1.get_aggregation_spec({}, schema=lf.schema, domains=domains)
+        spec2 = t2.get_aggregation_spec({}, schema=lf.schema, domains=domains)
         df_agg, _ = lf.aggregate([], [spec1, spec2])
         centers1 = t1._to_update(df_agg).updates["x"]
         centers2 = t2._to_update(df_agg).updates["x"]
         assert list(centers1) == list(centers2)
 
-    def test_histogram_domain_cols_share_edges_across_different_columns(self):
-        """Explicit histogram domain columns align near-identical sibling ranges."""
+    def test_shared_domain_aligns_edges_across_different_columns(self):
+        """Sibling histograms handed one shared domain land on identical edges."""
         df = pl.DataFrame(
             {
                 "y_pos": [0.0, 0.25, 0.5, 0.75, 1.0],
@@ -204,16 +215,12 @@ class TestHistogramBinAlignment:
         )
         lf = LFQueryBuilder(df)
         bins = 4
-        domain_cols = ("y_pos", "y_neg")
         t_pos = Histogram(x="y_pos", bins=bins)
         t_neg = Histogram(x="y_neg", bins=bins)
+        shared = lf.physical_minmax(["y_pos", "y_neg"], lf.schema, memoize=False)
 
-        spec_pos = t_pos.get_aggregation_spec(
-            {}, schema=lf.schema, histogram_domain_cols=domain_cols
-        )
-        spec_neg = t_neg.get_aggregation_spec(
-            {}, schema=lf.schema, histogram_domain_cols=domain_cols
-        )
+        spec_pos = t_pos.get_aggregation_spec({}, schema=lf.schema, domains=shared)
+        spec_neg = t_neg.get_aggregation_spec({}, schema=lf.schema, domains=shared)
         df_agg, _ = lf.aggregate([], [spec_pos, spec_neg])
 
         centers_pos = list(t_pos._to_update(df_agg).updates["x"])
@@ -260,7 +267,9 @@ class TestHistogramBinAlignment:
         df = pl.DataFrame({"val": list(range(100))})
         lf = LFQueryBuilder(df)
         trace = Histogram(x="val", bins=10)
-        spec = trace.get_aggregation_spec({}, schema=lf.schema)
+        spec = trace.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, trace, {})
+        )
 
         # Baseline: no cross-filter
         df_agg_full, _ = lf.aggregate([], [spec])
@@ -297,8 +306,12 @@ class TestHistogramBinAlignment:
         bins = 10
         t_sin = Histogram(x="sin", bins=bins)
         t_cos = Histogram(x="cos", bins=bins)
-        spec_sin = t_sin.get_aggregation_spec({}, schema=lf.schema)
-        spec_cos = t_cos.get_aggregation_spec({}, schema=lf.schema)
+        spec_sin = t_sin.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, t_sin, {})
+        )
+        spec_cos = t_cos.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, t_cos, {})
+        )
 
         # Baseline — no cross-filter
         df_base, _ = lf.aggregate([], [spec_sin, spec_cos])
@@ -497,7 +510,9 @@ class TestHistogramTemporal:
         df = self._hourly_df(tz="UTC").with_columns(pl.Series("cat", ["A", "B"] * 50))
         lf = LFQueryBuilder(df)
         trace = Histogram(x="t", bins=10, histnorm="count", group_by="cat")
-        spec = trace.get_aggregation_spec({}, schema=lf.schema)
+        spec = trace.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, trace, {})
+        )
         _, grouped = lf.aggregate([], [spec])
         results = trace._to_grouped_update(grouped[trace.uid]).group_results or []
         assert len(results) == 2
@@ -557,7 +572,9 @@ class TestHistogramBinStabilityRegression:
         lf_filtered = LFQueryBuilder(df)
 
         trace = Histogram(x="val", bins=10, group_by="cat")
-        spec = trace.get_aggregation_spec({}, schema=lf_full.schema)
+        spec = trace.get_aggregation_spec(
+            {}, schema=lf_full.schema, domains=_domains(lf_full, trace, {})
+        )
 
         _, grouped_full = lf_full.aggregate([], [spec])
         _, grouped_filtered = lf_filtered.aggregate([pl.col("val") < 150], [spec])

@@ -23,7 +23,7 @@ Downsampling strategies:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Literal
 
 import polars as pl
@@ -117,6 +117,7 @@ def _streaming_envelope_plan(
     uid: str,
     vp_filter: pl.Expr | None,
     x_range: tuple | None,
+    x_domain: tuple | None,
     schema: pl.Schema | None,
 ):
     """Streaming min-max envelope using equal-width buckets in x.
@@ -128,9 +129,9 @@ def _streaming_envelope_plan(
     ``min_by``/``max_by`` locate the x value at each y extremum in a single
     associative pass, so the group never buffers.
 
-    When zoomed, the viewport provides the x bounds. When unzoomed, the x
-    domain is read from parquet statistics (metadata-only on an unfiltered
-    scan, streaming count on a cross-filtered scan).
+    When zoomed, the viewport provides the x bounds. When unzoomed, ``x_domain``
+    carries the unfiltered ``(min, max)`` the engine resolved, in physical
+    units, so a cross-filter cannot move the bucket edges.
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
@@ -163,12 +164,7 @@ def _streaming_envelope_plan(
             elif is_temporal:
                 x_lo, x_hi = int(x_lo), int(x_hi)
         else:
-            domain = src.select(
-                phys_expr.min().alias("__lo"),
-                phys_expr.max().alias("__hi"),
-            ).collect(engine="streaming")
-            x_lo = domain["__lo"].item()
-            x_hi = domain["__hi"].item()
+            x_lo, x_hi = x_domain if x_domain is not None else (None, None)
 
         if x_lo is None or x_hi is None:
             return empty
@@ -569,12 +565,28 @@ class LinePlot(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
+    def domain_cols(
+        self, update_range: Dict[str, Any], *, scan_source: bool = False
+    ) -> tuple[str, ...]:
+        # Only the ungrouped out-of-core minmax envelope bins in x; every other
+        # line formulation reads its bucket grid off the rows themselves.
+        if (
+            not scan_source
+            or self.downsample != "minmax"
+            or self.group_by_cols is not None
+            or update_range.get("x") is not None
+        ):
+            return ()
+        return (self.x_col,)
+
     def get_aggregation_spec(
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
         x_sorted: bool = False,
         scan_source: bool = False,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped line aggregation spec.
 
@@ -640,6 +652,7 @@ class LinePlot(FlexTrace):
                         else None
                     ),
                     x_range,
+                    (domains or {}).get(self.x_col),
                     schema,
                 ),
             )

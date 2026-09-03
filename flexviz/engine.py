@@ -236,11 +236,19 @@ class FlexEngine:
                 len(cached),
             )
 
+        # Resolved only here, past the fast-path: a fully cached request needs
+        # no min/max scan at all. Both overlay layers reuse these specs, so the
+        # shared unfiltered domain is resolved once per request.
+        domain_cols, domains = self._resolve_domains(
+            aggregation_traces, histogram_domains, backend_schema
+        )
+
         t_agg_start = time.perf_counter()
         agg_specs = self._collect_aggregation_specs(
             aggregation_traces=aggregation_traces,
             backend_schema=backend_schema,
-            histogram_domains=histogram_domains,
+            domain_cols=domain_cols,
+            domains=domains,
         )
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
@@ -306,8 +314,8 @@ class FlexEngine:
         own selection is ignored (re-brush case), as are ``None``-uid
         selections (they never filter in the legacy engine). Domain
         resolution stays on the UNFILTERED frame — unzoomed domains are
-        unfiltered min/max (bin edges are filter-stable, matching the
-        ``__hist_lo/hi__`` legacy semantics).
+        unfiltered min/max, so bin edges are filter-stable, exactly as in the
+        aggregation path.
         """
         if self._backend_lf is None or self._source_name is None:
             return [], {}
@@ -613,11 +621,10 @@ class FlexEngine:
         """Resolve ``domain=None`` (= full data domain) to concrete floats.
 
         One batched min/max ``select`` over the **unfiltered** LazyFrame covers
-        the free axis and every unresolved binned target column (mirrors the
-        ``__hist_lo_/__hist_hi_`` pattern in ``LFQueryBuilder.aggregate``; the
-        builder itself is never mutated). The free axis gets the min/max
-        verbatim — the binned-dim epsilon is applied later, uniformly, in
-        ``_resolved_target_dims``.
+        the free axis and every unresolved binned target column (the same
+        unfiltered-domain rule the aggregation path uses; the builder itself is
+        never mutated). The free axis gets the min/max verbatim — the binned-dim
+        epsilon is applied later, uniformly, in ``_resolved_target_dims``.
 
         A **categorical** free axis (bar/pie/treemap source) is not binned and
         takes no domain: free-domain resolution is skipped entirely (``domain``
@@ -667,7 +674,13 @@ class FlexEngine:
             needed.append(free_spec.column)
         needed += [col for _, col in box2d_axes]
         needed += unresolved_cols
-        minmax = self._backend_lf.physical_minmax(needed, schema) if needed else {}
+        # Cubes are built only for ``cache=True`` sources, so the static-data
+        # contract that ``memoize`` requires already holds.
+        minmax = (
+            self._backend_lf.physical_minmax(needed, schema, memoize=True)
+            if needed
+            else {}
+        )
 
         free = free_spec
         if resolve_free:
@@ -822,11 +835,44 @@ class FlexEngine:
         binding = self._scalable_traces[trace_info.uid].recompute_axes
         return {ax: update_range[ax] for ax in binding if ax in update_range}
 
+    def _resolve_domains(
+        self,
+        aggregation_traces: list[_AggregationTrace],
+        histogram_domains: Dict[str, tuple[str, ...]],
+        schema: pl.Schema | None,
+    ) -> tuple[Dict[str, tuple[str, ...]], Dict[str, tuple[Any, Any]]]:
+        """Resolve every unfiltered ``(min, max)`` this request needs, in one collect.
+
+        Bin edges must not move when a cross-filter narrows the data, so the
+        bounds come from the unfiltered frame. Each trace states its own columns
+        (``FlexTrace.domain_cols``); an unzoomed histogram instead takes the
+        union its same-figure siblings share, so their bars line up.
+
+        Memoized only for a cached source, whose data the cache contract already
+        treats as static — an uncached reset must be able to see changed data.
+        """
+        if self._backend_lf is None:
+            return {}, {}
+        domain_cols = {
+            item.info.uid: histogram_domains.get(item.info.uid)
+            or item.trace.domain_cols(
+                item.update_range, scan_source=self._backend_lf.is_scan
+            )
+            for item in aggregation_traces
+        }
+        needed = sorted({col for cols in domain_cols.values() for col in cols})
+        if not needed:
+            return domain_cols, {}
+        return domain_cols, self._backend_lf.physical_minmax(
+            needed, schema, memoize=self._cache is not None
+        )
+
     def _collect_aggregation_specs(
         self,
         aggregation_traces: list[_AggregationTrace],
         backend_schema: pl.Schema | None,
-        histogram_domains: Dict[str, tuple[str, ...]],
+        domain_cols: Dict[str, tuple[str, ...]],
+        domains: Dict[str, tuple[Any, Any]],
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
 
@@ -834,13 +880,14 @@ class FlexEngine:
             ti = item.info
             trace = item.trace
             t_s = time.perf_counter()
+            trace_domains = {c: domains[c] for c in domain_cols.get(ti.uid, ())}
 
-            if trace.trace_type == "histogram":
+            if trace.trace_type in ("histogram", "histogram2d"):
                 agg_specs.append(
                     trace.get_aggregation_spec(
                         update_range=item.update_range,
                         schema=backend_schema,
-                        histogram_domain_cols=histogram_domains.get(ti.uid),
+                        domains=trace_domains,
                     )
                 )
             elif trace.trace_type == "line":
@@ -860,6 +907,7 @@ class FlexEngine:
                         scan_source=(
                             self._backend_lf is not None and self._backend_lf.is_scan
                         ),
+                        domains=trace_domains,
                     )
                 )
             else:

@@ -216,19 +216,19 @@ class TestLFQueryBuilderAssumeSorted:
         lf.assume_sorted("a")
 
 
-# ---- LFQueryBuilder.physical_minmax (cube domain memo) --------------------
+# ---- LFQueryBuilder.physical_minmax ---------------------------------------
 
 
 class TestPhysicalMinMax:
     def test_basic_minmax(self):
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 5.0, 3.0]}).lazy())
-        assert b.physical_minmax(["a"]) == {"a": (1.0, 5.0)}
+        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 5.0)}
 
     def test_temporal_uses_physical(self):
         b = LFQueryBuilder(
             pl.DataFrame({"t": [date(2020, 1, 1), date(2020, 1, 11)]}).lazy()
         )
-        lo, hi = b.physical_minmax(["t"])["t"]
+        lo, hi = b.physical_minmax(["t"], memoize=True)["t"]
         # Date physical = days since epoch; the span is 10 days.
         assert hi - lo == 10
 
@@ -236,25 +236,28 @@ class TestPhysicalMinMax:
         """Second call must not re-collect — sabotage the LazyFrame to prove
         the value comes from the memo (the cube cache-hit TTFB guarantee)."""
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 2.0, 3.0]}).lazy())
-        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
         b._ldf = None  # any further .collect() would raise
-        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
 
     def test_partial_memo_only_collects_missing(self):
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 3.0], "c": [10.0, 40.0]}).lazy())
-        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
         # "a" is memoized; "c" is new — both returned, "a" not recomputed.
-        assert b.physical_minmax(["a", "c"]) == {"a": (1.0, 3.0), "c": (10.0, 40.0)}
+        assert b.physical_minmax(["a", "c"], memoize=True) == {
+            "a": (1.0, 3.0),
+            "c": (10.0, 40.0),
+        }
 
     def test_all_null_column_yields_none(self):
         b = LFQueryBuilder(
             pl.DataFrame({"a": pl.Series([None, None], dtype=pl.Float64)}).lazy()
         )
-        assert b.physical_minmax(["a"]) == {"a": (None, None)}
+        assert b.physical_minmax(["a"], memoize=True) == {"a": (None, None)}
 
     def test_duplicate_columns_deduped(self):
         """The same column in several roles (free axis == target dim) must not
         build duplicate select aliases (Polars DuplicateError)."""
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 4.0], "b": [2.0, 8.0]}).lazy())
-        out = b.physical_minmax(["a", "a", "b", "a"])
+        out = b.physical_minmax(["a", "a", "b", "a"], memoize=True)
         assert out == {"a": (1.0, 4.0), "b": (2.0, 8.0)}

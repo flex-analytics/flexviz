@@ -33,7 +33,15 @@ def _aggregate_hist2d(
         histfunc=histfunc,
         histnorm=histnorm,
     )
-    spec = trace.get_aggregation_spec(update_range or {}, schema=lf.schema)
+    update_range = update_range or {}
+    cols = trace.domain_cols(update_range)
+    spec = trace.get_aggregation_spec(
+        update_range,
+        schema=lf.schema,
+        domains=(
+            lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+        ),
+    )
     regular_df, _ = lf.aggregate([], [spec])
     return trace._to_update(regular_df)
 
