@@ -23,7 +23,7 @@
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
 - **Linked hover** — fully client-side; a single on/off toggle (`hover_mode`), with the runtime auto-selecting the projection from the hovered source trace: lines and 1D histograms project a point onto shared axes (guides + bin-bands), while 2D cell sources (histogram2d, geo) project a cell. Column-to-figure-axis mapping computed at page load; persists in spec state through share/restore
 - **Draggable dashboard grid** — optional GridStack layout (`layout.draggable=True`) with client-side drag/resize, persisted `grid_items`, and a toolbar lock button that toggles editability (`layout.grid_editable`) without backend round-trips
-- **Pre-group global statistics** — aggregation specs can list columns in `global_stats_cols`; `LFQueryBuilder` injects per-column `with_columns(col.min(), col.max())` before filtering/grouping, exposing global bounds as constant columns that expressions can reference with `.first()`.  `Histogram` uses these stats for stable no-viewport bin edges, and the engine supplies same-figure histogram domain columns so sibling histogram traces can share one lazy min/max domain without an extra collect.
+- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, and the out-of-core `LinePlot` envelope use these bounds for stable bin edges a cross-filter cannot move. A `cache=True` source memoizes the bounds; a `cache=False` source recomputes them on every request that needs them.
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
@@ -446,8 +446,9 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - `trace_type = "line"`
 - Three downsampling strategies, selected via `downsample` param:
   - **`"nth"`** — uniform stride: uses the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`) — stride computed inside the kernel, no `len()` expression dependency, enabling N grouped sub-traces to parallelize in one `select()`.
-  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket and gathers x and y at those indices. On a resident frame this uses the single `minmax_line` Rust kernel call (one kernel call on purpose: Polars does not CSE opaque plugin expressions, so the earlier two-gather form ran the whole scan twice per trace). On a scan source the kernel would materialise the whole column, so the engine swaps in `_streaming_envelope_plan`: a single streaming `group_by` with equal-width buckets in x and `min_by`/`max_by` for the x at each extremum. Preserves extrema and spikes on both paths.
+  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket and gathers x and y at those indices. On a resident frame this uses the single `minmax_line` Rust kernel call (one kernel call on purpose: Polars does not CSE opaque plugin expressions, so the earlier two-gather form ran the whole scan twice per trace). On a scan source the kernel would materialise the whole column, so the engine swaps in `_streaming_envelope_plan`: one streaming `group_by` collect with equal-width buckets in x and `min_by`/`max_by` for the x at each extremum. The x domain is the viewport when zoomed, or the engine-resolved unfiltered `(min, max)` when not, so a cross-filter never moves the bucket edges. Preserves extrema and spikes on both paths.
   - **`"fpcs"`** — Feature-Preserving Compensated Sampling: runs the same MinMax bucket pass as `minmax`, then applies a compensation algorithm to carry forward "deferred" extrema across windows. Uses the `_fpcs_line` combined kernel (index selection + gather in one call). `n_points` is a target, not a hard cap; output can reach up to roughly `2 * n_points`.
+- **Collect engine**: every collect on a source uses `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The same `is_scan` signal picks the kernel-vs-native formulation above.
 - Viewport restriction, ungrouped lines: when the x column has been asserted sorted (`check_sorted` / `assume_sorted`, surfaced via `LFQueryBuilder.is_sorted`, threaded by the engine as `x_sorted`), the viewport becomes a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`; otherwise a dtype-aware `is_between` mask. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
 - Grouped line traces use a true grouped query: viewport filtering is applied before
@@ -466,15 +467,17 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 - Uses the `fixed_hist` Rust plugin with explicit bin bounds.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
-  representation (µs / days). Viewport bounds and the injected global min/max
-  stats are converted to the same physical unit (`LFQueryBuilder.aggregate`
-  emits physical stats for temporal columns). `_to_update` casts the physical
-  bin centers back to the temporal dtype so the delta carries datetimes (the
-  renderer auto-detects a date axis, like the line trace) and emits hover-band
-  bounds in epoch-ms. Mirrors the cube's `_typed_temporal_lit(...).to_physical()`
-  idiom and `temporal_unit` (contract G).
+  representation (µs / days). Viewport bounds and the engine-resolved
+  unfiltered min/max are converted to the same physical unit
+  (`LFQueryBuilder.physical_minmax` reduces temporal columns on
+  `to_physical()`). `_to_update` casts the physical bin centers back to the
+  temporal dtype so the delta carries datetimes (the renderer auto-detects a
+  date axis, like the line trace) and emits hover-band bounds in epoch-ms.
+  Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
+  `temporal_unit` (contract G).
 - Optional viewport range filter applied before binning; without a viewport,
-  per-column global stats provide stable edges across cross-filter updates.
+  the engine's resolved unfiltered domain provides stable edges across
+  cross-filter updates.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
   `fixed_hist`. Numeric and differing temporal physical units remain separate.
@@ -749,22 +752,31 @@ FlexEngine
          and map traces):
          force_update=True  OR  (trace.recompute_axes ∩ changed event axes ≠ ∅)
          where changed axes are cartesian keys ("x"/"y2"/…) or "coordinates" for maps
-      4. Collect AggregationSpec / GroupedAggregationSpec per active trace;
-         for histogram traces without a viewport range, group coordinate-compatible
-         same-figure siblings by (figure_uid, axes, data_axis, coordinate_unit) via
-         `_histogram_domain_cols_by_uid` so they share one unfiltered global min/max
-         domain (no extra collect)
-      5. In update mode: aggregate once with selection filters
-      6. In overlay mode: filter agg specs per layer via overlay_style
+      4. Group histogram domain-sharing siblings for the request: for histogram
+         traces without a viewport range, coordinate-compatible same-figure
+         siblings are grouped by (figure_uid, axes, data_axis, coordinate_unit)
+         via `_histogram_domain_cols_by_uid` so they share one unfiltered
+         domain; this grouping also feeds the cache key
+      5. Cache fast-path: if every deliverable trace is a viewport-free cache
+         hit, return the cached deltas here (see Caching, below) — no domain
+         resolution or aggregation runs
+      6. Resolve every domain the active traces need — each trace's own
+         `domain_cols()` unioned with the histogram groups above — in one
+         `LFQueryBuilder.physical_minmax` call; memoized only for a
+         `cache=True` source, so a fully cached request resolves nothing
+      7. Collect AggregationSpec / GroupedAggregationSpec per active trace,
+         passing each trace its resolved domain bounds
+      8. In update mode: aggregate once with selection filters
+      9. In overlay mode: filter agg specs per layer via overlay_style
          (with an active selection, traces with "filtered_only" reuse their
          cached unfiltered layer instead of recomputing bg; init/deselect/reset
          still emit that sole unfiltered layer for every trace);
          execute only the layers required by the event
          (`selection` → fg, `init`/`deselect`/`reset` → bg,
          `viewport` → bg or bg+fg depending on active selections)
-      7. Route regular results to _to_update(df_agg)
-      8. Route grouped results to _to_grouped_update(df_grouped)
-      9. Normalize Series → list once; emit TraceDelta / GroupedChildDelta
+      10. Route regular results to _to_update(df_agg)
+      11. Route grouped results to _to_grouped_update(df_grouped)
+      12. Normalize Series → list once; emit TraceDelta / GroupedChildDelta
 ```
 
 `TraceInfo` (dataclass) carries `uid`, `axes`, `trace_type`, `figure_uid` — the minimal metadata the engine needs without holding trace instances directly.
@@ -796,12 +808,13 @@ LFQueryBuilder
 ├── _sorted_cols: Set[str]
 │
 ├── schema                      ← cached property
-├── check_sorted(col)           ← verifies with collect() — O(n)
-├── assume_sorted(col)          ← skips verification; caller guarantees order
+├── collect_engine               ← "streaming" if is_scan else "in-memory"; every collect below uses it
+├── physical_minmax(cols, schema, memoize)  ← per-column unfiltered (min, max); kept on the builder only when memoize=True
+├── check_sorted(col)            ← verifies with collect() — O(n)
+├── assume_sorted(col)           ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
-      base_ldf = _ldf (+ with_columns(col.min(), col.max()) for any global_stats_cols)
-      filtered_ldf = base_ldf if not filter_exprs else base_ldf.filter(*filter_exprs)
-      regular specs  → one batched select(...).collect()
+      filtered_ldf = _ldf if not filter_exprs else _ldf.filter(*filter_exprs)
+      regular specs  → one batched select(...).collect(), plus any spec.plan(filtered_ldf) hstacked in
       grouped specs  → fused group_by(...).agg(...).sort(...).collect() per batch
 ```
 
@@ -812,9 +825,9 @@ AggregationSpec
 ├── expr: pl.Expr    ← evaluated in the shared filtered LazyFrame context;
 │                       output column aliased to trace uid; yields a Struct series
 ├── uid: str = ""    ← trace uid; used by engine for overlay_style dispatch
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← columns for which __hist_lo_<col>__ / __hist_hi_<col>__
-                        are added on the unfiltered base frame before filtering
+└── plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
+                     ← escape hatch for a spec that cannot be a select expression;
+                        called as plan(filtered_ldf), result hstacked into the batched output
 ```
 
 `GroupedAggregationSpec` (dataclass):
@@ -827,9 +840,7 @@ GroupedAggregationSpec
 ├── agg_exprs: Tuple[pl.Expr, ...]       ← already aliased to logical parent uids
 ├── pre_group_filters: Tuple[pl.Expr, ...]
 ├── pre_group_filter_key: Any            ← semantic key for grouped fusion safety
-├── batch_key: Tuple[Any, ...]
-└── global_stats_cols: Tuple[str, ...] = ()
-                     ← same semantics as AggregationSpec.global_stats_cols
+└── batch_key: Tuple[Any, ...]
 ```
 
 Grouped specs with identical `(group_cols, sort_cols, batch_key)` are fused into one
@@ -865,6 +876,8 @@ Phase 1 (issue #26) caches only the **unfiltered *and* viewport-free** computati
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
 
 In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (issue #28 adds Redis/disk), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
+
+A `cache=True` source also memoizes each column's resolved unfiltered min/max (`LFQueryBuilder.physical_minmax`) on the builder for the source's lifetime, so a cached request never re-scans the data to resolve bin-edge domains. A `cache=False` source recomputes those bounds on every request that needs them, so an uncached reset always sees the current source data. Re-registering a source replaces the builder and drops the memo.
 
 ### Routes
 
@@ -1089,7 +1102,8 @@ need to produce the same string — keying is asymmetric (the join key is the tr
 predicates and selections, keeps the nesting (AND across selections of OR-within-selection), and
 carries no figure uids — so two sessions with the same snapped predicates share one cached
 build. **Domain resolution stays on the unfiltered frame**: unzoomed domains are unfiltered
-min/max, so bin edges are filter-stable (≡ the legacy `__hist_lo/hi__` semantics). That
+min/max, resolved through the same `LFQueryBuilder.physical_minmax` call the aggregation path
+uses, so bin edges are filter-stable and the two paths agree exactly. That
 equivalence includes the **sibling union**: coordinate-compatible same-figure histograms grouped
 by `_histogram_domain_cols_by_uid` bin over the union of their columns' min/max in the legacy
 path, so a cube target widens its binned dim the same way — otherwise the cube-served fg layer
@@ -1560,4 +1574,4 @@ EChartsAdapter is currently deprecated. No goal to support this in the near futu
 
 ### Roadmap
 
-- **`median` / `n_unique` reducers for `Histogram`, `Histogram2D`, and `GeoHistogram2D`.** When these traces moved to the `flexviz_polars` Rust kernel they dropped `median` and `n_unique`, which the kernel does not implement (count + `sum`/`mean`/`min`/`max` only). Both break the kernel's fixed-memory, single-pass design — `median` needs per-bin value retention, `n_unique` needs a per-bin set. The intended path is to add `FixedHist2DReducer::Median` / `NUnique` (and a 1D equivalent for `Histogram`) so all three traces regain uniform, fast support; the prior pure-Polars `bin_2d` pipeline in `trace/_hist_helpers.py` is the reference implementation for the expected semantics. Until then, requesting `histfunc="median"` or `"n_unique"` on these traces raises `ValueError`.
+- **`median` / `n_unique` reducers for `Histogram`, `Histogram2D`, and `GeoHistogram2D`.** When these traces moved to the `flexviz_polars` Rust kernel they dropped `median` and `n_unique`, which the kernel does not implement (count + `sum`/`mean`/`min`/`max` only). Both break the kernel's fixed-memory, single-pass design — `median` needs per-bin value retention, `n_unique` needs a per-bin set. The intended path is to add `FixedHist2DReducer::Median` / `NUnique` (and a 1D equivalent for `Histogram`) so all three traces regain uniform, fast support; the reference implementation for the expected semantics lives only in git history (the pure-Polars `bin_2d` pipeline, commit `83add5f`, formerly `trace/_hist_helpers.py`). Until then, requesting `histfunc="median"` or `"n_unique"` on these traces raises `ValueError`.
