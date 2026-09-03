@@ -73,11 +73,12 @@ class TestLFQueryBuilderAggregate:
         t_high = LinePlot(x="ts", y="a", n_points=2000)
         t_low = LinePlot(x="ts", y="b", n_points=500)
         schema = lf.schema
+        domains = lf.physical_minmax(["ts"], memoize=False)
         result, _ = lf.aggregate(
             [],
             [
-                t_high.get_aggregation_spec({}, schema=schema),
-                t_low.get_aggregation_spec({}, schema=schema),
+                t_high.get_aggregation_spec({}, schema=schema, domains=domains),
+                t_low.get_aggregation_spec({}, schema=schema, domains=domains),
             ],
         )
         assert result.height == 1

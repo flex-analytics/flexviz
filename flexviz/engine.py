@@ -893,20 +893,28 @@ class FlexEngine:
             elif trace.trace_type == "line":
                 # TODO: make sorted the default behavior for line traces
                 #       -> I do not like the specific branch here for line traces
-                # Sorted x turns the viewport into a contiguous row range, which
-                # the line trace can slice instead of mask. Guarantee only —
-                # never verified here, and it cannot change the result.
+                lf = self._backend_lf
+                is_scan = lf is not None and lf.is_scan
+                if (
+                    lf is not None
+                    and not is_scan
+                    and trace.group_by_cols is None
+                    and trace.downsample == "minmax"
+                ):
+                    # The resident envelope buckets by x width, so ascending x
+                    # is a contract, not a hint. Validated once per source and
+                    # column; ``assume_sorted_x=True`` skips it. A scan runs an
+                    # order-independent plan, and a frame sorted by group then x
+                    # is not globally sorted, so neither of those is checked.
+                    lf.check_sorted(trace.x_col)
+                # Sorted x also turns the viewport into a contiguous row range,
+                # which the line trace can slice instead of mask.
                 agg_specs.append(
                     trace.get_aggregation_spec(
                         update_range=item.update_range,
                         schema=backend_schema,
-                        x_sorted=(
-                            self._backend_lf is not None
-                            and self._backend_lf.is_sorted(trace.x_col)
-                        ),
-                        scan_source=(
-                            self._backend_lf is not None and self._backend_lf.is_scan
-                        ),
+                        x_sorted=(lf is not None and lf.is_sorted(trace.x_col)),
+                        scan_source=is_scan,
                         domains=trace_domains,
                     )
                 )

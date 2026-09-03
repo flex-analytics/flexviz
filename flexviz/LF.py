@@ -205,9 +205,9 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_sorted(self, col: str | pl.Expr):
+    def check_sorted(self, col: str | pl.Expr) -> None:
         """
-        Check if a column is sorted and set it as sorted, if not already set.
+        Verify that a column is sorted ascending, then flag it as sorted.
 
         This uses under the hood ._sorted_cols to keep track of the columns that are
         sorted. This is useful as one cannot query the flags of a LazyFrame.
@@ -219,19 +219,27 @@ class LFQueryBuilder:
 
         Raises
         ------
-        AssertionError
-            If the column is not in the schema or if the column is not sorted.
+        ValueError
+            If the column is not in the schema or is not sorted ascending.
         """
-        col: str = get_col_name(col)
-        assert col in self.schema, f"Column '{col}' not in schema"
-        if col not in self._sorted_cols:
-            # TODO: how expensive is this?
-            s: pl.Series = (
-                self._ldf.select(col).collect(engine=self.collect_engine).to_series()
+        col_name: str = get_col_name(col)
+        if col_name not in self.schema:
+            raise ValueError(f"Column '{col_name}' not in schema")
+        if col_name in self._sorted_cols:
+            return
+        # One pass over the column, memoized per builder and column, so a
+        # registered source pays it at most once. The flag it leaves behind also
+        # makes a later ``physical_minmax`` on this column O(1).
+        s: pl.Series = (
+            self._ldf.select(col_name).collect(engine=self.collect_engine).to_series()
+        )
+        if not s.is_sorted():
+            raise ValueError(
+                f"Column '{col_name}' is not sorted ascending. Sort the frame by "
+                f"'{col_name}', or pass assume_sorted_x=True if you guarantee it."
             )
-            assert s.is_sorted(), f"Column '{col}' not sorted"
-            self._ldf = self._ldf.set_sorted(col)
-            self._sorted_cols.add(col)
+        self._ldf = self._ldf.set_sorted(col_name)
+        self._sorted_cols.add(col_name)
 
     def is_sorted(self, col: str | pl.Expr) -> bool:
         """Whether ``col`` was asserted sorted via ``assume_sorted``/``check_sorted``.

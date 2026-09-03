@@ -264,7 +264,8 @@ class Figure:
         Parameters
         ----------
         x:
-            Column name for x-axis data (should be sorted ascending).
+            Column name for x-axis data.  Must be sorted ascending: an ungrouped
+            ``"minmax"`` line buckets by equal x width.
         y:
             Column name for y-axis data.
         name:
@@ -284,9 +285,11 @@ class Figure:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            When True, mark the backend LazyFrame's x column as sorted via
-            `set_sorted` without verifying (no collect). Only use if you
-            guarantee `x` is sorted ascending.
+            The engine checks that `x` is ascending once per registered source
+            and column (one collect) and raises `ValueError` when it is not.
+            Set True to skip that check by marking the column sorted via
+            `set_sorted`. Only use it if you guarantee `x` is sorted ascending;
+            an unsorted column then gives wrong results.
         """
         if assume_sorted_x and self._backend_lf is not None:
             # Opt-in: caller guarantees sortedness. This avoids an expensive collect.

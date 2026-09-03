@@ -32,10 +32,20 @@ def _fpcs_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
     ).to_series()
 
 
-def _minmax_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+def _minmax_line(
+    x: pl.Series,
+    y: pl.Series,
+    n_points: int,
+    x_domain: tuple[float, float] | None = None,
+) -> pl.Series:
     return pl.select(
         flexviz_polars._minmax_line(
-            pl.lit(x), pl.lit(y), n_points, x_name=x.name, y_name=y.name
+            pl.lit(x),
+            pl.lit(y),
+            n_points,
+            x_name=x.name,
+            y_name=y.name,
+            x_domain=x_domain,
         )
     ).to_series()
 
@@ -2001,3 +2011,87 @@ class TestMinmaxLineDifferential:
     def test_n_points_zero_raises(self):
         with pytest.raises(Exception, match="greater than 0"):
             _minmax_line(pl.Series("x", [1.0]), pl.Series("y", [1.0]), 0)
+
+
+# ---------------------------------------------------------------------------
+# minmax_line — equal-x-width buckets (x_domain)
+# ---------------------------------------------------------------------------
+
+
+def _bursty_xy() -> tuple[pl.Series, pl.Series]:
+    """100k rows crammed into [0, 1) plus a 1k-row tail spread over [1, 100]."""
+    dense = [i / 100_000 for i in range(100_000)]
+    tail = [1.0 + i * 99 / 999 for i in range(1_000)]
+    xs = dense + tail
+    return (
+        pl.Series("x", xs, dtype=pl.Float64),
+        pl.Series("y", _distinct_values(len(xs))),
+    )
+
+
+class TestMinmaxLineXDomain:
+    def test_uniform_x_matches_row_count_buckets(self):
+        """On evenly spaced x both bucket definitions cover the same rows."""
+        n = 100_000
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        y = pl.Series("y", _distinct_values(n))
+
+        without = _minmax_line(x, y, 200)
+        with_domain = _minmax_line(x, y, 200, x_domain=(0, n - 1))
+
+        assert sorted(with_domain.struct.field("y").to_list()) == sorted(
+            without.struct.field("y").to_list()
+        )
+
+    def test_bursty_x_spends_its_buckets_on_the_tail(self):
+        """Row-count buckets follow the density; x-width buckets follow x."""
+        x, y = _bursty_xy()
+
+        with_domain = _minmax_line(x, y, 200, x_domain=(0, 100))
+        without = _minmax_line(x, y, 200)
+
+        # 99 of the 100 buckets cover [1, 100], which holds only 1k of the rows.
+        assert sum(v >= 1 for v in with_domain.struct.field("x").to_list()) >= 180
+        assert sum(v >= 1 for v in without.struct.field("x").to_list()) < 50
+
+    def test_output_points_come_from_the_domain(self):
+        """A hole in x empties the middle buckets, so the windows leave gaps;
+        the multi-chunk y routes them through the chunked kernel."""
+        n = 100_000
+        x = pl.Series(
+            "x",
+            [i / n for i in range(n)] + [10.0 + i / n for i in range(n)],
+            dtype=pl.Float64,
+        )
+        y = pl.Series("y", _distinct_values(2 * n))
+        bounds = [0, 1, 7919, 60_000, 150_001, len(x)]
+        y = pl.concat(
+            [
+                pl.Series("y", y.to_list()[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert y.n_chunks() == len(bounds) - 1
+
+        out = _minmax_line(x, y, 200, x_domain=(0.25, 10.5))
+
+        assert len(out) <= 200
+        source = set(zip(x.to_list(), y.to_list()))
+        points = list(
+            zip(out.struct.field("x").to_list(), out.struct.field("y").to_list())
+        )
+        assert all(point in source for point in points)
+        assert all(0.25 <= px <= 10.5 for px, _ in points)
+
+    def test_large_integer_bounds_keep_the_edge_rows(self):
+        """A nanosecond-epoch domain has no exact f64, and still keeps its edges."""
+        base = 1_700_000_000_000_000_000  # ns epoch, well past 2**53
+        xs = [base + i * 100 for i in range(1000)]
+        x = pl.Series("x", xs, dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(len(xs)))
+
+        out = _minmax_line(x, y, 200, x_domain=(xs[0], xs[-1]))
+
+        got = out.struct.field("y").to_list()
+        assert y[0] in got and y[-1] in got

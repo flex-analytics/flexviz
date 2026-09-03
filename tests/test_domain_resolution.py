@@ -125,6 +125,17 @@ class TestResolveCount:
         # its own x domain instead of taking the resolved one.
         assert len(collects.calls) == 3
 
+    def test_resident_line_resolves_its_x_domain(self, collects):
+        """A resident minmax line bins in x too, so it needs the domain."""
+        df = pl.DataFrame({"ts": list(range(200)), "a": [float(i) for i in range(200)]})
+        engine, infos = _engine(df, [LinePlot(x="ts", y="a", n_points=20)])
+        _init(engine, infos)
+
+        assert len(collects.minmax) == 1
+        assert "__min_ts__" in collects.minmax[0][1]
+        # The sorted-x check, the min/max, then the aggregation select.
+        assert len(collects.calls) == 3
+
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
         """One min/max scan plus one batched select, however many histograms."""
@@ -387,10 +398,11 @@ class TestDomainsContract:
                 {}, schema=self._schema(), domains={"a": (0.0, 1.0)}
             )
 
-    def test_line_missing_domain_raises(self):
+    @pytest.mark.parametrize("scan_source", [False, True])
+    def test_line_missing_domain_raises(self, scan_source):
         df = pl.DataFrame({"k": [1.0, 2.0], "a": [3.0, 4.0]})
         trace = LinePlot(x="k", y="a", n_points=10)
         with pytest.raises(KeyError, match="k"):
             trace.get_aggregation_spec(
-                {}, schema=df.schema, scan_source=True, domains={}
+                {}, schema=df.schema, scan_source=scan_source, domains={}
             )

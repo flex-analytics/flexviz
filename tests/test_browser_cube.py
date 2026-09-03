@@ -1601,12 +1601,14 @@ def _bar_source_dashboard_url(port: int, source_name: str, live_brush: str) -> s
 
 def _bar_source_line_corr_dashboard_url(port: int, source_name: str) -> str:
     """Bar source (labels=g) + line(x=a, y=b) target + corr([a, b, v]) target —
-    a categorical source live-driving line_env and corr cubes (#46)."""
+    a categorical source live-driving line_env and corr cubes (#46).
+
+    Sorted on ``a`` for the ungrouped minmax line's ascending-x contract."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
 
-    df = _cat_target_df()
+    df = _cat_target_df().sort("a")
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
@@ -4104,12 +4106,15 @@ def _line_target_dashboard_url(
     port: int, source_name: str, live_brush: str = "auto"
 ) -> str:
     """Source hist(a) + minmax line target (x=b, y=a). A brush on ``a``
-    restricts which rows contribute, reshaping the per-bucket y envelope."""
+    restricts which rows contribute, reshaping the per-bucket y envelope.
+
+    Sorted on ``b``: an ungrouped minmax line buckets by x width, which the
+    engine only accepts on an ascending x column."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
 
-    df = _cube_df()
+    df = _cube_df().sort("b")
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
@@ -4297,12 +4302,14 @@ def _line_gap_df() -> pl.DataFrame:
 def _line_gap_dashboard_url(port: int, source_name: str, mode: str) -> str:
     """Source hist(a) + minmax line target (x=b, y=a) whose x has an empty band,
     in cross_filter_mode ``mode``. A live brush on ``a`` drives the line_env
-    cube; the live envelope must carry the gap (null break) across the band."""
+    cube; the live envelope must carry the gap (null break) across the band.
+
+    Sorted on ``b`` for the ungrouped minmax line's ascending-x contract."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
 
-    df = _line_gap_df()
+    df = _line_gap_df().sort("b")
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
@@ -4780,20 +4787,14 @@ class TestLineTargetCube:
         assert clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
 
-        # After the POST settles the line shows the LEGACY minmax delta, not the
-        # cube envelope. The legacy delta buckets argmin/argmax over the UNSORTED
-        # x=b column, so its x is not globally ascending; the cube envelope
-        # concatenates buckets by ascending x, so its x IS sorted. (The server
-        # now ships gapless x/y -- gaps are a client render concern -- so the
-        # legacy delta no longer carries the gap-mask Nulls this once keyed on.)
+        # After the POST settles the line shows the committed server delta, not
+        # the cube envelope. Both bucket by x width now, so the two are no
+        # longer told apart by x ordering; the exact match against the freshly
+        # fetched legacy delta below is what pins the replacement (the cube
+        # packs its y partials as f32, so its envelope never matches exactly).
         page.wait_for_timeout(500)
         committed_line = _line_xy(page, "#fv-plot-1")
         assert len(committed_line["x"]) > 0
-        xs_real = [v for v in committed_line["x"] if v is not None]
-        assert xs_real != sorted(xs_real), (
-            "committed line must be the legacy (unsorted-x) minmax delta, "
-            "not the ascending-x cube envelope"
-        )
 
         # Reference: the EXACT legacy server delta for the committed selection,
         # fetched directly via /dashboard/update (no client cache, no cube
