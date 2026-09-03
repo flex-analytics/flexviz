@@ -2028,7 +2028,9 @@ class TestResidencySeam:
         """The seam must actually swap formulations, not just report a flag."""
         line = LinePlot(x="ts", y="val", n_points=1000)
         resident = line.get_aggregation_spec({}, scan_source=False)
-        scanned = line.get_aggregation_spec({}, scan_source=True)
+        scanned = line.get_aggregation_spec(
+            {}, scan_source=True, domains={"ts": (0.0, 1.0)}
+        )
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
@@ -2036,7 +2038,12 @@ class TestResidencySeam:
     def test_only_minmax_swaps(self, downsample):
         """`nth` already streams; `fpcs` has no streaming formulation."""
         line = LinePlot(x="ts", y="val", n_points=1000, downsample=downsample)
-        assert line.get_aggregation_spec({}, scan_source=True).plan is None
+        assert (
+            line.get_aggregation_spec(
+                {}, scan_source=True, domains={"ts": (0.0, 1.0)}
+            ).plan
+            is None
+        )
 
 
 # ---- descending viewport ranges ---------------------------------------------

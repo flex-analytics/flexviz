@@ -472,6 +472,46 @@ def test_reregister_clears_cache(client):
     assert cache_mod.get_cache().stats()["entries"] == 0
 
 
+def test_reregister_same_builder_invalidates_nothing_and_warns(client, tmp_path):
+    """Re-registering the exact same builder object warns and clears nothing,
+    so the source keeps serving its old, cached data. Raw data or a new
+    builder still replaces it and clears both caches."""
+    import warnings
+
+    from flexviz.server import register_source
+
+    path = tmp_path / "s.parquet"
+    pl.DataFrame({"x": list(range(40)), "y": [i % 3 for i in range(40)]}).write_parquet(
+        path
+    )
+    builder = LFQueryBuilder(pl.scan_parquet(path))
+    register_source("s", builder, cache=True)
+    r1 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    entries = cache_mod.get_cache().stats()["entries"]
+    assert entries >= 1
+
+    pl.DataFrame(
+        {
+            "x": list(range(0, 400, 10)),
+            "y": [i % 3 for i in range(40)],
+            "z": list(range(40)),
+        }
+    ).write_parquet(path)
+
+    with pytest.warns(UserWarning, match="nothing was invalidated"):
+        register_source("s", builder, cache=True)
+    assert cache_mod.get_cache().stats()["entries"] == entries
+    r2 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    assert r2 == r1
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        register_source("s", pl.scan_parquet(path), cache=True)
+    assert cache_mod.get_cache().stats()["entries"] == 0
+    r3 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    assert r3 != r1
+
+
 def test_reregister_clears_cube_cache(client):
     """Source re-registration invalidates BOTH caches (delta + cube blobs)."""
     from flexviz.server import register_source

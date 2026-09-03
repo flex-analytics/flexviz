@@ -16,7 +16,7 @@ Supported ``histnorm`` values
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict
 
 import polars as pl
@@ -234,12 +234,19 @@ class Histogram(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
+    def domain_cols(
+        self, update_range: Dict[str, Any], *, scan_source: bool = False
+    ) -> tuple[str, ...]:
+        if update_range.get(self.prop_key) is not None:
+            return ()
+        return (self.data_col,)
+
     def get_aggregation_spec(
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
         *,
-        histogram_domain_cols: Sequence[str] | None = None,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 
@@ -251,10 +258,13 @@ class Histogram(FlexTrace):
           that range.  Both bg and fg overlay layers use the same spec (and
           therefore the same edges).
         - When no viewport range is available (e.g. ``init`` with no prior
-          zoom) the edges are derived lazily from unfiltered global stats.
-          The engine can pass same-figure sibling ``histogram_domain_cols`` so
-          related histogram traces share one min/max domain without an extra
-          collect.
+          zoom) the edges come from ``domains``: the unfiltered ``(min, max)``
+          the engine resolved for this trace. It holds one entry per
+          same-figure sibling column, so related histograms bin over one
+          shared domain.
+
+        An unzoomed trace requires ``data_col`` in ``domains``; a
+        ``(None, None)`` entry means an empty or all-null column.
         """
         filter_expr = _range_filter_expr(
             self.data_col, update_range.get(self.prop_key), schema=schema
@@ -278,8 +288,8 @@ class Histogram(FlexTrace):
             # runs before the group_by split.  The hist expression uses shared
             # bin edges so all groups align.
             # ------------------------------------------------------------------
-            lo_expr, hi_expr, global_stats_cols = self._histogram_bounds_exprs(
-                axis_range, histogram_domain_cols, temporal
+            lo_expr, hi_expr = self._histogram_bounds_exprs(
+                axis_range, domains, temporal
             )
 
             hist_expr = (
@@ -311,32 +321,25 @@ class Histogram(FlexTrace):
                     else None
                 ),
                 batch_key=batch_key,
-                global_stats_cols=global_stats_cols,
             )
 
         # ----------------------------------------------------------------------
         # Ungrouped path: apply viewport filter directly inside the expression.
         # ----------------------------------------------------------------------
-        lo_expr, hi_expr, global_stats = self._histogram_bounds_exprs(
-            axis_range, histogram_domain_cols, temporal
-        )
+        lo_expr, hi_expr = self._histogram_bounds_exprs(axis_range, domains, temporal)
 
         data_expr = data_col_expr
         if filter_expr is not None:
             data_expr = data_expr.filter(filter_expr)
         hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
-        return AggregationSpec(
-            expr=hist_expr.implode().alias(self.uid),
-            uid=self.uid,
-            global_stats_cols=global_stats,
-        )
+        return AggregationSpec(expr=hist_expr.implode().alias(self.uid), uid=self.uid)
 
     def _histogram_bounds_exprs(
         self,
         axis_range: Any,
-        histogram_domain_cols: Sequence[str] | None,
+        domains: Mapping[str, tuple[Any, Any]] | None,
         temporal_dtype: pl.DataType | None = None,
-    ) -> tuple[pl.Expr, pl.Expr, tuple[str, ...]]:
+    ) -> tuple[pl.Expr, pl.Expr]:
         if axis_range is not None:
             if temporal_dtype is not None:
                 # Viewport bounds arrive as date strings / epoch-ms; convert to
@@ -346,40 +349,26 @@ class Histogram(FlexTrace):
                 # the same conversion the viewport filter already applied.
                 lo = _physical_bound_expr(axis_range[0], temporal_dtype)
                 hi = _physical_bound_expr(axis_range[1], temporal_dtype)
-                return (lo, hi + _HIST_BIN_EPSILON, ())
+                return lo, hi + _HIST_BIN_EPSILON
             return (
                 pl.lit(float(axis_range[0])),
                 pl.lit(float(axis_range[1]) + _HIST_BIN_EPSILON),
-                (),
             )
 
-        domain_cols = self._histogram_domain_cols(histogram_domain_cols)
-        # Aggregate after the horizontal reduction: polars rejects horizontal
-        # functions over length-1 inputs inside group_by(). Equivalent, since
-        # the stats columns are whole-frame constants.
-        lo_expr = (
-            pl.min_horizontal(*[pl.col(f"__hist_lo_{col}__") for col in domain_cols])
-            .first()
-            .fill_null(0.0)
-        )
-        hi_expr = (
-            pl.max_horizontal(*[pl.col(f"__hist_hi_{col}__") for col in domain_cols])
-            .first()
-            .fill_null(1.0)
-            + _HIST_BIN_EPSILON
-        )
-        return lo_expr, hi_expr, domain_cols
+        # The trace's own column must be a resolved key; a missing key means
+        # the caller violated the unzoomed-domains contract.
+        resolved = domains or {}
+        if self.data_col not in resolved:
+            raise KeyError(self.data_col)
 
-    def _histogram_domain_cols(
-        self,
-        histogram_domain_cols: Sequence[str] | None,
-    ) -> tuple[str, ...]:
-        cols = list(dict.fromkeys(histogram_domain_cols or (self.data_col,)))
-        # Ensure this trace's own column is always in global_stats_cols so that
-        # __hist_lo_{data_col}__ / __hist_hi_{data_col}__ exist in the DataFrame.
-        if self.data_col not in cols:
-            cols.append(self.data_col)
-        return tuple(cols)
+        # Siblings sharing a domain widen it: the lowest low and the highest
+        # high across every column the engine resolved for this trace.
+        bounds = resolved.values()
+        los = [lo for lo, _ in bounds if lo is not None]
+        his = [hi for _, hi in bounds if hi is not None]
+        lo = min(los) if los else 0.0
+        hi = max(his) if his else 1.0
+        return pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON)
 
     def _to_update(
         self,

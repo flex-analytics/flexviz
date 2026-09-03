@@ -21,6 +21,7 @@ viewport range (or the data range on init).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Dict
 
 import polars as pl
@@ -302,11 +303,28 @@ class Histogram2D(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
+    def domain_cols(
+        self, update_range: Dict[str, Any], *, scan_source: bool = False
+    ) -> tuple[str, ...]:
+        # Both axes or neither: the kernel bins over one rectangle, and the
+        # engine never supplies a partial viewport here.
+        if update_range.get("x") is not None and update_range.get("y") is not None:
+            return ()
+        return (self.x_col, self.y_col)
+
     def get_aggregation_spec(
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
     ) -> AggregationSpec:
+        """Return the 2-D histogram aggregation spec.
+
+        An unzoomed trace requires both ``x_col`` and ``y_col`` in
+        ``domains``; a ``(None, None)`` entry means an empty or all-null
+        column.
+        """
         x_range = update_range.get("x")
         y_range = update_range.get("y")
         # Temporal axes bin on their physical representation; _to_update restores
@@ -314,7 +332,7 @@ class Histogram2D(FlexTrace):
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
         if self.z_col is None:
-            expr, global_stats_cols = _hist2d_count_expr(
+            expr = _hist2d_count_expr(
                 self.x_col,
                 self.y_col,
                 self.x_bins,
@@ -322,11 +340,12 @@ class Histogram2D(FlexTrace):
                 x_range,
                 y_range,
                 self.uid,
+                domains,
                 schema,
             )
         else:
             assert self.histfunc is not None
-            expr, global_stats_cols = _hist2d_reduce_expr(
+            expr = _hist2d_reduce_expr(
                 self.x_col,
                 self.y_col,
                 self.z_col,
@@ -336,11 +355,10 @@ class Histogram2D(FlexTrace):
                 y_range,
                 self.uid,
                 self.histfunc,
+                domains,
                 schema,
             )
-        return AggregationSpec(
-            expr=expr, uid=self.uid, global_stats_cols=global_stats_cols
-        )
+        return AggregationSpec(expr=expr, uid=self.uid)
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
         raw = df[self.uid][0]
@@ -502,16 +520,17 @@ def _hist2d_bounds(
     y_col: str,
     x_range: tuple | None,
     y_range: tuple | None,
+    domains: Mapping[str, tuple[Any, Any]] | None,
     schema: pl.Schema | None = None,
 ) -> tuple:
-    """Resolve viewport bounds and the viewport mask for the hist2d kernels.
+    """Resolve the bin-edge literals and the viewport mask for the kernels.
 
-    When a viewport is given, returns scalar ``pl.lit`` bound expressions and
-    the inclusive viewport mask.  When no viewport is given, returns lazy
-    column expressions that read from the global-stats columns injected by
-    ``LFQueryBuilder``.
+    With a viewport, the bounds are the viewport and the mask restricts the
+    data. Without one, the bounds are the engine-resolved unfiltered
+    ``(min, max)`` per axis and no mask applies, so cross-filtering cannot move
+    the bin edges.
 
-    Returns ``(x_lo, x_hi, y_lo, y_hi, viewport_mask_or_None, global_stats_cols)``.
+    Returns ``(x_lo, x_hi, y_lo, y_hi, viewport_mask_or_None)``.
 
     Boundary note: ``is_between`` is inclusive on both ends, so a value equal
     to ``x_hi`` passes the filter and is placed in the last bin by the Rust
@@ -536,13 +555,19 @@ def _hist2d_bounds(
         # numeric range otherwise.
         x_lo, x_hi = _hist2d_bound_lits(x_range, x_dtype)
         y_lo, y_hi = _hist2d_bound_lits(y_range, y_dtype)
-        return (x_lo, x_hi, y_lo, y_hi, viewport_mask, ())
-    else:
-        x_lo_expr = pl.col(f"__hist_lo_{x_col}__").first().fill_null(0.0)
-        x_hi_expr = pl.col(f"__hist_hi_{x_col}__").first().fill_null(1.0)
-        y_lo_expr = pl.col(f"__hist_lo_{y_col}__").first().fill_null(0.0)
-        y_hi_expr = pl.col(f"__hist_hi_{y_col}__").first().fill_null(1.0)
-        return (x_lo_expr, x_hi_expr, y_lo_expr, y_hi_expr, None, (x_col, y_col))
+        return (x_lo, x_hi, y_lo, y_hi, viewport_mask)
+
+    # The kernel adds its own EPS to the span, so pass the raw bounds.
+    x_lo, x_hi = _domain_lits(domains, x_col)
+    y_lo, y_hi = _domain_lits(domains, y_col)
+    return (x_lo, x_hi, y_lo, y_hi, None)
+
+
+def _domain_lits(
+    domains: Mapping[str, tuple[Any, Any]] | None, col: str
+) -> tuple[pl.Expr, pl.Expr]:
+    lo, hi = (domains or {})[col]
+    return pl.lit(0.0 if lo is None else lo), pl.lit(1.0 if hi is None else hi)
 
 
 def _hist2d_count_expr(
@@ -553,19 +578,16 @@ def _hist2d_count_expr(
     x_range: tuple | None,
     y_range: tuple | None,
     uid: str,
+    domains: Mapping[str, tuple[Any, Any]] | None = None,
     schema: pl.Schema | None = None,
-) -> tuple[pl.Expr, tuple[str, ...]]:
+) -> pl.Expr:
     """Build a count-only 2D histogram expression using fixed_hist2d.
-
-    Returns ``(expr, global_stats_cols)``.  When no viewport is given the
-    data bounds are derived via ``global_stats_cols``; when a viewport is
-    given the bounds are known scalars and data is pre-filtered.
 
     The Rust kernel adds its own internal EPS to ``(x_hi - x_lo)`` when
     computing the bin scale, so callers must pass raw bounds (not EPS-adjusted).
     """
-    x_lo, x_hi, y_lo, y_hi, mask, global_stats_cols = _hist2d_bounds(
-        x_col, y_col, x_range, y_range, schema
+    x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
+        x_col, y_col, x_range, y_range, domains, schema
     )
     x_phys = _hist2d_phys_col(x_col, schema)
     y_phys = _hist2d_phys_col(y_col, schema)
@@ -580,7 +602,7 @@ def _hist2d_count_expr(
         nb_x,
         nb_y,
     ).alias(uid)
-    return expr, global_stats_cols
+    return expr
 
 
 def _hist2d_reduce_expr(
@@ -593,11 +615,12 @@ def _hist2d_reduce_expr(
     y_range: tuple | None,
     uid: str,
     histfunc: str,
+    domains: Mapping[str, tuple[Any, Any]] | None = None,
     schema: pl.Schema | None = None,
-) -> tuple[pl.Expr, tuple[str, ...]]:
+) -> pl.Expr:
     """Build a z-reduced 2D histogram expression using fixed_hist2d_reduce."""
-    x_lo, x_hi, y_lo, y_hi, mask, global_stats_cols = _hist2d_bounds(
-        x_col, y_col, x_range, y_range, schema
+    x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
+        x_col, y_col, x_range, y_range, domains, schema
     )
     x_phys = _hist2d_phys_col(x_col, schema)
     y_phys = _hist2d_phys_col(y_col, schema)
@@ -615,4 +638,4 @@ def _hist2d_reduce_expr(
         nb_y,
         histfunc,
     ).alias(uid)
-    return expr, global_stats_cols
+    return expr

@@ -221,8 +221,8 @@ class FlexvizExprNamespace:
         ----------
         lo_expr:
             Polars expression evaluating to a scalar (length-1 Series) that is the
-            left edge of the first bin.  Pass ``pl.lit(lo)`` for a known scalar or
-            ``pl.col("__hist_lo_col__").first().fill_null(0.0)`` for a global-stats column.
+            left edge of the first bin.  Pass it as ``pl.lit(lo)``; a null or
+            missing value falls back to 0.0.
         hi_expr:
             Right edge of the last bin (caller must add epsilon before calling).
         n_bins:
@@ -252,8 +252,7 @@ class FlexvizExprNamespace:
         contiguous-slice fast path for null-free single-chunk inputs.
         Returns a length-1 ``Struct{z_flat: List(UInt32), x_lo, x_hi, y_lo, y_hi}``.
         ``self`` is the x expression; pass y as the first positional argument.
-        Pass known viewport bounds as ``pl.lit(val)``; pass global-stats columns as
-        ``pl.col("__hist_lo_x__").first()`` when bounds must be derived lazily.
+        Pass every bound as ``pl.lit(val)``.
         z_flat is row-major (y-first): ``z_flat[yi * nb_x + xi]`` is bin (xi, yi).
         Empty bins have count 0.
         """

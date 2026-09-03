@@ -47,18 +47,10 @@ class AggregationSpec:
 
     Executed as ``filtered_ldf.select(expr)`` (batched with other specs),
     unless ``plan`` is set — see below.
-
-    ``global_stats_cols`` names columns for which ``(col.min(), col.max())`` are
-    added as constant columns on the **unfiltered** base frame before any
-    cross-filter is applied.  The trace expression can then reference
-    ``__hist_lo_{col}__`` / ``__hist_hi_{col}__`` to derive stable bin edges
-    that are independent of the cross-filter selection.  Currently used by
-    ``Histogram`` for the no-viewport path.
     """
 
     expr: pl.Expr
     uid: str = ""
-    global_stats_cols: Tuple[str, ...] = ()
     #: Optional escape hatch for an aggregation that cannot be a select
     #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
     #: DataFrame whose single column is named ``uid``, i.e. exactly the column
@@ -77,10 +69,6 @@ class GroupedAggregationSpec:
     derived from the visible/filtered rows, not the full source frame.
     ``batch_key`` allows callers to prevent unsafe fusion when grouped traces
     have different pre-group semantics (for example, different viewport ranges).
-    ``global_stats_cols`` names columns for which ``(col.min(), col.max())`` are
-    added via ``with_columns`` before ``group_by``, exposing global (pre-split)
-    statistics to per-group aggregation expressions.  Used by ``Histogram`` to
-    derive shared bin edges across all groups without an extra collect.
     """
 
     uid: str
@@ -90,7 +78,6 @@ class GroupedAggregationSpec:
     pre_group_filters: Tuple[pl.Expr, ...] = ()
     pre_group_filter_key: Any = None
     batch_key: Tuple[Any, ...] = ()
-    global_stats_cols: Tuple[str, ...] = ()
 
 
 class LFQueryBuilder:
@@ -121,15 +108,16 @@ class LFQueryBuilder:
         self._explicit_row_index_col: bool = explicit_row_index_col
         self._cache_schema: bool = cache_schema  # whether to cache the ldf its schema
         self._sorted_cols: Set[str] = set()  # columns that are sorted
+        self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
 
     @property
     def is_scan(self) -> bool:
         """Whether this source reads from storage rather than a resident frame.
 
-        The residency signal behind the engine's kernel-vs-native choice. A
-        resident frame's unoptimized plan roots at ``DF [...]``; a file source
-        roots at ``<Format> SCAN [...]``. Computed once — ``explain`` walks the
-        plan, and this is asked per request.
+        The residency signal behind both the kernel-vs-native trace choice and
+        ``collect_engine``. A resident frame's unoptimized plan roots at
+        ``DF [...]``; a file source roots at ``<Format> SCAN [...]``. Computed
+        once — ``explain`` walks the plan, and this is asked per request.
 
         Not a correctness switch: both paths must produce identical output, and
         there is a test that asserts it. It only selects which formulation runs.
@@ -142,6 +130,15 @@ class LFQueryBuilder:
                 # path that works for every source, just not bounded.
                 self._cached_is_scan = False
         return self._cached_is_scan
+
+    @property
+    def collect_engine(self) -> str:
+        """The Polars engine every collect on this source uses.
+
+        Fixed per source kind rather than left to ``"auto"``: a file scan must
+        stream, a resident frame must not pay the streaming machinery.
+        """
+        return "streaming" if self.is_scan else "in-memory"
 
     @property
     def row_index_col(self) -> str | None:
@@ -167,32 +164,31 @@ class LFQueryBuilder:
         return schema
 
     def physical_minmax(
-        self, columns: List[str], schema: pl.Schema | None = None
+        self,
+        columns: List[str],
+        schema: pl.Schema | None = None,
+        *,
+        memoize: bool,
     ) -> dict[str, Tuple[Any, Any]]:
-        """Memoized ``(min, max)`` of each column's physical Float64 form.
+        """``(min, max)`` of each column in its physical representation.
 
-        Temporal columns are reduced on their physical representation
-        (``to_physical()``); other columns on the raw value cast to Float64 —
-        the same per-column expression the cube domain resolution needs, so one
-        ``(min, max)`` per column serves the free axis, box2d axes, and binned
-        target dims alike (all reduce the same physical representation).
+        Temporal columns reduce on ``to_physical()``; every other column on its
+        raw value. Nothing is cast to Float64, so large integer bounds stay
+        exact. An empty or all-null column yields ``(None, None)``.
 
-        The result is cached per column for the builder's lifetime. This
-        **assumes the data is static** (the cube path only calls this for
-        ``cache=True`` sources, the same static-data contract as ``schema``
-        caching) — without it, a cube *cache hit* still pays an O(N) min/max
-        scan, because the resolved domain is part of the cube content key.
-        Re-registering a source replaces the builder, dropping the memo.
+        ``memoize`` keeps the result for the builder's lifetime. Only a
+        ``cache=True`` source may set it — the same static-data contract that
+        governs schema caching — because otherwise a reset must be able to see
+        changed source data. Re-registering a source with raw data or a new
+        builder replaces the builder and drops the memo. Re-registering the
+        same builder object keeps it, and the server warns.
         """
-        if not hasattr(self, "_cube_domain_cache"):
-            self._cube_domain_cache: dict[str, Tuple[Any, Any]] = {}
+        memo = self._minmax_memo if memoize else {}
         sch = schema if schema is not None else self.schema
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
         # already be memoized. ``dict.fromkeys`` preserves first-seen order.
-        missing = list(
-            dict.fromkeys(c for c in columns if c not in self._cube_domain_cache)
-        )
+        missing = list(dict.fromkeys(c for c in columns if c not in memo))
         if missing:
             exprs: List[pl.Expr] = []
             for c in missing:
@@ -200,16 +196,12 @@ class LFQueryBuilder:
                 dtype = sch.get(c) if hasattr(sch, "get") else None
                 if dtype is not None and dtype.is_temporal():
                     val = val.to_physical()
-                val = val.cast(pl.Float64)
-                exprs.append(val.min().alias(f"__cube_min_{c}__"))
-                exprs.append(val.max().alias(f"__cube_max_{c}__"))
-            stats = self._ldf.select(exprs).collect()
+                exprs.append(val.min().alias(f"__min_{c}__"))
+                exprs.append(val.max().alias(f"__max_{c}__"))
+            stats = self._ldf.select(exprs).collect(engine=self.collect_engine)
             for c in missing:
-                self._cube_domain_cache[c] = (
-                    stats[f"__cube_min_{c}__"].item(),
-                    stats[f"__cube_max_{c}__"].item(),
-                )
-        return {c: self._cube_domain_cache[c] for c in columns}
+                memo[c] = (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
+        return {c: memo[c] for c in columns}
 
     # --------------- Handling flags ---------------
 
@@ -234,7 +226,9 @@ class LFQueryBuilder:
         assert col in self.schema, f"Column '{col}' not in schema"
         if col not in self._sorted_cols:
             # TODO: how expensive is this?
-            s: pl.Series = self._ldf.select(col).collect().to_series()
+            s: pl.Series = (
+                self._ldf.select(col).collect(engine=self.collect_engine).to_series()
+            )
             assert s.is_sorted(), f"Column '{col}' not sorted"
             self._ldf = self._ldf.set_sorted(col)
             self._sorted_cols.add(col)
@@ -285,32 +279,9 @@ class LFQueryBuilder:
             ``grouped_dfs`` maps each grouped parent uid to its fused
             ``group_by().agg().sort()`` result DataFrame.
         """
-        # Collect all global-stats columns requested by any spec (regular or grouped).
-        # Stats are computed on the unfiltered base frame so that bin edges derived
-        # from them remain stable across cross-filter updates and consistent between
-        # traces that use different columns with the same data range.
-        all_stats_cols: set[str] = set()
-        for spec in agg_specs:
-            all_stats_cols.update(getattr(spec, "global_stats_cols", ()))
-
-        base_ldf = self._ldf
-        if all_stats_cols:
-            schema = self.schema
-            stats_exprs: list[pl.Expr] = []
-            for col_name in sorted(all_stats_cols):
-                col = pl.col(col_name)
-                # The only consumers of these stats are the numeric histogram
-                # kernels (fixed_hist / fixed_hist2d), which reject temporal
-                # dtypes. Emit min/max in the column's physical representation so
-                # temporal columns yield numeric bounds.
-                dtype = schema.get(col_name)
-                if dtype is not None and dtype.is_temporal():
-                    col = col.to_physical()
-                stats_exprs.append(col.min().alias(f"__hist_lo_{col_name}__"))
-                stats_exprs.append(col.max().alias(f"__hist_hi_{col_name}__"))
-            base_ldf = base_ldf.with_columns(stats_exprs)
-
-        filtered_ldf = base_ldf if not filter_exprs else base_ldf.filter(*filter_exprs)
+        filtered_ldf = (
+            self._ldf if not filter_exprs else self._ldf.filter(*filter_exprs)
+        )
 
         regular_specs = [s for s in agg_specs if isinstance(s, AggregationSpec)]
         grouped_specs = [s for s in agg_specs if isinstance(s, GroupedAggregationSpec)]
@@ -321,7 +292,9 @@ class LFQueryBuilder:
         plan_specs = [s for s in regular_specs if s.plan is not None]
 
         if expr_specs:
-            regular_df = filtered_ldf.select(*[s.expr for s in expr_specs]).collect()
+            regular_df = filtered_ldf.select(*[s.expr for s in expr_specs]).collect(
+                engine=self.collect_engine
+            )
         else:
             regular_df = pl.DataFrame()
         for spec in plan_specs:
@@ -368,10 +341,6 @@ class LFQueryBuilder:
                 if not first.pre_group_filters
                 else filtered_ldf.filter(*first.pre_group_filters)
             )
-            # Global stats columns (e.g. __hist_lo_<col>__, __hist_hi_<col>__) were
-            # already added to base_ldf above, so they are present in filtered_ldf
-            # and therefore in batch_ldf without any extra with_columns call here.
-
             agg_exprs: list[pl.Expr] = []
             for spec in batch_specs:
                 agg_exprs.extend(spec.agg_exprs)
@@ -380,7 +349,7 @@ class LFQueryBuilder:
                 batch_ldf.group_by(list(first.group_cols))
                 .agg(*agg_exprs)
                 .sort(list(first.sort_cols))
-                .collect()
+                .collect(engine=self.collect_engine)
             )
             for spec in batch_specs:
                 grouped_dfs[spec.uid] = batch_df
