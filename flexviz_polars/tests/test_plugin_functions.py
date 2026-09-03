@@ -2095,3 +2095,40 @@ class TestMinmaxLineXDomain:
 
         got = out.struct.field("y").to_list()
         assert y[0] in got and y[-1] in got
+
+    def test_multi_chunk_x_matches_rechunked(self):
+        """The chunked edge search must find the same bucket edges as a
+        contiguous one."""
+        n = 60_000
+        bounds = [0, 1, 7919, 30_000, 30_001, 59_999, n]
+        xs = [i / 7.0 for i in range(n)]
+        ys = _distinct_values(n)
+        x = pl.concat(
+            [
+                pl.Series("x", xs[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        y = pl.concat(
+            [
+                pl.Series("y", ys[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert x.n_chunks() > 1 and y.n_chunks() > 1
+
+        chunked = _minmax_line(x, y, 200, x_domain=(10.0, 8000.0))
+        contiguous = _minmax_line(
+            x.rechunk(), y.rechunk(), 200, x_domain=(10.0, 8000.0)
+        )
+
+        assert (
+            chunked.struct.field("x").to_list()
+            == contiguous.struct.field("x").to_list()
+        )
+        assert (
+            chunked.struct.field("y").to_list()
+            == contiguous.struct.field("y").to_list()
+        )
