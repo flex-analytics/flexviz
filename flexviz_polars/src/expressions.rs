@@ -421,7 +421,7 @@ fn pairs_for_offsets(s: &Series, offsets: &[(usize, usize)]) -> Vec<(u32, u32)> 
 }
 
 /// `arg_min_max_indices` over equal-x-width buckets instead of equal-row-count
-/// ones. x must be sorted ascending and null-free; rows outside `[lo, hi]` are
+/// ones. x must be sorted ascending and null-free. Rows outside `[lo, hi]` are
 /// dropped.
 fn arg_min_max_indices_x_width(
     x: &Series,
@@ -458,7 +458,7 @@ fn arg_min_max_indices_x_width(
 /// Reads x through its physical representation, so a temporal column is an
 /// Int64 view with no copy or cast. An integer column searches integer edges in
 /// i128; only a float column goes through f64. Nulls in x are read as their
-/// physical value, not skipped, and a NaN breaks the edge search; callers
+/// physical value, not skipped, and a NaN breaks the edge search. Callers
 /// already require an x free of both.
 fn x_width_offsets(
     x: &Series,
@@ -474,7 +474,7 @@ fn x_width_offsets(
                 if let Ok(ca) = phys.$downcast() {
                     let (lo_i, hi_i) = int_bounds(lo, hi, x.dtype())?;
                     // Ceiling division, so the kernel rebuilds the same width
-                    // as `_bucket_grid`; truncating would narrow it and open
+                    // as `_bucket_grid`. Truncating would narrow it and open
                     // more buckets than the budget. Span and count are positive
                     // (`positive_span`), so add-then-floor is the ceiling.
                     let n = n_buckets as i128;
@@ -613,8 +613,9 @@ where
     let mut offsets = Vec::with_capacity(n_buckets.min(n_rows));
     let mut start = search(edge(0), false);
     for i in 1..=n_buckets {
-        // The last bucket is closed so that x == hi is kept; `.max(start)` guards
-        // the edges going backwards on float rounding.
+        // The last bucket is closed so that x == hi is kept. `.max(start)` guards
+        // an x that is not really sorted, which `assume_sorted_x=True` allows: the
+        // search then returns an index below `start` and `end - start` underflows.
         let end = search(edge(i), i == n_buckets).max(start);
         if end > start {
             offsets.push((start, end - start));

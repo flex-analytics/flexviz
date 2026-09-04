@@ -28,38 +28,21 @@ def polars_lf_from(data) -> pl.LazyFrame:
     raise ValueError(f"Unsupported data type: {type(data)}")
 
 
-def polars_col_from(col: str | pl.Expr) -> pl.Expr:
-    if isinstance(col, str):
-        col = pl.col(col)
-    return col
-
-
-def check_line_x_dtype(col_name: str, dtype: pl.DataType) -> None:
-    """Raise unless ``dtype`` can carry x for an ungrouped minmax line.
-
-    The bucket grid is arithmetic on x, so a string or nested column has no
-    grid at all. Shared by ``Figure.add_line`` (which fails at build time when
-    the frame is known) and ``LFQueryBuilder.check_line_x``.
-    """
-    if not (dtype.is_numeric() or dtype.is_temporal()):
-        raise ValueError(
-            f"x column '{col_name}' must be numeric or temporal for a minmax "
-            f"line, got {dtype}."
-        )
-
-
-def _line_x_null_error(col_name: str, n_null: int) -> ValueError:
-    return ValueError(
-        f"x column '{col_name}' has {n_null} null values; "
-        f"a minmax line needs a null-free x."
-    )
-
-
-def _line_x_nan_error(col_name: str, n_nan: int) -> ValueError:
-    return ValueError(
-        f"x column '{col_name}' has {n_nan} NaN values; "
-        f"a minmax line needs a NaN-free x."
-    )
+# Dtypes the x-width kernel dispatches. It searches bucket edges as i64 or f64,
+# so a wider numeric (Int128, Decimal) has no edge type there and panics the
+# plugin. Temporal columns reduce to their i64 physical.
+_LINE_X_NUMERIC = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+    pl.Float32,
+    pl.Float64,
+)
 
 
 def get_col_name(col: str | pl.Expr) -> str:
@@ -119,26 +102,14 @@ class LFQueryBuilder:
     def __init__(
         self,
         ldf: pl.DataFrame | pl.LazyFrame,
-        row_index_col: str | pl.Expr | None = None,
         cache_schema: bool = True,
     ):
         ldf = polars_lf_from(ldf)
         assert isinstance(ldf, pl.LazyFrame)
-        if row_index_col is not None:
-            row_index_col = polars_col_from(row_index_col)
-            explicit_row_index_col = True
-        else:
-            explicit_row_index_col = False
-
-        # Store the lazy frame and the row index column
         self._ldf: pl.LazyFrame = ldf
-        self._row_index_col: pl.Expr | None = row_index_col
-        self._explicit_row_index_col: bool = explicit_row_index_col
         self._cache_schema: bool = cache_schema  # whether to cache the ldf its schema
         self._sorted_cols: Set[str] = set()  # columns that are sorted
         self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
-        # Columns whose line-x null/NaN contract a domain probe already checked.
-        self._line_x_checked: Set[str] = set()
 
     @property
     def is_scan(self) -> bool:
@@ -170,16 +141,6 @@ class LFQueryBuilder:
         """
         return "streaming" if self.is_scan else "in-memory"
 
-    @property
-    def row_index_col(self) -> str | None:
-        if self._row_index_col is None:
-            return None
-        return self._row_index_col.meta.output_name()
-
-    @property
-    def explicit_row_index_col(self) -> str | None:
-        return self.row_index_col if self._explicit_row_index_col else None
-
     # Is ~ 40x faster than LazyFrame.collect_schema() when the LazyFrame is in memory
     @property
     def schema(self):
@@ -199,7 +160,6 @@ class LFQueryBuilder:
         schema: pl.Schema | None = None,
         *,
         memoize: bool,
-        contract_cols: Set[str] | None = None,
     ) -> dict[str, Tuple[Any, Any]]:
         """``(min, max)`` of each column in its physical representation.
 
@@ -213,29 +173,14 @@ class LFQueryBuilder:
         changed source data. Re-registering a source with raw data or a new
         builder replaces the builder and drops the memo. Re-registering the
         same builder object keeps it, and the server warns.
-
-        ``contract_cols`` are minmax-line x columns whose null/NaN contract
-        rides this very select: their counts are extra outputs of the same
-        collect, so a scan source gets the contract without a second pass over
-        the data. Only requested columns are covered, and a violation raises
-        before anything is memoized.
         """
         memo = self._minmax_memo if memoize else {}
-        # Same static-data contract as the min/max memo: an uncached source
-        # re-checks, because its data may have changed.
-        checked = self._line_x_checked if memoize else set()
         sch = schema if schema is not None else self.schema
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
         # already be memoized. ``dict.fromkeys`` preserves first-seen order.
-        requested = list(dict.fromkeys(columns))
-        missing = [c for c in requested if c not in memo]
-        contract = [
-            c
-            for c in requested
-            if contract_cols and c in contract_cols and c not in checked
-        ]
-        if missing or contract:
+        missing = [c for c in dict.fromkeys(columns) if c not in memo]
+        if missing:
             exprs: List[pl.Expr] = []
             for c in missing:
                 val = pl.col(c)
@@ -244,44 +189,60 @@ class LFQueryBuilder:
                     val = val.to_physical()
                 exprs.append(val.min().alias(f"__min_{c}__"))
                 exprs.append(val.max().alias(f"__max_{c}__"))
-            for c in contract:
-                exprs.append(pl.col(c).null_count().alias(f"__nulls_{c}__"))
-                dtype = sch.get(c) if hasattr(sch, "get") else None
-                if dtype is not None and dtype.is_float():
-                    exprs.append(pl.col(c).is_nan().sum().alias(f"__nans_{c}__"))
             stats = self._ldf.select(exprs).collect(engine=self.collect_engine)
-            # Raise before the memo write: a source that breaks the contract
-            # must break it again on the next request too.
-            for c in contract:
-                if n_null := stats[f"__nulls_{c}__"].item():
-                    raise _line_x_null_error(c, n_null)
-                if f"__nans_{c}__" in stats.columns:
-                    if n_nan := stats[f"__nans_{c}__"].item():
-                        raise _line_x_nan_error(c, n_nan)
             for c in missing:
                 memo[c] = (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
-            checked.update(contract)
         return {c: memo[c] for c in columns}
 
     # --------------- Handling flags ---------------
 
-    def check_line_x(self, col: str | pl.Expr) -> None:
+    def check_line_x_schema(self, col: str | pl.Expr) -> None:
+        """Raise unless the schema lets ``col`` carry x for an ungrouped minmax line.
+
+        The bucket grid is arithmetic on x that the Rust kernel runs in i64 or
+        f64, so the dtype must be one the kernel dispatches (see
+        ``_LINE_X_NUMERIC``) or temporal. This reads the schema, never collects.
+
+        Raises
+        ------
+        ValueError
+            If the column is not in the schema, or its dtype cannot carry x.
+        """
+        col_name: str = get_col_name(col)
+        if col_name not in self.schema:
+            raise ValueError(f"Column '{col_name}' not in schema")
+        dtype = self.schema[col_name]
+        if not (dtype in _LINE_X_NUMERIC or dtype.is_temporal()):
+            raise ValueError(
+                f"x column '{col_name}' must be a 64-bit-or-smaller numeric or a "
+                f"temporal for a minmax line, got {dtype}. Cast the column first."
+            )
+
+    def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
         """
         Verify that a column can carry x for an ungrouped minmax line.
 
-        The envelope buckets by equal x width and binary-searches the bucket
-        edges, so x must be numeric or temporal, free of nulls and NaN, and
-        sorted ascending. On the happy path that is one pass over x (the order
-        check) plus O(1) work; the NaN count only runs when the column already
-        failed. A passing column is flagged sorted (``._sorted_cols``, because
-        one cannot query the flags of a LazyFrame), which memoizes the check per
-        builder and column and makes a later ``physical_minmax`` on that column
-        O(1).
+        The dtype gate always applies. On a scan source that is the whole
+        contract: its streaming envelope is order independent, drops null x and
+        tolerates NaN. A resident frame feeds the kernel, which needs x sorted
+        ascending and free of nulls and NaN. That costs one collect: an O(1)
+        null check, one pass over the order, and on a float dtype an O(1) read
+        of the last element. NaN sorts last, so on a sorted null-free column
+        every NaN is a suffix.
+
+        ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
+        skips the collect on later requests. The flags of a LazyFrame cannot be
+        queried, hence the set. Only a ``cache=True`` source may set it, the
+        same static-data contract that governs ``physical_minmax``. On any other
+        source the data may have changed since the check, so nothing is kept and
+        the next request checks again.
 
         Parameters
         ----------
         col : str | pl.Expr
             Column name or expression.
+        memoize : bool
+            Whether a passing column may be remembered as sorted.
 
         Raises
         ------
@@ -289,43 +250,39 @@ class LFQueryBuilder:
             If the column is not in the schema or breaks the contract.
         """
         col_name: str = get_col_name(col)
-        if col_name not in self.schema:
-            raise ValueError(f"Column '{col_name}' not in schema")
+        self.check_line_x_schema(col_name)  # free, so it runs before any collect
+        if self.is_scan:
+            return
         if col_name in self._sorted_cols:
             return
         dtype = self.schema[col_name]
-        check_line_x_dtype(col_name, dtype)  # before any collect: it is free
-        x = pl.col(col_name)
-        engine = self.collect_engine
         is_float = dtype.is_float()
-        # One collect covers the whole contract: null count, order, and — on a
-        # float dtype — a trailing-NaN read. NaN sorts last, so on a sorted
-        # null-free column every NaN is a suffix and the last element decides.
+        x = pl.col(col_name)
         stats = self._ldf.select(
-            x.null_count().alias("__n_null"),
+            x.has_nulls().alias("__has_nulls"),
             x.is_sorted().alias("__sorted"),
             *([x.last().is_nan().alias("__last_nan")] if is_float else []),
-        ).collect(engine=engine)
-        if n_null := stats["__n_null"].item():
-            raise _line_x_null_error(col_name, n_null)
+        ).collect(engine=self.collect_engine)
+        if stats["__has_nulls"].item():
+            raise ValueError(
+                f"x column '{col_name}' has null values. A minmax line needs "
+                f"a null-free x. Drop the null rows first."
+            )
         if not stats["__sorted"].item():
-            # A NaN in the middle of x breaks the order, so name it for what it
-            # is. This extra count runs on the failure path only.
-            if is_float and (n_nan := self._nan_count(x, engine)):
-                raise _line_x_nan_error(col_name, n_nan)
+            # A NaN in the middle also lands here: it sorts last, so it breaks
+            # the order too.
             raise ValueError(
                 f"Column '{col_name}' is not sorted ascending. Sort the frame by "
                 f"'{col_name}', or pass assume_sorted_x=True if you guarantee it."
             )
         if is_float and stats["__last_nan"].item():
-            raise _line_x_nan_error(col_name, self._nan_count(x, engine))
-        self._ldf = self._ldf.set_sorted(col_name)
-        # Memoized only once every check passed, so a failing column is never
-        # remembered as passing.
-        self._sorted_cols.add(col_name)
-
-    def _nan_count(self, x: pl.Expr, engine: str) -> int:
-        return self._ldf.select(x.is_nan().sum()).collect(engine=engine).item()
+            raise ValueError(
+                f"x column '{col_name}' has NaN values. A minmax line needs "
+                f"a NaN-free x. Drop the NaN rows first."
+            )
+        if memoize:
+            self._ldf = self._ldf.set_sorted(col_name)
+            self._sorted_cols.add(col_name)
 
     def is_sorted(self, col: str | pl.Expr) -> bool:
         """Whether ``col`` was asserted sorted via ``assume_sorted``/``check_line_x``.

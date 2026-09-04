@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import polars as pl
 
-from .LF import LFQueryBuilder, check_line_x_dtype, polars_lf_from
+from .LF import LFQueryBuilder, polars_lf_from
 from .spec import DashboardSpec, FigureSpec, VisualizationSpec
 from .trace.bar import BarPlot
 from .trace.base import FlexTrace, _composite_label
@@ -204,7 +204,6 @@ class Figure:
     def __init__(
         self,
         data: pl.DataFrame | pl.LazyFrame | None = None,
-        row_index_col: str | None = None,
         cache: bool = False,
     ) -> None:
         """
@@ -214,10 +213,6 @@ class Figure:
             A Polars DataFrame or LazyFrame (or anything accepted by
             ``polars_lf_from``).  Pass ``None`` for in-memory figures
             where each trace carries its own data.
-        row_index_col:
-            Name of a pre-existing sorted integer row-index column.
-            When ``None`` (default), no row-index column is added unless a
-            future feature explicitly requests one.
         cache:
             Opt this figure's source into init-load caching.  Asserts the
             data is static for the process lifetime (no invalidation yet;
@@ -226,9 +221,7 @@ class Figure:
         """
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(
-                polars_lf_from(data), row_index_col=row_index_col
-            )
+            self._backend_lf = LFQueryBuilder(polars_lf_from(data))
 
         self._uid: str = str(uuid4())
         self._traces: List[FlexTrace] = []
@@ -264,8 +257,8 @@ class Figure:
         Parameters
         ----------
         x:
-            Column name for x-axis data.  Must be sorted ascending: an ungrouped
-            ``"minmax"`` line buckets by equal x width.
+            Column name for x-axis data.  For an ungrouped ``"minmax"`` line it
+            must be sorted ascending: those buckets are equal in x width.
         y:
             Column name for y-axis data.
         name:
@@ -286,22 +279,22 @@ class Figure:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            For an ungrouped `"minmax"` line the engine verifies `x` once per
-            registered source and column (one pass over x): numeric or
-            temporal, no nulls or NaN, sorted ascending. It raises `ValueError`
-            otherwise. Set True to skip that check by marking the column sorted
-            via `set_sorted`. Only use it if you guarantee `x` meets the
-            contract; a column that does not then gives wrong results.
+            For an ungrouped `"minmax"` line on a resident frame the engine
+            verifies `x` with one pass over the column: no nulls or NaN, sorted
+            ascending. It raises `ValueError` otherwise. A cached figure pays
+            that once per source and column. An uncached one pays it on every
+            unzoomed request. Set True to skip the check by marking the column
+            sorted via `set_sorted`. Only use it if you guarantee `x` meets the
+            contract. A column that does not then gives wrong results.
         """
         if self._backend_lf is not None:
+            if downsample == "minmax" and group_by is None:
+                # Fail here rather than on the first request: the ungrouped
+                # minmax envelope buckets by x width.
+                self._backend_lf.check_line_x_schema(x)
             if assume_sorted_x:
                 # Opt-in: caller guarantees sortedness. This avoids an expensive collect.
                 self._backend_lf.assume_sorted(x)
-            dtype = self._backend_lf.schema.get(x)
-            if dtype is not None and downsample == "minmax" and group_by is None:
-                # Fail here rather than on the first request: the ungrouped
-                # minmax envelope buckets by x width.
-                check_line_x_dtype(x, dtype)
         return self._add_trace(
             LinePlot(
                 x=x,

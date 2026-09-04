@@ -17,9 +17,11 @@ fig.add_line(
 
 ## Algorithms
 
-- **`"minmax"`** (default): splits the viewport into `n_points // 2` buckets
-  and keeps the y-minimum and y-maximum of each. Extremes and spikes always
-  survive, which makes it the right default for monitoring-style data.
+- **`"minmax"`** (default): splits the x range into `n_points // 2` buckets
+  and keeps the y-minimum and y-maximum of each. An ungrouped line makes the
+  buckets equal in x width. A grouped one makes them equal in row count.
+  Extremes and spikes always survive, which makes it the right default for
+  monitoring-style data.
 - **`"fpcs"`**: Feature-Preserving Compensated Sampling. Runs the same
   min-max pass, then carries deferred extrema forward across windows to
   reduce visual artifacts on oscillating signals. `n_points` is a target, not
@@ -31,15 +33,21 @@ fig.add_line(
 ## The x contract
 
 An ungrouped `"minmax"` line buckets by equal x width and binary-searches the
-bucket edges, so its x column must be numeric or temporal, hold no nulls and no
-NaN, and be sorted ascending. The engine verifies this once per registered
-source and column, with one pass over x, and raises `ValueError` when the
-column breaks the contract. A file source runs an order-independent plan, so it
-is not order-checked: its dtype is read off the schema, and its null and NaN
-counts ride the domain probe of the first unzoomed request.
+bucket edges. Its x column must be a 64-bit-or-smaller numeric, or a temporal,
+and must not be infinite. Wider numerics (`Int128`, `Decimal`) have no edge type
+in the kernel and are rejected. On a resident frame x must also be sorted
+ascending and free of nulls and NaN. The engine verifies this and raises
+`ValueError` when the column breaks the contract. `Figure.add_line` applies the
+dtype part at build time.
 
+A file source runs an order-independent plan that drops null x and tolerates
+NaN, so only its dtype is gated.
+
+- The order, null, and NaN check costs one pass over x. A `cache=True` source
+  pays it once per source and column. A `cache=False` source may have changed
+  since the last request, so it pays it on every unzoomed request.
 - `add_line(..., assume_sorted_x=True)` skips the check. Only pass it when you
-  can guarantee the column; a column that breaks the contract then produces
+  can guarantee the column. A column that breaks the contract then produces
   wrong output.
 - Sorted x also makes a viewport zoom a zero-copy binary-searched slice of the
   frame instead of a row-by-row range filter, which matters at 100M+ rows.
@@ -51,8 +59,8 @@ counts ride the domain probe of the first unzoomed request.
 
 ### Equal-row-count buckets
 
-An ungrouped line spends its budget on x width, so a dense burst in a narrow x
-span gets few points. To spend the budget on row count instead, plot against a
+An ungrouped `"minmax"` line spends its budget on x width, so a dense burst in
+a narrow x span gets few points. To spend the budget on row count instead, plot against a
 row index:
 
 ```python
@@ -60,19 +68,19 @@ df = df.with_row_index("i")
 fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal rows
 ```
 
-### Nulls and NaN
+### Nulls, NaN, and infinities
 
 | Column | What happens |
 | --- | --- |
-| x | Raises `ValueError` with the number of null or NaN values. |
+| x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source drops it. |
 | y | Skipped, on every downsampling path. |
 
-A null or NaN has no position on the axis, and the bucket edges are found by
-binary search, so a dirty x has no bucket to fall in. Drop the rows first:
+An infinite bound has no finite bucket width, so the grid cannot be built. Drop
+the rows first:
 
 ```python
-df = df.drop_nulls("ts")                    # nulls
-df = df.filter(pl.col("x").is_not_nan())    # NaN
+df = df.drop_nulls("x")                     # nulls
+df = df.filter(pl.col("x").is_finite())     # NaN and infinities
 ```
 
 ## Gap handling

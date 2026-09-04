@@ -7,6 +7,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
+from flexviz.cache import InMemoryLRUCache
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.LF import LFQueryBuilder
@@ -2275,9 +2276,13 @@ class TestResidentLineXWidth:
         [
             ([1.0, None, 3.0], pl.Float64, "null values"),
             ([1.0, 2.0, float("nan")], pl.Float64, "NaN values"),
-            (["a", "b", "c"], pl.String, "numeric or temporal"),
+            ([1.0, 2.0, float("inf")], pl.Float64, "infinite bound"),
+            (["a", "b", "c"], pl.String, "numeric or a temporal"),
+            # Wider than the kernel's i64 edge search: rejected before it panics.
+            ([1, 2, 3], pl.Int128, "64-bit-or-smaller"),
+            ([1, 2, 3], pl.Decimal(10, 2), "64-bit-or-smaller"),
         ],
-        ids=["null", "nan", "string"],
+        ids=["null", "nan", "inf", "string", "int128", "decimal"],
     )
     def test_x_contract_is_enforced(self, xs, dtype, message):
         df = pl.DataFrame(
@@ -2293,8 +2298,37 @@ class TestResidentLineXWidth:
         df.write_parquet(path)
         lf = LFQueryBuilder(pl.scan_parquet(path))
         assert lf.is_scan
-        with pytest.raises(ValueError, match="numeric or temporal"):
+        with pytest.raises(ValueError, match="numeric or a temporal"):
             self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+    def test_scan_source_rejects_infinite_x(self, tmp_path):
+        # An infinite bound has no bucket grid, on either source kind.
+        df = pl.DataFrame({"ts": [0.0, 1.0, float("inf")], "val": [1.0, 2.0, 3.0]})
+        path = tmp_path / "inf_x.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        with pytest.raises(ValueError, match="infinite bound"):
+            self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+    @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    def test_zoomed_request_past_an_infinite_x_still_works(self, tmp_path, scan):
+        # A viewport supplies its own finite bounds, so no domain is probed.
+        df = pl.DataFrame(
+            {"ts": [0.0, 1.0, 2.0, float("inf")], "val": [1.0, 2.0, 3.0, 4.0]}
+        )
+        if scan:
+            df.write_parquet(tmp_path / "inf_zoom.parquet")
+            lf = LFQueryBuilder(pl.scan_parquet(tmp_path / "inf_zoom.parquet"))
+        else:
+            lf = LFQueryBuilder(df)
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
+        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        deltas = engine.process(
+            InteractionEvent(type="viewport", axis_ranges={"x": (0.0, 2.0)}), infos
+        )
+        assert sorted(deltas[0].updates["y"]) == [1.0, 2.0, 3.0]
 
     @staticmethod
     def _scan(tmp_path, xs) -> LFQueryBuilder:
@@ -2310,51 +2344,28 @@ class TestResidentLineXWidth:
         return lf
 
     @pytest.mark.parametrize(
-        "xs,message",
-        [
-            ([1.0, None, 3.0], "1 null values"),
-            ([1.0, float("nan"), 3.0], "1 NaN values"),
-        ],
-        ids=["null", "nan"],
+        "xs",
+        [[1.0, None, 3.0], [1.0, float("nan"), 3.0], [3.0, 1.0, 2.0]],
+        ids=["null", "nan", "unsorted"],
     )
-    def test_scan_x_contract_rides_the_domain_probe(self, tmp_path, xs, message):
-        # A scan is never order-checked, but a null or NaN x has no position on
-        # the axis on any path, so the domain probe rejects it.
-        with pytest.raises(ValueError, match=message):
-            self._process(
-                self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
-            )
-
-    def test_scan_contract_adds_no_collect(self, tmp_path, monkeypatch):
-        plans: list[str] = []
-        real = pl.LazyFrame.collect
-
-        def spy(self, *args, **kwargs):
-            plans.append(self.explain(optimized=False))
-            return real(self, *args, **kwargs)
-
-        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
-
-        lf = self._scan(tmp_path, [float(i) for i in range(200)])
-        deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
-
-        assert len(deltas) == 1
-        probes = [p for p in plans if "__min_ts__" in p]
-        assert len(probes) == 1
-        # The counts are extra outputs of the min/max select, not a second pass.
-        assert "__nulls_ts__" in probes[0] and "__nans_ts__" in probes[0]
-        assert len(plans) == 2  # the probe and the envelope plan
+    def test_scan_x_needs_only_the_dtype(self, tmp_path, xs):
+        # The streaming envelope is order independent, drops null x and
+        # tolerates NaN, so none of these is rejected.
+        deltas, _ = self._process(
+            self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
+        )
+        assert len(list(deltas[0].updates["y"])) > 0
 
     def test_x_is_checked_before_the_domain_resolve(self, monkeypatch):
-        # The check flags the column sorted, which makes the min/max collect
-        # O(1) on this very first request.
+        # On a cached source the check flags the column sorted, which makes the
+        # min/max collect O(1) on this very first request.
         order: list[str] = []
         real_check = LFQueryBuilder.check_line_x
         real_minmax = LFQueryBuilder.physical_minmax
 
-        def check(self, col):
+        def check(self, col, **kwargs):
             order.append("check")
-            return real_check(self, col)
+            return real_check(self, col, **kwargs)
 
         def minmax(self, *args, **kwargs):
             order.append("minmax")
@@ -2368,7 +2379,17 @@ class TestResidentLineXWidth:
         )
         assert order == ["check", "minmax"]
 
-    def test_x_column_is_collected_once_per_source(self, monkeypatch):
+    @staticmethod
+    def _two_requests(lf: LFQueryBuilder, cache_backend) -> tuple[int, int]:
+        """Collect counts of two identical unzoomed requests."""
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine = FlexEngine(
+            backend_lf=lf,
+            scalable_traces={line.uid: line},
+            cache_backend=cache_backend,
+        )
+        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        event = InteractionEvent(type="init", force_update=True)
         collects: list[int] = []
         real = pl.LazyFrame.collect
 
@@ -2376,20 +2397,25 @@ class TestResidentLineXWidth:
             collects.append(1)
             return real(self, *args, **kwargs)
 
-        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(pl.LazyFrame, "collect", spy)
+            engine.process(event, infos)
+            first = len(collects)
+            engine.process(event, infos)
+        return first, len(collects) - first
 
+    def test_uncached_source_rechecks_every_request(self):
+        # Nothing is memoized, so the source data may have changed since the
+        # last request: check again.
         lf = LFQueryBuilder(self._frame(1_000))
-        line = LinePlot(x="ts", y="val", n_points=50)
-        engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        event = InteractionEvent(type="init", force_update=True)
+        first, second = self._two_requests(lf, cache_backend=None)
+        assert first == second
+        assert lf._sorted_cols == set()
 
-        engine.process(event, infos)
-        first = len(collects)
-        engine.process(event, infos)
-        second = len(collects) - first
-
-        # The x check passes over the column on the first request only, in a
-        # single collect (null count and order together); the second request
-        # pays the domain resolve and the aggregation alone.
-        assert first == second + 1
+    def test_cached_source_checks_once(self):
+        # A cached source is static, so the pass is memoized as the sorted flag
+        # and `check_line_x` returns without collecting on later requests.
+        lf = LFQueryBuilder(self._frame(1_000))
+        first, second = self._two_requests(lf, cache_backend=InMemoryLRUCache())
+        assert first > second
+        assert lf._sorted_cols == {"ts"}

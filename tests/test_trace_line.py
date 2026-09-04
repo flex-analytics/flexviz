@@ -673,7 +673,7 @@ def _minmax_points(lf: LFQueryBuilder, trace: LinePlot, x_range=None) -> dict:
 
 
 def _gappy_frame() -> pl.DataFrame:
-    """Sorted Int64 x with a large gap; every y distinct, so no plateau ties.
+    """Sorted Int64 x with a large gap. Every y is distinct, so no plateau ties.
 
     The span (100_000) is a whole multiple of the 100 buckets, so the streaming
     plan's integer-ceil width equals the kernel's true-division width and the
@@ -783,14 +783,14 @@ class TestLineXWidthBuckets:
         assert sum(v >= 500_000 for v in unzoomed["x"].to_list()) < len(xs_out)
 
     def test_all_null_x_breaks_the_x_contract(self):
-        # The aggregation itself still yields nothing, but the engine now
-        # rejects a null x before it ever gets there.
+        # The engine rejects a null x before the aggregation runs. The
+        # aggregation itself also yields nothing.
         df = pl.DataFrame(
             {"ts": pl.Series("ts", [None, None], dtype=pl.Int64), "val": [1.0, 2.0]}
         )
         lf = LFQueryBuilder(df)
-        with pytest.raises(ValueError, match="2 null values"):
-            lf.check_line_x("ts")
+        with pytest.raises(ValueError, match="null values"):
+            lf.check_line_x("ts", memoize=True)
         out = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=20))
         assert len(out["x"]) == 0 or all(v is None for v in out["x"].to_list())
 
@@ -803,7 +803,8 @@ class TestLineXWidthBuckets:
         assert sorted(out["y"].to_list()) == [0.0, 99.0]
 
     def test_true_max_x_survives_on_a_float_domain(self):
-        # lo + width * n_buckets rounds below this max, which used to drop it.
+        # lo + width * n_buckets rounds below this max, so only a closed last
+        # bucket keeps it.
         df = pl.DataFrame(
             {"ts": [0.667425, 99.849514], "val": [0.0, 100.0]},
             schema={"ts": pl.Float64, "val": pl.Float64},
@@ -901,8 +902,13 @@ class TestAddLineXGate:
 
     def test_string_x_is_rejected_at_build_time(self):
         fig = Figure(self._df())
-        with pytest.raises(ValueError, match="numeric or temporal"):
+        with pytest.raises(ValueError, match="numeric or a temporal"):
             fig.add_line(x="ts", y="val")
+
+    def test_misspelled_x_is_rejected_at_build_time(self):
+        fig = Figure(self._df())
+        with pytest.raises(ValueError, match="not in schema"):
+            fig.add_line(x="tsp", y="val")
 
     def test_only_the_ungrouped_minmax_line_is_gated(self):
         fig = Figure(self._df())

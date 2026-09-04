@@ -62,8 +62,8 @@ import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namesp
 
 LineDownsample = Literal["minmax", "fpcs", "nth"]
 
-# A line needs two points to be a line, and 25k points already exceed the pixel
-# width of any screen the browser can draw them on.
+# Two points make a line, and 25k already exceeds the pixel width of any screen
+# the browser draws them on.
 _N_POINTS_MIN = 2
 _N_POINTS_MAX = 25_000
 
@@ -123,6 +123,7 @@ def _viewport_window(
 
 
 def _bucket_grid(
+    x_col: str,
     x_range: tuple | None,
     x_domain: tuple | None,
     dtype: pl.DataType | None,
@@ -132,14 +133,17 @@ def _bucket_grid(
 
     Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
     the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
-    move the bucket edges. ``None`` means there is no domain at all — an empty
-    or all-null x column.
+    move the bucket edges. ``None`` means there is no grid: an empty or all-null
+    x column, or a temporal viewport bound that failed to parse. An infinite
+    bound raises: the edges are found by binary search, and an infinite span has
+    no finite bucket width.
 
     Float columns need true division: integer ceiling division rounds a sub-1
     width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
     Integer and temporal columns divide with a ceiling to keep the width whole.
-    The check is on the column dtype, not the Python type of the span, because
-    JSON deserializes 100.0 as int.
+    The branch is on the column dtype, because the Python type of the span is no
+    dtype signal: a JSON viewport bound of ``100`` arrives as an int on a float
+    column.
     """
     if x_range is not None:
         lo, hi = x_range[0], x_range[1]
@@ -159,6 +163,11 @@ def _bucket_grid(
 
     if lo is None or hi is None:
         return None
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        raise ValueError(
+            f"x column '{x_col}' has an infinite bound ({lo}, {hi}). A minmax "
+            f"line needs a finite x. Filter the frame with is_finite() first."
+        )
 
     span = hi - lo
     if span <= 0:  # a constant x column still gets one bucket, of width 1
@@ -219,7 +228,7 @@ def _streaming_envelope_plan(
             if dtype is not None and dtype.is_temporal()
             else pl.col(x_col)
         )
-        grid = _bucket_grid(x_range, x_domain, dtype, n_out)
+        grid = _bucket_grid(x_col, x_range, x_domain, dtype, n_out)
         if grid is None:
             return empty
         x_lo, bsz, _ = grid
@@ -320,11 +329,11 @@ def _plugin_minmax_agg_expr(
     y at the argmin and argmax positions within each bucket. Preserves extrema
     and spikes that uniform-stride subsampling would miss.
 
-    ``x_domain`` is the ``(lo, hi)`` the buckets span: the kernel makes them
-    equal in x width over it, rebuilding the same width ``_bucket_grid`` holds
-    (ungrouped lines; it needs x sorted ascending, and the kernel drops rows
-    outside ``[lo, hi]``). Without it the buckets are equal in row count, which
-    is what a grouped line uses.
+    ``x_domain`` is the ``(lo, hi)`` the buckets span. The kernel makes them
+    equal in x width over it, rebuilding the same width ``_bucket_grid`` holds.
+    That needs x sorted ascending, and the kernel drops rows outside
+    ``[lo, hi]``. Ungrouped lines pass it. Without it the buckets are equal in
+    row count, which is what a grouped line uses.
 
     Index selection and both gathers happen in one kernel call: Polars does not
     CSE opaque plugin expressions, so the two-gather form
@@ -633,7 +642,7 @@ class LinePlot(FlexTrace):
     def domain_cols(
         self, update_range: Dict[str, Any], *, scan_source: bool = False
     ) -> tuple[str, ...]:
-        # Every ungrouped minmax line bins in x, on both source kinds; a zoomed
+        # Every ungrouped minmax line bins in x, on both source kinds. A zoomed
         # one takes its grid from the viewport, and every other formulation
         # reads its bucket grid off the rows themselves.
         if (
@@ -657,7 +666,7 @@ class LinePlot(FlexTrace):
 
         ``x_sorted`` is the caller's guarantee that the x column is ascending
         (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
-        faster viewport restriction; correctness of the output is unchanged.
+        faster viewport restriction. The output is unchanged.
         The ungrouped minmax envelope needs it for a second reason: its buckets
         are equal in x width, which the engine validates once per source.
 
@@ -665,11 +674,11 @@ class LinePlot(FlexTrace):
         frame. The kernel needs the whole column in memory, so on a scan the
         minmax envelope switches to a streaming plan (``_streaming_envelope_plan``).
         Both build the same equal-x-width grid (``_bucket_grid``), so they return
-        the same ``y`` multiset; they differ only in which member of an exact
+        the same ``y`` multiset. They differ only in which member of an exact
         ``y`` plateau they pick.
 
-        An unzoomed ungrouped minmax trace requires ``x_col`` in ``domains``;
-        a ``(None, None)`` entry means an empty or all-null column.
+        An unzoomed ungrouped minmax trace requires ``x_col`` in ``domains``.
+        A ``(None, None)`` entry means an empty or all-null column.
         """
         x_range = update_range.get("x")
 
@@ -732,13 +741,12 @@ class LinePlot(FlexTrace):
 
             n_buckets = max(self.n_points // 2, 1)
             x_dtype = schema.get(self.x_col) if schema else None
-            grid = _bucket_grid(x_range, x_domain, x_dtype, n_buckets)
-            # Pass the grid's ``(lo, hi)``: the kernel rebuilds the same width,
-            # so kernel and grid never disagree. The viewport slice stays
-            # (zero-copy on sorted x) and the kernel drops rows outside
-            # ``[lo, hi]``, so slice and grid agree. A ``None`` grid (empty or
-            # all-null x) becomes a zero-span sentinel, so the kernel returns
-            # no points.
+            grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype, n_buckets)
+            # The kernel rebuilds the same width from ``(lo, hi)``, so grid and
+            # kernel never disagree. It drops rows outside ``[lo, hi]``, so the
+            # viewport slice agrees with the grid. A ``None`` grid (empty or
+            # all-null x) becomes a zero-span sentinel: the kernel returns no
+            # points.
             kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
             expr = _plugin_minmax_agg_expr(
                 self.x_col,

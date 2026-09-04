@@ -22,12 +22,7 @@ from .cube import (
     temporal_unit,
 )
 from .events import ActiveSource, GroupedChildDelta, InteractionEvent, TraceDelta
-from .LF import (
-    LFQueryBuilder,
-    AggregationSpec,
-    GroupedAggregationSpec,
-    check_line_x_dtype,
-)
+from .LF import LFQueryBuilder, AggregationSpec, GroupedAggregationSpec
 from .spec import SelectionState
 from .trace.base import (
     FlexTrace,
@@ -241,15 +236,15 @@ class FlexEngine:
                 len(cached),
             )
 
-        # Before the domain scan: the check leaves the x column flagged sorted,
-        # which makes the min/max collect O(1) on this very first request.
-        line_x_cols = self._check_line_x(aggregation_traces)
+        # Before the domain scan: on a cached source the check leaves the x
+        # column flagged sorted, which makes the min/max collect O(1).
+        verified_x = self._check_line_x(aggregation_traces)
 
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
         # shared unfiltered domain is resolved once per request.
         domain_cols, domains = self._resolve_domains(
-            aggregation_traces, histogram_domains, backend_schema, line_x_cols
+            aggregation_traces, histogram_domains, backend_schema
         )
 
         t_agg_start = time.perf_counter()
@@ -258,6 +253,7 @@ class FlexEngine:
             backend_schema=backend_schema,
             domain_cols=domain_cols,
             domains=domains,
+            verified_x=verified_x,
         )
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
@@ -849,7 +845,6 @@ class FlexEngine:
         aggregation_traces: list[_AggregationTrace],
         histogram_domains: Dict[str, tuple[str, ...]],
         schema: pl.Schema | None,
-        line_x_cols: set[str],
     ) -> tuple[Dict[str, tuple[str, ...]], Dict[str, tuple[Any, Any]]]:
         """Resolve every unfiltered ``(min, max)`` this request needs, in one collect.
 
@@ -860,9 +855,6 @@ class FlexEngine:
 
         Memoized only for a cached source, whose data the cache contract already
         treats as static — an uncached reset must be able to see changed data.
-
-        ``line_x_cols`` carries the scan-source x columns whose null/NaN
-        contract this same collect checks (see ``_check_line_x``).
         """
         if self._backend_lf is None:
             return {}, {}
@@ -877,28 +869,24 @@ class FlexEngine:
         if not needed:
             return domain_cols, {}
         return domain_cols, self._backend_lf.physical_minmax(
-            needed, schema, memoize=self._cache is not None, contract_cols=line_x_cols
+            needed, schema, memoize=self._cache is not None
         )
 
     def _check_line_x(self, aggregation_traces: list[_AggregationTrace]) -> set[str]:
         """Validate the x column of every ungrouped minmax line.
 
         Those buckets are equal in x width, so a well-formed x is a contract,
-        not a hint. A resident source pays the full check once per source and
-        column (``assume_sorted_x=True`` skips it). A scan runs an
-        order-independent plan, so its order is never checked; its dtype is
-        gated here (free, off the schema) and its null/NaN contract rides the
-        domain probe, which is why those columns are returned. A frame sorted by
-        group then x is not globally sorted, so a grouped line is not checked.
+        not a hint. A frame sorted by group then x is not globally sorted, so a
+        grouped line is not checked. ``assume_sorted_x=True`` skips the check.
 
-        Known limit: a zoomed request resolves no domain, so on a scan it never
-        reaches the null/NaN check. The first request of a figure is unzoomed,
-        so a dirty x is still caught once.
+        Returns the resident x columns this request verified. Only a cached
+        source keeps the sorted flag between requests, so on an uncached one the
+        aggregation specs cannot read the answer back off the builder.
         """
         lf = self._backend_lf
-        scan_x_cols: set[str] = set()
+        verified: set[str] = set()
         if lf is None:
-            return scan_x_cols
+            return verified
         for item in aggregation_traces:
             trace = item.trace
             if not (
@@ -907,13 +895,10 @@ class FlexEngine:
                 and trace.downsample == "minmax"
             ):
                 continue
+            lf.check_line_x(trace.x_col, memoize=self._cache is not None)
             if not lf.is_scan:
-                lf.check_line_x(trace.x_col)
-                continue
-            if (dtype := lf.schema.get(trace.x_col)) is not None:
-                check_line_x_dtype(trace.x_col, dtype)
-                scan_x_cols.add(trace.x_col)
-        return scan_x_cols
+                verified.add(trace.x_col)
+        return verified
 
     def _collect_aggregation_specs(
         self,
@@ -921,6 +906,7 @@ class FlexEngine:
         backend_schema: pl.Schema | None,
         domain_cols: Dict[str, tuple[str, ...]],
         domains: Dict[str, tuple[Any, Any]],
+        verified_x: set[str],
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
 
@@ -949,7 +935,10 @@ class FlexEngine:
                     trace.get_aggregation_spec(
                         update_range=item.update_range,
                         schema=backend_schema,
-                        x_sorted=(lf is not None and lf.is_sorted(trace.x_col)),
+                        x_sorted=(
+                            trace.x_col in verified_x
+                            or (lf is not None and lf.is_sorted(trace.x_col))
+                        ),
                         scan_source=is_scan,
                         domains=trace_domains,
                     )

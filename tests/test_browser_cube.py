@@ -4788,10 +4788,10 @@ class TestLineTargetCube:
         edge_lo, edge_hi = clause["range"]
 
         # After the POST settles the line shows the committed server delta, not
-        # the cube envelope. Both bucket by x width now, so the two are no
-        # longer told apart by x ordering; the exact match against the freshly
-        # fetched legacy delta below is what pins the replacement (the cube
-        # packs its y partials as f32, so its envelope never matches exactly).
+        # the cube envelope. Both bucket by x width, so x ordering cannot tell
+        # them apart. What pins the replacement is the exact match against the
+        # legacy delta fetched below. The cube packs its y partials as f32, so
+        # its envelope never matches exactly.
         page.wait_for_timeout(500)
         committed_line = _line_xy(page, "#fv-plot-1")
         assert len(committed_line["x"]) > 0

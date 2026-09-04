@@ -2044,7 +2044,7 @@ class TestMinmaxLineXDomain:
         )
 
     def test_bursty_x_spends_its_buckets_on_the_tail(self):
-        """Row-count buckets follow the density; x-width buckets follow x."""
+        """Row-count buckets follow the density. x-width buckets follow x."""
         x, y = _bursty_xy()
 
         with_domain = _minmax_line(x, y, 200, x_domain=(0, 100))
@@ -2055,8 +2055,8 @@ class TestMinmaxLineXDomain:
         assert sum(v >= 1 for v in without.struct.field("x").to_list()) < 50
 
     def test_output_points_come_from_the_domain(self):
-        """A hole in x empties the middle buckets, so the windows leave gaps;
-        the multi-chunk y routes them through the chunked kernel."""
+        """A hole in x empties the middle buckets, so the windows leave gaps.
+        The multi-chunk y routes them through the chunked kernel."""
         n = 100_000
         x = pl.Series(
             "x",
@@ -2134,7 +2134,7 @@ class TestMinmaxLineXDomain:
         )
 
     def test_int64_x_past_2_53_keeps_every_bucket(self):
-        """Beyond 2**53 an f64 edge collapses neighbours; integer edges do not."""
+        """Beyond 2**53 an f64 edge collapses neighbours. Integer edges do not."""
         base = 2**53
         x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(20))
