@@ -2214,6 +2214,26 @@ class TestResidentLineXWidth:
             infos,
         )
 
+    def test_row_index_x_matches_the_row_count_kernel(self):
+        # The recipe for equal-row-count buckets: use a row index as x. A
+        # uniform integer x makes every x-width bucket hold exactly one
+        # row-count bucket's rows, so the public path reproduces the row-count
+        # kernel (the ``x_domain``-free call) exactly.
+        import flexviz_polars as _fvp
+
+        df = self._frame(10_000)  # ts = 0..n-1 is a row index; val is distinct
+        deltas, _ = self._process(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=200)
+        )
+        row_count = pl.select(
+            _fvp._minmax_line(
+                pl.lit(df["ts"]), pl.lit(df["val"]), 200, x_name="ts", y_name="val"
+            )
+        ).to_series()
+        assert sorted(deltas[0].updates["y"]) == sorted(
+            row_count.struct.field("val").to_list()
+        )
+
     def test_unsorted_resident_x_raises(self):
         df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
         with pytest.raises(ValueError, match="ts"):
@@ -2369,7 +2389,7 @@ class TestResidentLineXWidth:
         engine.process(event, infos)
         second = len(collects) - first
 
-        # The x check passes over the column on the first request only (null
-        # count, then order); the second request pays the domain resolve and
-        # the aggregation alone.
-        assert first == second + 2
+        # The x check passes over the column on the first request only, in a
+        # single collect (null count and order together); the second request
+        # pays the domain resolve and the aggregation alone.
+        assert first == second + 1

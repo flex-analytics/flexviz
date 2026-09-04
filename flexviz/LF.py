@@ -297,34 +297,35 @@ class LFQueryBuilder:
         check_line_x_dtype(col_name, dtype)  # before any collect: it is free
         x = pl.col(col_name)
         engine = self.collect_engine
-        # Read off the validity bitmap, so it costs nothing and it carries the
-        # count the message needs.
-        n_null = self._ldf.select(x.null_count()).collect(engine=engine).item()
-        if n_null:
+        is_float = dtype.is_float()
+        # One collect covers the whole contract: null count, order, and — on a
+        # float dtype — a trailing-NaN read. NaN sorts last, so on a sorted
+        # null-free column every NaN is a suffix and the last element decides.
+        stats = self._ldf.select(
+            x.null_count().alias("__n_null"),
+            x.is_sorted().alias("__sorted"),
+            *([x.last().is_nan().alias("__last_nan")] if is_float else []),
+        ).collect(engine=engine)
+        if n_null := stats["__n_null"].item():
             raise _line_x_null_error(col_name, n_null)
-        # The one pass over x. Nulls are rejected above, so the ``nulls_last``
-        # option of ``is_sorted`` cannot change the answer here.
-        if not self._ldf.select(x.is_sorted()).collect(engine=engine).item():
-            if dtype.is_float():
-                # A NaN in the middle of x breaks the order, so name it for
-                # what it is. This second pass runs on the failure path only.
-                n_nan = self._ldf.select(x.is_nan().sum()).collect(engine=engine).item()
-                if n_nan:
-                    raise _line_x_nan_error(col_name, n_nan)
+        if not stats["__sorted"].item():
+            # A NaN in the middle of x breaks the order, so name it for what it
+            # is. This extra count runs on the failure path only.
+            if is_float and (n_nan := self._nan_count(x, engine)):
+                raise _line_x_nan_error(col_name, n_nan)
             raise ValueError(
                 f"Column '{col_name}' is not sorted ascending. Sort the frame by "
                 f"'{col_name}', or pass assume_sorted_x=True if you guarantee it."
             )
+        if is_float and stats["__last_nan"].item():
+            raise _line_x_nan_error(col_name, self._nan_count(x, engine))
         self._ldf = self._ldf.set_sorted(col_name)
-        if dtype.is_float():
-            # NaN sorts last in Polars, so on a sorted null-free column every
-            # NaN is a suffix: the last element alone decides, in O(1).
-            if self._ldf.select(x.last().is_nan()).collect(engine=engine).item():
-                n_nan = self._ldf.select(x.is_nan().sum()).collect(engine=engine).item()
-                raise _line_x_nan_error(col_name, n_nan)
         # Memoized only once every check passed, so a failing column is never
         # remembered as passing.
         self._sorted_cols.add(col_name)
+
+    def _nan_count(self, x: pl.Expr, engine: str) -> int:
+        return self._ldf.select(x.is_nan().sum()).collect(engine=engine).item()
 
     def is_sorted(self, col: str | pl.Expr) -> bool:
         """Whether ``col`` was asserted sorted via ``assume_sorted``/``check_line_x``.
