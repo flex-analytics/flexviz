@@ -473,9 +473,12 @@ fn x_width_offsets(
             $(
                 if let Ok(ca) = phys.$downcast() {
                     let (lo_i, hi_i) = int_bounds(lo, hi, x.dtype())?;
-                    // The caller guarantees hi = lo + width * n_buckets for an
-                    // integer x, so this division is exact.
-                    let width = (hi_i - lo_i) / n_buckets as i128;
+                    // Ceiling division, so the kernel rebuilds the same width
+                    // as `_bucket_grid`; truncating would narrow it and open
+                    // more buckets than the budget. Span and count are positive
+                    // (`positive_span`), so add-then-floor is the ceiling.
+                    let n = n_buckets as i128;
+                    let width = (hi_i - lo_i + n - 1) / n;
                     return Ok(chunked_bucket_offsets(
                         ca,
                         n_buckets,
@@ -526,7 +529,8 @@ fn x_width_offsets(
     )
 }
 
-/// The `[lo, hi]` bounds of an integer x, which must have arrived as integers.
+/// The `[lo, hi]` bounds of an integer x, which must have arrived as integers,
+/// so an integer edge search never round-trips through f64.
 fn int_bounds(lo: XBound, hi: XBound, dtype: &DataType) -> PolarsResult<(i128, i128)> {
     match (lo, hi) {
         (XBound::Int(lo), XBound::Int(hi)) => Ok((lo as i128, hi as i128)),

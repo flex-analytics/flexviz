@@ -1577,7 +1577,6 @@ EChartsAdapter is currently deprecated. No goal to support this in the near futu
 | `EChartsAdapter` | Does not support `BoxPlot` or `TreeMap`; supports line, histogram, bar, pie, and heatmap |
 | `trace/` interface | `_backend_data`, `_display`, `_params` dicts have `TypedDict` hints (`TraceDisplay`, `TraceParams`); `backend_data` values are `str | list[str]` |
 | `LinePlot`, `Histogram`, `Histogram2D`, `GeoHistogram2D` | All require `flexviz_polars` plugin; raise `ImportError` at import time without it (no pure-Python fallback). |
-| Cube line-envelope kernel (issue #36) | The future line-as-target cube shape needs exact argmin/argmax-by-y partials; pure Polars pays ~4–5× for the exact args. A one-pass Rust `fixed_line_envelope2d` kernel is planned before line targets land (Phase 4). |
 | Cube client temporal snapping | The server builds temporal-free-axis cubes (physical epoch cast), but the client gesture machine bails on non-numeric viewport ranges, so temporal source axes currently degrade to mouseup-only behavior. |
 
 ### Roadmap

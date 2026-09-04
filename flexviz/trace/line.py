@@ -168,29 +168,6 @@ def _bucket_grid(
     return (lo, -(-span // n_buckets), hi)
 
 
-def _kernel_x_domain(
-    grid: tuple[Any, Any, Any] | None,
-    n_buckets: int,
-    dtype: pl.DataType | None,
-) -> tuple[Any, Any]:
-    """The ``(lo, hi)`` that makes the kernel rebuild ``grid``.
-
-    The kernel divides the span itself. A float grid divided the true span, so
-    hand back that same ``hi``: ``lo + width * n_buckets`` rounds below it about
-    one time in five, which drops the last row. An integer grid rounded its
-    width up, so its span is ``n_buckets`` whole widths, exact in Python ints.
-
-    Without a grid (an empty or all-null x column) an empty span is right: the
-    kernel returns no points, matching the streaming plan.
-    """
-    if grid is None:
-        return (0.0, 0.0)
-    lo, width, hi = grid
-    if dtype is not None and dtype.is_float():
-        return (lo, hi)
-    return (lo, lo + width * n_buckets)
-
-
 # ---------------------------------------------------------------------------
 # Out-of-core envelope (streaming, single collect)
 # ---------------------------------------------------------------------------
@@ -208,8 +185,7 @@ def _streaming_envelope_plan(
 ):
     """Streaming min-max envelope using equal-width buckets in x.
 
-    Replaces the two-pass ``_native_envelope_plan``. One streaming collect, no
-    intermediate collects.
+    One streaming collect, no intermediate collects.
 
     Buckets partition the x range into ``n_points // 2`` equal-width bins.
     ``min_by``/``max_by`` locate the x value at each y extremum in a single
@@ -221,8 +197,8 @@ def _streaming_envelope_plan(
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
-    point. This is a deliberate trade: the previous two-pass plan paid 2.9x
-    runtime and 39x memory for deterministic tie-breaking.
+    point. This is a deliberate trade: deterministic tie-breaking here would
+    cost a second pass and far more memory for no visible difference.
     """
     n_out = max(n_points // 2, 1)
     empty = pl.DataFrame(
@@ -344,10 +320,11 @@ def _plugin_minmax_agg_expr(
     y at the argmin and argmax positions within each bucket. Preserves extrema
     and spikes that uniform-stride subsampling would miss.
 
-    ``x_domain`` makes the buckets equal in x width over that span (ungrouped
-    lines; it needs x sorted ascending, and the kernel drops rows outside the
-    span). Without it the buckets are equal in row count, which is what a
-    grouped line uses.
+    ``x_domain`` is the ``(lo, hi)`` the buckets span: the kernel makes them
+    equal in x width over it, rebuilding the same width ``_bucket_grid`` holds
+    (ungrouped lines; it needs x sorted ascending, and the kernel drops rows
+    outside ``[lo, hi]``). Without it the buckets are equal in row count, which
+    is what a grouped line uses.
 
     Index selection and both gathers happen in one kernel call: Polars does not
     CSE opaque plugin expressions, so the two-gather form
@@ -756,16 +733,20 @@ class LinePlot(FlexTrace):
             n_buckets = max(self.n_points // 2, 1)
             x_dtype = schema.get(self.x_col) if schema else None
             grid = _bucket_grid(x_range, x_domain, x_dtype, n_buckets)
-            # The viewport restriction stays: it is a zero-copy slice on sorted
-            # x, so the kernel reads a small input. The kernel drops whatever
-            # falls outside the grid, so slice and grid agree.
+            # Pass the grid's ``(lo, hi)``: the kernel rebuilds the same width,
+            # so kernel and grid never disagree. The viewport slice stays
+            # (zero-copy on sorted x) and the kernel drops rows outside
+            # ``[lo, hi]``, so slice and grid agree. A ``None`` grid (empty or
+            # all-null x) becomes a zero-span sentinel, so the kernel returns
+            # no points.
+            kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
             expr = _plugin_minmax_agg_expr(
                 self.x_col,
                 self.y_col,
                 _viewport_window(self.x_col, x_range, schema, x_sorted),
                 self.n_points,
                 self.uid,
-                x_domain=_kernel_x_domain(grid, n_buckets, x_dtype),
+                x_domain=kernel_domain,
             )
             return AggregationSpec(expr=expr, uid=self.uid)
 

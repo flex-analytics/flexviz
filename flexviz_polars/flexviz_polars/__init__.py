@@ -61,8 +61,8 @@ def _minmax_line(
             "n_points": n_points,
             "x_name": x_name,
             "y_name": y_name,
-            # Buckets of equal x width over this domain instead of equal row
-            # count. Needs x sorted ascending.
+            # Buckets of equal x width over this ``(lo, hi)`` domain instead of
+            # equal row count. Needs x sorted ascending.
             "x_domain": (
                 None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
             ),

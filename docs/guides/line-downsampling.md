@@ -49,6 +49,17 @@ counts ride the domain probe of the first unzoomed request.
 - `n_points` must be between 2 and 25000. The client posts the trace spec on
   every update, so the bound is enforced wherever a line is built.
 
+### Equal-row-count buckets
+
+An ungrouped line spends its budget on x width, so a dense burst in a narrow x
+span gets few points. To spend the budget on row count instead, plot against a
+row index:
+
+```python
+df = df.with_row_index("i")
+fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal rows
+```
+
 ### Nulls and NaN
 
 | Column | What happens |
