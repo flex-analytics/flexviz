@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import numbers
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,20 +35,14 @@ def _arg_min_max(expr: IntoExprColumn, n_points: int) -> pl.Expr:
     )
 
 
-def _as_f64_domain(x_domain: tuple[float, float]) -> tuple[float, float]:
-    """Widen ``x_domain`` to the f64 the kernel reads.
+def _kernel_bound(value) -> int | float:
+    """Normalize one ``x_domain`` bound to the Python type the kernel reads.
 
-    ``float()`` rounds an Int64 bound (nanosecond epochs exceed 2**53). Widen
-    outward, so a row inside the domain stays inside it whatever rounding the
-    kernel applies to x.
+    An integral bound stays a Python ``int``: the kernel searches integer x on
+    exact integers, and ``float()`` would round a nanosecond epoch. Everything
+    else goes as ``float``.
     """
-    lo, hi = x_domain
-    lo_f, hi_f = float(lo), float(hi)
-    if lo_f > lo:
-        lo_f = math.nextafter(lo_f, -math.inf)
-    if hi_f < hi:
-        hi_f = math.nextafter(hi_f, math.inf)
-    return lo_f, hi_f
+    return int(value) if isinstance(value, numbers.Integral) else float(value)
 
 
 def _minmax_line(
@@ -57,7 +51,7 @@ def _minmax_line(
     n_points: int,
     x_name: str | None = None,
     y_name: str | None = None,
-    x_domain: tuple[float, float] | None = None,
+    x_domain: tuple[int | float, int | float] | None = None,
 ) -> pl.Expr:
     return register_plugin_function(
         args=[x_expr, y_expr],
@@ -68,8 +62,10 @@ def _minmax_line(
             "x_name": x_name,
             "y_name": y_name,
             # Buckets of equal x width over this domain instead of equal row
-            # count. Needs x sorted ascending. Floats: the kernel reads f64.
-            "x_domain": None if x_domain is None else _as_f64_domain(x_domain),
+            # count. Needs x sorted ascending.
+            "x_domain": (
+                None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
+            ),
         },
         is_elementwise=False,
     )

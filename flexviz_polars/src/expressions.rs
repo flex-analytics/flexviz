@@ -83,6 +83,37 @@ struct ArgMinMaxKwargs {
     n_points: usize,
 }
 
+/// One `x_domain` bound.
+///
+/// Integer x is searched on exact integers: a nanosecond epoch (~1.7e18) has no
+/// exact f64, so an f64 edge collapses neighbouring rows into one bucket. The
+/// kwargs travel as a pickle, which keeps a Python `int` and a Python `float`
+/// distinct, so an untagged enum reads back the bound the caller sent.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(untagged)]
+enum XBound {
+    Int(i64),
+    Float(f64),
+}
+
+impl XBound {
+    fn as_f64(self) -> f64 {
+        match self {
+            XBound::Int(v) => v as f64,
+            XBound::Float(v) => v,
+        }
+    }
+}
+
+/// Whether `[lo, hi]` spans anything, compared without an f64 round trip so
+/// that two integer bounds one apart never look equal.
+fn positive_span(lo: XBound, hi: XBound) -> bool {
+    match (lo, hi) {
+        (XBound::Int(lo), XBound::Int(hi)) => hi > lo,
+        _ => hi.as_f64() > lo.as_f64(),
+    }
+}
+
 #[derive(Deserialize)]
 struct MinmaxLineKwargs {
     n_points: usize,
@@ -92,7 +123,7 @@ struct MinmaxLineKwargs {
     /// width over `[lo, hi]`, which needs x sorted ascending. `None` keeps the
     /// row-count buckets.
     #[serde(default)]
-    x_domain: Option<(f64, f64)>,
+    x_domain: Option<(XBound, XBound)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -396,17 +427,21 @@ fn arg_min_max_indices_x_width(
     x: &Series,
     y: &Series,
     n_points: usize,
-    lo: f64,
-    hi: f64,
+    lo: XBound,
+    hi: XBound,
 ) -> PolarsResult<Vec<u32>> {
     polars_ensure!(
         y.len() <= u32::MAX as usize,
         InvalidOperation: "series length exceeds UInt32 index capacity"
     );
-    if y.is_empty() || !(hi > lo) {
+    if y.is_empty() || !positive_span(lo, hi) {
         return Ok(Vec::new());
     }
 
+    // The bucket count may not be clamped to the row count the way
+    // `arg_min_max_pairs` clamps it: it divides `[lo, hi]`, so a smaller count
+    // would widen the buckets and rebuild a different grid than the caller's.
+    // Only the output allocation is bounded by the rows (`bucket_offsets`).
     let offsets = x_width_offsets(x, lo, hi, (n_points / 2).max(1))?;
     let mut indices: Vec<u32> = pairs_for_offsets(y, &offsets)
         .into_iter()
@@ -421,35 +456,68 @@ fn arg_min_max_indices_x_width(
 /// Non-empty `(start, len)` windows for `n_buckets` equal-width x buckets.
 ///
 /// Reads x through its physical representation, so a temporal column is an
-/// Int64 view with no copy or cast. Nulls in x are read as their physical
-/// value, not skipped; callers already require a null-free x.
+/// Int64 view with no copy or cast. An integer column searches integer edges in
+/// i128; only a float column goes through f64. Nulls in x are read as their
+/// physical value, not skipped, and a NaN breaks the edge search; callers
+/// already require an x free of both.
 fn x_width_offsets(
     x: &Series,
-    lo: f64,
-    hi: f64,
+    lo: XBound,
+    hi: XBound,
     n_buckets: usize,
 ) -> PolarsResult<Vec<(usize, usize)>> {
     let phys = x.to_physical_repr();
 
-    macro_rules! try_dispatch {
-        ($downcast:ident) => {
-            if let Ok(ca) = phys.$downcast() {
-                return Ok(chunked_bucket_offsets(ca, lo, hi, n_buckets));
-            }
+    macro_rules! int_dispatch {
+        ($($downcast:ident),* $(,)?) => {
+            $(
+                if let Ok(ca) = phys.$downcast() {
+                    let (lo_i, hi_i) = int_bounds(lo, hi, x.dtype())?;
+                    // The caller guarantees hi = lo + width * n_buckets for an
+                    // integer x, so this division is exact.
+                    let width = (hi_i - lo_i) / n_buckets as i128;
+                    return Ok(chunked_bucket_offsets(
+                        ca,
+                        n_buckets,
+                        |v| v as i128,
+                        |i| {
+                            if i == n_buckets {
+                                hi_i
+                            } else {
+                                lo_i + i as i128 * width
+                            }
+                        },
+                    ));
+                }
+            )*
         };
     }
 
-    try_dispatch!(i64);
-    try_dispatch!(i32);
-    try_dispatch!(i16);
-    try_dispatch!(i8);
-    try_dispatch!(u64);
-    try_dispatch!(u32);
-    try_dispatch!(u16);
-    try_dispatch!(u8);
-    try_dispatch!(f64);
-    try_dispatch!(f32);
-    try_dispatch!(f16);
+    macro_rules! float_dispatch {
+        ($($downcast:ident),* $(,)?) => {
+            $(
+                if let Ok(ca) = phys.$downcast() {
+                    let (lo_f, hi_f) = (lo.as_f64(), hi.as_f64());
+                    let width = (hi_f - lo_f) / n_buckets as f64;
+                    return Ok(chunked_bucket_offsets(
+                        ca,
+                        n_buckets,
+                        |v| v.to_hist_f64(),
+                        |i| {
+                            if i == n_buckets {
+                                hi_f
+                            } else {
+                                lo_f + i as f64 * width
+                            }
+                        },
+                    ));
+                }
+            )*
+        };
+    }
+
+    int_dispatch!(i64, i32, i16, i8, u64, u32, u16, u8);
+    float_dispatch!(f64, f32, f16);
 
     polars_bail!(
         InvalidOperation:
@@ -458,69 +526,92 @@ fn x_width_offsets(
     )
 }
 
+/// The `[lo, hi]` bounds of an integer x, which must have arrived as integers.
+fn int_bounds(lo: XBound, hi: XBound, dtype: &DataType) -> PolarsResult<(i128, i128)> {
+    match (lo, hi) {
+        (XBound::Int(lo), XBound::Int(hi)) => Ok((lo as i128, hi as i128)),
+        _ => polars_bail!(
+            InvalidOperation:
+            "x_domain must be integer bounds for an x of type {}, got a float bound",
+            dtype
+        ),
+    }
+}
+
 /// `bucket_offsets` over a chunked x, searched without a per-element `get`.
 ///
 /// `ChunkedArray::get` resolves the chunk by walking the chunk lengths, so a
 /// binary search over it costs O(chunks) per access: measurably ~10x slower per
 /// edge on a 1000-chunk Parquet read. Searching the per-chunk last values first
 /// and then one contiguous slice keeps every edge at O(log chunks + log len).
-fn chunked_bucket_offsets<T>(
+fn chunked_bucket_offsets<T, K>(
     ca: &ChunkedArray<T>,
-    lo: f64,
-    hi: f64,
     n_buckets: usize,
+    to_key: impl Fn(T::Native) -> K,
+    edge: impl Fn(usize) -> K,
 ) -> Vec<(usize, usize)>
 where
     T: PolarsNumericType,
-    T::Native: FixedHistValue,
+    K: Copy + PartialOrd,
 {
     let chunks: Vec<&[T::Native]> = ca
         .downcast_iter()
         .map(|arr| arr.values().as_slice())
         .collect();
     let mut starts = Vec::with_capacity(chunks.len() + 1);
-    let mut chunk_last = Vec::with_capacity(chunks.len());
+    let mut chunk_last: Vec<Option<K>> = Vec::with_capacity(chunks.len());
     let mut offset = 0usize;
-    let mut last = f64::NEG_INFINITY;
+    let mut last: Option<K> = None;
     for chunk in &chunks {
         starts.push(offset);
         offset += chunk.len();
         // An empty chunk keeps its predecessor's last value, so `chunk_last`
         // stays sorted and the empty chunk is never the first one to pass.
-        last = chunk.last().map_or(last, |v| v.to_hist_f64());
+        if let Some(v) = chunk.last() {
+            last = Some(to_key(*v));
+        }
         chunk_last.push(last);
     }
     let len = offset;
 
     // First index whose x passes `edge`: `x >= edge`, or `x > edge` when strict.
-    let search = |edge: f64, strict: bool| {
-        let fails = |v: f64| !if strict { v > edge } else { v >= edge };
-        let chunk_idx = chunk_last.partition_point(|&v| fails(v));
+    let search = |edge: K, strict: bool| {
+        let fails = |v: K| !if strict { v > edge } else { v >= edge };
+        let chunk_idx = chunk_last.partition_point(|&v| match v {
+            Some(v) => fails(v),
+            None => true,
+        });
         match chunks.get(chunk_idx) {
-            Some(chunk) => starts[chunk_idx] + chunk.partition_point(|v| fails(v.to_hist_f64())),
+            Some(chunk) => starts[chunk_idx] + chunk.partition_point(|v| fails(to_key(*v))),
             None => len,
         }
     };
 
-    bucket_offsets(lo, hi, n_buckets, search)
+    bucket_offsets(n_buckets, len, edge, search)
 }
 
-fn bucket_offsets<F>(lo: f64, hi: f64, n_buckets: usize, search: F) -> Vec<(usize, usize)>
+/// `(start, len)` of every non-empty bucket, given its edges and a search.
+///
+/// Generic over the edge type so an integer x can search exact i128 edges while
+/// a float x searches f64 ones. `n_rows` bounds the allocation: every bucket
+/// kept holds at least one row, so more buckets than rows cannot all be kept.
+fn bucket_offsets<E, FE, FS>(
+    n_buckets: usize,
+    n_rows: usize,
+    edge: FE,
+    search: FS,
+) -> Vec<(usize, usize)>
 where
-    F: Fn(f64, bool) -> usize,
+    E: Copy,
+    FE: Fn(usize) -> E,
+    FS: Fn(E, bool) -> usize,
 {
-    let width = (hi - lo) / n_buckets as f64;
-    let mut offsets = Vec::with_capacity(n_buckets);
-    let mut start = search(lo, false);
+    let mut offsets = Vec::with_capacity(n_buckets.min(n_rows));
+    let mut start = search(edge(0), false);
     for i in 1..=n_buckets {
         // The last bucket is closed so that x == hi is kept; `.max(start)` guards
         // the edges going backwards on float rounding.
-        let edge = if i == n_buckets {
-            search(hi, true)
-        } else {
-            search(lo + i as f64 * width, false)
-        };
-        let end = edge.max(start);
+        let end = search(edge(i), i == n_buckets).max(start);
         if end > start {
             offsets.push((start, end - start));
         }

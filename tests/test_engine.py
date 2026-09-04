@@ -2250,6 +2250,104 @@ class TestResidentLineXWidth:
         deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
         assert len(deltas) == 1
 
+    @pytest.mark.parametrize(
+        "xs,dtype,message",
+        [
+            ([1.0, None, 3.0], pl.Float64, "null values"),
+            ([1.0, 2.0, float("nan")], pl.Float64, "NaN values"),
+            (["a", "b", "c"], pl.String, "numeric or temporal"),
+        ],
+        ids=["null", "nan", "string"],
+    )
+    def test_x_contract_is_enforced(self, xs, dtype, message):
+        df = pl.DataFrame(
+            {"ts": pl.Series("ts", xs, dtype=dtype), "val": [1.0, 2.0, 3.0]}
+        )
+        with pytest.raises(ValueError, match=message):
+            self._process(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+
+    def test_scan_source_gates_the_x_dtype(self, tmp_path):
+        # A scan skips the order check but still needs an x it can bucket.
+        df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+        path = tmp_path / "string_x.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        with pytest.raises(ValueError, match="numeric or temporal"):
+            self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+    @staticmethod
+    def _scan(tmp_path, xs) -> LFQueryBuilder:
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series("ts", xs, dtype=pl.Float64),
+                "val": [float(i) for i in range(len(xs))],
+            }
+        )
+        df.write_parquet(tmp_path / "x.parquet")
+        lf = LFQueryBuilder(pl.scan_parquet(tmp_path / "x.parquet"))
+        assert lf.is_scan
+        return lf
+
+    @pytest.mark.parametrize(
+        "xs,message",
+        [
+            ([1.0, None, 3.0], "1 null values"),
+            ([1.0, float("nan"), 3.0], "1 NaN values"),
+        ],
+        ids=["null", "nan"],
+    )
+    def test_scan_x_contract_rides_the_domain_probe(self, tmp_path, xs, message):
+        # A scan is never order-checked, but a null or NaN x has no position on
+        # the axis on any path, so the domain probe rejects it.
+        with pytest.raises(ValueError, match=message):
+            self._process(
+                self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
+            )
+
+    def test_scan_contract_adds_no_collect(self, tmp_path, monkeypatch):
+        plans: list[str] = []
+        real = pl.LazyFrame.collect
+
+        def spy(self, *args, **kwargs):
+            plans.append(self.explain(optimized=False))
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
+
+        lf = self._scan(tmp_path, [float(i) for i in range(200)])
+        deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+        assert len(deltas) == 1
+        probes = [p for p in plans if "__min_ts__" in p]
+        assert len(probes) == 1
+        # The counts are extra outputs of the min/max select, not a second pass.
+        assert "__nulls_ts__" in probes[0] and "__nans_ts__" in probes[0]
+        assert len(plans) == 2  # the probe and the envelope plan
+
+    def test_x_is_checked_before_the_domain_resolve(self, monkeypatch):
+        # The check flags the column sorted, which makes the min/max collect
+        # O(1) on this very first request.
+        order: list[str] = []
+        real_check = LFQueryBuilder.check_line_x
+        real_minmax = LFQueryBuilder.physical_minmax
+
+        def check(self, col):
+            order.append("check")
+            return real_check(self, col)
+
+        def minmax(self, *args, **kwargs):
+            order.append("minmax")
+            return real_minmax(self, *args, **kwargs)
+
+        monkeypatch.setattr(LFQueryBuilder, "check_line_x", check)
+        monkeypatch.setattr(LFQueryBuilder, "physical_minmax", minmax)
+
+        self._process(
+            LFQueryBuilder(self._frame(1_000)), LinePlot(x="ts", y="val", n_points=50)
+        )
+        assert order == ["check", "minmax"]
+
     def test_x_column_is_collected_once_per_source(self, monkeypatch):
         collects: list[int] = []
         real = pl.LazyFrame.collect
@@ -2271,6 +2369,7 @@ class TestResidentLineXWidth:
         engine.process(event, infos)
         second = len(collects) - first
 
-        # The sorted check collects the x column on the first request only; the
-        # second request pays the domain resolve and the aggregation alone.
-        assert first == second + 1
+        # The x check passes over the column on the first request only (null
+        # count, then order); the second request pays the domain resolve and
+        # the aggregation alone.
+        assert first == second + 2

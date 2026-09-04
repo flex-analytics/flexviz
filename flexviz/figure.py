@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import polars as pl
 
-from .LF import LFQueryBuilder, polars_lf_from
+from .LF import LFQueryBuilder, check_line_x_dtype, polars_lf_from
 from .spec import DashboardSpec, FigureSpec, VisualizationSpec
 from .trace.bar import BarPlot
 from .trace.base import FlexTrace, _composite_label
@@ -273,8 +273,9 @@ class Figure:
         color:
             CSS colour string (e.g. ``"#e74c3c"``).
         n_points:
-            Target number of visible points per viewport.  For FPCS this is
-            not a hard cap; output may be up to roughly twice this value.
+            Target number of visible points per viewport, between 2 and 25000.
+            For FPCS this is not a hard cap; output may be up to roughly twice
+            this value.
         add_gaps:
             When True (default), insert None values at detected gaps in x so
             renderers show a broken line across empty periods.
@@ -285,15 +286,22 @@ class Figure:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            The engine checks that `x` is ascending once per registered source
-            and column (one collect) and raises `ValueError` when it is not.
-            Set True to skip that check by marking the column sorted via
-            `set_sorted`. Only use it if you guarantee `x` is sorted ascending;
-            an unsorted column then gives wrong results.
+            For an ungrouped `"minmax"` line the engine verifies `x` once per
+            registered source and column (one pass over x): numeric or
+            temporal, no nulls or NaN, sorted ascending. It raises `ValueError`
+            otherwise. Set True to skip that check by marking the column sorted
+            via `set_sorted`. Only use it if you guarantee `x` meets the
+            contract; a column that does not then gives wrong results.
         """
-        if assume_sorted_x and self._backend_lf is not None:
-            # Opt-in: caller guarantees sortedness. This avoids an expensive collect.
-            self._backend_lf.assume_sorted(x)
+        if self._backend_lf is not None:
+            if assume_sorted_x:
+                # Opt-in: caller guarantees sortedness. This avoids an expensive collect.
+                self._backend_lf.assume_sorted(x)
+            dtype = self._backend_lf.schema.get(x)
+            if dtype is not None and downsample == "minmax" and group_by is None:
+                # Fail here rather than on the first request: the ungrouped
+                # minmax envelope buckets by x width.
+                check_line_x_dtype(x, dtype)
         return self._add_trace(
             LinePlot(
                 x=x,

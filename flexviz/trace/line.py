@@ -62,6 +62,11 @@ import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namesp
 
 LineDownsample = Literal["minmax", "fpcs", "nth"]
 
+# A line needs two points to be a line, and 25k points already exceed the pixel
+# width of any screen the browser can draw them on.
+_N_POINTS_MIN = 2
+_N_POINTS_MAX = 25_000
+
 # A viewport restriction: either an ``is_between`` mask, or a zero-copy
 # ``(offset, length)`` slice when x is known sorted.
 # TODO: should we not always assume that x is sorted? (KISS)
@@ -122,8 +127,8 @@ def _bucket_grid(
     x_domain: tuple | None,
     dtype: pl.DataType | None,
     n_buckets: int,
-) -> tuple[Any, Any] | None:
-    """``(lo, bucket_width)`` of the equal-x-width grid, in physical units.
+) -> tuple[Any, Any, Any] | None:
+    """``(lo, bucket_width, hi)`` of the equal-x-width grid, in physical units.
 
     Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
     the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
@@ -156,23 +161,33 @@ def _bucket_grid(
         return None
 
     span = hi - lo
-    if span <= 0:  # a constant x column still gets one bucket
-        return (lo, 1)
+    if span <= 0:  # a constant x column still gets one bucket, of width 1
+        return (lo, 1, lo + 1)
     if dtype is not None and dtype.is_float():
-        return (lo, span / n_buckets)
-    return (lo, -(-span // n_buckets))
+        return (lo, span / n_buckets, hi)
+    return (lo, -(-span // n_buckets), hi)
 
 
-def _kernel_x_domain(grid: tuple[Any, Any] | None, n_buckets: int) -> tuple[Any, Any]:
+def _kernel_x_domain(
+    grid: tuple[Any, Any, Any] | None,
+    n_buckets: int,
+    dtype: pl.DataType | None,
+) -> tuple[Any, Any]:
     """The ``(lo, hi)`` that makes the kernel rebuild ``grid``.
 
-    The kernel divides the span itself, so hand it exactly ``n_buckets`` widths.
+    The kernel divides the span itself. A float grid divided the true span, so
+    hand back that same ``hi``: ``lo + width * n_buckets`` rounds below it about
+    one time in five, which drops the last row. An integer grid rounded its
+    width up, so its span is ``n_buckets`` whole widths, exact in Python ints.
+
     Without a grid (an empty or all-null x column) an empty span is right: the
     kernel returns no points, matching the streaming plan.
     """
     if grid is None:
         return (0.0, 0.0)
-    lo, width = grid
+    lo, width, hi = grid
+    if dtype is not None and dtype.is_float():
+        return (lo, hi)
     return (lo, lo + width * n_buckets)
 
 
@@ -231,7 +246,7 @@ def _streaming_envelope_plan(
         grid = _bucket_grid(x_range, x_domain, dtype, n_out)
         if grid is None:
             return empty
-        x_lo, bsz = grid
+        x_lo, bsz, _ = grid
 
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
@@ -440,7 +455,8 @@ class LinePlot(FlexTrace):
     color:
         Line colour hint (CSS string), passed to the renderer.
     n_points:
-        Target number of points returned per viewport after downsampling.
+        Target number of points returned per viewport after downsampling,
+        between 2 and 25000.
         ``"minmax"`` and ``"nth"`` return at most this many points.  ``"fpcs"``
         follows FPCS target semantics and can return up to roughly
         ``2 * n_points`` points.
@@ -477,6 +493,13 @@ class LinePlot(FlexTrace):
         update_on_zoom: bool = True,
         group_by: str | Sequence[str] | None = None,
     ) -> None:
+        # The trust boundary: the client posts the spec on every update, and a
+        # decoded spec builds the trace through here as well.
+        if not _N_POINTS_MIN <= n_points <= _N_POINTS_MAX:
+            raise ValueError(
+                f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
+                f"got {n_points}."
+            )
         group_cols = (
             _to_col_tuple(group_by, "group_by") if group_by is not None else None
         )
@@ -656,7 +679,7 @@ class LinePlot(FlexTrace):
         """Return either a regular or grouped line aggregation spec.
 
         ``x_sorted`` is the caller's guarantee that the x column is ascending
-        (set by ``assume_sorted_x`` / ``check_sorted``). It only enables a
+        (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
         faster viewport restriction; correctness of the output is unchanged.
         The ungrouped minmax envelope needs it for a second reason: its buckets
         are equal in x width, which the engine validates once per source.
@@ -731,12 +754,8 @@ class LinePlot(FlexTrace):
                 )
 
             n_buckets = max(self.n_points // 2, 1)
-            grid = _bucket_grid(
-                x_range,
-                x_domain,
-                schema.get(self.x_col) if schema else None,
-                n_buckets,
-            )
+            x_dtype = schema.get(self.x_col) if schema else None
+            grid = _bucket_grid(x_range, x_domain, x_dtype, n_buckets)
             # The viewport restriction stays: it is a zero-copy slice on sorted
             # x, so the kernel reads a small input. The kernel drops whatever
             # falls outside the grid, so slice and grid agree.
@@ -746,7 +765,7 @@ class LinePlot(FlexTrace):
                 _viewport_window(self.x_col, x_range, schema, x_sorted),
                 self.n_points,
                 self.uid,
-                x_domain=_kernel_x_domain(grid, n_buckets),
+                x_domain=_kernel_x_domain(grid, n_buckets, x_dtype),
             )
             return AggregationSpec(expr=expr, uid=self.uid)
 

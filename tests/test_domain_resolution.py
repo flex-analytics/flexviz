@@ -133,8 +133,9 @@ class TestResolveCount:
 
         assert len(collects.minmax) == 1
         assert "__min_ts__" in collects.minmax[0][1]
-        # The sorted-x check, the min/max, then the aggregation select.
-        assert len(collects.calls) == 3
+        # The x check (null count, then the order pass), the min/max, then
+        # the aggregation select.
+        assert len(collects.calls) == 4
 
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):

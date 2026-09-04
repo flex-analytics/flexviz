@@ -8,7 +8,9 @@ import polars as pl
 import pytest
 
 import datetime as dt
+import random
 
+from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
 from flexviz.trace.line import LinePlot
@@ -708,6 +710,26 @@ class TestLineXWidthBuckets:
         trace = LinePlot(x="ts", y="val", **kwargs)
         assert trace.domain_cols(update_range, scan_source=scan_source) == expected
 
+    @staticmethod
+    def _resident_and_scan(df, tmp_path, n_points, x_range=None):
+        """The same line aggregated on a resident frame and on a scan."""
+        path = tmp_path / "x_width.parquet"
+        df.write_parquet(path)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+        return (
+            _minmax_points(
+                LFQueryBuilder(df),
+                LinePlot(x="ts", y="val", n_points=n_points),
+                x_range=x_range,
+            ),
+            _minmax_points(
+                scan_lf,
+                LinePlot(x="ts", y="val", n_points=n_points),
+                x_range=x_range,
+            ),
+        )
+
     def test_resident_kernel_matches_the_scan_plan(self, tmp_path):
         df = _gappy_frame()
         path = tmp_path / "gappy.parquet"
@@ -760,11 +782,16 @@ class TestLineXWidthBuckets:
         # The same span holds far fewer points when the buckets span the data.
         assert sum(v >= 500_000 for v in unzoomed["x"].to_list()) < len(xs_out)
 
-    def test_all_null_x_returns_no_points(self):
+    def test_all_null_x_breaks_the_x_contract(self):
+        # The aggregation itself still yields nothing, but the engine now
+        # rejects a null x before it ever gets there.
         df = pl.DataFrame(
             {"ts": pl.Series("ts", [None, None], dtype=pl.Int64), "val": [1.0, 2.0]}
         )
-        out = _minmax_points(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=20))
+        lf = LFQueryBuilder(df)
+        with pytest.raises(ValueError, match="2 null values"):
+            lf.check_line_x("ts")
+        out = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=20))
         assert len(out["x"]) == 0 or all(v is None for v in out["x"].to_list())
 
     def test_constant_x_still_returns_its_envelope(self):
@@ -774,3 +801,110 @@ class TestLineXWidthBuckets:
         )
         out = _minmax_points(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=20))
         assert sorted(out["y"].to_list()) == [0.0, 99.0]
+
+    def test_true_max_x_survives_on_a_float_domain(self):
+        # lo + width * n_buckets rounds below this max, which used to drop it.
+        df = pl.DataFrame(
+            {"ts": [0.667425, 99.849514], "val": [0.0, 100.0]},
+            schema={"ts": pl.Float64, "val": pl.Float64},
+        )
+        out = _minmax_points(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=20))
+        assert out["x"].to_list() == [0.667425, 99.849514]
+
+    def test_max_x_row_survives_on_random_float_domains(self):
+        # y strictly increasing, so the max-x row is the global y max and must
+        # appear in any correct envelope.
+        rng = random.Random(20260903)
+        for _ in range(300):
+            k = rng.choice([2, 3, 5, 10, 50, 200])
+            xs = sorted({rng.uniform(-1e3, 1e3) for _ in range(k)})
+            if len(xs) < 2:
+                continue
+            df = pl.DataFrame(
+                {"ts": xs, "val": [float(i) for i in range(len(xs))]},
+                schema={"ts": pl.Float64, "val": pl.Float64},
+            )
+            n_points = rng.choice([2, 4, 20, 100, 1000])
+            out = _minmax_points(
+                LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=n_points)
+            )
+            assert xs[-1] in out["x"].to_list(), (xs[-1], n_points)
+
+    @pytest.mark.parametrize(
+        "base", [2**53, 1_700_000_000_000_000_000], ids=["2**53", "ns_epoch"]
+    )
+    def test_large_integer_x_matches_the_scan_plan(self, base, tmp_path):
+        # Past 2**53 these 20 x values share f64 representations.
+        df = pl.DataFrame(
+            {"ts": [base + i for i in range(20)], "val": [float(i) for i in range(20)]},
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        )
+        resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
+        assert len(resident["x"]) == 20
+        assert resident["x"].to_list() == scanned["x"].to_list()
+
+    @pytest.mark.parametrize("unit", ["ns", "us"])
+    @pytest.mark.parametrize("zoomed", [False, True], ids=["unzoomed", "zoomed"])
+    def test_fine_grained_datetime_matches_the_scan_plan(self, unit, zoomed, tmp_path):
+        # 20 samples one time-unit apart: at "ns" the physical values are past
+        # 2**53 and only integer edges separate them.
+        t0 = dt.datetime(2023, 1, 1, tzinfo=dt.timezone.utc)
+        phys0 = int(t0.timestamp() * (1e9 if unit == "ns" else 1e6))
+        df = pl.DataFrame(
+            {
+                "ts": [phys0 + i for i in range(20)],
+                "val": [float(i) for i in range(20)],
+            },
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        ).with_columns(pl.col("ts").cast(pl.Datetime(unit)))
+        # A viewport bound is a date string, which carries microseconds at most,
+        # so the "ns" window is 1000x wider than its 19 ns of data and one
+        # bucket swallows every row.
+        x_range = ("2023-01-01T00:00:00", "2023-01-01T00:00:00.000019")
+        expected = 2 if zoomed and unit == "ns" else 20
+
+        resident, scanned = self._resident_and_scan(
+            df, tmp_path, n_points=20, x_range=x_range if zoomed else None
+        )
+        assert len(resident["x"]) == expected
+        assert resident["x"].to_list() == scanned["x"].to_list()
+
+
+# ---- n_points bounds and the add_line x gate --------------------------------
+
+
+class TestLineNPointsBounds:
+    @pytest.mark.parametrize("n_points", [1, 0, -5, 25_001])
+    def test_out_of_range_is_rejected(self, n_points):
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            LinePlot(x="ts", y="val", n_points=n_points)
+
+    @pytest.mark.parametrize("n_points", [2, 25_000])
+    def test_bounds_are_inclusive(self, n_points):
+        assert LinePlot(x="ts", y="val", n_points=n_points).n_points == n_points
+
+    def test_a_decoded_spec_is_bounded_too(self):
+        # The client posts the spec on every update, so decoding is a trust
+        # boundary.
+        spec = LinePlot(x="ts", y="val", n_points=1000).to_trace_spec()
+        spec.params["n_points"] = 25_001
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            LinePlot.from_trace_spec(spec)
+
+
+class TestAddLineXGate:
+    """A string x fails at ``add_line`` when the figure knows the frame."""
+
+    @staticmethod
+    def _df() -> pl.DataFrame:
+        return pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+
+    def test_string_x_is_rejected_at_build_time(self):
+        fig = Figure(self._df())
+        with pytest.raises(ValueError, match="numeric or temporal"):
+            fig.add_line(x="ts", y="val")
+
+    def test_only_the_ungrouped_minmax_line_is_gated(self):
+        fig = Figure(self._df())
+        fig.add_line(x="ts", y="val", downsample="nth")
+        fig.add_line(x="ts", y="val", group_by="ts")

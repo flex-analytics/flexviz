@@ -2132,3 +2132,41 @@ class TestMinmaxLineXDomain:
             chunked.struct.field("y").to_list()
             == contiguous.struct.field("y").to_list()
         )
+
+    def test_int64_x_past_2_53_keeps_every_bucket(self):
+        """Beyond 2**53 an f64 edge collapses neighbours; integer edges do not."""
+        base = 2**53
+        x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        out = _minmax_line(x, y, 20, x_domain=(base, base + 20))
+
+        assert out.struct.field("x").to_list() == x.to_list()
+
+    def test_integer_bounds_are_not_rounded(self):
+        """A nanosecond-epoch bound one apart from `lo` still bounds one row."""
+        base = 1_700_000_000_000_000_000  # ns epoch, f64 steps by 256 here
+        x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        assert _minmax_line(x, y, 4, x_domain=(base, base + 1)).struct.field(
+            "x"
+        ).to_list() == [base, base + 1]
+        assert _minmax_line(x, y, 4, x_domain=(base, base + 2)).struct.field(
+            "x"
+        ).to_list() == [base, base + 1, base + 2]
+
+    def test_float_bound_on_integer_x_is_rejected(self):
+        x = pl.Series("x", list(range(20)), dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        with pytest.raises(Exception, match="must be integer bounds"):
+            _minmax_line(x, y, 20, x_domain=(0.0, 20.0))
+
+    def test_integer_bounds_on_float_x_are_accepted(self):
+        x = pl.Series("x", [i / 2 for i in range(20)], dtype=pl.Float64)
+        y = pl.Series("y", _distinct_values(20))
+
+        out = _minmax_line(x, y, 20, x_domain=(0, 10))
+
+        assert out.struct.field("x").to_list() == x.to_list()

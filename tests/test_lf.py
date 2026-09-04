@@ -262,3 +262,69 @@ class TestPhysicalMinMax:
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 4.0], "b": [2.0, 8.0]}).lazy())
         out = b.physical_minmax(["a", "a", "b", "a"], memoize=True)
         assert out == {"a": (1.0, 4.0), "b": (2.0, 8.0)}
+
+
+# ---- LFQueryBuilder.check_line_x -------------------------------------------
+
+
+class TestCheckLineX:
+    """The x contract of an ungrouped minmax line."""
+
+    @staticmethod
+    def _lf(xs, dtype=pl.Float64) -> LFQueryBuilder:
+        return LFQueryBuilder(
+            pl.DataFrame(
+                {"ts": pl.Series("ts", xs, dtype=dtype), "val": [0.0] * len(xs)}
+            )
+        )
+
+    def test_sorted_numeric_x_passes_and_is_flagged(self):
+        lf = self._lf([1.0, 2.0, 3.0])
+        lf.check_line_x("ts")
+        assert lf.is_sorted("ts")
+
+    def test_string_x_is_rejected_before_any_collect(self, monkeypatch):
+        monkeypatch.setattr(
+            pl.LazyFrame, "collect", lambda *a, **k: pytest.fail("collected")
+        )
+        lf = self._lf(["a", "b"], dtype=pl.String)
+        with pytest.raises(ValueError, match="numeric or temporal"):
+            lf.check_line_x("ts")
+
+    def test_null_x_is_rejected(self):
+        lf = self._lf([1.0, None, 3.0])
+        with pytest.raises(ValueError, match="1 null values"):
+            lf.check_line_x("ts")
+
+    def test_trailing_nan_x_is_rejected(self):
+        # A NaN sorts last, so this column passes `is_sorted`.
+        lf = self._lf([1.0, 2.0, float("nan")])
+        with pytest.raises(ValueError, match="1 NaN values"):
+            lf.check_line_x("ts")
+
+    def test_nan_in_the_middle_reports_the_nan_not_the_order(self):
+        # A NaN sorts last, so it also breaks `is_sorted`. The message must
+        # name the real defect, or the user sorts a frame that is already sorted.
+        lf = self._lf([1.0, float("nan"), 3.0])
+        with pytest.raises(ValueError, match="1 NaN values"):
+            lf.check_line_x("ts")
+
+    def test_failing_column_is_not_memoized(self):
+        lf = self._lf([1.0, 2.0, float("nan")])
+        for _ in range(2):
+            with pytest.raises(ValueError, match="1 NaN values"):
+                lf.check_line_x("ts")
+        assert not lf.is_sorted("ts")
+
+    def test_unsorted_x_is_rejected(self):
+        lf = self._lf([3.0, 1.0, 2.0])
+        with pytest.raises(ValueError, match="not sorted ascending"):
+            lf.check_line_x("ts")
+
+    def test_passing_column_is_checked_once(self, monkeypatch):
+        lf = self._lf([1.0, 2.0, 3.0])
+        lf.check_line_x("ts")
+        monkeypatch.setattr(
+            pl.LazyFrame, "collect", lambda *a, **k: pytest.fail("collected twice")
+        )
+        lf.check_line_x("ts")
