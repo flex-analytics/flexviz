@@ -7,6 +7,7 @@ import datetime as dt
 import polars as pl
 import pytest
 
+from flexviz.cache import InMemoryLRUCache
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.LF import LFQueryBuilder
@@ -2027,10 +2028,9 @@ class TestResidencySeam:
     def test_scan_selects_the_streaming_plan(self):
         """The seam must actually swap formulations, not just report a flag."""
         line = LinePlot(x="ts", y="val", n_points=1000)
-        resident = line.get_aggregation_spec({}, scan_source=False)
-        scanned = line.get_aggregation_spec(
-            {}, scan_source=True, domains={"ts": (0.0, 1.0)}
-        )
+        domains = {"ts": (0.0, 1.0)}
+        resident = line.get_aggregation_spec({}, scan_source=False, domains=domains)
+        scanned = line.get_aggregation_spec({}, scan_source=True, domains=domains)
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
@@ -2152,3 +2152,270 @@ class TestDescendingViewportRanges:
         assert got["f"] == [[1.0, 2.0], [3.0, 4.0]]
         assert got["g"] == ("a", 1)
         assert got["h"] == (None, 5)
+
+
+# ---- resident line: x-width buckets and the sorted-x contract ---------------
+
+
+class TestResidentLineXWidth:
+    """The resident minmax envelope buckets by x width over the resolved domain."""
+
+    @staticmethod
+    def _frame(n: int = 10_000) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"ts": list(range(n)), "val": [float((i * 7919) % n) for i in range(n)]},
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        )
+
+    def test_cross_filter_does_not_move_the_bucket_edges(self):
+        # 100 buckets of width 100 over ts in [0, 9999]. A selection keeping the
+        # middle 10% overlaps 10 of them, so at most ~20 points survive. Bucket
+        # edges taken from the filtered data would re-spread the budget instead.
+        df = self._frame()
+        lf = LFQueryBuilder(df)
+        source = LinePlot(x="ts", y="val", n_points=200)
+        target = LinePlot(x="ts", y="val", n_points=200)
+        engine = FlexEngine(
+            backend_lf=lf, scalable_traces={source.uid: source, target.uid: target}
+        )
+        infos = [
+            TraceInfo(
+                uid=source.uid, axes=("x", "y"), trace_type="line", figure_uid="src"
+            ),
+            TraceInfo(
+                uid=target.uid, axes=("x", "y"), trace_type="line", figure_uid="tgt"
+            ),
+        ]
+        event = InteractionEvent(
+            type="selection",
+            force_update=True,
+            selections=[
+                SelectionState(
+                    source_figure_uid="src",
+                    predicates=[
+                        SelectionPredicate(
+                            clauses=[ClauseFilter(column="ts", range=(4500, 5499))]
+                        )
+                    ],
+                )
+            ],
+        )
+        delta = next(d for d in engine.process(event, infos) if d.uid == target.uid)
+        xs = list(delta.updates["x"])
+        assert all(4500 <= v <= 5499 for v in xs)
+        assert 0 < len(xs) <= 22
+        assert len(xs) < 100  # far below the 200-point budget
+
+    @staticmethod
+    def _process(lf: LFQueryBuilder, trace: LinePlot):
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [TraceInfo(uid=trace.uid, axes=("x", "y"), trace_type="line")]
+        return (
+            engine.process(InteractionEvent(type="init", force_update=True), infos),
+            infos,
+        )
+
+    def test_row_index_x_matches_the_row_count_kernel(self):
+        # The recipe for equal-row-count buckets: use a row index as x. A
+        # uniform integer x makes every x-width bucket hold exactly one
+        # row-count bucket's rows, so the public path reproduces the row-count
+        # kernel (the ``x_domain``-free call) exactly.
+        import flexviz_polars as _fvp
+
+        df = self._frame(10_000)  # ts = 0..n-1 is a row index; val is distinct
+        deltas, _ = self._process(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=200)
+        )
+        row_count = pl.select(
+            _fvp._minmax_line(
+                pl.lit(df["ts"]), pl.lit(df["val"]), 200, x_name="ts", y_name="val"
+            )
+        ).to_series()
+        assert sorted(deltas[0].updates["y"]) == sorted(
+            row_count.struct.field("val").to_list()
+        )
+
+    def test_unsorted_resident_x_raises(self):
+        df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
+        with pytest.raises(ValueError, match="ts"):
+            self._process(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+
+    def test_assume_sorted_x_skips_the_check(self):
+        df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
+        lf = LFQueryBuilder(df)
+        lf.assume_sorted("ts")  # what add_line(assume_sorted_x=True) does
+        deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+        assert len(deltas) == 1
+
+    def test_grouped_line_is_not_checked(self):
+        # Sorted by group then x, so ts is not globally sorted.
+        df = pl.DataFrame(
+            {
+                "ts": list(range(100)) * 2,
+                "val": [float(i) for i in range(200)],
+                "sensor": ["A"] * 100 + ["B"] * 100,
+            }
+        )
+        deltas, _ = self._process(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=50, group_by="sensor"),
+        )
+        assert len(deltas[0].group_results) == 2
+
+    def test_scan_source_is_not_checked(self, tmp_path):
+        df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
+        path = tmp_path / "unsorted.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+        assert len(deltas) == 1
+
+    @pytest.mark.parametrize(
+        "xs,dtype,message",
+        [
+            ([1.0, None, 3.0], pl.Float64, "null values"),
+            ([1.0, 2.0, float("nan")], pl.Float64, "NaN values"),
+            ([1.0, 2.0, float("inf")], pl.Float64, "infinite bound"),
+            (["a", "b", "c"], pl.String, "numeric or a temporal"),
+            # Wider than the kernel's i64 edge search: rejected before it panics.
+            ([1, 2, 3], pl.Int128, "64-bit-or-smaller"),
+            ([1, 2, 3], pl.Decimal(10, 2), "64-bit-or-smaller"),
+        ],
+        ids=["null", "nan", "inf", "string", "int128", "decimal"],
+    )
+    def test_x_contract_is_enforced(self, xs, dtype, message):
+        df = pl.DataFrame(
+            {"ts": pl.Series("ts", xs, dtype=dtype), "val": [1.0, 2.0, 3.0]}
+        )
+        with pytest.raises(ValueError, match=message):
+            self._process(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+
+    def test_scan_source_gates_the_x_dtype(self, tmp_path):
+        # A scan skips the order check but still needs an x it can bucket.
+        df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+        path = tmp_path / "string_x.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+    def test_scan_source_rejects_infinite_x(self, tmp_path):
+        # An infinite bound has no bucket grid, on either source kind.
+        df = pl.DataFrame({"ts": [0.0, 1.0, float("inf")], "val": [1.0, 2.0, 3.0]})
+        path = tmp_path / "inf_x.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        with pytest.raises(ValueError, match="infinite bound"):
+            self._process(lf, LinePlot(x="ts", y="val", n_points=50))
+
+    @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    def test_zoomed_request_past_an_infinite_x_still_works(self, tmp_path, scan):
+        # A viewport supplies its own finite bounds, so no domain is probed.
+        df = pl.DataFrame(
+            {"ts": [0.0, 1.0, 2.0, float("inf")], "val": [1.0, 2.0, 3.0, 4.0]}
+        )
+        if scan:
+            df.write_parquet(tmp_path / "inf_zoom.parquet")
+            lf = LFQueryBuilder(pl.scan_parquet(tmp_path / "inf_zoom.parquet"))
+        else:
+            lf = LFQueryBuilder(df)
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
+        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        deltas = engine.process(
+            InteractionEvent(type="viewport", axis_ranges={"x": (0.0, 2.0)}), infos
+        )
+        assert sorted(deltas[0].updates["y"]) == [1.0, 2.0, 3.0]
+
+    @staticmethod
+    def _scan(tmp_path, xs) -> LFQueryBuilder:
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series("ts", xs, dtype=pl.Float64),
+                "val": [float(i) for i in range(len(xs))],
+            }
+        )
+        df.write_parquet(tmp_path / "x.parquet")
+        lf = LFQueryBuilder(pl.scan_parquet(tmp_path / "x.parquet"))
+        assert lf.is_scan
+        return lf
+
+    @pytest.mark.parametrize(
+        "xs",
+        [[1.0, None, 3.0], [1.0, float("nan"), 3.0], [3.0, 1.0, 2.0]],
+        ids=["null", "nan", "unsorted"],
+    )
+    def test_scan_x_needs_only_the_dtype(self, tmp_path, xs):
+        # The streaming envelope is order independent, drops null x and
+        # tolerates NaN, so none of these is rejected.
+        deltas, _ = self._process(
+            self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
+        )
+        assert len(list(deltas[0].updates["y"])) > 0
+
+    def test_x_is_checked_before_the_domain_resolve(self, monkeypatch):
+        # On a cached source the check flags the column sorted, which makes the
+        # min/max collect O(1) on this very first request.
+        order: list[str] = []
+        real_check = LFQueryBuilder.check_line_x
+        real_minmax = LFQueryBuilder.physical_minmax
+
+        def check(self, col, **kwargs):
+            order.append("check")
+            return real_check(self, col, **kwargs)
+
+        def minmax(self, *args, **kwargs):
+            order.append("minmax")
+            return real_minmax(self, *args, **kwargs)
+
+        monkeypatch.setattr(LFQueryBuilder, "check_line_x", check)
+        monkeypatch.setattr(LFQueryBuilder, "physical_minmax", minmax)
+
+        self._process(
+            LFQueryBuilder(self._frame(1_000)), LinePlot(x="ts", y="val", n_points=50)
+        )
+        assert order == ["check", "minmax"]
+
+    @staticmethod
+    def _two_requests(lf: LFQueryBuilder, cache_backend) -> tuple[int, int]:
+        """Collect counts of two identical unzoomed requests."""
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine = FlexEngine(
+            backend_lf=lf,
+            scalable_traces={line.uid: line},
+            cache_backend=cache_backend,
+        )
+        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        event = InteractionEvent(type="init", force_update=True)
+        collects: list[int] = []
+        real = pl.LazyFrame.collect
+
+        def spy(self, *args, **kwargs):
+            collects.append(1)
+            return real(self, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(pl.LazyFrame, "collect", spy)
+            engine.process(event, infos)
+            first = len(collects)
+            engine.process(event, infos)
+        return first, len(collects) - first
+
+    def test_uncached_source_rechecks_every_request(self):
+        # Nothing is memoized, so the source data may have changed since the
+        # last request: check again.
+        lf = LFQueryBuilder(self._frame(1_000))
+        first, second = self._two_requests(lf, cache_backend=None)
+        assert first == second
+        assert lf._sorted_cols == set()
+
+    def test_cached_source_checks_once(self):
+        # A cached source is static, so the pass is memoized as the sorted flag
+        # and `check_line_x` returns without collecting on later requests.
+        lf = LFQueryBuilder(self._frame(1_000))
+        first, second = self._two_requests(lf, cache_backend=InMemoryLRUCache())
+        assert first > second
+        assert lf._sorted_cols == {"ts"}
