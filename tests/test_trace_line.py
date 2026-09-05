@@ -11,6 +11,8 @@ import datetime as dt
 import math
 import random
 
+from flexviz.engine import FlexEngine, TraceInfo
+from flexviz.events import InteractionEvent
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
@@ -1542,6 +1544,19 @@ class TestBucketsByXWidth:
         ).buckets_by_x_width
 
 
+def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
+    """Drive one line trace through the engine, the way a request does."""
+    engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+    infos = [TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line")]
+    return engine.process(InteractionEvent(type="init", force_update=True), infos)
+
+
+def _both_sources(df: pl.DataFrame, path) -> list[LFQueryBuilder]:
+    """The same frame as a resident source and as a file source."""
+    df.write_parquet(path)
+    return [LFQueryBuilder(df), LFQueryBuilder(pl.scan_parquet(path))]
+
+
 class TestCheckSchema:
     """The dtype half of the line contract. Reads the schema, never collects."""
 
@@ -1589,6 +1604,63 @@ class TestCheckSchema:
             LinePlot(x="ts", y="val", downsample="lttb").check_schema(
                 self._schema(pl.Int64, y_dtype=pl.String)
             )
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    @pytest.mark.parametrize(
+        "dtype", [pl.Decimal(10, 2), pl.Int128, pl.Categorical(), pl.Enum(["a"])]
+    )
+    def test_a_y_the_pair_kernel_cannot_take_is_rejected(self, dtype, downsample):
+        with pytest.raises(ValueError, match="must not be a Decimal"):
+            LinePlot(x="ts", y="val", downsample=downsample).check_schema(
+                self._schema(pl.Int64, y_dtype=dtype)
+            )
+
+    def test_an_nth_line_takes_any_y(self):
+        # A stride gathers rows and compares nothing.
+        LinePlot(x="ts", y="val", downsample="nth").check_schema(
+            self._schema(pl.Int64, y_dtype=pl.Decimal(10, 2))
+        )
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb"])
+    def test_a_decimal_y_is_rejected_on_both_source_kinds(self, tmp_path, downsample):
+        # The kernel panics on a Decimal y and the scan plan accepts it, so
+        # without the gate residency would decide the outcome.
+        df = pl.DataFrame({"ts": list(range(100))}).with_columns(
+            val=pl.col("ts").cast(pl.Decimal(10, 2))
+        )
+        for lf in _both_sources(df, tmp_path / "decimal.parquet"):
+            with pytest.raises(ValueError, match="must not be a Decimal"):
+                _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+
+    @pytest.mark.parametrize(
+        "dtype",
+        [
+            pl.Int8,
+            pl.Int16,
+            pl.Int32,
+            pl.Int64,
+            pl.UInt8,
+            pl.UInt16,
+            pl.UInt32,
+            pl.UInt64,
+            pl.Float32,
+            pl.Float64,
+            pl.Boolean,
+            pl.Date,
+            pl.Datetime("us"),
+            pl.Datetime("ns"),
+            pl.Duration("ms"),
+            pl.Time,
+            pl.String,
+        ],
+    )
+    def test_an_accepted_y_runs_on_both_source_kinds(self, tmp_path, dtype):
+        df = pl.DataFrame({"ts": list(range(100))}).with_columns(
+            val=pl.col("ts").cast(dtype)
+        )
+        for lf in _both_sources(df, tmp_path / "y.parquet"):
+            deltas = _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+            assert len(deltas[0].updates["x"]) > 0
 
 
 class TestLineDownsampleValidation:

@@ -60,6 +60,12 @@ aggregates and raises `ValueError` when the column breaks the contract.
 A file source runs an order-independent plan that drops null and NaN x, so only
 its dtype is gated.
 
+The y column is gated on its dtype as well. An x-width line rejects `Decimal`,
+`Int128`, `Categorical` and `Enum`: the kernel cannot compare them, while the
+file-source plan can, so without the gate the same line would work on one source
+kind and fail on the other. An `"lttb"` line asks for more, a numeric, temporal
+or Boolean y, because the triangle rule does arithmetic on it.
+
 - The order, null, and NaN check costs one pass over x. A `cache=True` source
   pays it once per source and column. A `cache=False` source may have changed
   since the last request, so it pays it on every request that reaches

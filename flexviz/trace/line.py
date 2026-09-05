@@ -95,6 +95,12 @@ _LINE_X_NUMERIC = (
     pl.Float64,
 )
 
+# Dtypes the pair kernel panics on: it argmin/argmaxes y through a Polars build
+# that carries neither the wide-integer nor the categorical dtype. The plan
+# takes them, so without this gate the same line would work on a file source
+# and fail on a resident frame.
+_LINE_Y_UNSUPPORTED = (pl.Decimal, pl.Int128, pl.Categorical, pl.Enum)
+
 # Two points make a line, and 25k already exceeds the pixel width of any screen
 # the browser draws them on.
 _N_POINTS_MIN = 2
@@ -621,6 +627,13 @@ class LinePlot(FlexTrace):
                     f"x column '{self.x_col}' must be a 64-bit-or-smaller numeric "
                     f"or a temporal for an x-width line, got {x_dtype}. Cast the "
                     f"column first."
+                )
+            # The bucket pass compares y, on both source kinds.
+            if schema[self.y_col] in _LINE_Y_UNSUPPORTED:
+                raise ValueError(
+                    f"y column '{self.y_col}' must not be a Decimal, an Int128 "
+                    f"or a categorical for an x-width line, got "
+                    f"{schema[self.y_col]}. Cast the column first."
                 )
         if self.downsample != "lttb":
             return
