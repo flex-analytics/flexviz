@@ -24,7 +24,9 @@ Dashboard(lf).show()
 - **In-memory frames** aggregate zero-copy: backend memory stays flat no
   matter the row count.
 - **Parquet-backed frames** (`scan_parquet`) let Polars push filters into the
-  scan and stream batches, so larger-than-RAM datasets work.
+  scan and stream batches. Ungrouped line and histogram traces then run a
+  streaming plan whose memory does not grow with the row count. Grouped traces
+  and 2D histograms still load the columns they aggregate.
 - Any transformation you apply before handing the frame over
   (`lf.filter(...).with_columns(...)`) stays lazy and is fused into every
   FlexViz query.

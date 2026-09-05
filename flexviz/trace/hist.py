@@ -52,9 +52,70 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 # Bin-edge helpers
 # ---------------------------------------------------------------------------
 
-#: Small offset added to the upper bound so the maximum data point always
-#: falls inside the last bin and bin edges are never degenerate.
+#: Small offset added to the upper bound (``hi``) so the maximum data point
+#: always falls inside the last bin and bin edges are never degenerate.
 _HIST_BIN_EPSILON: float = 1e-10
+
+#: Mirrors FIXED_HIST_ROUND_EPS in flexviz_polars/src/expressions.rs. The kernel
+#: adds it to the scaled offset before truncating, so a value on a bin edge lands
+#: in the bin above. The streaming plan must add the same, or the two paths
+#: disagree on edges. Distinct from ``_HIST_BIN_EPSILON``, which pads ``hi``.
+_FIXED_HIST_ROUND_EPS: float = 1e-9
+
+
+def _streaming_hist_plan(
+    value_expr: pl.Expr,
+    lo_expr: pl.Expr,
+    hi_expr: pl.Expr,
+    bins: int,
+    uid: str,
+    filter_expr: pl.Expr | None,
+):
+    """The kernel's histogram as a streaming ``group_by``, for a scan source.
+
+    The ``fixed_hist`` kernel materializes the whole column; this reads it in
+    batches instead. Same bin arithmetic: clip before the cast, and the
+    non-strict cast turns NaN into null so NaN and null both drop out at the
+    dense join. Empty bins come back as zero, ordered, so ``_to_update`` sees
+    the kernel's shape.
+    """
+
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        # Both bounds are literal expressions, so this selects no data.
+        lo, hi = pl.select(lo_expr.alias("lo"), hi_expr.alias("hi")).row(0)
+        # The kernel reads its bounds as f64 and refuses an inverted span.
+        lo = 0.0 if lo is None else float(lo)
+        hi = 1.0 if hi is None else float(hi)
+        if hi < lo:
+            raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
+
+        # hi == lo is the kernel's degenerate span: every value lands in bin 0
+        # and every breakpoint is lo.
+        scale = bins / (hi - lo) if hi > lo else 0.0
+        step = (hi - lo) / bins if hi > lo else 0.0
+        bin_idx = (
+            ((value_expr.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
+            .clip(0, bins - 1)
+            .cast(pl.Int32, strict=False)
+        )
+        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
+        counted = (
+            src.group_by(bin_idx.alias("__b"))
+            .agg(pl.len().alias("count"))
+            .collect(engine="streaming")
+        )
+        return (
+            pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
+            .join(counted, on="__b", how="left")
+            .sort("__b")
+            .with_columns(
+                (pl.lit(lo) + (pl.col("__b") + 1) * step).alias("breakpoint"),
+                pl.col("count").fill_null(0).cast(pl.UInt32),
+            )
+            .select(pl.struct("breakpoint", "count").implode().alias(uid))
+        )
+
+    return run
 
 
 class Histogram(FlexTrace):
@@ -265,6 +326,13 @@ class Histogram(FlexTrace):
 
         An unzoomed trace requires ``data_col`` in ``domains``; a
         ``(None, None)`` entry means an empty or all-null column.
+
+        ``scan_source`` says the rows come from storage rather than a resident
+        frame. The ``fixed_hist`` kernel needs the whole column in memory, so an
+        ungrouped histogram on a scan takes ``_streaming_hist_plan`` instead: the
+        same bin arithmetic as a streaming ``group_by``, bit-identical output at
+        bounded memory. A grouped histogram keeps the kernel on both source
+        kinds.
         """
         filter_expr = _range_filter_expr(
             self.data_col, update_range.get(self.prop_key), schema=schema
@@ -327,6 +395,14 @@ class Histogram(FlexTrace):
         # Ungrouped path: apply viewport filter directly inside the expression.
         # ----------------------------------------------------------------------
         lo_expr, hi_expr = self._histogram_bounds_exprs(axis_range, domains, temporal)
+
+        if scan_source:
+            return AggregationSpec(
+                uid=self.uid,
+                plan=_streaming_hist_plan(
+                    data_col_expr, lo_expr, hi_expr, self.bins, self.uid, filter_expr
+                ),
+            )
 
         data_expr = data_col_expr
         if filter_expr is not None:

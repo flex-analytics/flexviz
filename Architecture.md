@@ -484,7 +484,9 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
-- Uses the `fixed_hist` Rust plugin with explicit bin bounds.
+- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan repeats the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
+- `_FIXED_HIST_ROUND_EPS` mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
+- A **grouped** histogram runs the kernel inside `group_by().agg()` on every source kind. There is no grouped streaming plan.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the engine-resolved
@@ -687,8 +689,10 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
 │     instead of binary search. Returns Struct{breakpoint: Float64, count: UInt32}
 │     of length n_bins — identical output shape to polars.hist(include_breakpoint=True).
-│     Used by Histogram trace (both ungrouped and grouped paths) to guarantee
-│     O(n) bin assignment with stable, pre-specified edges.
+│     Used by the Histogram trace for every grouped aggregation and for an
+│     ungrouped one on a resident frame, to guarantee O(n) bin assignment with
+│     stable, pre-specified edges. An ungrouped histogram on a scan source takes
+│     the equivalent streaming plan instead.
 │
 ├── fixed_hist2d(y_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y) → pl.Expr
 │     O(n) fixed-bin 2D count histogram. Uses typed dispatch (avoids f64 cast for

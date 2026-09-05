@@ -120,10 +120,11 @@ class TestResolveCount:
         assert len(collects.minmax) == 1
         plan = collects.minmax[0][1]
         assert all(f"__min_{c}__" in plan for c in ("a", "b", "ts"))
-        # min/max + the batched select (both histograms and the hist2d) + the
-        # line envelope group_by. A fourth would mean the line plan re-probed
-        # its own x domain instead of taking the resolved one.
-        assert len(collects.calls) == 3
+        # min/max + the hist2d select + one streaming plan per ungrouped
+        # histogram + the line envelope group_by. A plan spec cannot join the
+        # batched select, so each brings its own collect. A sixth would mean the
+        # line plan re-probed its own x domain instead of taking the resolved one.
+        assert len(collects.calls) == 5
 
     def test_resident_line_resolves_its_x_domain(self, collects):
         """A resident minmax line bins in x too, so it needs the domain."""
@@ -163,7 +164,7 @@ class TestResolveCount:
 
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
-        """One min/max scan plus one batched select, however many histograms."""
+        """One min/max scan plus one streaming plan per ungrouped histogram."""
         src = _write(
             tmp_path / "d.parquet",
             pl.DataFrame({"a": [float(i) for i in range(200)]}),
@@ -174,7 +175,8 @@ class TestResolveCount:
         _init(engine, infos)
 
         assert len(collects.minmax) == 1
-        assert len(collects.calls) == 2
+        # A plan spec runs alone: it trades the shared select for bounded memory.
+        assert len(collects.calls) == 1 + n_traces
 
 
 # ---- fixed engine per source kind ------------------------------------------
