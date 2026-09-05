@@ -47,10 +47,11 @@ def _aggregate_grouped_line(
     x_range: tuple[float, float] | None = None,
     group_by: str | Sequence[str] | None = "sensor",
     downsample: str = "minmax",
+    n_points: int = 100,
 ) -> list:
     lf = LFQueryBuilder(df)
     trace = LinePlot(
-        x="ts", y="val", n_points=100, group_by=group_by, downsample=downsample
+        x="ts", y="val", n_points=n_points, group_by=group_by, downsample=downsample
     )
     update_range = {"x": x_range} if x_range is not None else {}
     agg_spec = trace.get_aggregation_spec(
@@ -1317,12 +1318,30 @@ class TestLineLTTB:
         assert out["y"].dtype == pl.Datetime("ms")
         assert len(out["y"]) == 100
 
-    def test_grouped_is_rejected(self):
-        with pytest.raises(ValueError, match="does not support group_by"):
-            LinePlot(x="ts", y="val", downsample="lttb", group_by="sensor")
-        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0], "g": ["a", "b"]}))
-        with pytest.raises(ValueError, match="does not support group_by"):
-            fig.add_line(x="ts", y="val", downsample="lttb", group_by="g")
+    def test_grouped_returns_exactly_n_points_per_child(self):
+        n_points = 50
+        n_rows = 500
+        rng = random.Random(7)
+        sensors = ["A", "B", "C"]
+        df = pl.DataFrame(
+            {
+                "ts": list(range(n_rows)) * len(sensors),
+                "val": [
+                    rng.random() + i * 10
+                    for i in range(len(sensors))
+                    for _ in range(n_rows)
+                ],
+                "sensor": [s for s in sensors for _ in range(n_rows)],
+            }
+        )
+        results = _aggregate_grouped_line(df, downsample="lttb", n_points=n_points)
+        assert {cr.group_value_key for cr in results} == set(sensors)
+        for cr in results:
+            xs = cr.updates["x"].to_list()
+            ys = cr.updates["y"].to_list()
+            assert len(xs) == n_points
+            assert len(ys) == n_points
+            assert xs == sorted(xs)
 
 
 class TestLTTBFunction:

@@ -15,10 +15,11 @@ Downsampling strategies:
   the one global grid, so a series covering a tenth of the x domain gets a tenth
   of the points.
 
-* ``"lttb"`` — MinMaxLTTB: the ungrouped min-max pass with a 4x budget, then the
+* ``"lttb"`` — MinMaxLTTB: the min-max pass with a 4x budget, then the
   Largest-Triangle-Three-Buckets rule over the prefetched points.  Returns exactly
   ``n_points`` points when the prefetch holds more.  Smoother than ``"minmax"`` on
-  noisy data, at the price of one Python pass over the prefetch.  Ungrouped only.
+  noisy data, at the price of one Python pass over the prefetch.  Grouped, the
+  thinning runs once per child.
 
 * ``"fpcs"`` — Feature-Preserving Compensated Sampling: one ``(min, max)`` pair per
   bucket, then a compensation walk that carries a deferred extremum across bucket
@@ -886,7 +887,7 @@ class LinePlot(FlexTrace):
     downsample:
         Downsampling strategy.  ``"minmax"`` (default) uses the min-max
         envelope algorithm; ``"lttb"`` thins a 4x min-max prefetch with the
-        MinMaxLTTB triangle rule (ungrouped only); ``"fpcs"`` uses
+        MinMaxLTTB triangle rule; ``"fpcs"`` uses
         Feature-Preserving Compensated Sampling; ``"nth"`` selects every nth
         row.  All of them need the ``flexviz_polars`` plugin.  The first three
         bucket by x width, and grouped they share one grid across the groups,
@@ -931,9 +932,6 @@ class LinePlot(FlexTrace):
                 f"downsample must be one of {get_args(LineDownsample)}, "
                 f"got {downsample!r}."
             )
-        if downsample == "lttb" and group_by is not None:
-            # Grouped lines have no x-width prefetch yet.
-            raise ValueError("downsample='lttb' does not support group_by yet")
         group_cols = (
             _to_col_tuple(group_by, "group_by") if group_by is not None else None
         )
