@@ -848,13 +848,20 @@ GroupedAggregationSpec
 ├── agg_exprs: Tuple[pl.Expr, ...]       ← already aliased to logical parent uids
 ├── pre_group_filters: Tuple[pl.Expr, ...]
 ├── pre_group_filter_key: Any            ← semantic key for grouped fusion safety
-└── batch_key: Tuple[Any, ...]
+├── batch_key: Tuple[Any, ...]
+└── plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
+                     ← escape hatch for a grouped aggregation that is a whole plan;
+                        called as plan(batch_ldf), returns group_cols plus a uid column
 ```
 
 Grouped specs with identical `(group_cols, sort_cols, batch_key)` are fused into one
 Polars grouped query. If `pre_group_filters` are present, every fused spec must also
 provide the same `pre_group_filter_key`; otherwise fusion is rejected. The collected
 grouped `DataFrame` is then shared back to each logical parent uid in that batch.
+
+A grouped spec can carry a `plan` instead of `agg_exprs`. A plan spec runs alone, after
+the cross-filter and its own `pre_group_filters`, and returns the same frame shape the
+fused query returns. Plan specs never fuse, so they need no `pre_group_filter_key`.
 
 `_to_update` receives the result as `df_agg[uid][0]` — a Python dict of `{field: value}` where array fields are Python lists (after `implode()` inside the trace expression).
 

@@ -89,6 +89,14 @@ class GroupedAggregationSpec:
     pre_group_filters: Tuple[pl.Expr, ...] = ()
     pre_group_filter_key: Any = None
     batch_key: Tuple[Any, ...] = ()
+    #: Optional escape hatch for a grouped aggregation that is a whole plan
+    #: instead of an expression list. Called as ``plan(batch_ldf)``, where
+    #: ``batch_ldf`` already carries the cross-filter and this spec's
+    #: ``pre_group_filters``. It must return a frame with ``group_cols`` plus
+    #: one column named ``uid``, the shape the fused grouped query returns.
+    #: ``agg_exprs`` is ignored when ``plan`` is set, and a plan spec never
+    #: fuses with other grouped specs.
+    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
 
 
 class LFQueryBuilder:
@@ -315,8 +323,9 @@ class LFQueryBuilder:
         tuple[pl.DataFrame, dict[str, pl.DataFrame]]
             ``(regular_df, grouped_dfs)`` where ``regular_df`` is the result
             of a batched ``select()`` for all ``AggregationSpec``s, and
-            ``grouped_dfs`` maps each grouped parent uid to its fused
-            ``group_by().agg().sort()`` result DataFrame.
+            ``grouped_dfs`` maps each grouped parent uid to its result
+            DataFrame, from the fused ``group_by().agg().sort()`` or from the
+            spec's own plan.
         """
         filtered_ldf = (
             self._ldf if not filter_exprs else self._ldf.filter(*filter_exprs)
@@ -347,9 +356,32 @@ class LFQueryBuilder:
                 planned if regular_df.is_empty() else regular_df.hstack(planned)
             )
 
+        # A grouped spec with its own plan cannot fuse; run it alone on the same
+        # rows the batched path would have given it.
+        grouped_plan_specs = [s for s in grouped_specs if s.plan is not None]
+        grouped_expr_specs = [s for s in grouped_specs if s.plan is None]
+
         grouped_dfs: dict[str, pl.DataFrame] = {}
+        for spec in grouped_plan_specs:
+            batch_ldf = (
+                filtered_ldf
+                if not spec.pre_group_filters
+                else filtered_ldf.filter(*spec.pre_group_filters)
+            )
+            planned = spec.plan(batch_ldf)
+            missing = [
+                c for c in (*spec.group_cols, spec.uid) if c not in planned.columns
+            ]
+            if missing:
+                raise ValueError(
+                    f"GroupedAggregationSpec.plan for {spec.uid!r} must return the "
+                    f"group columns and a column named {spec.uid!r}, missing "
+                    f"{missing!r}"
+                )
+            grouped_dfs[spec.uid] = planned
+
         grouped_batches: dict[tuple, list[GroupedAggregationSpec]] = {}
-        for spec in grouped_specs:
+        for spec in grouped_expr_specs:
             batch_id = (spec.group_cols, spec.sort_cols, spec.batch_key)
             grouped_batches.setdefault(batch_id, []).append(spec)
 
