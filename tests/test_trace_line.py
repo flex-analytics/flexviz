@@ -604,11 +604,12 @@ class TestSortedViewportSlice:
     """``x_sorted`` picks a zero-copy slice over an ``is_between`` mask.
 
     It is a performance path only: every case here asserts the slice returns
-    exactly what the mask returns.
+    exactly what the mask returns. The flag decides for ``nth`` alone; an
+    x-width line is sorted by contract and always slices.
     """
 
     @staticmethod
-    def _agg(df: pl.DataFrame, x_range, x_sorted: bool, downsample="minmax") -> dict:
+    def _agg(df: pl.DataFrame, x_range, x_sorted: bool, downsample="nth") -> dict:
         lf = LFQueryBuilder(df)
         trace = LinePlot(x="ts", y="val", n_points=100, downsample=downsample)
         update_range = {"x": x_range} if x_range else {}
@@ -638,7 +639,6 @@ class TestSortedViewportSlice:
             {"ts": list(range(n)), "val": [float((i * 37) % 101) for i in range(n)]}
         ).with_columns(ts=pl.col("ts").cast(dtype))
 
-    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
     @pytest.mark.parametrize(
         "x_range",
         [
@@ -649,11 +649,11 @@ class TestSortedViewportSlice:
             (2500, 2500),  # single point
         ],
     )
-    def test_slice_matches_mask(self, x_range, downsample):
+    def test_slice_matches_mask(self, x_range):
         df = self._df()
         assert self._same(
-            self._agg(df, x_range, True, downsample),
-            self._agg(df, x_range, False, downsample),
+            self._agg(df, x_range, True),
+            self._agg(df, x_range, False),
         )
 
     def test_slice_matches_mask_float_x(self):
@@ -709,7 +709,7 @@ class TestSortedViewportSlice:
         keep = pl.col("val") > 20.0
         got = []
         for flag in (False, True):
-            trace = LinePlot(x="ts", y="val", n_points=100)
+            trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
             spec = trace.get_aggregation_spec(
                 {"x": (500, 3000)}, schema=lf.schema, x_sorted=flag
             )

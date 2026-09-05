@@ -937,10 +937,9 @@ class LinePlot(FlexTrace):
 
         ``x_sorted`` is the caller's guarantee that the x column is ascending
         (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
-        faster viewport restriction. The output is unchanged.
-        The ungrouped x-width strategies need it for a second reason: their
-        buckets are equal in x width, which the engine validates once per
-        source.
+        faster viewport restriction, and only for ``nth``: an ungrouped x-width
+        line on a resident frame is sorted by contract, so it always slices.
+        The output is unchanged either way.
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan every
@@ -1050,7 +1049,9 @@ class LinePlot(FlexTrace):
                 expr=_plugin_pairs_agg_expr(
                     self.x_col,
                     self.y_col,
-                    _viewport_window(self.x_col, x_range, schema, x_sorted),
+                    # The kernel needs x sorted, and the engine raised if it was
+                    # not, so the viewport is always a slice here.
+                    _viewport_window(self.x_col, x_range, schema, True),
                     n_buckets,
                     self.uid,
                     kernel_domain,

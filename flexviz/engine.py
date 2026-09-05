@@ -238,7 +238,7 @@ class FlexEngine:
 
         # Before the domain scan: on a cached source the check leaves the x
         # column flagged sorted, which makes the min/max collect O(1).
-        verified_x = self._check_line_contract(aggregation_traces)
+        self._check_line_contract(aggregation_traces)
 
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
@@ -253,7 +253,6 @@ class FlexEngine:
             backend_schema=backend_schema,
             domain_cols=domain_cols,
             domains=domains,
-            verified_x=verified_x,
         )
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
@@ -870,9 +869,7 @@ class FlexEngine:
             needed, schema, memoize=self._cache is not None
         )
 
-    def _check_line_contract(
-        self, aggregation_traces: list[_AggregationTrace]
-    ) -> set[str]:
+    def _check_line_contract(self, aggregation_traces: list[_AggregationTrace]) -> None:
         """Validate every line trace against the current source.
 
         The engine is the one authority for this: every request rebuilds the
@@ -881,15 +878,10 @@ class FlexEngine:
         sorted memo (``check_line_x``). Only an ungrouped x-width line on a
         resident frame reads x in order, so only that one pays the data pass,
         once per x column per request however many traces share it.
-
-        Returns the resident x columns this request verified sorted. Only a
-        cached source keeps the sorted flag between requests, so on an uncached
-        one the aggregation specs cannot read the answer back off the builder.
         """
         lf = self._backend_lf
-        verified: set[str] = set()
         if lf is None:
-            return verified
+            return
         checked: set[str] = set()
         for item in aggregation_traces:
             trace = item.trace
@@ -905,8 +897,6 @@ class FlexEngine:
                 continue
             checked.add(trace.x_col)
             lf.check_line_x(trace.x_col, memoize=self._cache is not None)
-            verified.add(trace.x_col)
-        return verified
 
     def _collect_aggregation_specs(
         self,
@@ -914,7 +904,6 @@ class FlexEngine:
         backend_schema: pl.Schema | None,
         domain_cols: Dict[str, tuple[str, ...]],
         domains: Dict[str, tuple[Any, Any]],
-        verified_x: set[str],
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
 
@@ -937,16 +926,14 @@ class FlexEngine:
                 #       -> I do not like the specific branch here for line traces
                 lf = self._backend_lf
                 is_scan = lf is not None and lf.is_scan
-                # Sorted x turns the viewport into a contiguous row range, which
-                # the line trace can slice instead of mask.
+                # A declared-sorted x turns the viewport into a contiguous row
+                # range an ``nth`` line can slice instead of mask. Every other
+                # strategy is sorted by contract and slices anyway.
                 agg_specs.append(
                     trace.get_aggregation_spec(
                         update_range=item.update_range,
                         schema=backend_schema,
-                        x_sorted=(
-                            trace.x_col in verified_x
-                            or (lf is not None and lf.is_sorted(trace.x_col))
-                        ),
+                        x_sorted=lf is not None and lf.is_sorted(trace.x_col),
                         scan_source=is_scan,
                         domains=trace_domains,
                     )
