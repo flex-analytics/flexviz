@@ -12,13 +12,13 @@ Importing it registers a `flexviz` namespace on `pl.Expr`:
 import polars as pl
 import flexviz_polars  # registers pl.Expr.flexviz
 
-pl.select(pl.lit([1.0, 5.0, 2.0]).flexviz.arg_min_max(2))
+pl.select(pl.lit([1.0, 5.0, 2.0]).flexviz.every_nth(2))
 ```
 
-The namespace exposes `every_nth`, `arg_min_max`, `fixed_hist`,
-`fixed_hist2d`, `fixed_hist2d_reduce`, and `fixed_line_envelope2d`: the
-downsampling and fixed-bin binning kernels behind FlexViz's line, histogram,
-and heatmap paths.
+The namespace exposes `every_nth`, `fixed_hist`, `fixed_hist2d`,
+`fixed_hist2d_reduce`, and `fixed_line_envelope2d`: the downsampling and
+fixed-bin binning kernels behind FlexViz's line, histogram, and heatmap paths.
+`_minmax_pairs_line` is the min-max bucket kernel behind the line paths.
 
 ## License
 

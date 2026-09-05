@@ -75,13 +75,8 @@ fn every_nth(inputs: &[Series], kwargs: EveryNthKwargs) -> PolarsResult<Series> 
 }
 
 // ---------------------------------------------------------------------------
-// arg_min_max
+// minmax_pairs_line
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct ArgMinMaxKwargs {
-    n_points: usize,
-}
 
 /// One `x_domain` bound.
 ///
@@ -115,28 +110,11 @@ fn positive_span(lo: XBound, hi: XBound) -> bool {
 }
 
 #[derive(Deserialize)]
-struct MinmaxLineKwargs {
-    n_points: usize,
-    x_name: Option<String>,
-    y_name: Option<String>,
-    /// `Some((lo, hi))` switches the buckets from equal row count to equal x
-    /// width over `[lo, hi]`, which needs x sorted ascending. `None` keeps the
-    /// row-count buckets.
-    #[serde(default)]
-    x_domain: Option<(XBound, XBound)>,
-}
-
-// ---------------------------------------------------------------------------
-// minmax_pairs_line
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
 struct MinmaxPairsKwargs {
     n_buckets: usize,
-    /// Same meaning as in `MinmaxLineKwargs`: `Some((lo, hi))` switches to
-    /// equal-x-width buckets, `None` keeps the row-count buckets.
-    #[serde(default)]
-    x_domain: Option<(XBound, XBound)>,
+    /// The `[lo, hi]` the buckets divide into equal x widths. Needs x sorted
+    /// ascending; rows outside it are dropped.
+    x_domain: (XBound, XBound),
 }
 
 // ---------------------------------------------------------------------------
@@ -242,64 +220,6 @@ impl FixedHistValue for pf16 {
     }
 }
 
-fn arg_min_max_output(inputs: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new(inputs[0].name().clone(), DataType::UInt32))
-}
-
-#[polars_expr(output_type_func = arg_min_max_output)]
-fn arg_min_max(inputs: &[Series], kwargs: ArgMinMaxKwargs) -> PolarsResult<Series> {
-    polars_ensure!(
-        kwargs.n_points > 0,
-        InvalidOperation: "n_points must be greater than 0"
-    );
-
-    let s = &inputs[0];
-    let indices = arg_min_max_indices(s, kwargs.n_points)?;
-    Ok(UInt32Chunked::from_iter_values(s.name().clone(), indices.into_iter()).into_series())
-}
-
-fn minmax_line_output(inputs: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new(
-        PlSmallStr::EMPTY,
-        DataType::Struct(vec![inputs[0].clone(), inputs[1].clone()]),
-    ))
-}
-
-/// `arg_min_max` plus both gathers in one call. Exists because Polars does not
-/// CSE opaque plugin expressions: `x.gather(idx)` / `y.gather(idx)` on the same
-/// `arg_min_max` expression runs the whole scan twice.
-#[polars_expr(output_type_func = minmax_line_output)]
-fn minmax_line(inputs: &[Series], kwargs: MinmaxLineKwargs) -> PolarsResult<Series> {
-    polars_ensure!(
-        kwargs.n_points > 0,
-        InvalidOperation: "n_points must be greater than 0"
-    );
-
-    let x = &inputs[0];
-    let y = &inputs[1];
-    polars_ensure!(
-        x.len() == y.len(),
-        ShapeMismatch: "minmax_line: x and y must have the same length"
-    );
-
-    let indices = match kwargs.x_domain {
-        Some((lo, hi)) => arg_min_max_indices_x_width(x, y, kwargs.n_points, lo, hi)?,
-        None => arg_min_max_indices(y, kwargs.n_points)?,
-    };
-    let idx_ca = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, indices.into_iter());
-    let mut x_taken = x.take(&idx_ca)?;
-    let mut y_taken = y.take(&idx_ca)?;
-    let x_name = output_name(kwargs.x_name, x.name(), "x");
-    let y_name = output_name(kwargs.y_name, y.name(), "y");
-    x_taken.rename(x_name);
-    y_taken.rename(y_name);
-    let len = x_taken.len();
-
-    let out =
-        StructChunked::from_series("minmax_line".into(), len, [&x_taken, &y_taken].into_iter())?;
-    Ok(out.into_series())
-}
-
 fn minmax_pairs_line_output(inputs: &[Field]) -> PolarsResult<Field> {
     let x = inputs[0].dtype().clone();
     let y = inputs[1].dtype().clone();
@@ -315,8 +235,7 @@ fn minmax_pairs_line_output(inputs: &[Field]) -> PolarsResult<Field> {
 }
 
 /// One `(x, y)` pair per non-empty bucket: the argmin row and the argmax row of
-/// y, both with their x. `minmax_line` flattens and dedups the same buckets;
-/// this keeps the pairing, which the caller's compensation walk needs.
+/// y, both with their x. The caller flattens the pairs or walks them.
 #[polars_expr(output_type_func = minmax_pairs_line_output)]
 fn minmax_pairs_line(inputs: &[Series], kwargs: MinmaxPairsKwargs) -> PolarsResult<Series> {
     polars_ensure!(
@@ -335,23 +254,16 @@ fn minmax_pairs_line(inputs: &[Series], kwargs: MinmaxPairsKwargs) -> PolarsResu
         InvalidOperation: "series length exceeds UInt32 index capacity"
     );
 
-    let pairs = if y.is_empty() {
+    let (lo, hi) = kwargs.x_domain;
+    let pairs = if y.is_empty() || !positive_span(lo, hi) {
+        // A zero span is the caller's sentinel for "no grid": no bucket, no row.
         Vec::new()
     } else {
-        match kwargs.x_domain {
-            Some((lo, hi)) if !positive_span(lo, hi) => Vec::new(),
-            // The bucket count is not clamped to the row count here: it divides
-            // `[lo, hi]`, so a smaller count would widen the buckets and build a
-            // different grid than the caller's (see `arg_min_max_indices_x_width`).
-            Some((lo, hi)) => {
-                let offsets = x_width_offsets(x, lo, hi, kwargs.n_buckets)?;
-                pairs_for_offsets(y, &offsets)
-            },
-            None => {
-                let offsets = uniform_offsets(y.len(), kwargs.n_buckets.min(y.len()).max(1));
-                pairs_for_offsets(y, &offsets)
-            },
-        }
+        // The bucket count is not clamped to the row count: it divides `[lo, hi]`,
+        // so a smaller count would widen the buckets and build a different grid
+        // than the caller's. Only the output allocation is bounded by the rows
+        // (`bucket_offsets`).
+        pairs_for_offsets(y, &x_width_offsets(x, lo, hi, kwargs.n_buckets)?)
     };
 
     let min_idx = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, pairs.iter().map(|p| p.0));
@@ -371,53 +283,8 @@ fn minmax_pairs_line(inputs: &[Series], kwargs: MinmaxPairsKwargs) -> PolarsResu
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers (shared by the min-max kernels)
+// Internal helpers (the bucket pass)
 // ---------------------------------------------------------------------------
-
-fn uniform_offsets(len: usize, n_out: usize) -> Vec<(usize, usize)> {
-    let mut offsets = Vec::with_capacity(n_out);
-    let base = len / n_out;
-    let remainder = len % n_out;
-    let mut start = 0usize;
-
-    for i in 0..n_out {
-        let window_len = base + usize::from(i < remainder);
-        offsets.push((start, window_len));
-        start += window_len;
-    }
-
-    offsets
-}
-
-fn arg_min_max_indices(s: &Series, n_points: usize) -> PolarsResult<Vec<u32>> {
-    if s.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let pairs = arg_min_max_pairs(s, (n_points / 2).max(1))?;
-    let mut indices: Vec<u32> = pairs
-        .into_iter()
-        .flat_map(|(arg_min, arg_max)| [arg_min, arg_max])
-        .collect();
-
-    indices.sort_unstable();
-    indices.dedup();
-    Ok(indices)
-}
-
-fn arg_min_max_pairs(s: &Series, n_buckets: usize) -> PolarsResult<Vec<(u32, u32)>> {
-    polars_ensure!(
-        s.len() <= u32::MAX as usize,
-        InvalidOperation: "series length exceeds UInt32 index capacity"
-    );
-
-    if s.is_empty() || n_buckets == 0 {
-        return Ok(Vec::new());
-    }
-
-    let offsets = uniform_offsets(s.len(), n_buckets.min(s.len()).max(1));
-    Ok(pairs_for_offsets(s, &offsets))
-}
 
 fn pairs_for_offsets(s: &Series, offsets: &[(usize, usize)]) -> Vec<(u32, u32)> {
     // The fallback is the null path, and nulls are common in real signals: one null
@@ -432,39 +299,6 @@ fn pairs_for_offsets(s: &Series, offsets: &[(usize, usize)]) -> Vec<(u32, u32)> 
         .zip(arg_max_vec)
         .filter_map(|(arg_min, arg_max)| Some((arg_min? as u32, arg_max? as u32)))
         .collect()
-}
-
-/// `arg_min_max_indices` over equal-x-width buckets instead of equal-row-count
-/// ones. x must be sorted ascending and null-free. Rows outside `[lo, hi]` are
-/// dropped.
-fn arg_min_max_indices_x_width(
-    x: &Series,
-    y: &Series,
-    n_points: usize,
-    lo: XBound,
-    hi: XBound,
-) -> PolarsResult<Vec<u32>> {
-    polars_ensure!(
-        y.len() <= u32::MAX as usize,
-        InvalidOperation: "series length exceeds UInt32 index capacity"
-    );
-    if y.is_empty() || !positive_span(lo, hi) {
-        return Ok(Vec::new());
-    }
-
-    // The bucket count may not be clamped to the row count the way
-    // `arg_min_max_pairs` clamps it: it divides `[lo, hi]`, so a smaller count
-    // would widen the buckets and rebuild a different grid than the caller's.
-    // Only the output allocation is bounded by the rows (`bucket_offsets`).
-    let offsets = x_width_offsets(x, lo, hi, (n_points / 2).max(1))?;
-    let mut indices: Vec<u32> = pairs_for_offsets(y, &offsets)
-        .into_iter()
-        .flat_map(|(arg_min, arg_max)| [arg_min, arg_max])
-        .collect();
-
-    indices.sort_unstable();
-    indices.dedup();
-    Ok(indices)
 }
 
 /// Non-empty `(start, len)` windows for `n_buckets` equal-width x buckets.
@@ -639,18 +473,6 @@ where
     offsets
 }
 
-fn output_name(preferred: Option<String>, current: &PlSmallStr, fallback: &str) -> PlSmallStr {
-    if let Some(name) = preferred {
-        if !name.is_empty() {
-            return name.into();
-        }
-    }
-    if !current.is_empty() {
-        return current.clone();
-    }
-    fallback.into()
-}
-
 /// Per-window `(arg_min, arg_max)` row indices; `None` where a window is
 /// empty or all-null.
 type ArgMinMaxIdx = (Vec<Option<u64>>, Vec<Option<u64>>);
@@ -808,8 +630,8 @@ where
     let mut min_indices = Vec::with_capacity(offsets.len());
     let mut max_indices = Vec::with_capacity(offsets.len());
     // Single monotone cursor — advances only when a chunk is fully consumed by a window.
-    // Correct because both offset builders emit adjacent, non-overlapping windows in
-    // order: an empty x-width bucket is dropped, which leaves the row ranges adjacent.
+    // Correct because the windows are adjacent, non-overlapping and in order: an
+    // empty x-width bucket is dropped, which leaves the row ranges adjacent.
     //
     // The cursor is seeded from the *first* window rather than assumed to start at
     // row 0, which is what makes this correct for any contiguous run of windows and

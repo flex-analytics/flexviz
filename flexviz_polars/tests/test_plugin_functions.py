@@ -1,6 +1,8 @@
-"""Unit tests for flexviz_polars plugin functions: every_nth and arg_min_max."""
+"""Unit tests for flexviz_polars plugin functions: every_nth and minmax_pairs_line."""
 
 from __future__ import annotations
+
+import math
 
 import polars as pl
 import pytest
@@ -16,37 +18,15 @@ def _every_nth(series: pl.Series, n_points: int) -> pl.Series:
     return pl.select(pl.lit(series).flexviz.every_nth(n_points)).to_series()
 
 
-def _arg_min_max(series: pl.Series, n_points: int) -> pl.Series:
-    return pl.select(pl.lit(series).flexviz.arg_min_max(n_points)).to_series()
-
-
 def _minmax_pairs_line(
     x: pl.Series,
     y: pl.Series,
     n_buckets: int,
-    x_domain: tuple[float, float] | None = None,
+    x_domain: tuple[float, float],
 ) -> pl.Series:
     return pl.select(
         flexviz_polars._minmax_pairs_line(
             pl.lit(x), pl.lit(y), n_buckets, x_domain=x_domain
-        )
-    ).to_series()
-
-
-def _minmax_line(
-    x: pl.Series,
-    y: pl.Series,
-    n_points: int,
-    x_domain: tuple[float, float] | None = None,
-) -> pl.Series:
-    return pl.select(
-        flexviz_polars._minmax_line(
-            pl.lit(x),
-            pl.lit(y),
-            n_points,
-            x_name=x.name,
-            y_name=y.name,
-            x_domain=x_domain,
         )
     ).to_series()
 
@@ -332,122 +312,6 @@ class TestEveryNth:
 
 
 # ---------------------------------------------------------------------------
-# arg_min_max
-# ---------------------------------------------------------------------------
-
-
-class TestArgMinMax:
-    def test_empty_series(self):
-        s = pl.Series("y", [], dtype=pl.Float64)
-        result = _arg_min_max(s, n_points=10)
-        assert result.is_empty()
-        assert result.dtype == pl.UInt32
-
-    def test_single_element(self):
-        s = pl.Series("y", [5.0])
-        result = _arg_min_max(s, n_points=10)
-        # One bucket, argmin == argmax == 0, deduped to 1 index
-        assert result.to_list() == [0]
-
-    def test_output_dtype_is_uint32(self):
-        s = pl.Series("y", [1.0, 2.0, 3.0, 4.0])
-        result = _arg_min_max(s, n_points=4)
-        assert result.dtype == pl.UInt32
-
-    def test_output_count_le_n_points(self):
-        for n_rows, n_points in [(100, 20), (1000, 50), (5, 10), (2, 4)]:
-            s = pl.Series("y", list(range(n_rows)), dtype=pl.Float64)
-            result = _arg_min_max(s, n_points=n_points)
-            assert len(result) <= n_points, f"n_rows={n_rows}, n_points={n_points}"
-
-    def test_output_is_sorted(self):
-        s = pl.Series("y", [float(i % 7) for i in range(100)])
-        result = _arg_min_max(s, n_points=20)
-        assert result.is_sorted(), "indices must be in ascending order"
-
-    def test_dedup_constant_series(self):
-        # Constant series: argmin == argmax in every bucket → deduped to n_buckets indices
-        s = pl.Series("y", [3.14] * 100)
-        n_points = 20
-        result = _arg_min_max(s, n_points=n_points)
-        n_buckets = n_points // 2  # = 10
-        # Each bucket contributes 1 (deduplicated) index → at most n_buckets indices
-        assert len(result) <= n_buckets
-
-    def test_spike_preserved(self):
-        # Flat series with one clear spike at position 499
-        vals = [0.0] * 499 + [1000.0] + [0.0] * 500
-        s = pl.Series("y", vals)
-        result = _arg_min_max(s, n_points=20)
-        # The spike at index 499 must appear as an argmax for its bucket
-        assert 499 in result.to_list(), "spike index 499 must be preserved"
-
-    def test_no_duplicate_indices(self):
-        s = pl.Series("y", list(range(100)), dtype=pl.Float64)
-        result = _arg_min_max(s, n_points=20)
-        assert len(result) == len(result.unique()), "output indices must be unique"
-
-    def test_indices_valid_for_gather(self):
-        s = pl.Series("y", list(range(50)), dtype=pl.Float64)
-        indices = _arg_min_max(s, n_points=10)
-        # All indices must be within [0, len(s) - 1]
-        assert indices.max() < len(s)
-        assert indices.min() >= 0
-
-    def test_monotone_series_preserves_endpoints(self):
-        # Monotone increasing: per bucket, min is first element, max is last
-        s = pl.Series("y", list(range(100)), dtype=pl.Float64)
-        indices = _arg_min_max(s, n_points=20)
-        # First bucket: argmin=0, argmax=9 (for 10 buckets of 10)
-        idx_list = indices.to_list()
-        assert 0 in idx_list, "first element (global min of first bucket) must appear"
-        assert 99 in idx_list, "last element (global max of last bucket) must appear"
-
-    def test_float16_output_count_le_n_points(self):
-        s = pl.Series("y", [float(i % 17) / 17 for i in range(1000)]).cast(pl.Float16)
-        result = _arg_min_max(s, n_points=50)
-        assert result.dtype == pl.UInt32
-        assert len(result) <= 50
-        assert result.is_sorted()
-
-    def test_float16_spike_preserved(self):
-        vals = [0.0] * 499 + [10.0] + [0.0] * 500
-        s = pl.Series("y", vals).cast(pl.Float16)
-        result = _arg_min_max(s, n_points=20)
-        assert 499 in result.to_list(), "float16 spike index must be preserved"
-
-    def test_filtered_multichunk_series_skips_empty_chunks(self):
-        frames = []
-        for chunk_idx in range(20):
-            start = chunk_idx * 1000
-            frames.append(
-                pl.DataFrame(
-                    {
-                        "x": list(range(start, start + 1000)),
-                        "y": [float(i % 100) for i in range(start, start + 1000)],
-                    }
-                )
-            )
-        df = pl.concat(frames, rechunk=False)
-
-        result = (
-            df.lazy()
-            .select(
-                pl.col("y")
-                .filter(pl.col("x").is_between(5000, 12000))
-                .flexviz.arg_min_max(50)
-            )
-            .collect()
-        )
-
-        indices = result["y"].to_list()
-        assert indices
-        assert min(indices) >= 0
-        assert max(indices) <= 7000
-        assert len(indices) <= 50
-
-
-# ---------------------------------------------------------------------------
 # minmax_pairs_line
 # ---------------------------------------------------------------------------
 
@@ -460,36 +324,13 @@ def _pairs_point_set(out: pl.Series) -> set:
     )
 
 
-def _line_point_set(out: pl.Series) -> set:
-    rows = out.struct.unnest()
-    return set(zip(rows["x"], rows["y"]))
-
-
 class TestMinmaxPairsLine:
-    def test_row_count_buckets_match_minmax_line(self):
-        n = 10_000
-        x = pl.Series("x", range(n), dtype=pl.Int64)
-        y = pl.Series("y", _distinct_values(n))
-
-        pairs = _minmax_pairs_line(x, y, 200)
-        line = _minmax_line(x, y, 400)
-
-        assert _pairs_point_set(pairs) == _line_point_set(line)
-
-    def test_x_width_buckets_match_minmax_line(self):
-        x, y = _bursty_xy()
-
-        pairs = _minmax_pairs_line(x, y, 100, x_domain=(0, 100))
-        line = _minmax_line(x, y, 200, x_domain=(0, 100))
-
-        assert _pairs_point_set(pairs) == _line_point_set(line)
-
     def test_buckets_are_ordered_and_min_precedes_max(self):
         n = 5_000
         x = pl.Series("x", range(n), dtype=pl.Int64)
         y = pl.Series("y", [float((i * 37) % 211) for i in range(n)])
 
-        rows = _minmax_pairs_line(x, y, 100).struct.unnest()
+        rows = _minmax_pairs_line(x, y, 100, (0, n - 1)).struct.unnest()
 
         x_min = rows["x_min"].to_list()
         assert x_min == sorted(x_min)
@@ -499,7 +340,7 @@ class TestMinmaxPairsLine:
         x = pl.Series("x", range(100), dtype=pl.Int64)
         y = pl.Series("y", [1.0] * 100)
 
-        rows = _minmax_pairs_line(x, y, 10).struct.unnest()
+        rows = _minmax_pairs_line(x, y, 10, (0, 99)).struct.unnest()
 
         assert len(rows) == 10
         assert rows["x_min"].to_list() == rows["x_max"].to_list()
@@ -510,33 +351,67 @@ class TestMinmaxPairsLine:
         x = pl.Series("x", xs, dtype=pl.Float64)
         y = pl.Series("y", _distinct_values(len(xs)))
 
-        rows = _minmax_pairs_line(x, y, 100, x_domain=(0.0, 1000.0)).struct.unnest()
+        rows = _minmax_pairs_line(x, y, 100, (0.0, 1000.0)).struct.unnest()
 
         assert 0 < len(rows) < 100
         assert all(px < 50 or px >= 950 for px in rows["x_min"])
 
-    def test_null_y_rows_never_appear_and_nan_matches_minmax_line(self):
-        """Nulls are skipped. NaN wins its bucket, the same NaN-propagating
-        policy the shared `pairs_for_offsets` gives `minmax_line`."""
+    def test_a_null_or_nan_y_loses_to_a_real_value(self):
+        """Both lose their bucket to any real y, on the SIMD and the null path."""
         n = 300
         ys = [float(i % 17) for i in range(n)]
-        ys[10] = None
+        ys[10] = None  # one null routes the whole column to the fallback
         ys[11] = float("nan")
         x = pl.Series("x", range(n), dtype=pl.Int64)
         y = pl.Series("y", ys, dtype=pl.Float64)
 
-        pairs = _minmax_pairs_line(x, y, 30)
-        rows = pairs.struct.unnest()
+        rows = _minmax_pairs_line(x, y, 30, (0, n - 1)).struct.unnest()
 
         picked = set(rows["x_min"]) | set(rows["x_max"])
-        assert 10 not in picked
-        assert picked == set(_minmax_line(x, y, 60).struct.field("x"))
+        assert not picked & {10, 11}
+
+    def test_an_all_null_bucket_drops_and_an_all_nan_bucket_stays(self):
+        """The caller drops the NaN pair; an empty bucket never reaches it."""
+        n = 300
+        nans = [float(i % 17) for i in range(n)]
+        nulls: list[float | None] = list(nans)
+        for i in range(10, 20):  # exactly bucket 1 of 30
+            nans[i] = float("nan")
+            nulls[i] = None
+        x = pl.Series("x", range(n), dtype=pl.Int64)
+
+        nan_rows = _minmax_pairs_line(
+            x, pl.Series("y", nans, dtype=pl.Float64), 30, (0, n - 1)
+        ).struct.unnest()
+        null_rows = _minmax_pairs_line(
+            x, pl.Series("y", nulls, dtype=pl.Float64), 30, (0, n - 1)
+        ).struct.unnest()
+
+        assert len(nan_rows) == 30
+        assert math.isnan(nan_rows["y_min"][1]) and math.isnan(nan_rows["y_max"][1])
+        assert len(null_rows) == 29
+        assert not set(null_rows["x_min"]) & set(range(10, 20))
 
     def test_empty_input_gives_empty_output(self):
         x = pl.Series("x", [], dtype=pl.Int64)
         y = pl.Series("y", [], dtype=pl.Float64)
 
-        out = _minmax_pairs_line(x, y, 10)
+        out = _minmax_pairs_line(x, y, 10, (0, 100))
+
+        assert out.is_empty()
+        assert out.struct.unnest().columns == ["x_min", "y_min", "x_max", "y_max"]
+
+    @pytest.mark.parametrize("x_domain", [(0, 0), (0.0, 0.0)], ids=["integer", "float"])
+    def test_a_zero_span_domain_returns_no_rows(self, x_domain):
+        """The caller's sentinel for "no grid": an empty or all-null x column.
+
+        The integer form matters on its own: a float bound on an integer x is
+        rejected, so the sentinel must never reach the edge search.
+        """
+        x = pl.Series("x", range(100), dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(100))
+
+        out = _minmax_pairs_line(x, y, 10, x_domain)
 
         assert out.is_empty()
         assert out.struct.unnest().columns == ["x_min", "y_min", "x_max", "y_max"]
@@ -545,7 +420,7 @@ class TestMinmaxPairsLine:
         x = pl.Series("x", range(100), dtype=pl.Int32)
         y = pl.Series("y", [float(i % 7) for i in range(100)], dtype=pl.Float32)
 
-        rows = _minmax_pairs_line(x, y, 10).struct.unnest()
+        rows = _minmax_pairs_line(x, y, 10, (0, 99)).struct.unnest()
 
         assert rows["x_min"].dtype == pl.Int32 and rows["x_max"].dtype == pl.Int32
         assert rows["y_min"].dtype == pl.Float32 and rows["y_max"].dtype == pl.Float32
@@ -555,12 +430,12 @@ class TestMinmaxPairsLine:
         y = pl.Series("y", _distinct_values(10))
 
         with pytest.raises(Exception, match="n_buckets must be greater than 0"):
-            _minmax_pairs_line(x, y, 0)
+            _minmax_pairs_line(x, y, 0, (0, 9))
 
     def test_length_mismatch_is_rejected(self):
         with pytest.raises(Exception, match="same length"):
             _minmax_pairs_line(
-                pl.Series("x", [1, 2], dtype=pl.Int64), pl.Series("y", [1.0]), 4
+                pl.Series("x", [1, 2], dtype=pl.Int64), pl.Series("y", [1.0]), 4, (0, 1)
             )
 
 
@@ -1739,13 +1614,16 @@ class TestKernelThreadPool:
 
 
 # ---------------------------------------------------------------------------
-# arg_min_max — parallel window path
+# minmax_pairs_line — parallel window path
 #
 # `par_by_window` only engages above MIN_PAR (1 << 17) total rows, so every test
 # above this point exercises the serial path only. These run over that threshold.
+#
+# A row-index x makes every equal-x-width bucket hold a fixed number of rows,
+# which is what lets an independent oracle predict the windows.
 # ---------------------------------------------------------------------------
 
-PAR_ROWS = 300_000  # > MIN_PAR (131_072)
+PAR_ROWS = 300_000
 
 
 def _distinct_values(n: int) -> list[float]:
@@ -1759,34 +1637,55 @@ def _distinct_values(n: int) -> list[float]:
     return [float((i * 2654435761) % (2**23)) for i in range(n)]
 
 
-def _expected_arg_min_max(values: list[float], n_points: int) -> list[int]:
-    """Independent oracle: pure-Python argmin/argmax per uniform window."""
-    n = len(values)
-    n_out = max(min(max(n_points // 2, 1), n), 1)
-    base, remainder = divmod(n, n_out)
-    indices: set[int] = set()
-    start = 0
-    for i in range(n_out):
-        window_len = base + (1 if i < remainder else 0)
-        if window_len:
-            window = values[start : start + window_len]
-            indices.add(start + min(range(window_len), key=window.__getitem__))
-            indices.add(start + max(range(window_len), key=window.__getitem__))
-        start += window_len
-    return sorted(indices)
+def _bursty_xy() -> tuple[pl.Series, pl.Series]:
+    """100k rows crammed into [0, 1) plus a 1k-row tail spread over [1, 100]."""
+    dense = [i / 100_000 for i in range(100_000)]
+    tail = [1.0 + i * 99 / 999 for i in range(1_000)]
+    xs = dense + tail
+    return (
+        pl.Series("x", xs, dtype=pl.Float64),
+        pl.Series("y", _distinct_values(len(xs))),
+    )
 
 
-class TestArgMinMaxParallel:
+def _row_index_windows(n: int, n_buckets: int) -> list[tuple[int, int]]:
+    """The windows the kernel builds for x = 0..n-1 over the domain (0, n-1)."""
+    width = -(-(n - 1) // n_buckets)  # ceiling, as in x_width_offsets
+    edges = [min(i * width, n) for i in range(n_buckets)] + [n]  # last bucket closed
+    return [(a, b - a) for a, b in zip(edges, edges[1:]) if b > a]
+
+
+def _expected_pairs(values: list, n_buckets: int) -> list[tuple[int, int]]:
+    """Independent oracle: the argmin and argmax row of every non-empty window."""
+    pairs = []
+    for start, length in _row_index_windows(len(values), n_buckets):
+        live = [start + k for k in range(length) if values[start + k] is not None]
+        # An all-null window yields no pair at all, so it drops out entirely.
+        if live:
+            pairs.append(
+                (min(live, key=lambda j: values[j]), max(live, key=lambda j: values[j]))
+            )
+    return pairs
+
+
+def _pairs_indices(y: pl.Series, n_buckets: int) -> list[tuple[int, int]]:
+    """The kernel's (argmin, argmax) rows, read back through a row-index x."""
+    n = len(y)
+    x = pl.Series("x", range(n), dtype=pl.Int64)
+    rows = _minmax_pairs_line(x, y, n_buckets, (0, n - 1)).struct.unnest()
+    return list(zip(rows["x_min"], rows["x_max"]))
+
+
+class TestMinmaxPairsLineParallel:
     @pytest.mark.parametrize("dtype", [pl.Float64, pl.Float32, pl.Int64, pl.Int32])
     def test_single_chunk_matches_oracle(self, dtype):
         values = _distinct_values(PAR_ROWS)
-        s = pl.Series("y", values, dtype=pl.Float64).cast(dtype)
-        assert s.n_chunks() == 1
-        result = _arg_min_max(s, n_points=1000).to_list()
-        assert result == _expected_arg_min_max(s.to_list(), 1000)
+        y = pl.Series("y", values, dtype=pl.Float64).cast(dtype)
+        assert y.n_chunks() == 1
+        assert _pairs_indices(y, 500) == _expected_pairs(y.to_list(), 500)
 
-    @pytest.mark.parametrize("n_points", [4, 1000, 20_001])
-    def test_multi_chunk_matches_single_chunk(self, n_points):
+    @pytest.mark.parametrize("n_buckets", [1, 500, 20_001])
+    def test_multi_chunk_matches_single_chunk(self, n_buckets):
         """The per-worker chunk cursor must be seeded from its own first window.
 
         A worker that inherited a cursor starting at row 0 would mis-locate every
@@ -1808,9 +1707,9 @@ class TestArgMinMaxParallel:
         assert many.n_chunks() == len(bounds) - 1
         assert many.to_list() == values
 
-        expected = _expected_arg_min_max(values, n_points)
-        assert _arg_min_max(one, n_points=n_points).to_list() == expected
-        assert _arg_min_max(many, n_points=n_points).to_list() == expected
+        expected = _expected_pairs(values, n_buckets)
+        assert _pairs_indices(one, n_buckets) == expected
+        assert _pairs_indices(many, n_buckets) == expected
 
     # -- null fallback -----------------------------------------------------
     #
@@ -1818,231 +1717,55 @@ class TestArgMinMaxParallel:
     # column to `fallback_window_argminmax`. That is also split by window, so these
     # exercise the parallel fallback rather than the SIMD paths.
 
-    @staticmethod
-    def _expected_with_nulls(values: list[float | None], n_points: int) -> list[int]:
-        n = len(values)
-        n_out = max(min(max(n_points // 2, 1), n), 1)
-        base, remainder = divmod(n, n_out)
-        indices: set[int] = set()
-        start = 0
-        for i in range(n_out):
-            window_len = base + (1 if i < remainder else 0)
-            live = [
-                start + k for k in range(window_len) if values[start + k] is not None
-            ]
-            # An all-null window yields no index at all (both args are None and the
-            # pair is dropped), matching `arg_min_max_pairs`.
-            if live:
-                indices.add(min(live, key=lambda j: values[j]))
-                indices.add(max(live, key=lambda j: values[j]))
-            start += window_len
-        return sorted(indices)
-
     @pytest.mark.parametrize("n_chunks_in", [1, 5])
     def test_scattered_nulls_match_oracle(self, n_chunks_in):
         values: list[float | None] = list(_distinct_values(PAR_ROWS))
         for i in range(0, PAR_ROWS, 7):  # ~14% nulls, none of them window-aligned
             values[i] = None
         if n_chunks_in == 1:
-            s = pl.Series("y", values, dtype=pl.Float64)
+            y = pl.Series("y", values, dtype=pl.Float64)
         else:
             step = PAR_ROWS // n_chunks_in
-            s = pl.concat(
+            y = pl.concat(
                 [
                     pl.Series("y", values[a : a + step], dtype=pl.Float64)
                     for a in range(0, PAR_ROWS, step)
                 ],
                 rechunk=False,
             )
-        assert s.null_count() > 0 and s.n_chunks() == n_chunks_in
-        assert _arg_min_max(s, n_points=1000).to_list() == self._expected_with_nulls(
-            values, 1000
-        )
+        assert y.null_count() > 0 and y.n_chunks() == n_chunks_in
+        assert _pairs_indices(y, 500) == _expected_pairs(values, 500)
 
-    def test_all_null_window_contributes_no_index(self):
+    def test_all_null_window_contributes_no_pair(self):
         values: list[float | None] = list(_distinct_values(PAR_ROWS))
         # 500 windows of 600 rows; blank window 3 entirely.
         for i in range(3 * 600, 4 * 600):
             values[i] = None
-        s = pl.Series("y", values, dtype=pl.Float64)
-        result = _arg_min_max(s, n_points=1000).to_list()
-        assert result == self._expected_with_nulls(values, 1000)
-        assert not any(3 * 600 <= i < 4 * 600 for i in result)
+        y = pl.Series("y", values, dtype=pl.Float64)
+        pairs = _pairs_indices(y, 500)
+        assert pairs == _expected_pairs(values, 500)
+        assert not any(3 * 600 <= i < 4 * 600 for pair in pairs for i in pair)
 
     def test_all_null_series(self):
-        s = pl.Series("y", [None] * PAR_ROWS, dtype=pl.Float64)
-        assert _arg_min_max(s, n_points=1000).to_list() == []
-
-    def test_window_count_below_worker_count_stays_correct(self):
-        """n_points=2 gives one window: below the 2-window floor, so serial."""
-        values = _distinct_values(PAR_ROWS)
-        s = pl.Series("y", values, dtype=pl.Float64)
-        assert _arg_min_max(s, n_points=2).to_list() == _expected_arg_min_max(values, 2)
+        y = pl.Series("y", [None] * PAR_ROWS, dtype=pl.Float64)
+        assert _pairs_indices(y, 500) == []
 
 
 # ---------------------------------------------------------------------------
-# minmax_line — differential against the two-gather form
-#
-# `minmax_line` exists because Polars does not CSE opaque plugin expressions:
-# the pre-fusion form `x.gather(idx), y.gather(idx)` ran the whole arg_min_max
-# scan twice per trace. Both formulations are still compiled into the plugin,
-# so the old form is the reference. A differential is stronger than an oracle
-# here: on ties and NaN the SIMD kernel may pick any of several valid indices,
-# which an independent oracle cannot predict, but both formulations run the
-# identical index selection, so equality is exact by construction.
+# minmax_pairs_line — equal-x-width buckets
 # ---------------------------------------------------------------------------
 
 
-def _two_gather(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
-    """The pre-fusion formulation of the minmax line aggregation."""
-    idx = pl.lit(y).flexviz.arg_min_max(n_points)
-    return pl.select(
-        pl.struct(
-            **{x.name: pl.lit(x).gather(idx), y.name: pl.lit(y).gather(idx)}
-        ).alias("out")
-    ).to_series()
-
-
-def _assert_fused_matches(x: pl.Series, y: pl.Series, n_points: int) -> None:
-    from polars.testing import assert_series_equal
-
-    fused = _minmax_line(x, y, n_points).rename("out")
-    assert_series_equal(fused, _two_gather(x, y, n_points))
-
-
-class TestMinmaxLineDifferential:
-    @pytest.mark.parametrize("n_rows", [1_000, PAR_ROWS])  # serial and parallel paths
-    @pytest.mark.parametrize(
-        "dtype", [pl.Float64, pl.Float32, pl.Float16, pl.Int64, pl.Int32]
-    )
-    def test_dtypes(self, n_rows, dtype):
-        # The f16 cast collapses distinct values into plateaus; for a
-        # differential that is a feature, not a problem (see class comment).
-        y = pl.Series("y", _distinct_values(n_rows), dtype=pl.Float64).cast(dtype)
-        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
-        _assert_fused_matches(x, y, 1000)
-
-    @pytest.mark.parametrize("n_points", [1, 2, 3, 1000, 25_000])
-    def test_n_points_extremes(self, n_points):
-        n = 10_000
-        y = pl.Series("y", _distinct_values(n))
-        x = pl.Series("x", range(n), dtype=pl.Float64)
-        _assert_fused_matches(x, y, n_points)
-
-    def test_plateaus(self):
-        """Ties everywhere: which index wins is kernel-defined, but both forms
-        must pick the same one."""
-        n = 10_000
-        y = pl.Series("y", [float(i // 500) for i in range(n)])
-        x = pl.Series("x", range(n), dtype=pl.Float64)
-        _assert_fused_matches(x, y, 100)
-
-    def test_nan(self):
-        values = _distinct_values(10_000)
-        values[10::100] = [float("nan")] * len(values[10::100])
-        y = pl.Series("y", values)
-        x = pl.Series("x", range(len(values)), dtype=pl.Float64)
-        _assert_fused_matches(x, y, 1000)
-
-    @pytest.mark.parametrize("n_rows", [10_000, PAR_ROWS])
-    def test_y_nulls_route_to_fallback(self, n_rows):
-        values: list[float | None] = list(_distinct_values(n_rows))
-        for i in range(0, n_rows, 7):
-            values[i] = None
-        y = pl.Series("y", values, dtype=pl.Float64)
-        x = pl.Series("x", range(n_rows), dtype=pl.Float64)
-        _assert_fused_matches(x, y, 1000)
-
-    def test_x_nulls_survive_the_gather(self):
-        n = 10_000
-        y = pl.Series("y", _distinct_values(n))
-        x = pl.Series(
-            "x", [None if i % 3 == 0 else float(i) for i in range(n)], dtype=pl.Float64
-        )
-        _assert_fused_matches(x, y, 1000)
-
-    def test_datetime_x(self):
-        from datetime import datetime, timedelta
-
-        n = 10_000
-        t0 = datetime(2026, 1, 1)
-        x = pl.Series("x", [t0 + timedelta(seconds=i) for i in range(n)])
-        y = pl.Series("y", _distinct_values(n))
-        _assert_fused_matches(x, y, 1000)
-
-    def test_multi_chunk(self):
-        values = _distinct_values(PAR_ROWS)
-        bounds = [0, 1, 7919, 100_000, 233_333, PAR_ROWS]
-        y = pl.concat(
-            [
-                pl.Series("y", values[a:b], dtype=pl.Float64)
-                for a, b in zip(bounds, bounds[1:])
-            ],
-            rechunk=False,
-        )
-        x = pl.Series("x", range(PAR_ROWS), dtype=pl.Float64)
-        assert y.n_chunks() == len(bounds) - 1
-        _assert_fused_matches(x, y, 1000)
-
-    def test_empty(self):
-        _assert_fused_matches(
-            pl.Series("x", [], dtype=pl.Float64),
-            pl.Series("y", [], dtype=pl.Float64),
-            1000,
-        )
-
-    def test_single_row(self):
-        _assert_fused_matches(pl.Series("x", [1.0]), pl.Series("y", [2.0]), 1000)
-
-    def test_length_mismatch_raises(self):
-        with pytest.raises(Exception, match="same length"):
-            _minmax_line(pl.Series("x", [1.0, 2.0]), pl.Series("y", [1.0]), 10)
-
-    def test_n_points_zero_raises(self):
-        with pytest.raises(Exception, match="greater than 0"):
-            _minmax_line(pl.Series("x", [1.0]), pl.Series("y", [1.0]), 0)
-
-
-# ---------------------------------------------------------------------------
-# minmax_line — equal-x-width buckets (x_domain)
-# ---------------------------------------------------------------------------
-
-
-def _bursty_xy() -> tuple[pl.Series, pl.Series]:
-    """100k rows crammed into [0, 1) plus a 1k-row tail spread over [1, 100]."""
-    dense = [i / 100_000 for i in range(100_000)]
-    tail = [1.0 + i * 99 / 999 for i in range(1_000)]
-    xs = dense + tail
-    return (
-        pl.Series("x", xs, dtype=pl.Float64),
-        pl.Series("y", _distinct_values(len(xs))),
-    )
-
-
-class TestMinmaxLineXDomain:
-    def test_uniform_x_matches_row_count_buckets(self):
-        """On evenly spaced x both bucket definitions cover the same rows."""
-        n = 100_000
-        x = pl.Series("x", range(n), dtype=pl.Float64)
-        y = pl.Series("y", _distinct_values(n))
-
-        without = _minmax_line(x, y, 200)
-        with_domain = _minmax_line(x, y, 200, x_domain=(0, n - 1))
-
-        assert sorted(with_domain.struct.field("y").to_list()) == sorted(
-            without.struct.field("y").to_list()
-        )
-
+class TestMinmaxPairsLineXDomain:
     def test_bursty_x_spends_its_buckets_on_the_tail(self):
-        """Row-count buckets follow the density. x-width buckets follow x."""
+        """The buckets follow x, not the density of the rows."""
         x, y = _bursty_xy()
 
-        with_domain = _minmax_line(x, y, 200, x_domain=(0, 100))
-        without = _minmax_line(x, y, 200)
+        rows = _minmax_pairs_line(x, y, 100, (0, 100)).struct.unnest()
 
-        # 99 of the 100 buckets cover [1, 100], which holds only 1k of the rows.
-        assert sum(v >= 1 for v in with_domain.struct.field("x").to_list()) >= 180
-        assert sum(v >= 1 for v in without.struct.field("x").to_list()) < 50
+        # One bucket covers [0, 1), which holds 100k of the 101k rows.
+        assert sum(v < 1 for v in rows["x_min"]) == 1
+        assert sum(v >= 1 for v in rows["x_min"]) >= 90
 
     def test_output_points_come_from_the_domain(self):
         """A hole in x empties the middle buckets, so the windows leave gaps.
@@ -2064,14 +1787,12 @@ class TestMinmaxLineXDomain:
         )
         assert y.n_chunks() == len(bounds) - 1
 
-        out = _minmax_line(x, y, 200, x_domain=(0.25, 10.5))
+        out = _minmax_pairs_line(x, y, 100, (0.25, 10.5))
 
-        assert len(out) <= 200
+        assert len(out) <= 100
         source = set(zip(x.to_list(), y.to_list()))
-        points = list(
-            zip(out.struct.field("x").to_list(), out.struct.field("y").to_list())
-        )
-        assert all(point in source for point in points)
+        points = _pairs_point_set(out)
+        assert points <= source
         assert all(0.25 <= px <= 10.5 for px, _ in points)
 
     def test_large_integer_bounds_keep_the_edge_rows(self):
@@ -2081,9 +1802,13 @@ class TestMinmaxLineXDomain:
         x = pl.Series("x", xs, dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(len(xs)))
 
-        out = _minmax_line(x, y, 200, x_domain=(xs[0], xs[-1]))
+        got = {
+            py
+            for _, py in _pairs_point_set(
+                _minmax_pairs_line(x, y, 100, (xs[0], xs[-1]))
+            )
+        }
 
-        got = out.struct.field("y").to_list()
         assert y[0] in got and y[-1] in got
 
     def test_multi_chunk_x_matches_rechunked(self):
@@ -2109,19 +1834,12 @@ class TestMinmaxLineXDomain:
         )
         assert x.n_chunks() > 1 and y.n_chunks() > 1
 
-        chunked = _minmax_line(x, y, 200, x_domain=(10.0, 8000.0))
-        contiguous = _minmax_line(
-            x.rechunk(), y.rechunk(), 200, x_domain=(10.0, 8000.0)
-        )
+        chunked = _minmax_pairs_line(x, y, 100, (10.0, 8000.0)).struct.unnest()
+        contiguous = _minmax_pairs_line(
+            x.rechunk(), y.rechunk(), 100, (10.0, 8000.0)
+        ).struct.unnest()
 
-        assert (
-            chunked.struct.field("x").to_list()
-            == contiguous.struct.field("x").to_list()
-        )
-        assert (
-            chunked.struct.field("y").to_list()
-            == contiguous.struct.field("y").to_list()
-        )
+        assert chunked.rows() == contiguous.rows()
 
     def test_int64_x_past_2_53_keeps_every_bucket(self):
         """Beyond 2**53 an f64 edge collapses neighbours. Integer edges do not."""
@@ -2129,9 +1847,9 @@ class TestMinmaxLineXDomain:
         x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(20))
 
-        out = _minmax_line(x, y, 20, x_domain=(base, base + 20))
+        rows = _minmax_pairs_line(x, y, 20, (base, base + 20)).struct.unnest()
 
-        assert out.struct.field("x").to_list() == x.to_list()
+        assert rows["x_min"].to_list() == x.to_list()
 
     def test_integer_bounds_are_not_rounded(self):
         """A nanosecond-epoch bound one apart from `lo` still bounds one row."""
@@ -2139,24 +1857,30 @@ class TestMinmaxLineXDomain:
         x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(20))
 
-        assert _minmax_line(x, y, 4, x_domain=(base, base + 1)).struct.field(
-            "x"
-        ).to_list() == [base, base + 1]
-        assert _minmax_line(x, y, 4, x_domain=(base, base + 2)).struct.field(
-            "x"
-        ).to_list() == [base, base + 1, base + 2]
+        def xs(hi):
+            return sorted(
+                {
+                    px
+                    for px, _ in _pairs_point_set(
+                        _minmax_pairs_line(x, y, 2, (base, hi))
+                    )
+                }
+            )
+
+        assert xs(base + 1) == [base, base + 1]
+        assert xs(base + 2) == [base, base + 1, base + 2]
 
     def test_float_bound_on_integer_x_is_rejected(self):
         x = pl.Series("x", list(range(20)), dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(20))
 
         with pytest.raises(Exception, match="must be integer bounds"):
-            _minmax_line(x, y, 20, x_domain=(0.0, 20.0))
+            _minmax_pairs_line(x, y, 10, (0.0, 20.0))
 
     def test_integer_bounds_on_float_x_are_accepted(self):
         x = pl.Series("x", [i / 2 for i in range(20)], dtype=pl.Float64)
         y = pl.Series("y", _distinct_values(20))
 
-        out = _minmax_line(x, y, 20, x_domain=(0, 10))
+        rows = _minmax_pairs_line(x, y, 20, (0, 10)).struct.unnest()
 
-        assert out.struct.field("x").to_list() == x.to_list()
+        assert rows["x_min"].to_list() == x.to_list()

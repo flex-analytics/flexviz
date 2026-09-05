@@ -2215,25 +2215,23 @@ class TestResidentLineXWidth:
             infos,
         )
 
-    def test_row_index_x_matches_the_row_count_kernel(self):
+    def test_row_index_x_gives_equal_row_count_buckets(self):
         # The recipe for equal-row-count buckets: use a row index as x. A
-        # uniform integer x makes every x-width bucket hold exactly one
-        # row-count bucket's rows, so the public path reproduces the row-count
-        # kernel (the ``x_domain``-free call) exactly.
-        import flexviz_polars as _fvp
-
+        # uniform integer x makes every x-width bucket hold the same number of
+        # rows, so 100 buckets of 100 rows return both extrema of each.
         df = self._frame(10_000)  # ts = 0..n-1 is a row index; val is distinct
         deltas, _ = self._process(
             LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=200)
         )
-        row_count = pl.select(
-            _fvp._minmax_line(
-                pl.lit(df["ts"]), pl.lit(df["val"]), 200, x_name="ts", y_name="val"
+        expected = sorted(
+            v
+            for start in range(0, 10_000, 100)
+            for v in (
+                df["val"][start : start + 100].min(),
+                df["val"][start : start + 100].max(),
             )
-        ).to_series()
-        assert sorted(deltas[0].updates["y"]) == sorted(
-            row_count.struct.field("val").to_list()
         )
+        assert sorted(deltas[0].updates["y"]) == expected
 
     @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
     def test_unsorted_resident_x_raises(self, downsample):

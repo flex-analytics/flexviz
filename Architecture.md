@@ -17,7 +17,7 @@
 
 => SPEC is key to all of this
 
-- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `arg_min_max`, `minmax_line`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, and `fixed_hist2d_reduce` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and argmin/argmax kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
+- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, and `fixed_hist2d_reduce` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and argmin/argmax kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
 - **Grouped traces** — grouped parents stay logical-only, `LFQueryBuilder` batches shared grouped queries, and group→color mapping persists in client-owned spec state
 - **Multi-column labels and group_by** — `BarPlot.labels`, `PiePlot.labels`, and any trace's `group_by` accept either a string or a list of strings.  Multi-column values are stored as JSON-encoded composite strings (e.g. `'["Europe","Germany"]'`) for legend keys, color-domain mapping, and child-uid stability.  Aggregation uses multi-column `group_by(...)` in Polars; cross-filter emission decomposes the composite back into per-column clauses so the wire format remains a list of `ClauseFilter` objects, never a JSON-encoded string.
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
@@ -681,11 +681,6 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     No Polars len() expression dependency → N grouped sub-traces parallelize in one select().
 │     Returns at most n_points elements of the same dtype.
 │
-├── arg_min_max(n_points: int) → pl.Expr
-│     Min-max envelope. Splits into n_points//2 buckets; returns sorted, deduplicated
-│     UInt32 indices of argmin + argmax within each bucket. Pass to .gather() to
-│     build a downsampled series that preserves extrema and spikes.
-│
 ├── fixed_hist(lo_expr, hi_expr, n_bins: int) → pl.Expr
 │     O(n) fixed-bin 1D histogram. lo_expr / hi_expr evaluate to scalar (length-1)
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
@@ -710,27 +705,20 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
       bins are null. Used by Histogram2D and GeoHistogram2D when z is given.
       `median` / `n_unique` are not implemented (see Roadmap).
 
-flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain=None) → pl.Expr
+flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
       Bucket pass that keeps the pairing: one row per non-empty bucket, in bucket
       order, as Struct{x_min, y_min, x_max, y_max} (x fields carry x's dtype, y
-      fields y's). Buckets are equal in x width over x_domain when it is given,
-      equal in row count otherwise. Used by LinePlot with downsample="fpcs" as
-      stage 1 of the compensation walk.
-
-flexviz_polars._minmax_line(x_expr, y_expr, n_points, x_name=None, y_name=None) → pl.Expr
-      Combined min-max index-selection + gather kernel.
-      Runs the arg_min_max bucket pass on y, gathers both x and y at the selected
-      indices in one call. Returns Struct{x_name: x_dtype, y_name: y_dtype}. Used
-      by LinePlot with downsample="minmax" (the default). Exists because Polars
-      does not CSE opaque plugin expressions: the two-gather form ran the scan
-      twice per trace. tests/test_trace_line.py pins the one-call plan shape, and
-      TestMinmaxLineDifferential pins bit-identity against the two-gather form.
+      fields y's). Buckets are equal in x width over the required x_domain, which
+      needs x sorted ascending; rows outside it are dropped and a zero span
+      returns no rows. Bucket selection and all four gathers happen in one call,
+      because Polars does not CSE opaque plugin expressions. It is stage 1 of
+      every x-width LinePlot on a resident ungrouped frame, and
+      tests/test_trace_line.py pins the one-call plan shape.
 ```
 
 **Rust internals** (`src/expressions.rs`):
 - `every_nth` — computes `stride = max(1, len / n_points)`, builds capped gather indices, calls `Series::take()`.
-- `arg_min_max` / `minmax_line` — reuse internal helpers: `uniform_offsets` (equal row counts, used by `arg_min_max` and by any bucket call with no `x_domain`) or `x_width_offsets` (binary-searched windows for equal x-width buckets over the `x_domain` kwarg, used by ungrouped lines: it reads x through its physical representation and drops rows outside the domain), `simd_argminmax` (SIMD fast path for contiguous numeric types), and `fallback_window_argminmax` (general Series API for non-SIMD/other dtypes). Flatten min+max indices, sort, deduplicate; `minmax_line` then `take`s x and y at those indices inside the same call. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is by row count rather than by window count, because x-width windows are wildly uneven. On equal-row-count windows the two agree. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, worth ~1.3-1.6x at one trace on a bandwidth-saturated host and bounded at ~-9% for 3-5 concurrent traces, fading by 20.
-- `minmax_pairs_line` — the same `uniform_offsets` / `x_width_offsets` bucket pass, but it keeps the `(argmin, argmax)` pairing instead of flattening it: one struct row per non-empty bucket, in bucket order. The compensation walk that reads it lives in Python (`_fpcs_walk` in `line.py`).
+- `minmax_pairs_line` — `x_width_offsets` gives the binary-searched windows of the equal-x-width buckets over the `x_domain` kwarg: it reads x through its physical representation and drops rows outside the domain. `pairs_for_offsets` then scans each window through `simd_argminmax` (SIMD fast path for contiguous numeric types) or `fallback_window_argminmax` (general Series API for nulls and other dtypes), and the kernel `take`s x and y at both indices inside the same call, one struct row per non-empty bucket, in bucket order. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is by row count rather than by window count, because x-width windows are wildly uneven. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, worth ~1.3-1.6x at one trace on a bandwidth-saturated host and bounded at ~-9% for 3-5 concurrent traces, fading by 20.
 - `fixed_hist` — dispatches on native dtype via `FixedHistValue` trait (avoids full-column cast); maps each value to a bin with `((v - lo) * scale).floor()` (+ round eps), clamps boundaries. **Rayon-parallel**: null-free contiguous runs are split into work units folded into private per-group count tables and merged by add. Falls back to the scalar single-table loop for chunks with nulls, undispatched dtypes, input below `MIN_PAR` (2^17 rows), or when two private tables exceed the byte budget — counts are identical either way (asserted against an independent Python reference in `test_plugin_functions.py`).
 - `fixed_hist2d` — O(n) 2D binning, same parallel/fallback structure as `fixed_hist` (x/y chunks aligned via `align_chunks_binary`); counts (UInt32) stored row-major. `fixed_hist2d_reduce` (Float64 reductions) remains single-threaded.
 - **Private-table budget**: both parallel kernels bound live scratch by `MAX_PRIVATE_BYTES` (32 MiB). Work units are folded in at most `n_chunks` groups — one table per group — so fragmented (many-chunk) input cannot multiply tables past the budget; when even two tables do not fit (≳4M bins), the kernel stays scalar.
@@ -1508,13 +1496,13 @@ flexviz/
 ├── flexviz_polars/          ← Rust/Polars plugin (build with make build-plugin)
 │   ├── src/
 │   │   ├── lib.rs           ← PyO3 module entry, global Polars allocator
-│   │   └── expressions.rs   ← every_nth, arg_min_max kernels + shared helpers
+│   │   └── expressions.rs   ← every_nth, minmax_pairs_line kernels + shared helpers
 │   ├── flexviz_polars/
 │   │   ├── __init__.py      ← FlexvizExprNamespace (@pl.api.register_expr_namespace)
 │   │   ├── _internal.pyi    ← type stub for compiled extension (__version__)
 │   │   └── typing.py        ← IntoExprColumn type alias
 │   ├── tests/
-│   │   └── test_plugin_functions.py ← unit tests for every_nth and arg_min_max
+│   │   └── test_plugin_functions.py ← unit tests for every_nth and minmax_pairs_line
 │   ├── Cargo.toml
 │   └── pyproject.toml
 └── tests/

@@ -25,16 +25,6 @@ def _every_nth(expr: IntoExprColumn, n_points: int) -> pl.Expr:
     )
 
 
-def _arg_min_max(expr: IntoExprColumn, n_points: int) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="arg_min_max",
-        kwargs={"n_points": n_points},
-        is_elementwise=False,
-    )
-
-
 def _kernel_bound(value) -> int | float:
     """Normalize one ``x_domain`` bound to the Python type the kernel reads.
 
@@ -45,43 +35,17 @@ def _kernel_bound(value) -> int | float:
     return int(value) if isinstance(value, numbers.Integral) else float(value)
 
 
-def _minmax_line(
-    x_expr: "IntoExprColumn",
-    y_expr: "IntoExprColumn",
-    n_points: int,
-    x_name: str | None = None,
-    y_name: str | None = None,
-    x_domain: tuple[int | float, int | float] | None = None,
-) -> pl.Expr:
-    return register_plugin_function(
-        args=[x_expr, y_expr],
-        plugin_path=LIB,
-        function_name="minmax_line",
-        kwargs={
-            "n_points": n_points,
-            "x_name": x_name,
-            "y_name": y_name,
-            # Buckets of equal x width over this ``(lo, hi)`` domain instead of
-            # equal row count. Needs x sorted ascending.
-            "x_domain": (
-                None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
-            ),
-        },
-        is_elementwise=False,
-    )
-
-
 def _minmax_pairs_line(
     x_expr: "IntoExprColumn",
     y_expr: "IntoExprColumn",
     n_buckets: int,
-    x_domain: tuple[int | float, int | float] | None = None,
+    x_domain: tuple[int | float, int | float],
 ) -> pl.Expr:
     """One ``(x_min, y_min, x_max, y_max)`` row per non-empty bucket.
 
-    Same buckets as ``_minmax_line``: equal x width over ``x_domain`` when it is
-    given, equal row count otherwise. The pairing is kept, so the caller can run
-    a compensation walk over it.
+    The buckets are equal in x width over ``x_domain``, which needs x sorted
+    ascending; rows outside it are dropped. A zero span returns no rows. The
+    pairing is kept, so the caller can flatten the pairs or walk them.
     """
     return register_plugin_function(
         args=[x_expr, y_expr],
@@ -89,9 +53,7 @@ def _minmax_pairs_line(
         function_name="minmax_pairs_line",
         kwargs={
             "n_buckets": n_buckets,
-            "x_domain": (
-                None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
-            ),
+            "x_domain": tuple(_kernel_bound(v) for v in x_domain),
         },
         is_elementwise=False,
     )
@@ -185,7 +147,7 @@ class FlexvizExprNamespace:
     """Polars expression namespace for flexviz downsampling kernels.
 
     Activated by ``import flexviz_polars``. After that, any Polars expression
-    supports ``.flexviz.every_nth(n)``, ``.flexviz.arg_min_max(n)``, and
+    supports ``.flexviz.every_nth(n)`` and
     ``.flexviz.fixed_hist(lo, hi, n_bins)``.
     """
 
@@ -204,26 +166,6 @@ class FlexvizExprNamespace:
             the full series is returned unchanged.
         """
         return _every_nth(self._expr, n_points)
-
-    def arg_min_max(self, n_points: int) -> pl.Expr:
-        """Return sorted, deduplicated argmin+argmax indices for uniform buckets.
-
-        Splits the series into ``n_points // 2`` equal-width buckets and
-        returns the position of the minimum and maximum value within each
-        bucket, yielding at most ``n_points`` indices total.  Duplicate
-        indices (buckets with a single element) are removed.
-
-        The resulting UInt32 index series can be passed directly to
-        ``.gather()`` on another expression to produce a min-max envelope
-        downsampling that preserves extrema and spikes.
-
-        Parameters
-        ----------
-        n_points:
-            Target number of output points (at most; may be less when
-            buckets contain only one element).
-        """
-        return _arg_min_max(self._expr, n_points)
 
     def fixed_hist(self, lo_expr: pl.Expr, hi_expr: pl.Expr, n_bins: int) -> pl.Expr:
         """Compute a fixed-bin 1D histogram using O(n) direct floor-division indexing.
