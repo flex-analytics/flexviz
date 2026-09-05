@@ -14,7 +14,8 @@ import random
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.line import LinePlot, _grouped_bucket_keys, _pairs_plan
+from flexviz.trace.line import LinePlot
+from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -1241,7 +1242,7 @@ class TestPlanDropsNaNAndNullX:
                 "gs": pl.String,
             },
         )
-        run = _pairs_plan(
+        run = pairs_plan(
             "ts",
             "val",
             2,
