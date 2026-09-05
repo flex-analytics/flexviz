@@ -167,9 +167,8 @@ def _bucket_grid(
     x_range: tuple | None,
     x_domain: tuple | None,
     dtype: pl.DataType | None,
-    n_buckets: int,
-) -> tuple[Any, Any, Any] | None:
-    """``(lo, bucket_width, hi)`` of the equal-x-width grid, in physical units.
+) -> tuple[Any, Any] | None:
+    """``(lo, hi)`` bounds of the equal-x-width grid, in physical units.
 
     Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
     the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
@@ -177,13 +176,6 @@ def _bucket_grid(
     x column, or a temporal viewport bound that failed to parse. An infinite
     bound raises: the edges are found by binary search, and an infinite span has
     no finite bucket width.
-
-    Float columns need true division: integer ceiling division rounds a sub-1
-    width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
-    Integer and temporal columns divide with a ceiling to keep the width whole.
-    The branch is on the column dtype, because the Python type of the span is no
-    dtype signal: a JSON viewport bound of ``100`` arrives as an int on a float
-    column.
     """
     if x_range is not None:
         lo, hi = x_range[0], x_range[1]
@@ -209,12 +201,9 @@ def _bucket_grid(
             f"line needs a finite x. Filter the frame with is_finite() first."
         )
 
-    span = hi - lo
-    if span <= 0:  # a constant x column still gets one bucket, of width 1
-        return (lo, 1, lo + 1)
-    if dtype is not None and dtype.is_float():
-        return (lo, span / n_buckets, hi)
-    return (lo, -(-span // n_buckets), hi)
+    if hi - lo <= 0:  # a constant x column still gets one bucket
+        return (lo, lo + 1)
+    return (lo, hi)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +239,7 @@ def _grouped_bucket_keys(
     # Physicals are >= 0, so -1 is a free slot for a null group value.
     key = phys.to_physical().cast(pl.Int64).fill_null(-1)
     return (
-        (key * n_buckets + bucket.cast(pl.Int64, strict=False)).alias("__b"),
+        (key * n_buckets + bucket).alias("__b"),
         ["__b"],
         [pl.col(group_cols[0]).first()],
     )
@@ -302,10 +291,22 @@ def _bucket_extrema(
         if dtype is not None and dtype.is_temporal()
         else pl.col(x_col)
     )
-    grid = _bucket_grid(x_col, x_range, x_domain, dtype, n_buckets)
+    grid = _bucket_grid(x_col, x_range, x_domain, dtype)
     if grid is None:
         return None
-    x_lo, bsz, _ = grid
+    x_lo, x_hi = grid
+    # Float columns need true division: integer ceiling division rounds a sub-1
+    # width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
+    # Integer and temporal columns divide with a ceiling to keep the width
+    # whole. The branch is on the column dtype, because the Python type of the
+    # span is no dtype signal: a JSON viewport bound of ``100`` arrives as an
+    # int on a float column.
+    span = x_hi - x_lo
+    bsz = (
+        span / n_buckets
+        if dtype is not None and dtype.is_float()
+        else -(-span // n_buckets)
+    )
 
     # A fractional width multiplies by the reciprocal instead of dividing:
     # Polars lowers a float `//` to that same multiply, and spelling it out is
@@ -1038,13 +1039,13 @@ class LinePlot(FlexTrace):
                 )
 
             x_dtype = schema.get(self.x_col) if schema else None
-            grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype, n_buckets)
+            grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype)
             # The kernel rebuilds the same width from ``(lo, hi)`` and reads a
             # bucket with the same floor division, so grid and kernel never
             # disagree. It drops rows outside ``[lo, hi]``, so the viewport
             # slice agrees with the grid. A ``None`` grid (empty or all-null x)
             # becomes a zero-span sentinel: the kernel returns no points.
-            kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
+            kernel_domain = grid if grid is not None else (0.0, 0.0)
             return AggregationSpec(
                 expr=_plugin_pairs_agg_expr(
                     self.x_col,
