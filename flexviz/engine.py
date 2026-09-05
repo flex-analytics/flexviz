@@ -860,10 +860,7 @@ class FlexEngine:
             return {}, {}
         domain_cols = {
             item.info.uid: histogram_domains.get(item.info.uid)
-            or item.trace.domain_cols(
-                item.update_range,
-                scan_source=self._backend_lf.is_scan,
-            )
+            or item.trace.domain_cols(item.update_range)
             for item in aggregation_traces
         }
         needed = sorted({col for cols in domain_cols.values() for col in cols})

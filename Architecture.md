@@ -357,7 +357,7 @@ FlexTrace (ABC)
 ├── group_by: str | list[str] | None     ← raw value from _params["group_by"]
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
-├── domain_cols(update_range, *, scan_source=False) → tuple[str, ...]
+├── domain_cols(update_range) → tuple[str, ...]
 │     ← columns whose unfiltered (min, max) the spec needs; () when the
 │       viewport supplies bounds
 ├── get_aggregation_spec(update_range, schema)

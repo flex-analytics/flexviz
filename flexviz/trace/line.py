@@ -885,12 +885,7 @@ class LinePlot(FlexTrace):
                 f"first, or use downsample='minmax'."
             )
 
-    def domain_cols(
-        self,
-        update_range: Dict[str, Any],
-        *,
-        scan_source: bool = False,
-    ) -> tuple[str, ...]:
+    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
         # Every x-width line bins in x, on both source kinds, grouped or not.
         # A zoomed one takes its grid from the viewport, and ``nth`` needs no
         # grid at all.

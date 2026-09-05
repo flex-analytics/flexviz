@@ -303,12 +303,7 @@ class Histogram2D(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
-    def domain_cols(
-        self,
-        update_range: Dict[str, Any],
-        *,
-        scan_source: bool = False,
-    ) -> tuple[str, ...]:
+    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
         # Both axes or neither: the kernel bins over one rectangle, and the
         # engine never supplies a partial viewport here.
         if update_range.get("x") is not None and update_range.get("y") is not None:

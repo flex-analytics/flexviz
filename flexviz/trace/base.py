@@ -215,20 +215,12 @@ class FlexTrace(ABC):
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
 
-    def domain_cols(
-        self,
-        update_range: dict[str, Any],
-        *,
-        scan_source: bool = False,
-    ) -> tuple[str, ...]:
+    def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose **unfiltered** ``(min, max)`` this trace's spec needs.
 
         Empty when the viewport already supplies the bounds, or when the trace
         needs none. The engine unions these over the request and resolves them
         in one min/max collect, so bin edges stay put under cross-filtering.
-
-        ``scan_source`` says the rows come from storage rather than a resident
-        frame; only a trace that swaps formulation on residency reads it.
         """
         return ()
 

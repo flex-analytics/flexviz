@@ -21,7 +21,7 @@ from flexviz.trace.line import LinePlot, _grouped_bucket_keys, _pairs_plan
 
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
-    cols = trace.domain_cols(update_range, scan_source=lf.is_scan)
+    cols = trace.domain_cols(update_range)
     return lf.physical_minmax(list(cols), memoize=False) if cols else {}
 
 
@@ -783,13 +783,12 @@ class TestLineXWidthBuckets:
             "fpcs_zoomed",
         ],
     )
-    @pytest.mark.parametrize("scan_source", [False, True], ids=["resident", "scan"])
-    def test_domain_cols(self, kwargs, update_range, expected, scan_source):
+    def test_domain_cols(self, kwargs, update_range, expected):
         # The x domain is requested on both source kinds: every x-width
         # formulation buckets by x width. Grouping adds no column: the group
         # key needs no bounds.
         trace = LinePlot(x="ts", y="val", **kwargs)
-        assert trace.domain_cols(update_range, scan_source=scan_source) == expected
+        assert trace.domain_cols(update_range) == expected
 
     @staticmethod
     def _resident_and_scan(df, tmp_path, n_points, x_range=None):
