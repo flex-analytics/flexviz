@@ -486,7 +486,7 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 - Supports `x` or `y`, not both simultaneously.
 - Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan repeats the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
 - `_FIXED_HIST_ROUND_EPS` mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
-- A **grouped** histogram runs the kernel inside `group_by().agg()` on every source kind. There is no grouped streaming plan.
+- A **grouped** histogram runs the streaming plan on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. The kernel would hold every group's column in memory at once. So the kernel serves only the ungrouped resident case.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the engine-resolved
@@ -503,8 +503,9 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
   `fixed_hist`. Numeric and differing temporal physical units remain separate.
-- Grouped histogram traces use a fused grouped query with the visible-range filter
-  applied before `group_by`.
+- Grouped histogram traces run their own plan with the visible-range filter
+  applied before `group_by`. A plan spec never fuses with other grouped specs,
+  so it carries no `batch_key` / `pre_group_filter_key`.
 - `_to_update` normalizes counts per `histnorm`; returns `{"x": centers, "y": counts}` (vertical) or `{"x": counts, "y": centers, "orientation": "h"}` (horizontal).
 
 ### BoxPlot
@@ -689,10 +690,10 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
 │     instead of binary search. Returns Struct{breakpoint: Float64, count: UInt32}
 │     of length n_bins — identical output shape to polars.hist(include_breakpoint=True).
-│     Used by the Histogram trace for every grouped aggregation and for an
-│     ungrouped one on a resident frame, to guarantee O(n) bin assignment with
-│     stable, pre-specified edges. An ungrouped histogram on a scan source takes
-│     the equivalent streaming plan instead.
+│     Used by the Histogram trace for an ungrouped aggregation on a resident
+│     frame, to guarantee O(n) bin assignment with stable, pre-specified edges.
+│     An ungrouped histogram on a scan source, and a grouped one on either source
+│     kind, take the equivalent streaming plan instead.
 │
 ├── fixed_hist2d(y_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y) → pl.Expr
 │     O(n) fixed-bin 2D count histogram. Uses typed dispatch (avoids f64 cast for
@@ -731,7 +732,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Integration with LinePlot**: `line.py` imports `flexviz_polars` at module level, and the grid and the bucket plan live next to it in `line_buckets.py`. `LinePlot.get_aggregation_spec()` dispatches on `self.downsample` and on the source kind. Every x-width strategy takes the same stage 1: `_plugin_pairs_agg_expr` (the kernel) for an ungrouped resident frame, `pairs_plan` for a scan and for a grouped line, both with `_bucket_budget(n_points, downsample)` buckets. `nth` takes `_plugin_nth_agg_expr`, ungrouped and inside `group_by().agg()`. `lttb` and `fpcs` then finish in `_to_update` (`_lttb`, `_fpcs_walk`).
 
-**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. Both the ungrouped and grouped paths in `Histogram.get_aggregation_spec()` call `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning.
+**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped resident path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning. Every other path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
 
 **Integration with Histogram2D / GeoHistogram2D**: `hist2d.py` and `geo_hist2d.py` both import `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. `GeoHistogram2D` maps lat→x and lon→y and passes filtered-data min/max (or viewport bounds) as the kernel `lo`/`hi`.
 

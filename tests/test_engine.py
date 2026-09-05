@@ -2136,6 +2136,63 @@ class TestHistogramResidencySeam:
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
+    @staticmethod
+    def _grouped_children(src, event: InteractionEvent):
+        lf = LFQueryBuilder(src)
+        hist = Histogram(x="val", bins=12, group_by="sensor")
+        engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
+        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        delta = engine.process(event, infos)[0]
+        # The parent uid is random per instance, so it is masked out of the
+        # child uid before comparison.
+        children = [
+            (
+                c.uid.replace(hist.uid, "<parent>"),
+                c.group_value_key,
+                c.updates["x"],
+                c.updates["y"],
+            )
+            for c in delta.group_results
+        ]
+        return children, lf.is_scan
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            InteractionEvent(type="init", force_update=True),
+            InteractionEvent(type="viewport", axis_ranges={"x": [2000.0, 7000.0]}),
+        ],
+        ids=["init", "viewport"],
+    )
+    def test_grouped_scan_matches_resident(self, tmp_path, event):
+        n = 20_000
+        df = pl.DataFrame(
+            {
+                "val": [float((i * 7919) % 9973) for i in range(n)],
+                "sensor": [f"s{i % 4}" for i in range(n)],
+            },
+            schema={"val": pl.Float64, "sensor": pl.String},
+        )
+        path = tmp_path / "hist_grouped.parquet"
+        df.write_parquet(path)
+
+        resident, resident_is_scan = self._grouped_children(df, event)
+        scanned, scan_is_scan = self._grouped_children(pl.scan_parquet(path), event)
+        assert resident_is_scan is False and scan_is_scan is True
+        assert len(resident) == 4
+        assert resident == scanned
+
+    def test_grouped_uses_the_plan_on_both_source_kinds(self):
+        """The kernel now serves only the ungrouped resident histogram."""
+        hist = Histogram(x="val", bins=12, group_by="sensor")
+        schema = pl.Schema({"val": pl.Float64, "sensor": pl.String})
+        for scan_source in (False, True):
+            spec = hist.get_aggregation_spec(
+                {}, schema=schema, domains={"val": (0.0, 1.0)}, scan_source=scan_source
+            )
+            assert spec.plan is not None
+            assert spec.agg_exprs == ()
+
 
 # ---- descending viewport ranges ---------------------------------------------
 

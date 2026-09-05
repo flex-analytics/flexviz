@@ -10,6 +10,7 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
+from flexviz.trace.base import _range_filter_expr
 from flexviz.trace.hist import Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
@@ -939,13 +940,150 @@ class TestHistogramScanPlanEquivalence:
         resident, scanned = self._both_updates(pl.DataFrame([series]))
         assert resident == scanned
 
-    def test_grouped_histogram_keeps_the_kernel(self):
-        trace = Histogram(x="v", bins=8, group_by="cat")
-        schema = pl.Schema({"v": pl.Float64, "cat": pl.String})
-        spec = trace.get_aggregation_spec(
-            {}, schema=schema, domains={"v": (0.0, 1.0)}, scan_source=True
+
+class TestHistogramGroupedPlanEquivalence:
+    """A grouped histogram runs the plan on both source kinds.
+
+    The reference is the fused grouped query the kernel used to run: the
+    ``fixed_hist`` expression inside ``group_by().agg()``. Children are
+    compared after ``_to_grouped_update``, which is what the engine sends.
+    """
+
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+
+    @staticmethod
+    def _children(result) -> list[dict]:
+        return [
+            {
+                "child_uid": c.child_uid,
+                "group_value_key": c.group_value_key,
+                "x": c.updates["x"].to_list(),
+                "y": c.updates["y"].to_list(),
+                "hover_bounds": c.updates["hover_bounds"],
+            }
+            for c in result.group_results
+        ]
+
+    def _both(
+        self,
+        df: pl.DataFrame,
+        group_by,
+        bins: int = 8,
+        x_range: tuple[float, float] | None = None,
+        histnorm: str = "count",
+    ) -> tuple[list[dict], list[dict]]:
+        lf = LFQueryBuilder(df)
+        trace = Histogram(x="v", bins=bins, histnorm=histnorm, group_by=group_by)
+        update_range = {"x": x_range} if x_range is not None else {}
+        domains = _domains(lf, trace, update_range)
+
+        specs = [
+            trace.get_aggregation_spec(
+                update_range, schema=lf.schema, domains=domains, scan_source=scan
+            )
+            for scan in (False, True)
+        ]
+        for spec in specs:
+            assert spec.plan is not None
+            assert spec.agg_exprs == ()
+        _, grouped = lf.aggregate([], [specs[0]])
+        got = self._children(trace._to_grouped_update(grouped[trace.uid]))
+
+        cols = list(trace.group_by_cols)
+        lo_expr, hi_expr = trace._histogram_bounds_exprs(x_range, domains, None)
+        ldf = df.lazy()
+        if x_range is not None:
+            ldf = ldf.filter(_range_filter_expr("v", list(x_range), schema=lf.schema))
+        ref_df = (
+            ldf.group_by(cols)
+            .agg(
+                pl.col("v")
+                .flexviz.fixed_hist(lo_expr, hi_expr, n_bins=bins)
+                .implode()
+                .alias(trace.uid)
+            )
+            .sort(cols)
+            .collect()
         )
-        assert spec.plan is None
+        return got, self._children(trace._to_grouped_update(ref_df))
+
+    @pytest.mark.parametrize(
+        "name,frame,group_by,x_range,histnorm",
+        [
+            (
+                "int_groups",
+                {"v": _VALUES, "g": [0, 1, 0, 1, 2, 2, 0, 1]},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "string_groups",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "two_group_cols",
+                {"v": _VALUES, "g": list("aabbaabb"), "h": [0, 1] * 4},
+                ["g", "h"],
+                None,
+                "count",
+            ),
+            (
+                "null_group",
+                {"v": _VALUES, "g": ["a", None, "b", None, "a", "b", None, "a"]},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "nan_and_null_values",
+                {
+                    "v": [0.0, float("nan"), 2.5, None, 4.0, float("nan"), 7.9, None],
+                    "g": list("aabbaabb"),
+                },
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "viewport",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                (2.0, 6.0),
+                "count",
+            ),
+            (
+                "density",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                None,
+                "probability density",
+            ),
+            (
+                "empty_viewport",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                (100.0, 200.0),
+                "count",
+            ),
+        ],
+    )
+    def test_plan_matches_kernel(self, name, frame, group_by, x_range, histnorm):
+        got, ref = self._both(
+            pl.DataFrame(frame), group_by, x_range=x_range, histnorm=histnorm
+        )
+        assert got == ref
+
+    def test_empty_viewport_yields_no_children(self):
+        got, ref = self._both(
+            pl.DataFrame({"v": self._VALUES, "g": list("abcabcab")}),
+            "g",
+            x_range=(100.0, 200.0),
+        )
+        assert got == [] and ref == []
 
 
 class TestHistogramStreamingPlanArithmetic:
