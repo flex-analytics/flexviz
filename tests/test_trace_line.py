@@ -344,6 +344,29 @@ class TestLinePlotPlugin:
         assert xs == [0, 4, 5, 11, 14, 19]
         assert ys == [10.0, 14.0, 25.0, 5.0, 32.0, 15.0]
 
+    def test_fpcs_keeps_both_extrema_at_one_x(self):
+        # Two rows share a timestamp and hold the min and the max of their
+        # bucket. Deduplicating on x alone dropped one of the two.
+        df = pl.DataFrame(
+            {
+                "ts": [0, 0, 1, 2, 3, 4, 5, 6],
+                "val": [-10.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        )
+        update = _aggregate_line(df, n_points=4, downsample="fpcs")
+        ys = update["y"].to_list()
+        assert 10.0 in ys and -10.0 in ys
+
+    def test_fpcs_emits_a_repeated_point_once(self):
+        # Two single-row buckets: the first defers the point it just emitted,
+        # and the second re-emits it.
+        from flexviz.trace.line import _fpcs_walk
+
+        assert _fpcs_walk([0, 1], [5.0, 1.0], [0, 1], [5.0, 1.0]) == (
+            [0, 1],
+            [5.0, 1.0],
+        )
+
     def test_fpcs_resident_matches_the_scan_plan(self, tmp_path):
         df = _gappy_frame()
         path = tmp_path / "fpcs.parquet"

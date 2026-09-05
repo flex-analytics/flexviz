@@ -218,10 +218,11 @@ def _fpcs_walk(x_min: list, y_min: list, x_max: list, y_max: list) -> tuple[list
     out_y: list = []
 
     def push(point):
-        # A deferred point is often the extremum the next bucket re-emits. On
-        # sorted x the same x is the same row, and comparing y as well would
-        # let a NaN through twice.
-        if not out_x or out_x[-1] != point[0]:
+        # A deferred point is often the extremum the next bucket re-emits, so a
+        # repeated point is dropped. Two rows can share an x and hold different
+        # y, so the whole pair decides. ``_to_update`` drops the null and NaN
+        # rows before the walk, so y compares cleanly here.
+        if not out_x or (out_x[-1], out_y[-1]) != point:
             out_x.append(point[0])
             out_y.append(point[1])
 
