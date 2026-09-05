@@ -699,23 +699,18 @@ class LinePlot(FlexTrace):
                 if x_range is not None
                 else None
             )
-            batch_key = (
-                self.x_col,
-                tuple(x_range) if x_range is not None else None,
-            )
             spec = dict(
                 uid=self.uid,
                 group_cols=group_by_cols,
                 sort_cols=group_by_cols,
                 pre_group_filters=(vp_expr,) if vp_expr is not None else (),
-                pre_group_filter_key=(
-                    ("x_range", tuple(x_range)) if x_range is not None else None
-                ),
-                batch_key=batch_key,
             )
             if self.buckets_by_x_width:
                 # One plan per grouped line, on both source kinds: the kernel
                 # would hold every column of every group in memory at once.
+                # A plan spec runs alone and never joins the fused select, so
+                # it carries no batch_key / pre_group_filter_key (LF.aggregate
+                # only reads those for expression specs).
                 return GroupedAggregationSpec(
                     **spec,
                     agg_exprs=(),
@@ -737,6 +732,13 @@ class LinePlot(FlexTrace):
                     _plugin_nth_agg_expr(
                         self.x_col, self.y_col, None, self.n_points, self.uid
                     ),
+                ),
+                pre_group_filter_key=(
+                    ("x_range", tuple(x_range)) if x_range is not None else None
+                ),
+                batch_key=(
+                    self.x_col,
+                    tuple(x_range) if x_range is not None else None,
                 ),
             )
 
