@@ -2252,8 +2252,9 @@ class TestResidentLineXWidth:
         deltas, _ = self._process(lf, LinePlot(x="ts", y="val", n_points=50))
         assert len(deltas) == 1
 
-    def test_grouped_line_is_not_checked(self):
-        # Sorted by group then x, so ts is not globally sorted.
+    def test_grouped_line_order_is_not_checked(self):
+        # Sorted by group then x, so ts is not globally sorted. The grouped
+        # plan reads x in no order, so only the dtype gate applies.
         df = pl.DataFrame(
             {
                 "ts": list(range(100)) * 2,
@@ -2395,7 +2396,7 @@ class TestResidentLineXWidth:
                 LinePlot(x="ts", y="vall", n_points=50),
             )
 
-    def test_only_the_ungrouped_x_width_lines_are_gated(self):
+    def test_only_the_x_width_lines_are_gated(self):
         # Row-count buckets carry no x contract, so a String x passes.
         df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
         deltas, _ = self._process(
@@ -2404,9 +2405,19 @@ class TestResidentLineXWidth:
         )
         assert len(deltas) == 1
         deltas, _ = self._process(
-            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50, group_by="ts")
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=50, group_by="ts", downsample="nth"),
         )
         assert len(deltas[0].group_results) == 3
+
+    def test_a_grouped_x_width_line_gates_its_x_dtype(self):
+        # The grid is arithmetic on x, grouped as well.
+        df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            self._process(
+                LFQueryBuilder(df),
+                LinePlot(x="ts", y="val", n_points=50, group_by="ts"),
+            )
 
     def test_two_lines_sharing_x_check_it_once(self, monkeypatch):
         # Uncached, so nothing is memoized: without the per-request set the

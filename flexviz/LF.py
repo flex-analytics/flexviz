@@ -204,9 +204,11 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
+    def check_line_x(
+        self, col: str | pl.Expr, *, memoize: bool, require_sorted: bool = True
+    ) -> None:
         """
-        Verify that a column can carry x for an ungrouped minmax line.
+        Verify that a column can carry x for a minmax line.
 
         The dtype gate always applies. The bucket grid is arithmetic on x that
         the Rust kernel runs in i64 or f64, so the dtype must be one the kernel
@@ -218,6 +220,10 @@ class LFQueryBuilder:
         null check, one pass over the order, and on a float dtype an O(1) read
         of the last element. NaN sorts last, so on a sorted null-free column
         every NaN is a suffix.
+
+        ``require_sorted=False`` keeps the dtype gate and drops the data pass.
+        A grouped line runs the same order-independent plan on both source
+        kinds, so its x is never read in order.
 
         ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
         skips the collect on later requests. The flags of a LazyFrame cannot be
@@ -232,6 +238,8 @@ class LFQueryBuilder:
             Column name or expression.
         memoize : bool
             Whether a passing column may be remembered as sorted.
+        require_sorted : bool
+            Whether the caller reads x in order.
 
         Raises
         ------
@@ -248,7 +256,7 @@ class LFQueryBuilder:
                 f"x column '{col_name}' must be a 64-bit-or-smaller numeric or a "
                 f"temporal for a minmax line, got {dtype}. Cast the column first."
             )
-        if self.is_scan:
+        if self.is_scan or not require_sorted:
             return
         if col_name in self._sorted_cols:
             return
