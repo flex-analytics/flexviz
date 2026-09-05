@@ -26,7 +26,10 @@ fig.add_line(
   buckets. The output holds exactly `n_points` points when the prefetch holds
   more, and fewer when x gaps leave buckets empty. The line looks smoother than
   a min-max envelope on noisy data. A grouped line thins each series on its
-  own. It is not a cross-filter cube target.
+  own, and that second pass runs in Python once per group, so many groups at a
+  large `n_points` cost proportionally: 200 groups at `n_points=2000` spent
+  about 60 percent of a 0.8 s request in that pass. It is not a cross-filter
+  cube target.
 - **`"fpcs"`**: Feature-Preserving Compensated Sampling. Runs the same min-max
   pass, then carries deferred extrema forward across buckets to reduce visual
   artifacts on oscillating signals. It buckets by x width, grouped or not.
@@ -50,8 +53,8 @@ An ungrouped `"minmax"`, `"lttb"` or `"fpcs"` line buckets by equal x width and
 binary-searches the bucket edges. Its x column must be a 64-bit-or-smaller numeric, or a temporal,
 and must not be infinite. Wider numerics (`Int128`, `Decimal`) have no edge type
 in the kernel and are rejected. On a resident frame x must also be sorted
-ascending and free of nulls and NaN. The engine verifies this on the first
-request and raises `ValueError` when the column breaks the contract.
+ascending and free of nulls and NaN. The engine verifies this before it
+aggregates and raises `ValueError` when the column breaks the contract.
 `Figure.add_line` itself checks nothing.
 
 A file source runs an order-independent plan that drops null and NaN x, so only
@@ -59,7 +62,8 @@ its dtype is gated.
 
 - The order, null, and NaN check costs one pass over x. A `cache=True` source
   pays it once per source and column. A `cache=False` source may have changed
-  since the last request, so it pays it on every unzoomed request.
+  since the last request, so it pays it on every request that reaches
+  aggregation, zoomed or not.
 - `add_line(..., assume_sorted_x=True)` skips the check. Only pass it when you
   can guarantee the column. A column that breaks the contract then produces
   wrong output.

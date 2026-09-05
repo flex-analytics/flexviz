@@ -125,10 +125,11 @@ class LFQueryBuilder:
 
     @property
     def collect_engine(self) -> str:
-        """The Polars engine every collect on this source uses.
+        """The Polars engine the builder's own collects use.
 
         Fixed per source kind rather than left to ``"auto"``: a file scan must
-        stream, a resident frame must not pay the streaming machinery.
+        stream, a resident frame must not pay the streaming machinery. The line
+        bucket plan is the exception: it streams on both source kinds.
         """
         return "streaming" if self.is_scan else "in-memory"
 

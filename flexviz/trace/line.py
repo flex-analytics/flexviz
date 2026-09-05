@@ -111,9 +111,7 @@ def _apply_viewport(expr: pl.Expr, vp: Viewport | None) -> pl.Expr:
 
     ``filter`` materialises the surviving rows; ``slice`` is zero-copy, so the
     downsample kernel reads the original buffer at an offset. The gap widens as
-    the user zooms in — at 100M rows, a 60% viewport is 3x faster and a 1%
-    viewport 35x, against a flat ~1 MB instead of ~75 MB (measured at 100M
-    rows on a 16-core desktop).
+    the user zooms in.
     """
     if vp is None:
         return expr
