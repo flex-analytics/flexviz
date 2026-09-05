@@ -330,16 +330,22 @@ def _bucket_extrema(
         return None
     x_lo, bsz, _ = grid
 
+    # A fractional width multiplies by the reciprocal instead of dividing:
+    # Polars lowers a float `//` to that same multiply, and spelling it out is
+    # what lets the kernel copy the arithmetic bit for bit. A whole width keeps
+    # integer division, which is exact past 2**53.
+    offset = phys_expr - pl.lit(x_lo)
+    raw = (
+        (offset * pl.lit(1.0 / bsz)).floor()
+        if isinstance(bsz, float)
+        else offset // pl.lit(bsz)
+    )
     # The Int64 cast is what drops a null or NaN x: neither has a bucket, and
-    # both become a null key that the filter removes. True division lands x_hi
-    # exactly on n_buckets; the clip folds that lone top row back into the last
-    # bucket instead of letting it open an n_buckets + 1-th one and overrun the
-    # budget.
+    # both become a null key that the filter removes. A row at x_hi lands on
+    # n_buckets; the clip folds it back into the last bucket instead of letting
+    # it open an n_buckets + 1-th one and overrun the budget.
     bucket = (
-        ((phys_expr - pl.lit(x_lo)) // pl.lit(bsz))
-        .cast(pl.Int64, strict=False)
-        .clip(upper_bound=n_buckets - 1)
-        .alias("__b")
+        raw.cast(pl.Int64, strict=False).clip(upper_bound=n_buckets - 1).alias("__b")
     )
     src = src.with_columns(bucket).filter(pl.col("__b").is_not_null())
 
@@ -606,7 +612,9 @@ def _plugin_pairs_agg_expr(
 
     ``x_domain`` is the ``(lo, hi)`` the buckets span. The kernel rebuilds the
     same equal-x-width grid ``_bucket_grid`` holds over it, which needs x sorted
-    ascending, and drops rows outside ``[lo, hi]``.
+    ascending, and drops rows outside ``[lo, hi]``. It reads the bucket of a
+    row with the arithmetic ``_bucket_extrema`` uses, so the two formulations
+    place a row at a bucket edge in the same bucket.
 
     Bucket selection and all four gathers happen in one kernel call: Polars does
     not CSE opaque plugin expressions, so a two-gather form would run the whole
@@ -972,9 +980,10 @@ class LinePlot(FlexTrace):
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan every
         ungrouped x-width strategy switches to ``_pairs_plan``, which builds the
-        same equal-x-width grid (``_bucket_grid``) as the kernel. So both source
-        kinds return the same ``y`` multiset and differ only in which member of
-        an exact ``y`` plateau they pick. ``fpcs`` can emit a different point set
+        same equal-x-width grid (``_bucket_grid``) as the kernel and reads a
+        bucket with the same floor division. So both source kinds return the
+        same ``y`` multiset and differ only in which member of an exact ``y``
+        plateau they pick. ``fpcs`` can emit a different point set
         on such a plateau, because the walk orders each pair by x.
 
         A grouped x-width line takes ``_pairs_plan`` on both source kinds, on the
@@ -1068,11 +1077,11 @@ class LinePlot(FlexTrace):
 
             x_dtype = schema.get(self.x_col) if schema else None
             grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype, n_buckets)
-            # The kernel rebuilds the same width from ``(lo, hi)``, so grid and
-            # kernel never disagree. It drops rows outside ``[lo, hi]``, so the
-            # viewport slice agrees with the grid. A ``None`` grid (empty or
-            # all-null x) becomes a zero-span sentinel: the kernel returns no
-            # points.
+            # The kernel rebuilds the same width from ``(lo, hi)`` and reads a
+            # bucket with the same floor division, so grid and kernel never
+            # disagree. It drops rows outside ``[lo, hi]``, so the viewport
+            # slice agrees with the grid. A ``None`` grid (empty or all-null x)
+            # becomes a zero-span sentinel: the kernel returns no points.
             kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
             return AggregationSpec(
                 expr=_plugin_pairs_agg_expr(

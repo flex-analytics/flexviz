@@ -1870,6 +1870,52 @@ class TestMinmaxPairsLineXDomain:
         assert xs(base + 1) == [base, base + 1]
         assert xs(base + 2) == [base, base + 1, base + 2]
 
+    def test_float_buckets_match_a_floor_division_oracle(self):
+        """The kernel must assign the bucket `_bucket_extrema` assigns.
+
+        Both read the bucket of a float x as `floor((x - lo) * (1 / width))`.
+        Comparing x against `lo + i * width` instead disagrees at an edge:
+        `7 * 0.1` rounds above `0.7`, which put that row in bucket 6 while the
+        plan put it in bucket 7.
+        """
+        lo, hi, n_buckets = 0.0, 1.0, 10
+        width = (hi - lo) / n_buckets
+        edges = [lo + i * width for i in range(n_buckets + 1)]
+        xs = sorted(
+            v
+            for v in {
+                w
+                for e in edges
+                for w in (e, math.nextafter(e, -1.0), math.nextafter(e, 2.0))
+            }
+            | {i / 10 for i in range(n_buckets + 1)}
+            if lo <= v <= hi
+        )
+        x = pl.Series("x", xs, dtype=pl.Float64)
+        y = pl.Series("y", _distinct_values(len(xs)))
+
+        oracle = (
+            pl.DataFrame({"x": x, "y": y})
+            .group_by(
+                ((pl.col("x") - lo) * (1.0 / width))
+                .floor()
+                .cast(pl.Int64)
+                .clip(upper_bound=n_buckets - 1)
+                .alias("b")
+            )
+            .agg(
+                pl.col(["x", "y"]).min_by("y").name.prefix("lo_"),
+                pl.col(["x", "y"]).max_by("y").name.prefix("hi_"),
+            )
+            .sort("b")
+        )
+        rows = _minmax_pairs_line(x, y, n_buckets, (lo, hi)).struct.unnest()
+
+        assert rows["x_min"].to_list() == oracle["lo_x"].to_list()
+        assert rows["y_min"].to_list() == oracle["lo_y"].to_list()
+        assert rows["x_max"].to_list() == oracle["hi_x"].to_list()
+        assert rows["y_max"].to_list() == oracle["hi_y"].to_list()
+
     def test_float_bound_on_integer_x_is_rejected(self):
         x = pl.Series("x", list(range(20)), dtype=pl.Int64)
         y = pl.Series("y", _distinct_values(20))

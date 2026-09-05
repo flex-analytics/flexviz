@@ -935,6 +935,25 @@ class TestLineXWidthBuckets:
         assert len(resident["x"]) == 20
         assert resident["x"].to_list() == scanned["x"].to_list()
 
+    def test_float_x_on_a_bucket_edge_matches_the_scan_plan(self, tmp_path):
+        # 10 buckets of width 0.1 over (0.0, 1.0), so many rows sit exactly on
+        # an edge. The kernel and the plan must place each of them in the same
+        # bucket: `7 * 0.1` rounds above 0.7, so an edge comparison put that row
+        # one bucket below the plan.
+        # y rises with x, so each bucket's extrema are its first and last row:
+        # one row moving bucket changes the output.
+        n = 1000
+        df = pl.DataFrame(
+            {
+                "ts": [i / n for i in range(n + 1)],
+                "val": [float(i) for i in range(n + 1)],
+            },
+            schema={"ts": pl.Float64, "val": pl.Float64},
+        )
+        resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
+        assert resident["x"].to_list() == scanned["x"].to_list()
+        assert resident["y"].to_list() == scanned["y"].to_list()
+
     @pytest.mark.parametrize("unit", ["ns", "us"])
     @pytest.mark.parametrize("zoomed", [False, True], ids=["unzoomed", "zoomed"])
     def test_fine_grained_datetime_matches_the_scan_plan(self, unit, zoomed, tmp_path):

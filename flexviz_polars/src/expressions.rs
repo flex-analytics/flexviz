@@ -305,9 +305,10 @@ fn pairs_for_offsets(s: &Series, offsets: &[(usize, usize)]) -> Vec<(u32, u32)> 
 ///
 /// Reads x through its physical representation, so a temporal column is an
 /// Int64 view with no copy or cast. An integer column searches integer edges in
-/// i128; only a float column goes through f64. Nulls in x are read as their
-/// physical value, not skipped, and a NaN breaks the edge search. Callers
-/// already require an x free of both.
+/// i128; only a float column goes through f64, where the search key is the
+/// bucket index instead of the x value. Nulls in x are read as their physical
+/// value, not skipped, and a NaN breaks the edge search. Callers already
+/// require an x free of both.
 fn x_width_offsets(
     x: &Series,
     lo: XBound,
@@ -349,18 +350,29 @@ fn x_width_offsets(
             $(
                 if let Ok(ca) = phys.$downcast() {
                     let (lo_f, hi_f) = (lo.as_f64(), hi.as_f64());
-                    let width = (hi_f - lo_f) / n_buckets as f64;
+                    // The search key is the bucket index, not the x value, so
+                    // that the kernel and `_bucket_extrema` run the same
+                    // arithmetic on the same doubles: `(x - lo) * inv_width`,
+                    // floored. Comparing x against `lo + i * width` instead
+                    // rounds the other way at an edge, which put a row one
+                    // bucket off the plan. `inv_width` is built in the two
+                    // steps the plan uses, so both reciprocals are bit-equal.
+                    let inv_width = 1.0 / ((hi_f - lo_f) / n_buckets as f64);
+                    // Rows outside `[lo, hi]` are dropped: below lo the key is
+                    // negative, and above hi it sits past the last edge.
+                    let past_hi = (n_buckets + 1) as f64;
                     return Ok(chunked_bucket_offsets(
                         ca,
                         n_buckets,
-                        |v| v.to_hist_f64(),
-                        |i| {
-                            if i == n_buckets {
-                                hi_f
+                        move |v| {
+                            let x = v.to_hist_f64();
+                            if x > hi_f {
+                                past_hi
                             } else {
-                                lo_f + i as f64 * width
+                                ((x - lo_f) * inv_width).floor()
                             }
                         },
+                        |i| i as f64,
                     ));
                 }
             )*
@@ -426,7 +438,8 @@ where
     }
     let len = offset;
 
-    // First index whose x passes `edge`: `x >= edge`, or `x > edge` when strict.
+    // First index whose key passes `edge`: `key >= edge`, or `key > edge` when
+    // strict.
     let search = |edge: K, strict: bool| {
         let fails = |v: K| !if strict { v > edge } else { v >= edge };
         let chunk_idx = chunk_last.partition_point(|&v| match v {
