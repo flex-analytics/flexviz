@@ -307,7 +307,6 @@ class Histogram2D(FlexTrace):
         self,
         update_range: Dict[str, Any],
         *,
-        schema: pl.Schema | None = None,
         scan_source: bool = False,
     ) -> tuple[str, ...]:
         # Both axes or neither: the kernel bins over one rectangle, and the

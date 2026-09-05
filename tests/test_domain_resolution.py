@@ -137,8 +137,8 @@ class TestResolveCount:
         # the aggregation select.
         assert len(collects.calls) == 3
 
-    def test_resident_grouped_line_resolves_x_and_group_bounds(self, collects):
-        """The packed group key needs its bounds, in the same collect as x."""
+    def test_resident_grouped_line_resolves_only_its_x_domain(self, collects):
+        """A grouped line bins in x. Its group key needs no bounds."""
         df = pl.DataFrame(
             {
                 "ts": list(range(200)),
@@ -153,7 +153,7 @@ class TestResolveCount:
 
         assert len(collects.minmax) == 1
         plan = collects.minmax[0][1]
-        assert "__min_ts__" in plan and "__min_g__" in plan
+        assert "__min_ts__" in plan and "__min_g__" not in plan
         # The min/max and the grouped plan. A third would be an order pass,
         # which a grouped line never needs.
         assert len(collects.calls) == 2

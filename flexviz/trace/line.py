@@ -209,7 +209,6 @@ def _bucket_grid(
 def _grouped_bucket_keys(
     group_cols: tuple[str, ...],
     schema: pl.Schema | None,
-    domains: Mapping[str, tuple[Any, Any]],
     n_buckets: int,
     bucket: pl.Expr,
 ) -> tuple[pl.Expr, list[str], list[pl.Expr]]:
@@ -219,62 +218,25 @@ def _grouped_bucket_keys(
     aggregations)``. Within one group the key is monotone in the bucket, so
     ``__b`` orders the buckets in either form.
 
-    The packed form turns every group column and the bucket into one Int64
-    key: one hash column instead of n + 1, measured 1.4x faster on a third of
-    the memory at 100M rows. The group values come back through ``first()``.
-
-    Each group column becomes an integer id. A string-like column takes its
-    categorical physical, which is below 2^32 but carries no resolved bound, so
-    it must lead and only one of them fits. Every other id is ``value - min +
-    1`` over the resolved bounds, with null in slot 0.
-
-    The multi-column form ``group_by(*group_cols, bucket)`` is the fallback,
-    for a dtype with no id, a second string-like column, a column whose bounds
-    were not resolved, or a width product that would overflow the key.
+    One string-like group column packs with the bucket into a single Int64
+    key, so the ``group_by`` hashes one column instead of two. It packs
+    because its categorical physical is a small id the frame already carries,
+    needing no resolved bounds. The group value comes back through
+    ``first()``. Every other shape groups by the columns themselves.
     """
-    multi = (bucket.alias("__b"), [*group_cols, "__b"], [])
-    lead: pl.Expr | None = None
-    factors: list[tuple[pl.Expr, int]] = []
-    for col in group_cols:
-        dtype = _dtype_for_col(schema, col)
-        if dtype is None:
-            return multi
-        if dtype in _STRING_LIKE:
-            if lead is not None:
-                return multi
-            phys = pl.col(col)
-            if dtype == pl.String:
-                phys = phys.cast(pl.Categorical)
-            # Physicals are >= 0, so -1 is a free slot for a null group value.
-            lead = phys.to_physical().cast(pl.Int64).fill_null(-1)
-            continue
-        if not (dtype.is_integer() or dtype.is_temporal() or dtype == pl.Boolean):
-            return multi
-        lo, hi = domains.get(col, (None, None))
-        if lo is None or hi is None:
-            return multi
-        value = pl.col(col)
-        if dtype.is_temporal():
-            value = value.to_physical()
-        lo, hi = int(lo), int(hi)
-        factors.append(((value.cast(pl.Int64) - lo + 1).fill_null(0), hi - lo + 2))
+    dtype = _dtype_for_col(schema, group_cols[0]) if len(group_cols) == 1 else None
+    if dtype not in _STRING_LIKE:
+        return (bucket.alias("__b"), [*group_cols, "__b"], [])
 
-    width = n_buckets
-    for _, w in factors:
-        width *= w
-    # The leading physical is unbounded below 2^32, so it needs the rest of the
-    # key to stay under 2^31. Without one the whole product is the bound.
-    if width > (2**31 if lead is not None else 2**62):
-        return multi
-
-    ids = factors if lead is None else [(lead, 0), *factors]
-    key = ids[0][0]
-    for id_expr, w in ids[1:]:
-        key = key * w + id_expr
+    phys = pl.col(group_cols[0])
+    if dtype == pl.String:
+        phys = phys.cast(pl.Categorical)
+    # Physicals are >= 0, so -1 is a free slot for a null group value.
+    key = phys.to_physical().cast(pl.Int64).fill_null(-1)
     return (
         (key * n_buckets + bucket.cast(pl.Int64, strict=False)).alias("__b"),
         ["__b"],
-        [pl.col(c).first() for c in group_cols],
+        [pl.col(group_cols[0]).first()],
     )
 
 
@@ -289,7 +251,6 @@ def _bucket_extrema(
     schema: pl.Schema | None,
     *,
     group_cols: tuple[str, ...] | None = None,
-    domains: Mapping[str, tuple[Any, Any]] | None = None,
 ) -> pl.DataFrame | None:
     """One row per non-empty equal-x-width bucket, in group-by order.
 
@@ -358,7 +319,7 @@ def _bucket_extrema(
         return src.group_by("__b").agg(*extrema).collect(engine="streaming")
 
     key, by, group_aggs = _grouped_bucket_keys(
-        group_cols, schema, domains or {}, n_buckets, pl.col("__b")
+        group_cols, schema, n_buckets, pl.col("__b")
     )
     return (
         src.with_columns(key)
@@ -393,7 +354,6 @@ def _pairs_plan(
     schema: pl.Schema | None,
     *,
     group_cols: tuple[str, ...] | None = None,
-    domains: Mapping[str, tuple[Any, Any]] | None = None,
 ):
     """Stage 1 of every x-width strategy: the bucket extrema kept as pairs.
 
@@ -424,7 +384,6 @@ def _pairs_plan(
             x_domain,
             schema,
             group_cols=group_cols,
-            domains=domains,
         )
         if group_cols is not None:
             if result is None:
@@ -930,34 +889,14 @@ class LinePlot(FlexTrace):
         self,
         update_range: Dict[str, Any],
         *,
-        schema: pl.Schema | None = None,
         scan_source: bool = False,
     ) -> tuple[str, ...]:
-        # Every x-width line bins in x, on both source kinds. A zoomed one
-        # takes its grid from the viewport, and ``nth`` needs no grid at all.
-        if not self.buckets_by_x_width:
+        # Every x-width line bins in x, on both source kinds, grouped or not.
+        # A zoomed one takes its grid from the viewport, and ``nth`` needs no
+        # grid at all.
+        if not self.buckets_by_x_width or update_range.get("x") is not None:
             return ()
-        cols = () if update_range.get("x") is not None else (self.x_col,)
-        group_cols = self.group_by_cols
-        if group_cols is None:
-            return cols
-        # The packed group key places each id over its own (min, max), so a
-        # grouped line needs those bounds on every request, zoomed too. A
-        # string-like id needs none, and any other dtype falls back to the
-        # multi-column key.
-        return tuple(
-            dict.fromkeys(
-                cols
-                + tuple(
-                    c
-                    for c in group_cols
-                    if (dtype := _dtype_for_col(schema, c)) is not None
-                    and (
-                        dtype.is_integer() or dtype.is_temporal() or dtype == pl.Boolean
-                    )
-                )
-            )
-        )
+        return (self.x_col,)
 
     def get_aggregation_spec(
         self,
@@ -991,9 +930,8 @@ class LinePlot(FlexTrace):
         the arbitrary one of the ungrouped scan plan. Grouped ``nth`` keeps its
         kernel inside the ``group_by``.
 
-        An unzoomed x-width trace requires ``x_col`` in ``domains``, and a
-        grouped one the bounds of its packed group columns. A ``(None, None)``
-        entry means an empty or all-null column.
+        An unzoomed x-width trace requires ``x_col`` in ``domains``. A
+        ``(None, None)`` entry means an empty or all-null column.
         """
         x_range = update_range.get("x")
 
@@ -1036,7 +974,6 @@ class LinePlot(FlexTrace):
                         None if x_range is not None else (domains or {})[self.x_col],
                         schema,
                         group_cols=group_by_cols,
-                        domains=domains or {},
                     ),
                 )
             return GroupedAggregationSpec(

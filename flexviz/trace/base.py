@@ -219,7 +219,6 @@ class FlexTrace(ABC):
         self,
         update_range: dict[str, Any],
         *,
-        schema: "pl.Schema | None" = None,
         scan_source: bool = False,
     ) -> tuple[str, ...]:
         """Columns whose **unfiltered** ``(min, max)`` this trace's spec needs.
@@ -230,7 +229,6 @@ class FlexTrace(ABC):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame; only a trace that swaps formulation on residency reads it.
-        ``schema`` is read by a trace whose columns depend on their dtype.
         """
         return ()
 

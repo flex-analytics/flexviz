@@ -238,7 +238,6 @@ class Histogram(FlexTrace):
         self,
         update_range: Dict[str, Any],
         *,
-        schema: pl.Schema | None = None,
         scan_source: bool = False,
     ) -> tuple[str, ...]:
         if update_range.get(self.prop_key) is not None:

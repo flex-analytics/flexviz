@@ -862,7 +862,6 @@ class FlexEngine:
             item.info.uid: histogram_domains.get(item.info.uid)
             or item.trace.domain_cols(
                 item.update_range,
-                schema=schema,
                 scan_source=self._backend_lf.is_scan,
             )
             for item in aggregation_traces

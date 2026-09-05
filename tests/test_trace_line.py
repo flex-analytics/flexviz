@@ -21,7 +21,7 @@ from flexviz.trace.line import LinePlot, _grouped_bucket_keys, _pairs_plan
 
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
-    cols = trace.domain_cols(update_range, schema=lf.schema, scan_source=lf.is_scan)
+    cols = trace.domain_cols(update_range, scan_source=lf.is_scan)
     return lf.physical_minmax(list(cols), memoize=False) if cols else {}
 
 
@@ -763,9 +763,7 @@ class TestLineXWidthBuckets:
             ({}, {"x": (0, 10)}, ()),
             ({"group_by": "sensor"}, {}, ("ts",)),
             ({"group_by": "sensor"}, {"x": (0, 10)}, ()),
-            ({"group_by": "gi"}, {}, ("ts", "gi")),
-            ({"group_by": "gi"}, {"x": (0, 10)}, ("gi",)),
-            ({"group_by": ["sensor", "gi"], "downsample": "fpcs"}, {}, ("ts", "gi")),
+            ({"group_by": ["sensor", "gi"], "downsample": "fpcs"}, {}, ("ts",)),
             ({"group_by": "sensor", "downsample": "nth"}, {}, ()),
             ({"downsample": "nth"}, {}, ()),
             ({"downsample": "fpcs"}, {}, ("ts",)),
@@ -777,8 +775,6 @@ class TestLineXWidthBuckets:
             "zoomed",
             "grouped",
             "grouped_zoomed",
-            "grouped_int",
-            "grouped_int_zoomed",
             "grouped_two_cols",
             "grouped_nth",
             "nth",
@@ -790,16 +786,10 @@ class TestLineXWidthBuckets:
     @pytest.mark.parametrize("scan_source", [False, True], ids=["resident", "scan"])
     def test_domain_cols(self, kwargs, update_range, expected, scan_source):
         # The x domain is requested on both source kinds: every x-width
-        # formulation buckets by x width. A grouped line adds the bounds its
-        # packed key needs, on every request.
-        schema = pl.Schema(
-            {"ts": pl.Int64, "val": pl.Float64, "sensor": pl.String, "gi": pl.Int32}
-        )
+        # formulation buckets by x width. Grouping adds no column: the group
+        # key needs no bounds.
         trace = LinePlot(x="ts", y="val", **kwargs)
-        assert (
-            trace.domain_cols(update_range, schema=schema, scan_source=scan_source)
-            == expected
-        )
+        assert trace.domain_cols(update_range, scan_source=scan_source) == expected
 
     @staticmethod
     def _resident_and_scan(df, tmp_path, n_points, x_range=None):
@@ -1215,50 +1205,42 @@ class TestGroupedXWidthBuckets:
         assert 0.05 < len(out["a"]["x"]) / len(out["b"]["x"]) < 0.2
 
     @pytest.mark.parametrize(
-        "group_cols,domains,expected",
+        "group_cols,expected",
         [
-            (("g",), {}, ["__b"]),
-            (("gi",), {"gi": (3, 8)}, ["__b"]),
-            (("g", "site"), {}, ["g", "site", "__b"]),
-            (("val",), {"val": (0.0, 1.0)}, ["val", "__b"]),
-            (("gi",), {"gi": (-(2**62), 2**62)}, ["gi", "__b"]),
-            (("gi",), {}, ["gi", "__b"]),
+            (("g",), ["__b"]),
+            (("gc",), ["__b"]),
+            (("gi",), ["gi", "__b"]),
+            (("val",), ["val", "__b"]),
+            (("g", "site"), ["g", "site", "__b"]),
+            (("g", "gi"), ["g", "gi", "__b"]),
         ],
-        ids=["str", "int", "two_str", "float", "overflow", "no_bounds"],
+        ids=["str", "cat", "int", "float", "two_str", "str_int"],
     )
-    def test_the_key_form(self, group_cols, domains, expected):
+    def test_the_key_form(self, group_cols, expected):
         keys = _grouped_bucket_keys(
-            group_cols, _grouped_frame().schema, domains, 50, pl.col("ts")
+            group_cols, _grouped_frame().schema, 50, pl.col("ts")
         )
         assert keys[1] == expected
-
-    def test_the_fallback_key_matches_the_packed_one(self):
-        # The same two series, once with ids the key packs and once with ids
-        # 2**62 apart, whose width product overflows it.
-        df = _grouped_frame()
-        wide = df.with_columns(
-            gi=pl.when(pl.col("g") == "a").then(-(2**62)).otherwise(2**62)
-        )
-        trace = LinePlot(x="ts", y="val", n_points=100, group_by="gi")
-        packed = _grouped_points(LFQueryBuilder(df), trace)
-        multi = _grouped_points(LFQueryBuilder(wide), trace)
-        assert [_points(u) for u in multi.values()] == [
-            _points(u) for u in packed.values()
-        ]
 
 
 class TestPlanDropsNaNAndNullX:
     """No bucket holds a null or a NaN x, so every plan form drops those rows."""
 
     @staticmethod
-    def _pairs(group_cols=None, domains=None):
+    def _pairs(group_cols=None):
         df = pl.DataFrame(
             {
                 "ts": [0.0, 1.0, 2.0, 3.0, float("nan"), None],
                 "val": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
                 "gi": [1] * 6,
+                "gs": ["a"] * 6,
             },
-            schema={"ts": pl.Float64, "val": pl.Float64, "gi": pl.Int64},
+            schema={
+                "ts": pl.Float64,
+                "val": pl.Float64,
+                "gi": pl.Int64,
+                "gs": pl.String,
+            },
         )
         run = _pairs_plan(
             "ts",
@@ -1270,7 +1252,6 @@ class TestPlanDropsNaNAndNullX:
             (0.0, 3.0),
             df.schema,
             group_cols=group_cols,
-            domains=domains or {},
         )
         return run(df.lazy())["u"].to_list()[0]
 
@@ -1282,8 +1263,8 @@ class TestPlanDropsNaNAndNullX:
             {"x_min": 2.0, "y_min": 3.0, "x_max": 3.0, "y_max": 4.0},
         ]
         assert self._pairs() == expected
-        assert self._pairs(("gi",), {"gi": (1, 1)}) == expected
-        assert self._pairs(("gi",), {}) == expected
+        assert self._pairs(("gs",)) == expected
+        assert self._pairs(("gi",)) == expected
 
 
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------
