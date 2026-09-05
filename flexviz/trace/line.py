@@ -158,10 +158,10 @@ def _lttb(x: list, y: list, n_out: int) -> tuple[list, list]:
 
     Stage 2 of MinMaxLTTB. ``_to_update`` drops null and NaN rows first.
 
-    ``x`` is shifted by ``x[0]`` before the area math: a nanosecond epoch loses
-    precision in float64, a difference of one viewport does not. No other
-    normalization is needed, because scaling x scales every area by the same
-    factor and leaves the argmax unchanged.
+    ``x`` and ``y`` are each shifted by their first value before the area math:
+    a nanosecond epoch loses precision in float64, a difference of one viewport
+    does not. No other normalization is needed, because scaling an axis scales
+    every area by the same factor and leaves the argmax unchanged.
     """
     n = len(x)
     if n <= n_out:
@@ -169,8 +169,9 @@ def _lttb(x: list, y: list, n_out: int) -> tuple[list, list]:
     if n_out < 3:  # no interior buckets to pick from
         return [x[0], x[-1]], [y[0], y[-1]]
 
-    x0 = x[0]
+    x0, y0 = x[0], y[0]
     xs = [float(v - x0) for v in x]
+    ys = [float(v - y0) for v in y]
     out_x, out_y = [x[0]], [y[0]]
 
     every = (n - 2) / (n_out - 2)
@@ -182,12 +183,12 @@ def _lttb(x: list, y: list, n_out: int) -> tuple[list, list]:
         hi = min(int((i + 2) * every) + 1, n)
         span = hi - lo
         avg_x = sum(xs[lo:hi]) / span
-        avg_y = sum(y[lo:hi]) / span
+        avg_y = sum(ys[lo:hi]) / span
 
-        ax, ay = xs[a], y[a]
+        ax, ay = xs[a], ys[a]
         best_area = -1.0
         for j in range(int(i * every) + 1, lo):
-            area = abs((ax - avg_x) * (y[j] - ay) - (ax - xs[j]) * (avg_y - ay))
+            area = abs((ax - avg_x) * (ys[j] - ay) - (ax - xs[j]) * (avg_y - ay))
             if area > best_area:
                 best_area, a = area, j
         out_x.append(x[a])

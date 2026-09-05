@@ -1301,6 +1301,17 @@ def _lttb_frame(n: int = 10_000) -> pl.DataFrame:
     )
 
 
+def _walk(n: int) -> list[int]:
+    """A random walk whose y range is close to the float64 ulp at a ns epoch."""
+    rng = random.Random(20260905)
+    value = 0
+    out = []
+    for _ in range(n):
+        value += rng.randint(-5, 5)
+        out.append(value)
+    return out
+
+
 class TestLineLTTB:
     def test_returns_exactly_n_points(self):
         out = _minmax_points(
@@ -1376,6 +1387,31 @@ class TestLineLTTB:
         assert out["x"].dtype == pl.Datetime("ns")
         assert len(out["x"]) == 100
         assert out["x"][0] >= t0
+
+    def test_a_large_y_offset_picks_the_same_points(self):
+        # The triangle areas average y, so a y past 2**53 loses precision in
+        # float64 and the argmax flips. A nanosecond epoch sits near 1.7e18.
+        from flexviz.trace.line import _lttb
+
+        n = 4_000
+        y = _walk(n)
+        x = list(range(n))
+        assert _lttb(x, y, 100)[0] == _lttb(x, [v + 2**60 for v in y], 100)[0]
+
+    def test_temporal_y_picks_the_same_points_as_its_physical(self):
+        # A Datetime("ns") y goes through its physical, which is that same
+        # large offset.
+        n = 4_000
+        ints = pl.DataFrame(
+            {"ts": list(range(n)), "val": pl.Series(_walk(n), dtype=pl.Int64)}
+        )
+        stamps = ints.with_columns(
+            val=(pl.col("val") + 1_700_000_000_000_000_000).cast(pl.Datetime("ns"))
+        )
+        trace = LinePlot(x="ts", y="val", n_points=100, downsample="lttb")
+        from_ints = _minmax_points(LFQueryBuilder(ints), trace)
+        from_stamps = _minmax_points(LFQueryBuilder(stamps), trace)
+        assert from_stamps["x"].to_list() == from_ints["x"].to_list()
 
     def test_temporal_y_round_trips_its_dtype(self):
         n = 5_000
