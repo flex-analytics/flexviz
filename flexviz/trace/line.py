@@ -760,7 +760,7 @@ def _plugin_minmax_agg_expr(
     equal in x width over it, rebuilding the same width ``_bucket_grid`` holds.
     That needs x sorted ascending, and the kernel drops rows outside
     ``[lo, hi]``. Ungrouped lines pass it. Without it the buckets are equal in
-    row count, which is what a grouped line uses.
+    row count.
 
     Index selection and both gathers happen in one kernel call: Polars does not
     CSE opaque plugin expressions, so the two-gather form
