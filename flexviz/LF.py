@@ -28,23 +28,6 @@ def polars_lf_from(data) -> pl.LazyFrame:
     raise ValueError(f"Unsupported data type: {type(data)}")
 
 
-# Dtypes the x-width kernel dispatches. It searches bucket edges as i64 or f64,
-# so a wider numeric (Int128, Decimal) has no edge type there and panics the
-# plugin. Temporal columns reduce to their i64 physical.
-_LINE_X_NUMERIC = (
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.Int64,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-    pl.UInt64,
-    pl.Float32,
-    pl.Float64,
-)
-
-
 def get_col_name(col: str | pl.Expr) -> str:
     if isinstance(col, str):
         return col
@@ -204,26 +187,18 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_line_x(
-        self, col: str | pl.Expr, *, memoize: bool, require_sorted: bool = True
-    ) -> None:
-        """
-        Verify that a column can carry x for a minmax line.
+    def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
+        """Verify the data of an x column against the resident-frame line contract.
 
-        The dtype gate always applies. The bucket grid is arithmetic on x that
-        the Rust kernel runs in i64 or f64, so the dtype must be one the kernel
-        dispatches (see ``_LINE_X_NUMERIC``) or temporal. That gate reads the
-        schema and never collects. On a scan source it is the whole contract:
-        the streaming envelope is order independent, drops null x and tolerates
-        NaN. A resident frame feeds the kernel, which needs x sorted
-        ascending and free of nulls and NaN. That costs one collect: an O(1)
-        null check, one pass over the order, and on a float dtype an O(1) read
-        of the last element. NaN sorts last, so on a sorted null-free column
-        every NaN is a suffix.
+        The x-width kernel needs x sorted ascending and free of nulls and NaN.
+        Verifying that costs one collect: an O(1) null check, one pass over the
+        order, and on a float dtype an O(1) read of the last element. NaN sorts
+        last, so on a sorted null-free column every NaN is a suffix.
 
-        ``require_sorted=False`` keeps the dtype gate and drops the data pass.
-        A grouped line runs the same order-independent plan on both source
-        kinds, so its x is never read in order.
+        The dtype half of the contract lives on the trace
+        (``LinePlot.check_schema``), and the engine calls this only where the
+        data matters: an ungrouped x-width line on a resident frame. A grouped
+        plan and a scan plan read x in no order.
 
         ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
         skips the collect on later requests. The flags of a LazyFrame cannot be
@@ -232,35 +207,15 @@ class LFQueryBuilder:
         source the data may have changed since the check, so nothing is kept and
         the next request checks again.
 
-        Parameters
-        ----------
-        col : str | pl.Expr
-            Column name or expression.
-        memoize : bool
-            Whether a passing column may be remembered as sorted.
-        require_sorted : bool
-            Whether the caller reads x in order.
-
         Raises
         ------
         ValueError
-            If the column is not in the schema or breaks the contract.
+            If the column breaks the contract.
         """
         col_name: str = get_col_name(col)
-        # Free, so the dtype gate runs before any collect.
-        if col_name not in self.schema:
-            raise ValueError(f"Column '{col_name}' not in schema")
-        dtype = self.schema[col_name]
-        if not (dtype in _LINE_X_NUMERIC or dtype.is_temporal()):
-            raise ValueError(
-                f"x column '{col_name}' must be a 64-bit-or-smaller numeric or a "
-                f"temporal for a minmax line, got {dtype}. Cast the column first."
-            )
-        if self.is_scan or not require_sorted:
-            return
         if col_name in self._sorted_cols:
             return
-        is_float = dtype.is_float()
+        is_float = self.schema[col_name].is_float()
         x = pl.col(col_name)
         stats = self._ldf.select(
             x.has_nulls().alias("__has_nulls"),

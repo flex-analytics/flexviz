@@ -409,7 +409,7 @@ class TestPhysicalMinMax:
 
 
 class TestCheckLineX:
-    """The x contract of an ungrouped minmax line."""
+    """The data check of an ungrouped x-width line on a resident frame."""
 
     @staticmethod
     def _lf(xs, dtype=pl.Float64) -> LFQueryBuilder:
@@ -419,37 +419,10 @@ class TestCheckLineX:
             )
         )
 
-    @staticmethod
-    def _scan(tmp_path, xs, dtype=pl.Float64) -> LFQueryBuilder:
-        pl.DataFrame(
-            {"ts": pl.Series("ts", xs, dtype=dtype), "val": [0.0] * len(xs)}
-        ).write_parquet(tmp_path / "x.parquet")
-        lf = LFQueryBuilder(pl.scan_parquet(tmp_path / "x.parquet"))
-        assert lf.is_scan
-        return lf
-
     def test_sorted_numeric_x_passes_and_is_flagged(self):
         lf = self._lf([1.0, 2.0, 3.0])
         lf.check_line_x("ts", memoize=True)
         assert lf.is_sorted("ts")
-
-    def test_missing_column_is_rejected(self):
-        with pytest.raises(ValueError, match="not in schema"):
-            self._lf([1.0, 2.0]).check_line_x("nope", memoize=True)
-
-    def test_string_x_is_rejected_before_any_collect(self, monkeypatch):
-        monkeypatch.setattr(
-            pl.LazyFrame, "collect", lambda *a, **k: pytest.fail("collected")
-        )
-        lf = self._lf(["a", "b"], dtype=pl.String)
-        with pytest.raises(ValueError, match="numeric or a temporal"):
-            lf.check_line_x("ts", memoize=True)
-
-    def test_int128_x_is_rejected(self):
-        # Wider than the kernel's i64 edge search: rejected before it panics.
-        lf = self._lf([1, 2, 3], dtype=pl.Int128)
-        with pytest.raises(ValueError, match="64-bit-or-smaller"):
-            lf.check_line_x("ts", memoize=True)
 
     def test_null_x_is_rejected(self):
         lf = self._lf([1.0, None, 3.0])
@@ -497,18 +470,3 @@ class TestCheckLineX:
         assert not lf.is_sorted("ts")
         assert lf._sorted_cols == set()
         lf.check_line_x("ts", memoize=False)  # collects again, still passes
-
-    @pytest.mark.parametrize(
-        "xs",
-        [[3.0, 1.0, 2.0], [1.0, None, 3.0], [1.0, float("nan"), 3.0]],
-        ids=["unsorted", "null", "nan"],
-    )
-    def test_scan_needs_only_the_dtype(self, tmp_path, xs):
-        # The streaming envelope is order independent, drops null x and
-        # tolerates NaN, so only the dtype is gated.
-        self._scan(tmp_path, xs).check_line_x("ts", memoize=False)
-
-    def test_scan_rejects_a_bad_dtype(self, tmp_path):
-        lf = self._scan(tmp_path, [1, 2, 3], dtype=pl.Int128)
-        with pytest.raises(ValueError, match="64-bit-or-smaller"):
-            lf.check_line_x("ts", memoize=False)

@@ -1482,6 +1482,55 @@ class TestBucketsByXWidth:
         ).buckets_by_x_width
 
 
+class TestCheckSchema:
+    """The dtype half of the line contract. Reads the schema, never collects."""
+
+    @staticmethod
+    def _schema(x_dtype, y_dtype=pl.Float64) -> pl.Schema:
+        return pl.Schema({"ts": x_dtype, "val": y_dtype})
+
+    @pytest.mark.parametrize("dtype", [pl.Int64, pl.Float32, pl.Datetime("us")])
+    def test_a_bucketable_x_passes(self, dtype):
+        LinePlot(x="ts", y="val").check_schema(self._schema(dtype))
+
+    @pytest.mark.parametrize("x,y", [("nope", "val"), ("ts", "nope")])
+    def test_a_missing_column_is_rejected(self, x, y):
+        with pytest.raises(ValueError, match="not in schema"):
+            LinePlot(x=x, y=y).check_schema(self._schema(pl.Int64))
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_string_x_is_rejected(self, downsample):
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            LinePlot(x="ts", y="val", downsample=downsample).check_schema(
+                self._schema(pl.String)
+            )
+
+    @pytest.mark.parametrize("dtype", [pl.Int128, pl.Decimal(10, 2)])
+    def test_a_wider_numeric_x_is_rejected(self, dtype):
+        # Wider than the kernel's i64 edge search.
+        with pytest.raises(ValueError, match="64-bit-or-smaller"):
+            LinePlot(x="ts", y="val").check_schema(self._schema(dtype))
+
+    def test_a_grouped_line_gates_its_x_too(self):
+        # The grid is arithmetic on x, grouped as well.
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            LinePlot(x="ts", y="val", group_by="ts").check_schema(
+                self._schema(pl.String)
+            )
+
+    def test_an_nth_line_takes_any_x(self):
+        # A stride carries no grid, so it needs no bucketable x.
+        LinePlot(x="ts", y="val", downsample="nth").check_schema(
+            self._schema(pl.String)
+        )
+
+    def test_lttb_rejects_a_non_numeric_y(self):
+        with pytest.raises(ValueError, match="numeric, temporal or Boolean"):
+            LinePlot(x="ts", y="val", downsample="lttb").check_schema(
+                self._schema(pl.Int64, y_dtype=pl.String)
+            )
+
+
 class TestLineDownsampleValidation:
     """An unknown strategy used to fall through to ``nth`` without a word."""
 

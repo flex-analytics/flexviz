@@ -80,6 +80,22 @@ _X_WIDTH_DOWNSAMPLES = ("minmax", "lttb", "fpcs")
 # pass. Not a public knob until someone needs to tune it.
 _LTTB_MINMAX_RATIO = 4
 
+# Dtypes the x-width kernel dispatches: it searches bucket edges as i64 or f64,
+# so a wider numeric (Int128, Decimal) has no edge type there and the plugin
+# returns an error. Temporal columns reduce to their i64 physical.
+_LINE_X_NUMERIC = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+    pl.Float32,
+    pl.Float64,
+)
+
 # The four fixed struct fields the pair kernel and the pair plan both emit.
 _PAIR_FIELDS = ("x_min", "y_min", "x_max", "y_max")
 
@@ -871,9 +887,24 @@ class LinePlot(FlexTrace):
         return self.downsample in _X_WIDTH_DOWNSAMPLES
 
     def check_schema(self, schema: pl.Schema) -> None:
-        """Raise when the schema cannot feed this line. Reads dtypes, never collects."""
-        if self.y_col not in schema:
-            raise ValueError(f"Column '{self.y_col}' not in schema")
+        """Raise when the schema cannot feed this line. Reads dtypes, never collects.
+
+        The dtype half of the line contract, checked for every line on every
+        request. The data half (order, nulls, NaN) is the builder's
+        ``check_line_x``, which the engine runs only where x is read in order.
+        """
+        for col in (self.x_col, self.y_col):
+            if col not in schema:
+                raise ValueError(f"Column '{col}' not in schema")
+        if self.buckets_by_x_width:
+            # The grid is arithmetic on x, grouped or not.
+            x_dtype = schema[self.x_col]
+            if not (x_dtype in _LINE_X_NUMERIC or x_dtype.is_temporal()):
+                raise ValueError(
+                    f"x column '{self.x_col}' must be a 64-bit-or-smaller numeric "
+                    f"or a temporal for an x-width line, got {x_dtype}. Cast the "
+                    f"column first."
+                )
         if self.downsample != "lttb":
             return
         # The triangle rule does arithmetic on y.
