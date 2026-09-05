@@ -14,14 +14,14 @@ import random
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.line import LinePlot
+from flexviz.trace.line import LinePlot, _grouped_bucket_keys
 
 # ---- helpers ---------------------------------------------------------------
 
 
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
-    cols = trace.domain_cols(update_range, scan_source=lf.is_scan)
+    cols = trace.domain_cols(update_range, schema=lf.schema, scan_source=lf.is_scan)
     return lf.physical_minmax(list(cols), memoize=False) if cols else {}
 
 
@@ -47,13 +47,16 @@ def _aggregate_grouped_line(
     x_range: tuple[float, float] | None = None,
     group_by: str | Sequence[str] | None = "sensor",
     downsample: str = "minmax",
+    n_points: int = 100,
 ) -> list:
     lf = LFQueryBuilder(df)
     trace = LinePlot(
-        x="ts", y="val", n_points=100, group_by=group_by, downsample=downsample
+        x="ts", y="val", n_points=n_points, group_by=group_by, downsample=downsample
     )
     update_range = {"x": x_range} if x_range is not None else {}
-    agg_spec = trace.get_aggregation_spec(update_range, schema=lf.schema)
+    agg_spec = trace.get_aggregation_spec(
+        update_range, schema=lf.schema, domains=_domains(lf, trace, update_range)
+    )
     _, grouped_dfs = lf.aggregate([], [agg_spec])
     return trace._to_grouped_update(grouped_dfs[trace.uid]).group_results or []
 
@@ -460,7 +463,7 @@ class TestLinePlotGrouped:
         results = _aggregate_grouped_line(df, group_by="sensor", downsample="fpcs")
         assert len(results) == 2
         assert {cr.group_value_key for cr in results} == {"A", "B"}
-        # Row-count buckets inside each group, and the walk keeps x ordered.
+        # The walk keeps x ordered inside each group.
         for cr in results:
             xs = cr.updates["x"].to_list()
             assert 0 < len(xs) <= 2 * 100
@@ -760,20 +763,45 @@ class TestLineXWidthBuckets:
         [
             ({}, {}, ("ts",)),
             ({}, {"x": (0, 10)}, ()),
-            ({"group_by": "sensor"}, {}, ()),
+            ({"group_by": "sensor"}, {}, ("ts",)),
+            ({"group_by": "sensor"}, {"x": (0, 10)}, ()),
+            ({"group_by": "gi"}, {}, ("ts", "gi")),
+            ({"group_by": "gi"}, {"x": (0, 10)}, ("gi",)),
+            ({"group_by": ["sensor", "gi"], "downsample": "fpcs"}, {}, ("ts", "gi")),
+            ({"group_by": "sensor", "downsample": "nth"}, {}, ()),
             ({"downsample": "nth"}, {}, ()),
             ({"downsample": "fpcs"}, {}, ("ts",)),
             ({"downsample": "lttb"}, {}, ("ts",)),
             ({"downsample": "fpcs"}, {"x": (0, 10)}, ()),
         ],
-        ids=["unzoomed", "zoomed", "grouped", "nth", "fpcs", "lttb", "fpcs_zoomed"],
+        ids=[
+            "unzoomed",
+            "zoomed",
+            "grouped",
+            "grouped_zoomed",
+            "grouped_int",
+            "grouped_int_zoomed",
+            "grouped_two_cols",
+            "grouped_nth",
+            "nth",
+            "fpcs",
+            "lttb",
+            "fpcs_zoomed",
+        ],
     )
     @pytest.mark.parametrize("scan_source", [False, True], ids=["resident", "scan"])
     def test_domain_cols(self, kwargs, update_range, expected, scan_source):
-        # The x domain is requested on both source kinds: both minmax
-        # formulations bucket by x width.
+        # The x domain is requested on both source kinds: every x-width
+        # formulation buckets by x width. A grouped line adds the bounds its
+        # packed key needs, on every request.
+        schema = pl.Schema(
+            {"ts": pl.Int64, "val": pl.Float64, "sensor": pl.String, "gi": pl.Int32}
+        )
         trace = LinePlot(x="ts", y="val", **kwargs)
-        assert trace.domain_cols(update_range, scan_source=scan_source) == expected
+        assert (
+            trace.domain_cols(update_range, schema=schema, scan_source=scan_source)
+            == expected
+        )
 
     @staticmethod
     def _resident_and_scan(df, tmp_path, n_points, x_range=None):
@@ -936,6 +964,253 @@ class TestLineXWidthBuckets:
         assert resident["x"].to_list() == scanned["x"].to_list()
 
 
+# ---- equal-x-width buckets (grouped) ----------------------------------------
+
+
+def _grouped_points(lf: LFQueryBuilder, trace: LinePlot, x_range=None) -> dict:
+    """Aggregate one grouped line the way the engine would, keyed by group."""
+    update_range = {"x": x_range} if x_range is not None else {}
+    spec = trace.get_aggregation_spec(
+        update_range,
+        schema=lf.schema,
+        scan_source=lf.is_scan,
+        domains=_domains(lf, trace, update_range),
+    )
+    _, grouped = lf.aggregate([], [spec])
+    results = trace._to_grouped_update(grouped[trace.uid]).group_results or []
+    return {cr.group_value_key: cr.updates for cr in results}
+
+
+def _grouped_frame(n: int = 400) -> pl.DataFrame:
+    """Two series over the same sorted x, every y distinct: no plateau ties."""
+    return pl.DataFrame(
+        {
+            "ts": list(range(n)) * 2,
+            "val": [float(i) for i in range(2 * n)],
+            "g": ["a"] * n + ["b"] * n,
+            "gi": [3] * n + [8] * n,
+            "gc": pl.Series(["a"] * n + ["b"] * n, dtype=pl.Categorical),
+            "site": ["north"] * n + ["south"] * n,
+        }
+    )
+
+
+def _points(updates) -> tuple[list, list]:
+    return updates["x"].to_list(), updates["y"].to_list()
+
+
+class TestGroupedXWidthBuckets:
+    """A grouped line bins on the same global grid as an ungrouped one."""
+
+    @pytest.mark.parametrize("downsample", ["minmax", "fpcs"])
+    def test_one_child_per_group(self, downsample):
+        out = _grouped_points(
+            LFQueryBuilder(_grouped_frame()),
+            LinePlot(
+                x="ts", y="val", n_points=100, group_by="g", downsample=downsample
+            ),
+        )
+        assert set(out) == {"a", "b"}
+        assert all(len(u["x"]) > 0 for u in out.values())
+
+    def test_one_group_matches_the_ungrouped_line(self):
+        # Same grid, same points: the group column only splits the rows.
+        df = _gappy_frame().with_columns(g=pl.lit("a"))
+        lf = LFQueryBuilder(df)
+        ungrouped = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=200))
+        grouped = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=200, group_by="g")
+        )
+        assert _points(grouped["a"]) == _points(ungrouped)
+
+    @pytest.mark.parametrize(
+        "group_by", ["g", "gi", "gc", ["g", "gi"]], ids=["str", "int", "cat", "two"]
+    )
+    def test_every_key_form_gives_the_same_envelopes(self, group_by):
+        lf = LFQueryBuilder(_grouped_frame())
+        out = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by=group_by)
+        )
+        reference = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        assert [_points(u) for u in out.values()] == [
+            _points(u) for u in reference.values()
+        ]
+
+    @pytest.mark.parametrize("downsample", ["minmax", "fpcs"])
+    def test_resident_and_scan_agree(self, tmp_path, downsample):
+        df = _grouped_frame()
+        path = tmp_path / "grouped.parquet"
+        df.write_parquet(path)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+
+        def run(lf):
+            return {
+                k: _points(u)
+                for k, u in _grouped_points(
+                    lf,
+                    LinePlot(
+                        x="ts",
+                        y="val",
+                        n_points=100,
+                        group_by="g",
+                        downsample=downsample,
+                    ),
+                ).items()
+            }
+
+        assert run(LFQueryBuilder(df)) == run(scan_lf)
+
+    def test_temporal_x_keeps_its_dtype(self):
+        n = 200
+        df = pl.DataFrame(
+            {
+                "ts": [
+                    dt.datetime(2023, 1, 1) + dt.timedelta(minutes=i) for i in range(n)
+                ]
+                * 2,
+                "val": [float(i) for i in range(2 * n)],
+                "g": ["a"] * n + ["b"] * n,
+            }
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50, group_by="g")
+        )
+        assert set(out) == {"a", "b"}
+        assert out["a"]["x"].dtype == pl.Datetime("us")
+
+    def test_float_x_works(self):
+        df = _grouped_frame().with_columns(ts=pl.col("ts").cast(pl.Float64) / 3.0)
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        assert set(out) == {"a", "b"}
+        assert out["b"]["x"].dtype == pl.Float64
+
+    def test_zoom_restricts_the_groups(self):
+        n = 100
+        df = pl.DataFrame(
+            {
+                "ts": list(range(n)) + list(range(1000, 1000 + n)),
+                "val": [float(i) for i in range(2 * n)],
+                "g": ["a"] * n + ["b"] * n,
+            }
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=50, group_by="g"),
+            x_range=(0, 50),
+        )
+        assert set(out) == {"a"}
+        assert all(0 <= v <= 50 for v in out["a"]["x"].to_list())
+
+    def test_an_empty_viewport_gives_no_children(self):
+        out = _grouped_points(
+            LFQueryBuilder(_grouped_frame()),
+            LinePlot(x="ts", y="val", n_points=50, group_by="g"),
+            x_range=(10_000, 20_000),
+        )
+        assert out == {}
+
+    @pytest.mark.parametrize(
+        "group_by,key", [("g", "null"), (["g", "site"], '[null,"north"]')]
+    )
+    def test_a_null_group_value_keeps_its_own_child(self, group_by, key):
+        # Two string columns fall back to the multi-column key, so both forms
+        # are covered.
+        df = _grouped_frame().with_columns(
+            g=pl.when(pl.col("ts") < 100).then(None).otherwise(pl.col("g")),
+            site=pl.lit("north"),
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=100, group_by=group_by),
+        )
+        assert key in out
+        assert len(out[key]["x"]) > 0
+
+    def test_a_null_integer_group_value_keeps_its_own_child(self):
+        df = _grouped_frame().with_columns(
+            gi=pl.when(pl.col("ts") < 100).then(None).otherwise(pl.col("gi"))
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=100, group_by="gi")
+        )
+        assert set(out) == {"null", "3", "8"}
+
+    def test_null_x_rows_fall_out(self):
+        df = _grouped_frame().with_columns(
+            ts=pl.when(pl.col("ts") < 100).then(None).otherwise(pl.col("ts"))
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        assert all(v is not None for u in out.values() for v in u["x"].to_list())
+
+    def test_nan_x_does_not_raise(self):
+        df = _grouped_frame().with_columns(
+            ts=pl.when(pl.col("ts") == 5)
+            .then(float("nan"))
+            .otherwise(pl.col("ts").cast(pl.Float64))
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        assert set(out) == {"a", "b"}
+        assert not any(math.isnan(v) for u in out.values() for v in u["x"].to_list())
+
+    def test_a_tenth_of_the_domain_gets_a_tenth_of_the_points(self):
+        # The whole point of one shared grid (issue #16). Row-count buckets
+        # would spend the full budget on the short series.
+        n = 1000
+        df = pl.DataFrame(
+            {
+                "ts": list(range(n // 10)) + list(range(n)),
+                "val": [float(i) for i in range(n // 10 + n)],
+                "g": ["a"] * (n // 10) + ["b"] * n,
+            }
+        )
+        out = _grouped_points(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=200, group_by="g")
+        )
+        assert len(out["b"]["x"]) >= 180
+        assert 0.05 < len(out["a"]["x"]) / len(out["b"]["x"]) < 0.2
+
+    @pytest.mark.parametrize(
+        "group_cols,domains,expected",
+        [
+            (("g",), {}, ["__b"]),
+            (("gi",), {"gi": (3, 8)}, ["__b"]),
+            (("g", "site"), {}, ["g", "site", "__b"]),
+            (("val",), {"val": (0.0, 1.0)}, ["val", "__b"]),
+            (("gi",), {"gi": (-(2**62), 2**62)}, ["gi", "__b"]),
+            (("gi",), {}, ["gi", "__b"]),
+        ],
+        ids=["str", "int", "two_str", "float", "overflow", "no_bounds"],
+    )
+    def test_the_key_form(self, group_cols, domains, expected):
+        keys = _grouped_bucket_keys(
+            group_cols, _grouped_frame().schema, domains, 50, pl.col("ts")
+        )
+        assert keys[1] == expected
+
+    def test_the_fallback_key_matches_the_packed_one(self):
+        # The same two series, once with ids the key packs and once with ids
+        # 2**62 apart, whose width product overflows it.
+        df = _grouped_frame()
+        wide = df.with_columns(
+            gi=pl.when(pl.col("g") == "a").then(-(2**62)).otherwise(2**62)
+        )
+        trace = LinePlot(x="ts", y="val", n_points=100, group_by="gi")
+        packed = _grouped_points(LFQueryBuilder(df), trace)
+        multi = _grouped_points(LFQueryBuilder(wide), trace)
+        assert [_points(u) for u in multi.values()] == [
+            _points(u) for u in packed.values()
+        ]
+
+
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------
 
 
@@ -1043,12 +1318,30 @@ class TestLineLTTB:
         assert out["y"].dtype == pl.Datetime("ms")
         assert len(out["y"]) == 100
 
-    def test_grouped_is_rejected(self):
-        with pytest.raises(ValueError, match="does not support group_by"):
-            LinePlot(x="ts", y="val", downsample="lttb", group_by="sensor")
-        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0], "g": ["a", "b"]}))
-        with pytest.raises(ValueError, match="does not support group_by"):
-            fig.add_line(x="ts", y="val", downsample="lttb", group_by="g")
+    def test_grouped_returns_exactly_n_points_per_child(self):
+        n_points = 50
+        n_rows = 500
+        rng = random.Random(7)
+        sensors = ["A", "B", "C"]
+        df = pl.DataFrame(
+            {
+                "ts": list(range(n_rows)) * len(sensors),
+                "val": [
+                    rng.random() + i * 10
+                    for i in range(len(sensors))
+                    for _ in range(n_rows)
+                ],
+                "sensor": [s for s in sensors for _ in range(n_rows)],
+            }
+        )
+        results = _aggregate_grouped_line(df, downsample="lttb", n_points=n_points)
+        assert {cr.group_value_key for cr in results} == set(sensors)
+        for cr in results:
+            xs = cr.updates["x"].to_list()
+            ys = cr.updates["y"].to_list()
+            assert len(xs) == n_points
+            assert len(ys) == n_points
+            assert xs == sorted(xs)
 
 
 class TestLTTBFunction:
@@ -1123,9 +1416,15 @@ class TestBucketsByXWidth:
     def test_nth_buckets_by_row_count(self):
         assert not LinePlot(x="ts", y="val", downsample="nth").buckets_by_x_width
 
-    def test_a_grouped_line_buckets_by_row_count(self):
-        # Sorted by group then x, so x is not globally sorted.
-        assert not LinePlot(x="ts", y="val", group_by="sensor").buckets_by_x_width
+    def test_a_grouped_line_buckets_by_x_width_too(self):
+        # One grid across the groups, so a series covering a tenth of the x
+        # domain gets a tenth of the points.
+        assert LinePlot(x="ts", y="val", group_by="sensor").buckets_by_x_width
+
+    def test_a_grouped_nth_line_buckets_by_row_count(self):
+        assert not LinePlot(
+            x="ts", y="val", group_by="sensor", downsample="nth"
+        ).buckets_by_x_width
 
 
 class TestLineDownsampleValidation:

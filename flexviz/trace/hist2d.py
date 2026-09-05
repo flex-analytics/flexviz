@@ -304,7 +304,11 @@ class Histogram2D(FlexTrace):
     # ------------------------------------------------------------------
 
     def domain_cols(
-        self, update_range: Dict[str, Any], *, scan_source: bool = False
+        self,
+        update_range: Dict[str, Any],
+        *,
+        schema: pl.Schema | None = None,
+        scan_source: bool = False,
     ) -> tuple[str, ...]:
         # Both axes or neither: the kernel bins over one rectangle, and the
         # engine never supplies a partial viewport here.
