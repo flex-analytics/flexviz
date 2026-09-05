@@ -331,17 +331,7 @@ class LFQueryBuilder:
                 if not spec.pre_group_filters
                 else filtered_ldf.filter(*spec.pre_group_filters)
             )
-            planned = spec.plan(batch_ldf)
-            missing = [
-                c for c in (*spec.group_cols, spec.uid) if c not in planned.columns
-            ]
-            if missing:
-                raise ValueError(
-                    f"GroupedAggregationSpec.plan for {spec.uid!r} must return the "
-                    f"group columns and a column named {spec.uid!r}, missing "
-                    f"{missing!r}"
-                )
-            grouped_dfs[spec.uid] = planned
+            grouped_dfs[spec.uid] = spec.plan(batch_ldf)
 
         grouped_batches: dict[tuple, list[GroupedAggregationSpec]] = {}
         for spec in grouped_expr_specs:

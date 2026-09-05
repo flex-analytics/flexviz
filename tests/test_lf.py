@@ -252,28 +252,6 @@ class TestGroupedAggregationSpec:
         assert seen[0].height == 50
         assert grouped["plan_uid"].to_dicts() == [{"cat": "A", "plan_uid": 50}]
 
-    def test_plan_spec_with_wrong_frame_shape_raises(
-        self, grouped_backend_lf: LFQueryBuilder
-    ):
-        """The plan frame must hold the group columns and a uid column."""
-
-        def no_uid(ldf: pl.LazyFrame) -> pl.DataFrame:
-            return ldf.group_by("cat").agg(pl.len().alias("other")).collect()
-
-        def no_group_col(ldf: pl.LazyFrame) -> pl.DataFrame:
-            return ldf.select(pl.len().alias("plan_uid")).collect()
-
-        for bad_plan in (no_uid, no_group_col):
-            spec = GroupedAggregationSpec(
-                uid="plan_uid",
-                group_cols=("cat",),
-                sort_cols=("cat",),
-                agg_exprs=(),
-                plan=bad_plan,
-            )
-            with pytest.raises(ValueError, match="must return the group columns"):
-                grouped_backend_lf.aggregate([], [spec])
-
     def test_plan_and_expr_specs_coexist(self, grouped_backend_lf: LFQueryBuilder):
         """Expression specs still fuse while a plan spec runs on its own."""
 

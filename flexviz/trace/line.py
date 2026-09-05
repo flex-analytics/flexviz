@@ -1102,6 +1102,7 @@ class LinePlot(FlexTrace):
             )
 
         if self.downsample == "fpcs":
+            # The walk orders each pair by x, so it reads the pairs whole.
             x_src, y_src = df_line["x_min"], df_line["y_min"]
             x_phys, y_phys = x_src.to_physical(), y_src
             xs, ys = _fpcs_walk(
@@ -1110,43 +1111,37 @@ class LinePlot(FlexTrace):
                 df_line["x_max"].to_physical().to_list(),
                 df_line["y_max"].to_list(),
             )
-            return TraceResult(
-                updates={
-                    "x": pl.Series(self.x_col, xs, dtype=x_phys.dtype).cast(
-                        x_src.dtype
-                    ),
-                    "y": pl.Series(self.y_col, ys, dtype=y_phys.dtype).cast(
-                        y_src.dtype
-                    ),
-                }
+        else:
+            # Flatten every pair to its two points. At most two rows per
+            # bucket, so this stays in Polars on a frame the size of the
+            # budget.
+            points = (
+                pl.concat(
+                    [
+                        df_line.select(
+                            pl.col("x_min").alias(self.x_col),
+                            pl.col("y_min").alias(self.y_col),
+                        ),
+                        df_line.select(
+                            pl.col("x_max").alias(self.x_col),
+                            pl.col("y_max").alias(self.y_col),
+                        ),
+                    ]
+                )
+                .unique()
+                .sort(self.x_col)
             )
+            x_src, y_src = points[self.x_col], points[self.y_col]
+            if self.downsample == "minmax":
+                return TraceResult(updates={"x": x_src, "y": y_src})
 
-        # Flatten every pair to its two points. At most two rows per bucket, so
-        # this stays in Polars on a frame the size of the budget.
-        points = (
-            pl.concat(
-                [
-                    df_line.select(
-                        pl.col("x_min").alias(self.x_col),
-                        pl.col("y_min").alias(self.y_col),
-                    ),
-                    df_line.select(
-                        pl.col("x_max").alias(self.x_col),
-                        pl.col("y_max").alias(self.y_col),
-                    ),
-                ]
-            )
-            .unique()
-            .sort(self.x_col)
-        )
-        x_src, y_src = points[self.x_col], points[self.y_col]
-        if self.downsample == "minmax":
-            return TraceResult(updates={"x": x_src, "y": y_src})
+            # LTTB does arithmetic on y as well as on x, so a temporal y also
+            # goes through its physical representation.
+            x_phys, y_phys = x_src.to_physical(), y_src.to_physical()
+            xs, ys = _lttb(x_phys.to_list(), y_phys.to_list(), self.n_points)
 
-        # LTTB does arithmetic on y as well as on x, so a temporal y also goes
-        # through its physical representation and is cast back.
-        x_phys, y_phys = x_src.to_physical(), y_src.to_physical()
-        xs, ys = _lttb(x_phys.to_list(), y_phys.to_list(), self.n_points)
+        # A Python stage 2 returns physical values, cast back to the dtypes the
+        # frame carries.
         return TraceResult(
             updates={
                 "x": pl.Series(self.x_col, xs, dtype=x_phys.dtype).cast(x_src.dtype),
