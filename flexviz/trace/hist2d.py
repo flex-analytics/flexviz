@@ -22,8 +22,9 @@ viewport range (or the data range on init).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
+import numpy as np
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
@@ -324,6 +325,12 @@ class Histogram2D(FlexTrace):
         An unzoomed trace requires both ``x_col`` and ``y_col`` in
         ``domains``; a ``(None, None)`` entry means an empty or all-null
         column.
+
+        ``scan_source`` says the rows come from storage rather than a resident
+        frame. The kernels need both axis columns in memory at once, so a scan
+        takes ``_batch_fold_plan`` instead: the same kernels, run over streamed
+        batches and folded in NumPy, at bounded memory. A resident frame keeps
+        the plain kernel expression, which joins the shared select.
         """
         x_range = update_range.get("x")
         y_range = update_range.get("y")
@@ -331,16 +338,37 @@ class Histogram2D(FlexTrace):
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
+        x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
+            self.x_col, self.y_col, x_range, y_range, domains, schema
+        )
+        edges = (x_lo, x_hi, y_lo, y_hi)
+
+        if scan_source:
+            return AggregationSpec(
+                uid=self.uid,
+                plan=_batch_fold_plan(
+                    self.x_col,
+                    self.y_col,
+                    self.z_col,
+                    self.x_bins,
+                    self.y_bins,
+                    self.histfunc,
+                    edges,
+                    mask,
+                    self.uid,
+                    schema,
+                ),
+            )
+
         if self.z_col is None:
             expr = _hist2d_count_expr(
                 self.x_col,
                 self.y_col,
                 self.x_bins,
                 self.y_bins,
-                x_range,
-                y_range,
+                edges,
+                mask,
                 self.uid,
-                domains,
                 schema,
             )
         else:
@@ -351,11 +379,10 @@ class Histogram2D(FlexTrace):
                 self.z_col,
                 self.x_bins,
                 self.y_bins,
-                x_range,
-                y_range,
+                edges,
+                mask,
                 self.uid,
                 self.histfunc,
-                domains,
                 schema,
             )
         return AggregationSpec(expr=expr, uid=self.uid)
@@ -570,39 +597,32 @@ def _domain_lits(
     return pl.lit(0.0 if lo is None else lo), pl.lit(1.0 if hi is None else hi)
 
 
+#: The (x_lo, x_hi, y_lo, y_hi) bin-edge literal expressions from _hist2d_bounds.
+_Edges = tuple[pl.Expr, pl.Expr, pl.Expr, pl.Expr]
+
+
 def _hist2d_count_expr(
     x_col: str,
     y_col: str,
     nb_x: int,
     nb_y: int,
-    x_range: tuple | None,
-    y_range: tuple | None,
-    uid: str,
-    domains: Mapping[str, tuple[Any, Any]] | None = None,
+    edges: _Edges,
+    mask: pl.Expr | None,
+    alias: str,
     schema: pl.Schema | None = None,
 ) -> pl.Expr:
     """Build a count-only 2D histogram expression using fixed_hist2d.
 
-    The Rust kernel adds its own internal EPS to ``(x_hi - x_lo)`` when
-    computing the bin scale, so callers must pass raw bounds (not EPS-adjusted).
+    ``edges`` are the raw bounds from ``_hist2d_bounds``: the Rust kernel adds
+    its own internal EPS to ``(x_hi - x_lo)`` when computing the bin scale, so
+    they must not be EPS-adjusted. ``mask`` restricts the rows inside the
+    expression; the batch fold passes None and filters the frame instead.
     """
-    x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
-        x_col, y_col, x_range, y_range, domains, schema
-    )
     x_phys = _hist2d_phys_col(x_col, schema)
     y_phys = _hist2d_phys_col(y_col, schema)
     x_expr = x_phys.filter(mask) if mask is not None else x_phys
     y_expr = y_phys.filter(mask) if mask is not None else y_phys
-    expr = x_expr.flexviz.fixed_hist2d(
-        y_expr,
-        x_lo,
-        x_hi,
-        y_lo,
-        y_hi,
-        nb_x,
-        nb_y,
-    ).alias(uid)
-    return expr
+    return x_expr.flexviz.fixed_hist2d(y_expr, *edges, nb_x, nb_y).alias(alias)
 
 
 def _hist2d_reduce_expr(
@@ -611,31 +631,177 @@ def _hist2d_reduce_expr(
     z_col: str,
     nb_x: int,
     nb_y: int,
-    x_range: tuple | None,
-    y_range: tuple | None,
-    uid: str,
+    edges: _Edges,
+    mask: pl.Expr | None,
+    alias: str,
     histfunc: str,
-    domains: Mapping[str, tuple[Any, Any]] | None = None,
     schema: pl.Schema | None = None,
 ) -> pl.Expr:
-    """Build a z-reduced 2D histogram expression using fixed_hist2d_reduce."""
-    x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
-        x_col, y_col, x_range, y_range, domains, schema
-    )
+    """Build a z-reduced 2D histogram expression using fixed_hist2d_reduce.
+
+    Same ``edges`` and ``mask`` contract as ``_hist2d_count_expr``.
+    """
     x_phys = _hist2d_phys_col(x_col, schema)
     y_phys = _hist2d_phys_col(y_col, schema)
     x_expr = x_phys.filter(mask) if mask is not None else x_phys
     y_expr = y_phys.filter(mask) if mask is not None else y_phys
     z_expr = pl.col(z_col).filter(mask) if mask is not None else pl.col(z_col)
-    expr = x_expr.flexviz.fixed_hist2d_reduce(
-        y_expr,
-        z_expr,
-        x_lo,
-        x_hi,
-        y_lo,
-        y_hi,
-        nb_x,
-        nb_y,
-        histfunc,
-    ).alias(uid)
-    return expr
+    return x_expr.flexviz.fixed_hist2d_reduce(
+        y_expr, z_expr, *edges, nb_x, nb_y, histfunc
+    ).alias(alias)
+
+
+# ---------------------------------------------------------------------------
+# Batch fold (scan sources)
+# ---------------------------------------------------------------------------
+
+#: Rows per streamed batch. About 64 MB for a two-column Float64 batch. Larger
+#: chunks only cost memory; smaller ones cost per-batch Python and kernel
+#: overhead.
+_FOLD_CHUNK_ROWS = 4_000_000
+
+
+def _fold_result_frame(
+    uid: str, z_flat: list, bounds: tuple[float, float, float, float], count: bool
+) -> pl.DataFrame:
+    """The one-row, one-column frame the kernel expression would have produced."""
+    x_lo, x_hi, y_lo, y_hi = bounds
+    dtype = pl.Struct(
+        {
+            "z_flat": pl.List(pl.UInt32 if count else pl.Float64),
+            "x_lo": pl.Float64,
+            "x_hi": pl.Float64,
+            "y_lo": pl.Float64,
+            "y_hi": pl.Float64,
+        }
+    )
+    row = {"z_flat": z_flat, "x_lo": x_lo, "x_hi": x_hi, "y_lo": y_lo, "y_hi": y_hi}
+    return pl.DataFrame([pl.Series(uid, [row], dtype=dtype)])
+
+
+def _finite_z_expr(z_col: str, schema: pl.Schema | None) -> pl.Expr:
+    """Rows whose ``z`` the reduce kernel accepts: not null, and not NaN for a
+    float column."""
+    usable = pl.col(z_col).is_not_null()
+    dtype = _dtype_for_col(schema, z_col)
+    if dtype is not None and dtype.is_float():
+        usable = usable & pl.col(z_col).is_not_nan()
+    return usable
+
+
+def _batch_fold_plan(
+    x_col: str,
+    y_col: str,
+    z_col: str | None,
+    nb_x: int,
+    nb_y: int,
+    histfunc: str | None,
+    edges: _Edges,
+    mask: pl.Expr | None,
+    uid: str,
+    schema: pl.Schema | None = None,
+) -> Callable[[pl.LazyFrame], pl.DataFrame]:
+    """The kernel grid folded over streamed batches, for a scan source.
+
+    As one expression the kernels need whole Series, so a scan materializes
+    both axis columns before binning. This runs the same kernels on one batch
+    at a time and accumulates the grid in NumPy, so peak memory is one batch
+    plus the grid. A streaming ``group_by`` on the flattened cell key is the
+    obvious alternative, but it is unbounded above the Polars hot table size
+    (measured), and ``collect_batches`` is the Polars escape hatch for custom
+    logic over streamed batches.
+
+    Count, min and max are exact. Sum and mean fold in a different order than
+    the kernel, so they agree to about 1e-13 relative.
+
+    ``collect_batches`` is marked unstable in Polars; a semantics test pins the
+    chunking this relies on.
+    """
+    # Both bounds are literal expressions, so this selects no data. The kernel
+    # reads them as f64, and the result frame echoes them back.
+    bounds = tuple(
+        float(v)
+        for v in pl.select(
+            *(e.alias(name) for e, name in zip(edges, ("xl", "xh", "yl", "yh")))
+        ).row(0)
+    )
+    lits = tuple(pl.lit(v) for v in bounds)
+    n_cells = nb_x * nb_y
+    cols = [c for c in (x_col, y_col, z_col) if c is not None]
+
+    if z_col is None:
+        exprs = [_hist2d_count_expr(x_col, y_col, nb_x, nb_y, lits, None, "g", schema)]
+    else:
+        assert histfunc is not None
+        exprs = [
+            _hist2d_reduce_expr(
+                x_col,
+                y_col,
+                z_col,
+                nb_x,
+                nb_y,
+                lits,
+                None,
+                "g",
+                "sum" if histfunc == "mean" else histfunc,
+                schema,
+            )
+        ]
+        if histfunc == "mean":
+            # The reduce kernel skips null/NaN z, so the mean denominator is the
+            # count of the rows with a usable z, not the count of all rows.
+            exprs.append(
+                _hist2d_count_expr(
+                    x_col,
+                    y_col,
+                    nb_x,
+                    nb_y,
+                    lits,
+                    _finite_z_expr(z_col, schema),
+                    "c",
+                    schema,
+                )
+            )
+
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
+        acc = np.zeros(n_cells, dtype=np.int64 if z_col is None else np.float64)
+        seen = np.zeros(n_cells, dtype=bool)
+        cnt = np.zeros(n_cells, dtype=np.int64)
+        for batch in src.select(cols).collect_batches(
+            chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
+        ):
+            out = batch.select(exprs)
+            grid = np.asarray(out["g"][0]["z_flat"], dtype=np.float64)
+            if z_col is None:
+                acc += grid.astype(np.int64)
+                continue
+            if histfunc == "mean":
+                cnt += np.asarray(out["c"][0]["z_flat"], dtype=np.int64)
+            # An empty cell comes back null, which lands here as NaN.
+            filled = ~np.isnan(grid)
+            if histfunc in ("sum", "mean"):
+                acc[filled] += grid[filled]
+            elif histfunc == "min":
+                acc[filled] = np.where(
+                    seen[filled], np.fmin(acc[filled], grid[filled]), grid[filled]
+                )
+            else:
+                acc[filled] = np.where(
+                    seen[filled], np.fmax(acc[filled], grid[filled]), grid[filled]
+                )
+            seen |= filled
+
+        # No batches (an empty frame) leaves the zero grid, which is what the
+        # kernel returns for empty input: zero counts, null reducer cells.
+        if z_col is None:
+            z_flat = acc.tolist()
+        elif histfunc == "mean":
+            z_flat = [
+                float(acc[i]) / cnt[i] if cnt[i] else None for i in range(n_cells)
+            ]
+        else:
+            z_flat = [float(acc[i]) if seen[i] else None for i in range(n_cells)]
+        return _fold_result_frame(uid, z_flat, bounds, count=z_col is None)
+
+    return run

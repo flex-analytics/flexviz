@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import polars as pl
 import pytest
@@ -15,6 +16,7 @@ from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
 from flexviz.trace.bar import BarPlot
 from flexviz.trace.box import BoxPlot
 from flexviz.trace.hist import Histogram
+from flexviz.trace.hist2d import Histogram2D
 from flexviz.trace.line import LinePlot
 
 # ---- helpers ---------------------------------------------------------------
@@ -2192,6 +2194,75 @@ class TestHistogramResidencySeam:
             )
             assert spec.plan is not None
             assert spec.agg_exprs == ()
+
+
+class TestHistogram2DResidencySeam:
+    """A scan 2-D histogram folds the kernel over batches, not one big select.
+
+    Count is bit-identical. A reducer folds in a different order, so it is
+    compared with a relative tolerance and an identical null pattern.
+    """
+
+    @staticmethod
+    def _hist2d_updates(src, event: InteractionEvent, z, histfunc):
+        lf = LFQueryBuilder(src)
+        hist = Histogram2D(x="val", y="alt", x_bins=8, y_bins=6, z=z, histfunc=histfunc)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
+        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram2d")]
+        return engine.process(event, infos)[0].updates, lf.is_scan
+
+    @pytest.mark.parametrize(
+        "z,histfunc", [(None, None), ("w", "mean")], ids=["count", "mean"]
+    )
+    @pytest.mark.parametrize(
+        "event",
+        [
+            InteractionEvent(type="init", force_update=True),
+            InteractionEvent(
+                type="viewport",
+                axis_ranges={"x": [2000.0, 7000.0], "y": [10.0, 60.0]},
+            ),
+        ],
+        ids=["init", "viewport"],
+    )
+    def test_scan_matches_resident(self, tmp_path, z, histfunc, event):
+        n = 20_000
+        df = pl.DataFrame(
+            {
+                "val": [float((i * 7919) % 9973) for i in range(n)],
+                "alt": [float((i * 31) % 97) for i in range(n)],
+                "w": [float((i * 13) % 251) - 100.0 for i in range(n)],
+            }
+        )
+        path = tmp_path / f"hist2d_{z or 'count'}.parquet"
+        df.write_parquet(path)
+
+        resident, resident_is_scan = self._hist2d_updates(df, event, z, histfunc)
+        scanned, scan_is_scan = self._hist2d_updates(
+            pl.scan_parquet(path), event, z, histfunc
+        )
+        assert resident_is_scan is False and scan_is_scan is True
+
+        assert resident["x"] == scanned["x"]
+        assert resident["y"] == scanned["y"]
+        assert resident["hover_bounds"] == scanned["hover_bounds"]
+        if z is None:
+            assert resident["z"] == scanned["z"]
+            return
+        for row_a, row_b in zip(resident["z"], scanned["z"]):
+            for a, b in zip(row_a, row_b):
+                assert (a is None) == (b is None)
+                if a is not None:
+                    assert math.isclose(a, b, rel_tol=1e-9)
+
+    def test_scan_selects_the_batch_fold(self):
+        """The seam must actually swap formulations, not just report a flag."""
+        hist = Histogram2D(x="val", y="alt", x_bins=8, y_bins=6)
+        domains = {"val": (0.0, 1.0), "alt": (0.0, 1.0)}
+        resident = hist.get_aggregation_spec({}, scan_source=False, domains=domains)
+        scanned = hist.get_aggregation_spec({}, scan_source=True, domains=domains)
+        assert resident.plan is None, "a resident source must keep the kernel"
+        assert scanned.plan is not None, "a scan source must bring its own plan"
 
 
 # ---- descending viewport ranges ---------------------------------------------

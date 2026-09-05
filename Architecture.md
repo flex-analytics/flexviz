@@ -584,11 +584,13 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 
 - `trace_type = "histogram2d"` · `axes = ("x", "y")` · `recompute_axes = ("x", "y")` · `overlay_style = "filtered_only"`
 - `z` is optional — when `None`, rows are counted per bin (implicit count). When given, `histfunc` is required.
-- Count-only `Histogram2D` uses the `flexviz_polars` `fixed_hist2d` Rust kernel when available.
-- z-column `Histogram2D` supports `histfunc in {"sum", "mean", "min", "max"}` and uses `fixed_hist2d_reduce` when available.
+- A **resident** frame runs one kernel expression: `fixed_hist2d` for the count, `fixed_hist2d_reduce` for a `z` column (`histfunc in {"sum", "mean", "min", "max"}`).
+- A **scan** source folds the same kernels over batches instead (`AggregationSpec.plan` → `_batch_fold_plan` in `hist2d.py`). As one expression the kernels need whole Series, so a scan materializes both axis columns before binning. The plan reads the frame through `LazyFrame.collect_batches(chunk_size=4M rows, maintain_order=False, engine="streaming")`, runs the kernel on each batch, and accumulates the grid in NumPy, so peak memory is one batch plus the grid. A streaming `group_by` on the flattened cell key is the obvious alternative, but it is unbounded above the Polars hot table size (measured), and `collect_batches` is the Polars escape hatch for custom logic over streamed batches. Measured on 100M rows at a 100 x 100 count grid: kernel 381 ms at 1.7 GB peak, fold 411 ms at 657 MB. At 500M rows: kernel 3.8 s at 8 GB, fold 3.7 s at 374 MB. Zoomed, the fold is about 4x faster, because the viewport filter runs inside the scan.
+- Fold exactness: count, `min` and `max` are exact. `sum` and `mean` fold in a different order than the kernel, so they agree to about 1e-13 relative. `mean` folds a `fixed_hist2d_reduce(histfunc="sum")` grid over a `fixed_hist2d` count of the rows with a usable `z` (the reduce kernel skips null and NaN `z`), and finalizes as sum / count with `None` where the count is 0.
+- `collect_batches` is marked unstable in Polars. A semantics test pins the chunking the fold relies on, so an API or chunking change fails there first.
 - A temporal x and/or y axis is binned on its `to_physical()` representation (the kernel is numeric-only) with physical bin edges; `_to_update` restores datetime centers on that axis (date axis) and emits epoch-ms hover bounds — same scheme as the 1-D `Histogram`.
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
-- The current viewport path still prefilters x/y/z before calling the Rust kernel. A later viewport-aware kernel can fuse range rejection into the Rust loop.
+- The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
 - Bin edges span the viewport range (or data range on init).
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
@@ -605,7 +607,7 @@ fig.add_geo_histogram2d(lat="lat", lon="lon", bin_boundaries="viewport")
 ```
 
 - `trace_type = "geo_histogram2d"` · `axes = None` · `recompute_axes = ("coordinates",)` · `overlay_style = "filtered_only"`
-- `GeoHistogram2D` uses the `flexviz_polars` Rust kernel (same as `Histogram2D`): count via `fixed_hist2d`, z-reduction via `fixed_hist2d_reduce`. lat maps to the kernel x (inner) axis and lon to the y (outer) axis so `z_flat` is already in the lon-major order the GeoJSON builder needs.
+- `GeoHistogram2D` uses the `flexviz_polars` Rust kernel (same as `Histogram2D`): count via `fixed_hist2d`, z-reduction via `fixed_hist2d_reduce`. It is kernel-only on both source kinds: it does not take the `Histogram2D` batch fold, so a scan still loads its lat/lon (and z) columns. lat maps to the kernel x (inner) axis and lon to the y (outer) axis so `z_flat` is already in the lon-major order the GeoJSON builder needs.
 - z-column support is `histfunc in {"sum", "mean", "min", "max"}`. `median` and `n_unique` are **not** supported on this fast path (mirrors `Histogram2D`); see the Roadmap below. `from_trace_spec` raises on legacy `median`/`n_unique` specs.
 - Rows are clipped to the visible map bounds before binning (a `.filter(mask)` inside the kernel expression). Viewport is passed as `update_range["coordinates"]` — a list of `[lon, lat]` corner points (from `PlotlyAdapter` / map `relayout`).
 - **`bin_boundaries`** (`params`, default `"data"`): `"data"` passes the min/max of the (viewport- and cross-filter-filtered) points as the kernel `lo`/`hi` bounds (bins shift when panning/zooming). `"viewport"` passes the viewport rectangle bounds (stable grid on pan/zoom, analogous to plotly-flex `bin_boundaries="viewport"`).
@@ -700,15 +702,20 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     same-type pairs) and a contiguous-slice fast path for null-free single-chunk
 │     inputs. Returns Struct{z_flat: List(UInt32), x_lo, x_hi, y_lo, y_hi} of
 │     length 1; z_flat is row-major (yi * nb_x + xi). Empty bins have count 0.
-│     Used by Histogram2D (count-only fast path) and GeoHistogram2D (count;
-│     lat→x, lon→y). lo/hi may be literals or scalar expressions (e.g. a
-│     filtered min/max), and are echoed back unchanged for edge derivation.
+│     Used by Histogram2D (count) on a resident frame as one expression and on
+│     a scan once per streamed batch, and by GeoHistogram2D (count; lat→x,
+│     lon→y) as one expression on both source kinds. lo/hi may be literals or
+│     scalar expressions (e.g. a filtered min/max), and are echoed back
+│     unchanged for edge derivation.
 │
 └── fixed_hist2d_reduce(y_expr, z_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y, histfunc) → pl.Expr
       O(n) fixed-bin 2D reducer for histfunc ∈ {"sum", "mean", "min", "max"}.
       Same typed-dispatch / cont_slice optimizations as fixed_hist2d. Returns
       Struct{z_flat: List(Float64), x_lo, x_hi, y_lo, y_hi} of length 1; empty
-      bins are null. Used by Histogram2D and GeoHistogram2D when z is given.
+      bins are null; null and NaN z are skipped. Used by Histogram2D when z is
+      given, as one expression on a resident frame and once per streamed batch
+      on a scan (with histfunc="sum" when the trace asks for "mean"), and by
+      GeoHistogram2D as one expression on both source kinds.
       `median` / `n_unique` are not implemented (see Roadmap).
 
 flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
@@ -734,7 +741,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped resident path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning. Every other path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
 
-**Integration with Histogram2D / GeoHistogram2D**: `hist2d.py` and `geo_hist2d.py` both import `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. `GeoHistogram2D` maps lat→x and lon→y and passes filtered-data min/max (or viewport bounds) as the kernel `lo`/`hi`.
+**Integration with Histogram2D / GeoHistogram2D**: `hist2d.py` and `geo_hist2d.py` both import `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. Where those calls run differs by source kind: a resident `Histogram2D` builds one kernel expression that joins the shared select, a scan `Histogram2D` runs the same kernel per streamed batch inside `_batch_fold_plan`, and `GeoHistogram2D` keeps the single expression on both source kinds. `GeoHistogram2D` maps lat→x and lon→y and passes filtered-data min/max (or viewport bounds) as the kernel `lo`/`hi`.
 
 ---
 
