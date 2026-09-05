@@ -2045,6 +2045,20 @@ class TestResidencySeam:
             is None
         )
 
+    def test_bar_on_a_scan_ignores_the_source_keywords(self, tmp_path):
+        """Every trace takes the same call shape, whether it reads it or not."""
+        df = pl.DataFrame({"cat": ["a", "b", "a", "b"], "val": [1.0, 2.0, 3.0, 4.0]})
+        path = tmp_path / "bar.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        bar = BarPlot(labels="cat", values="val", agg="sum")
+        engine = FlexEngine(backend_lf=lf, scalable_traces={bar.uid: bar})
+        infos = [TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar")]
+        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        assert deltas[0].updates["x"] == ["a", "b"]
+        assert deltas[0].updates["y"] == [4.0, 6.0]
+
 
 # ---- descending viewport ranges ---------------------------------------------
 

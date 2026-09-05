@@ -360,11 +360,12 @@ FlexTrace (ABC)
 ├── domain_cols(update_range) → tuple[str, ...]
 │     ← columns whose unfiltered (min, max) the spec needs; () when the
 │       viewport supplies bounds
-├── get_aggregation_spec(update_range, schema)
+├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
-│     ← histogram, histogram2d and line also take a `domains` keyword with
-│       the resolved bounds of their unzoomed domain_cols; the engine passes
-│       it per trace type, like `x_sorted` and `scan_source` for line
+│     ← the engine calls every trace the same way; a trace ignores what it
+│       does not need. `domains` holds the resolved bounds of the unzoomed
+│       domain_cols (histogram, histogram2d, line); `scan_source` and
+│       `sorted_cols` only let a trace pick a faster equivalent formulation
 ├── _to_update(df_agg) → TraceResult                              [abstract]
 ├── _to_grouped_update(df_grouped) → TraceResult                  [grouped parents]
 ├── _range_filter_exprs(col, range_, schema) → List[pl.Expr]      [convenience]
@@ -467,7 +468,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
   - **`"lttb"`** — MinMaxLTTB. Stage 1 is the shared pair pass at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets, on either source kind. Stage 2 is `_lttb()` in `_to_update`: the Largest-Triangle-Three-Buckets rule in pure Python over the prefetched points. Output is exactly `n_points` points when the prefetch holds more, else the prefetch verbatim. The first and last prefetched points always survive. `_to_update` drops null and NaN rows before it flattens the pairs, on every strategy. x and y both go through `to_physical()` and are cast back, so a temporal y works. x and y are each shifted by their first value before the area math, so a nanosecond epoch stays exact in float64. Grouped too: stage 1 is the grouped plan, and the thinning runs once per child. `LinePlot.check_schema` rejects a y that is not numeric, temporal or Boolean, on every request. Not a cube target.
   - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 1 is the shared pair pass. Stage 2 is `_fpcs_walk()` in `_to_update`, which carries a deferred extremum across bucket boundaries. It deduplicates on x alone: on sorted x the same x is the same row. Bucket count is `max(n_points - 2, 1)`. It uses the same x-width grid as `minmax`, grouped and ungrouped. `n_points` is a target, not a hard cap. The walk emits at most `2 * n_buckets + 1` points, and fewer when gaps in x leave buckets empty. It keeps no forced first or last point, because an x-width grid has no interior.
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan is the exception: it streams on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
-- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.is_sorted` and threaded by the engine as `x_sorted`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
+- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
 - Grouped line traces use a true grouped query: viewport filtering is applied before
   `group_by`, and downsampling happens inside it: one streaming plan for the x-width
@@ -811,6 +812,7 @@ LFQueryBuilder
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan always streams)
 ├── physical_minmax(cols, schema, *, memoize)  ← per-column unfiltered (min, max); kept on the builder only when memoize=True
 ├── check_line_x(col, *, memoize)   ← line x data check on a resident frame: one collect (null check, is_sorted pass, O(1) trailing-NaN probe). Kept as the sorted flag only when memoize=True. The dtype gate lives on the trace (LinePlot.check_schema)
+├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       filtered_ldf = _ldf if not filter_exprs else _ldf.filter(*filter_exprs)
@@ -822,8 +824,10 @@ LFQueryBuilder
 
 ```
 AggregationSpec
-├── expr: pl.Expr    ← evaluated in the shared filtered LazyFrame context;
-│                       output column aliased to trace uid; yields a Struct series
+├── expr: pl.Expr | None = None
+│                     ← evaluated in the shared filtered LazyFrame context;
+│                       output column aliased to trace uid; yields a Struct series.
+│                       None only when plan is set; both None raises ValueError
 ├── uid: str = ""    ← trace uid; used by engine for overlay_style dispatch
 └── plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
                      ← escape hatch for a spec that cannot be a select expression;

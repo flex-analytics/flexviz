@@ -40,10 +40,11 @@ class AggregationSpec:
     """Specification for one aggregation output.
 
     Executed as ``filtered_ldf.select(expr)`` (batched with other specs),
-    unless ``plan`` is set — see below.
+    unless ``plan`` is set — see below. ``expr`` is None only when ``plan``
+    carries the aggregation instead.
     """
 
-    expr: pl.Expr
+    expr: pl.Expr | None = None
     uid: str = ""
     #: Optional escape hatch for an aggregation that cannot be a select
     #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
@@ -52,6 +53,10 @@ class AggregationSpec:
     #: its own plan — the out-of-core line envelope uses a streaming group_by
     #: that cannot ride the shared select.
     plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+
+    def __post_init__(self) -> None:
+        if self.expr is None and self.plan is None:
+            raise ValueError("AggregationSpec needs either an expr or a plan")
 
 
 @dataclass(frozen=True)
@@ -244,13 +249,14 @@ class LFQueryBuilder:
             self._ldf = self._ldf.set_sorted(col_name)
             self._sorted_cols.add(col_name)
 
-    def is_sorted(self, col: str | pl.Expr) -> bool:
-        """Whether ``col`` was asserted sorted via ``assume_sorted``/``check_line_x``.
+    @property
+    def sorted_cols(self) -> frozenset[str]:
+        """The columns asserted sorted via ``assume_sorted`` / ``check_line_x``.
 
         A guarantee, not a check — this never collects. Consumers use it only to
         pick a faster equivalent formulation, never to change results.
         """
-        return get_col_name(col) in self._sorted_cols
+        return frozenset(self._sorted_cols)
 
     def assume_sorted(self, col: str | pl.Expr) -> None:
         """Mark a column as sorted without verifying (no collect).

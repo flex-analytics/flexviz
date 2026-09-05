@@ -21,7 +21,7 @@ child ``TraceResult`` per group.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import polars as pl
@@ -235,6 +235,10 @@ class BarPlot(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> GroupedAggregationSpec:
         """Return a grouped aggregation spec for ``group_by().agg().sort()``."""
         if self.values_col is None:

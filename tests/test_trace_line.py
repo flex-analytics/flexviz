@@ -627,7 +627,7 @@ class TestLineCubeSource:
 
 
 class TestSortedViewportSlice:
-    """``x_sorted`` picks a zero-copy slice over an ``is_between`` mask.
+    """A sorted x picks a zero-copy slice over an ``is_between`` mask.
 
     It is a performance path only: every case here asserts the slice returns
     exactly what the mask returns. The flag decides for ``nth`` alone; an
@@ -642,7 +642,7 @@ class TestSortedViewportSlice:
         spec = trace.get_aggregation_spec(
             update_range,
             schema=lf.schema,
-            x_sorted=x_sorted,
+            sorted_cols=frozenset({"ts"}) if x_sorted else frozenset(),
             domains=_domains(lf, trace, update_range),
         )
         df_agg, _ = lf.aggregate([], [spec])
@@ -701,9 +701,9 @@ class TestSortedViewportSlice:
             self._agg(df, (10**8, 10**9), True), self._agg(df, (10**8, 10**9), False)
         )
 
-    def test_grouped_path_ignores_x_sorted(self):
+    def test_grouped_path_ignores_sorted_cols(self):
         # Grouped lines restrict the frame before grouping, so they keep the
-        # mask; passing x_sorted must not change their output.
+        # mask; a sorted x must not change their output.
         df = self._df(n=2_000).with_columns(
             sensor=pl.Series(["a", "b"] * 1_000),
         )
@@ -712,7 +712,9 @@ class TestSortedViewportSlice:
         for flag in (False, True):
             trace = LinePlot(x="ts", y="val", n_points=100, group_by="sensor")
             spec = trace.get_aggregation_spec(
-                {"x": (100, 1900)}, schema=lf.schema, x_sorted=flag
+                {"x": (100, 1900)},
+                schema=lf.schema,
+                sorted_cols=frozenset({"ts"}) if flag else frozenset(),
             )
             _, grouped = lf.aggregate([], [spec])
             out.append(
@@ -737,7 +739,9 @@ class TestSortedViewportSlice:
         for flag in (False, True):
             trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
             spec = trace.get_aggregation_spec(
-                {"x": (500, 3000)}, schema=lf.schema, x_sorted=flag
+                {"x": (500, 3000)},
+                schema=lf.schema,
+                sorted_cols=frozenset({"ts"}) if flag else frozenset(),
             )
             df_agg, _ = lf.aggregate([keep], [spec])
             got.append(self._norm(trace._to_update(df_agg).updates))
@@ -754,7 +758,7 @@ def _minmax_points(lf: LFQueryBuilder, trace: LinePlot, x_range=None) -> dict:
     spec = trace.get_aggregation_spec(
         update_range,
         schema=lf.schema,
-        x_sorted=True,
+        sorted_cols=frozenset({"ts"}),
         scan_source=lf.is_scan,
         domains=_domains(lf, trace, update_range),
     )

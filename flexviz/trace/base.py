@@ -12,7 +12,7 @@ FlexTrace deliberately contains zero renderer imports.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import datetime
 from typing import Any, get_args
@@ -65,9 +65,12 @@ class FlexTrace(ABC):
     Subclasses implement two abstract methods:
 
     ``get_aggregation_spec``
-        Return an ``AggregationSpec`` that the engine will execute against
-        the shared ``LFQueryBuilder``.  The result column **must** be aliased
-        as ``self.uid``.
+        Return an ``AggregationSpec`` or a ``GroupedAggregationSpec`` that the
+        engine will execute against the shared ``LFQueryBuilder``.  The result
+        column **must** be aliased as ``self.uid``.  A spec may carry a ``plan``
+        instead of an expression.  A trace that needs unfiltered ``(min, max)``
+        bounds asks for them through the ``domain_cols`` hook and reads them
+        back from the ``domains`` argument.
 
     ``_to_update``
         Convert the aggregated DataFrame column (named ``self.uid``) into a
@@ -233,8 +236,15 @@ class FlexTrace(ABC):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return an aggregation spec for the engine to execute.
+
+        The engine calls every trace with all of these.  A trace ignores what
+        it does not need.
 
         Parameters
         ----------
@@ -242,11 +252,24 @@ class FlexTrace(ABC):
             Viewport axis ranges.  Keys are single-letter axis names
             (``"x"``, ``"y"``) with ``(min, max)`` tuple values.
             May be empty (e.g. on init or force-update).
+        schema:
+            The source schema, or ``None`` when it is unavailable.
+        domains:
+            The unfiltered ``(min, max)`` per column that ``domain_cols``
+            asked for.  The engine resolves them in one collect.
+        scan_source:
+            The source reads from storage.  A trace may pick a bounded
+            streaming formulation; the output must be identical.
+        sorted_cols:
+            Columns the builder asserts sorted.  Only for picking a faster
+            equivalent formulation, never to change results.
+
         Returns
         -------
         AggregationSpec | GroupedAggregationSpec
-            Result expressions **must** be aliased as ``self.uid`` when they
-            belong to this logical parent trace.
+            A regular or grouped spec.  The result column **must** be aliased
+            as ``self.uid``.  A spec may carry a ``plan`` instead of an
+            expression.
         """
 
     @abstractmethod
