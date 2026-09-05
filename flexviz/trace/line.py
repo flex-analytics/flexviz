@@ -330,27 +330,32 @@ def _bucket_extrema(
         return None
     x_lo, bsz, _ = grid
 
-    # True division lands x_hi exactly on n_buckets; fold that lone top row
-    # back into the last bucket instead of letting it open an n_buckets + 1-th
-    # one and overrun the budget.
-    bucket = ((phys_expr - pl.lit(x_lo)) // pl.lit(bsz)).clip(upper_bound=n_buckets - 1)
+    # The Int64 cast is what drops a null or NaN x: neither has a bucket, and
+    # both become a null key that the filter removes. True division lands x_hi
+    # exactly on n_buckets; the clip folds that lone top row back into the last
+    # bucket instead of letting it open an n_buckets + 1-th one and overrun the
+    # budget.
+    bucket = (
+        ((phys_expr - pl.lit(x_lo)) // pl.lit(bsz))
+        .cast(pl.Int64, strict=False)
+        .clip(upper_bound=n_buckets - 1)
+        .alias("__b")
+    )
+    src = src.with_columns(bucket).filter(pl.col("__b").is_not_null())
+
     y = pl.col(y_col)
     extrema = (
         pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
         pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
     )
     if group_cols is None:
-        return (
-            src.group_by(bucket.alias("__b")).agg(*extrema).collect(engine="streaming")
-        )
+        return src.group_by("__b").agg(*extrema).collect(engine="streaming")
 
     key, by, group_aggs = _grouped_bucket_keys(
-        group_cols, schema, domains or {}, n_buckets, bucket
+        group_cols, schema, domains or {}, n_buckets, pl.col("__b")
     )
     return (
-        # A null key is a null or NaN x, which no bucket holds.
         src.with_columns(key)
-        .filter(pl.col("__b").is_not_null())
         .group_by(by)
         .agg(*group_aggs, *extrema)
         .collect(engine="streaming")
@@ -1114,8 +1119,8 @@ class LinePlot(FlexTrace):
                 updates={"x": df_line[self.x_col], "y": df_line[self.y_col]}
             )
 
-        # A bucket that holds only nulls or only NaN still emits that value as
-        # its extremum, and a line skips a null or NaN point on every path.
+        # A bucket whose y is all null or all NaN still emits that value as its
+        # extremum, and a line skips a null or NaN point on every path.
         df_line = df_line.drop_nulls()
         if any(dtype.is_float() for dtype in df_line.dtypes):
             df_line = df_line.filter(

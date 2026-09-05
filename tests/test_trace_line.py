@@ -14,7 +14,7 @@ import random
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.line import LinePlot, _grouped_bucket_keys
+from flexviz.trace.line import LinePlot, _grouped_bucket_keys, _pairs_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -1159,6 +1159,25 @@ class TestGroupedXWidthBuckets:
         assert set(out) == {"a", "b"}
         assert not any(math.isnan(v) for u in out.values() for v in u["x"].to_list())
 
+    def test_a_nan_only_group_gets_no_child(self):
+        # Every key form must drop a NaN x. "site" is a second string column,
+        # so that group_by takes the multi-column key and "g" the packed one.
+        df = _grouped_frame().with_columns(
+            ts=pl.when(pl.col("g") == "b")
+            .then(float("nan"))
+            .otherwise(pl.col("ts").cast(pl.Float64)),
+            site=pl.lit("north"),
+        )
+        lf = LFQueryBuilder(df)
+        packed = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        multi = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by=["g", "site"])
+        )
+        assert set(packed) == {"a"}
+        assert set(multi) == {'["a","north"]'}
+
     def test_a_tenth_of_the_domain_gets_a_tenth_of_the_points(self):
         # The whole point of one shared grid (issue #16). Row-count buckets
         # would spend the full budget on the short series.
@@ -1207,6 +1226,45 @@ class TestGroupedXWidthBuckets:
         assert [_points(u) for u in multi.values()] == [
             _points(u) for u in packed.values()
         ]
+
+
+class TestPlanDropsNaNAndNullX:
+    """No bucket holds a null or a NaN x, so every plan form drops those rows."""
+
+    @staticmethod
+    def _pairs(group_cols=None, domains=None):
+        df = pl.DataFrame(
+            {
+                "ts": [0.0, 1.0, 2.0, 3.0, float("nan"), None],
+                "val": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "gi": [1] * 6,
+            },
+            schema={"ts": pl.Float64, "val": pl.Float64, "gi": pl.Int64},
+        )
+        run = _pairs_plan(
+            "ts",
+            "val",
+            2,
+            "u",
+            None,
+            None,
+            (0.0, 3.0),
+            df.schema,
+            group_cols=group_cols,
+            domains=domains or {},
+        )
+        return run(df.lazy())["u"].to_list()[0]
+
+    def test_every_key_form_gives_the_same_pairs(self):
+        # The packed key drops both rows through its null key. The ungrouped
+        # plan and the multi-column fallback must agree with it.
+        expected = [
+            {"x_min": 0.0, "y_min": 1.0, "x_max": 1.0, "y_max": 2.0},
+            {"x_min": 2.0, "y_min": 3.0, "x_max": 3.0, "y_max": 4.0},
+        ]
+        assert self._pairs() == expected
+        assert self._pairs(("gi",), {"gi": (1, 1)}) == expected
+        assert self._pairs(("gi",), {}) == expected
 
 
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------

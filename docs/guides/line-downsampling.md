@@ -54,8 +54,8 @@ ascending and free of nulls and NaN. The engine verifies this on the first
 request and raises `ValueError` when the column breaks the contract.
 `Figure.add_line` itself checks nothing.
 
-A file source runs an order-independent plan that drops null x and tolerates
-NaN, so only its dtype is gated.
+A file source runs an order-independent plan that drops null and NaN x, so only
+its dtype is gated.
 
 - The order, null, and NaN check costs one pass over x. A `cache=True` source
   pays it once per source and column. A `cache=False` source may have changed
@@ -88,7 +88,7 @@ fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal row
 
 | Column | What happens |
 | --- | --- |
-| x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source drops it. |
+| x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source and a grouped line drop the row. |
 | y | Skipped, on every downsampling path. |
 
 An infinite bound has no finite bucket width, so the grid cannot be built. Drop
