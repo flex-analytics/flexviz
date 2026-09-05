@@ -484,8 +484,8 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
-- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan repeats the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
-- `_FIXED_HIST_ROUND_EPS` mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
+- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
+- `_FIXED_HIST_ROUND_EPS` (`cube.py`) mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
 - A **grouped** histogram runs the streaming plan on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. The kernel would hold every group's column in memory at once. So the kernel serves only the ungrouped resident case.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`

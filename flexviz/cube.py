@@ -596,7 +596,9 @@ class CubeResult:
 
 
 #: Mirrors ``FIXED_HIST_ROUND_EPS`` in the Rust kernel: keeps values exactly on
-#: a bin edge from falling into the previous bin through float rounding.
+#: a bin edge from falling into the previous bin through float rounding. The
+#: histogram trace's streaming plan shares this constant via
+#: ``_fixed_hist_bin_expr`` below.
 _FIXED_HIST_ROUND_EPS: float = 1e-9
 
 
@@ -728,13 +730,15 @@ def _fixed_hist_bin_expr(
 ) -> pl.Expr:
     """Bin index bit-equal to the Rust ``fixed_hist`` kernel for in-domain rows:
     ``min(floor((v-lo)*(n/(hi-lo)) + eps), n-1)`` — same operation order, same
-    round-epsilon, same top clamp (the epsilon can push ``v == hi`` to ``n``)."""
+    round-epsilon, same top clamp (the epsilon can push ``v == hi`` to ``n``).
+    The cast is non-strict, so a NaN input becomes null instead of raising;
+    the histogram plan relies on this to drop NaN rows at its dense join."""
     scale = n / (hi - lo) if hi > lo else 0.0
     return (
         ((value.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
         .floor()
         .clip(0, n - 1)
-        .cast(pl.Int32)
+        .cast(pl.Int32, strict=False)
         .alias(alias)
     )
 

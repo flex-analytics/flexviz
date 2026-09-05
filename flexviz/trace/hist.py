@@ -23,7 +23,13 @@ import polars as pl
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
+from ..cube import (
+    CubeTargetSpec,
+    FreeAxisSpec,
+    MeasureSpec,
+    TargetDimSpec,
+    _fixed_hist_bin_expr,
+)
 from ..LF import AggregationSpec, GroupedAggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
@@ -54,13 +60,9 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 
 #: Small offset added to the upper bound (``hi``) so the maximum data point
 #: always falls inside the last bin and bin edges are never degenerate.
+#: Distinct from the cube's ``_FIXED_HIST_ROUND_EPS``, which pads the bin
+#: index instead of ``hi``.
 _HIST_BIN_EPSILON: float = 1e-10
-
-#: Mirrors FIXED_HIST_ROUND_EPS in flexviz_polars/src/expressions.rs. The kernel
-#: adds it to the scaled offset before truncating, so a value on a bin edge lands
-#: in the bin above. The streaming plan must add the same, or the two paths
-#: disagree on edges. Distinct from ``_HIST_BIN_EPSILON``, which pads ``hi``.
-_FIXED_HIST_ROUND_EPS: float = 1e-9
 
 
 def _streaming_hist_plan(
@@ -76,10 +78,11 @@ def _streaming_hist_plan(
     """The kernel's histogram as a streaming ``group_by``.
 
     The ``fixed_hist`` kernel materializes the whole column; this reads it in
-    batches instead. Same bin arithmetic: clip before the cast, and the
-    non-strict cast turns NaN into null so NaN and null both drop out at the
-    dense join. Empty bins come back as zero, ordered, so ``_to_update`` sees
-    the kernel's shape.
+    batches instead. The bin index comes from the cube's
+    ``_fixed_hist_bin_expr``, the one Python mirror of the kernel arithmetic;
+    its non-strict cast turns NaN into null so NaN and null both drop out at
+    the dense join. Empty bins come back as zero, ordered, so ``_to_update``
+    sees the kernel's shape.
 
     Ungrouped it returns one row holding every bin. Grouped it returns one row
     per group, sorted by group value, each holding that group's bins: the shape
@@ -101,13 +104,8 @@ def _streaming_hist_plan(
 
         # hi == lo is the kernel's degenerate span: every value lands in bin 0
         # and every breakpoint is lo.
-        scale = bins / (hi - lo) if hi > lo else 0.0
         step = (hi - lo) / bins if hi > lo else 0.0
-        bin_idx = (
-            ((value_expr.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
-            .clip(0, bins - 1)
-            .cast(pl.Int32, strict=False)
-        )
+        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
         src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
         all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
         dense_cols = (
@@ -117,7 +115,7 @@ def _streaming_hist_plan(
 
         if group_cols is None:
             counted = (
-                src.group_by(bin_idx.alias("__b"))
+                src.group_by(bin_idx)
                 .agg(pl.len().alias("count"))
                 .collect(engine="streaming")
             )
@@ -130,7 +128,7 @@ def _streaming_hist_plan(
 
         cols = list(group_cols)
         counted = (
-            src.group_by([*cols, bin_idx.alias("__b")])
+            src.group_by([*cols, bin_idx])
             .agg(pl.len().alias("count"))
             .collect(engine="streaming")
         )
