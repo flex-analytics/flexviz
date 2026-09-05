@@ -18,25 +18,31 @@ fig.add_line(
 ## Algorithms
 
 - **`"minmax"`** (default): splits the x range into `n_points // 2` buckets
-  and keeps the y-minimum and y-maximum of each. An ungrouped line makes the
-  buckets equal in x width. A grouped one makes them equal in row count.
-  Extremes and spikes always survive, which makes it the right default for
-  monitoring-style data.
+  and keeps the y-minimum and y-maximum of each. The buckets are equal in x
+  width, grouped or not. Extremes and spikes always survive, which makes it the
+  right default for monitoring-style data.
 - **`"lttb"`**: MinMaxLTTB. Runs the min-max pass with four times the budget,
   then keeps the point with the largest triangle area in each of `n_points`
   buckets. The output holds exactly `n_points` points when the prefetch holds
   more, and fewer when x gaps leave buckets empty. The line looks smoother than
-  a min-max envelope on noisy data. Ungrouped lines only, and it is not a
-  cross-filter cube target.
+  a min-max envelope on noisy data. A grouped line thins each series on its
+  own. It is not a cross-filter cube target.
 - **`"fpcs"`**: Feature-Preserving Compensated Sampling. Runs the same min-max
   pass, then carries deferred extrema forward across buckets to reduce visual
-  artifacts on oscillating signals. An ungrouped line buckets by x width, a
-  grouped one by row count. `n_points` is a target, not a cap: output can reach
-  roughly `2 * n_points`, and holds fewer points when the x gaps leave buckets
-  empty.
+  artifacts on oscillating signals. It buckets by x width, grouped or not.
+  `n_points` is a target, not a cap: output can reach roughly `2 * n_points`,
+  and holds fewer points when the x gaps leave buckets empty.
 - **`"nth"`**: uniform stride, keeping every n-th row. Cheapest, but a spike
   between kept points disappears. Use it when the data is smooth or when you
   want deterministic spacing.
+
+## Grouped lines
+
+A grouped line puts every series on one grid: the same buckets an ungrouped line
+over the same x column and `n_points` builds. A group that covers a tenth of the
+x domain therefore gets about a tenth of the points, not a full budget of its
+own. That split is provisional, and issue #16 tracks it. `"nth"` is the
+exception: it keeps a stride per group, so every series gets `n_points` points.
 
 ## The x contract
 
@@ -59,16 +65,18 @@ NaN, so only its dtype is gated.
   wrong output.
 - Sorted x also makes a viewport zoom a zero-copy binary-searched slice of the
   frame instead of a row-by-row range filter, which matters at 100M+ rows.
-- Grouped lines and `"nth"` lines are not checked. Their buckets hold equal row
-  counts, and they mask the viewport when x is not declared sorted, which is
-  always correct but slower on very large frames.
+- A grouped line is checked on its dtype only. Its buckets are arithmetic on x,
+  which needs no order. An `"nth"` line is not checked at all: a stride needs no
+  grid. A grouped line always masks the viewport, and an `"nth"` line masks it
+  when x is not declared sorted, which is always correct but slower on very
+  large frames.
 - `n_points` must be between 2 and 25000. The client posts the trace spec on
   every update, so the bound is enforced wherever a line is built.
 
 ### Equal-row-count buckets
 
-An ungrouped x-width line spends its budget on x width, so a dense burst in a
-narrow x span gets few points. To spend the budget on row count instead, plot against a
+An x-width line spends its budget on x width, so a dense burst in a narrow x
+span gets few points. To spend the budget on row count instead, plot against a
 row index:
 
 ```python
