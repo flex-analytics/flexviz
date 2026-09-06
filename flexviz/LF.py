@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import polars as pl
 
 from typing import Any, Callable, List, Set, Tuple
@@ -33,6 +35,71 @@ def get_col_name(col: str | pl.Expr) -> str:
         return col
     assert col.meta.is_column()
     return col.meta.output_name()
+
+
+def _parquet_footer_minmax(
+    path: str, columns: List[str], sch: pl.Schema
+) -> dict[str, Tuple[Any, Any]]:
+    """``(min, max)`` per column from the Parquet footer, in physical form.
+
+    Returns only the columns the footer can answer. The footer holds per
+    row-group statistics, so this reads a few kilobytes instead of decoding the
+    column. Values match what ``pl.col(c).min()`` (or ``.to_physical().min()``
+    for a temporal column) would collect.
+    """
+    import pyarrow.parquet as pq
+
+    meta = pq.read_metadata(path)
+    arrow_schema = meta.schema.to_arrow_schema()
+    # A nested column contributes several leaves, so an arrow field index stops
+    # being a leaf index and the statistics would be read off the wrong column.
+    if len(arrow_schema) != meta.num_columns:
+        return {}
+
+    out: dict[str, Tuple[Any, Any]] = {}
+    for c in columns:
+        dtype = sch.get(c)
+        if dtype is None:
+            continue
+        temporal = dtype.is_temporal()
+        # Only these reduce to a scalar that is comparable across row groups and
+        # convertible back to the physical value the collect path returns.
+        if not (temporal or dtype.is_integer() or dtype.is_float()):
+            continue
+        idx = arrow_schema.get_field_index(c)
+        if idx < 0:
+            continue
+
+        lo = hi = None
+        for rg in range(meta.num_row_groups):
+            stats = meta.row_group(rg).column(idx).statistics
+            if stats is None or not stats.has_min_max:
+                lo = None  # no statistics for this column, leave it to the collect
+                break
+            # Unsigned ints need the decoded value: the raw one is the signed
+            # reading of the same bytes. Temporal columns need the raw one: the
+            # decoded one is a Python datetime and cannot hold nanoseconds.
+            mn, mx = (
+                (stats.min_raw, stats.max_raw) if temporal else (stats.min, stats.max)
+            )
+            lo = mn if lo is None else min(lo, mn)
+            hi = mx if hi is None else max(hi, mx)
+        if lo is None:
+            continue
+
+        if temporal:
+            # Read the raw ints back through the file's own arrow type, so a unit
+            # the Polars dtype does not share (a millisecond time, say) converts.
+            atype = arrow_schema.field(idx).type
+            lo, hi = (
+                pl.from_arrow(pa.array([v], type=atype))
+                .cast(dtype)
+                .to_physical()
+                .item()
+                for v in (lo, hi)
+            )
+        out[c] = (lo, hi)
+    return out
 
 
 @dataclass(frozen=True)
@@ -129,6 +196,36 @@ class LFQueryBuilder:
         return self._cached_is_scan
 
     @property
+    def _parquet_path(self) -> str | None:
+        """The file behind a bare single-file local Parquet scan, else ``None``.
+
+        Only that shape lets the footer speak for the whole source. A multi-file
+        or hive scan, a cloud URL, or any node above the scan changes which rows
+        the statistics describe. Computed once, like ``is_scan``.
+        """
+        if not hasattr(self, "_cached_parquet_path"):
+            self._cached_parquet_path = None
+            try:
+                lines = self._ldf.explain(optimized=False).split("\n")
+            except Exception:
+                lines = [""]
+            prefix, suffix = "Parquet SCAN [", "]"
+            head = lines[0]
+            # A slice (``scan_parquet(n_rows=...)``) sits inside the scan node
+            # and reads fewer rows than the footer describes.
+            sliced = any(ln.startswith("SLICE") for ln in lines[1:])
+            if head.startswith(prefix) and head.endswith(suffix) and not sliced:
+                path = head[len(prefix) : -len(suffix)]
+                # A comma means several files; ``isfile`` rules out cloud URLs.
+                if (
+                    "," not in path
+                    and path.endswith(".parquet")
+                    and os.path.isfile(path)
+                ):
+                    self._cached_parquet_path = path
+        return self._cached_parquet_path
+
+    @property
     def collect_engine(self) -> str:
         """The Polars engine the builder's own collects use.
 
@@ -164,6 +261,11 @@ class LFQueryBuilder:
         raw value. Nothing is cast to Float64, so large integer bounds stay
         exact. An empty or all-null column yields ``(None, None)``.
 
+        On a bare single-file Parquet scan the Parquet footer answers what it
+        can, which reads a few kilobytes instead of decoding the column.
+        Whatever the footer cannot answer is collected as before. The footer is
+        an optimization only: any problem with it falls back to the collect.
+
         ``memoize`` keeps the result for the builder's lifetime. Only a
         ``cache=True`` source may set it — the same static-data contract that
         governs schema caching — because otherwise a reset must be able to see
@@ -176,7 +278,15 @@ class LFQueryBuilder:
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
         # already be memoized. ``dict.fromkeys`` preserves first-seen order.
-        missing = [c for c in dict.fromkeys(columns) if c not in memo]
+        missing = list(dict.fromkeys(c for c in columns if c not in memo))
+        path = self._parquet_path if missing else None
+        if path is not None:
+            try:
+                found = _parquet_footer_minmax(path, missing, sch)
+            except Exception:
+                found = {}
+            memo.update(found)
+            missing = [c for c in missing if c not in found]
         if missing:
             exprs: List[pl.Expr] = []
             for c in missing:

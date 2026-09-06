@@ -1,9 +1,10 @@
 """Request-wide unfiltered-domain resolution and per-source-kind engine pinning.
 
 Bin edges come from the unfiltered frame, so a cross-filter never moves them.
-The engine resolves every column a request needs in one min/max collect, and
-every collect names its Polars engine: streaming for a scan, in-memory for a
-resident frame.
+The engine resolves every column a request needs in one min/max pass: the
+Parquet footer on a single-file Parquet scan, one collect otherwise. Every
+collect names its Polars engine: streaming for a scan, in-memory for a resident
+frame.
 """
 
 from __future__ import annotations
@@ -95,19 +96,18 @@ class TestResolveCount:
         assert collects.minmax == []
 
     def test_one_collect_covers_every_column_in_the_request(self, tmp_path, collects):
-        """Two histograms, a hist2d and a scan line resolve in a single scan."""
-        src = _write(
-            tmp_path / "d.parquet",
-            pl.DataFrame(
-                {
-                    "a": [float(i) for i in range(200)],
-                    "b": [float(i % 7) for i in range(200)],
-                    "ts": list(range(200)),
-                }
-            ),
-        )
+        """A CSV scan has no footer to read, so the columns of two histograms, a
+        hist2d and a scan line must resolve in a single min/max collect."""
+        path = tmp_path / "d.csv"
+        pl.DataFrame(
+            {
+                "a": [float(i) for i in range(200)],
+                "b": [float(i % 7) for i in range(200)],
+                "ts": list(range(200)),
+            }
+        ).write_csv(path)
         engine, infos = _engine(
-            src,
+            pl.scan_csv(path),
             [
                 Histogram(x="a", bins=10),
                 Histogram(x="b", bins=10),
@@ -165,7 +165,8 @@ class TestResolveCount:
 
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
-        """One min/max scan plus one streaming plan per ungrouped histogram."""
+        """The footer resolves the bounds, so a Parquet scan pays one streaming
+        plan per ungrouped histogram and no min/max scan."""
         src = _write(
             tmp_path / "d.parquet",
             pl.DataFrame({"a": [float(i) for i in range(200)]}),
@@ -175,9 +176,9 @@ class TestResolveCount:
         )
         _init(engine, infos)
 
-        assert len(collects.minmax) == 1
+        assert collects.minmax == []
         # A plan spec runs alone: it trades the shared select for bounded memory.
-        assert len(collects.calls) == 1 + n_traces
+        assert len(collects.calls) == n_traces
 
 
 # ---- fixed engine per source kind ------------------------------------------
@@ -200,7 +201,7 @@ class TestEnginePinning:
         engine, infos = _engine(src, [Histogram(x="a", bins=10)])
         _init(engine, infos)
 
-        assert len(collects.minmax) == 1
+        assert collects.minmax == []  # the footer answered
         assert set(collects.engines) == {"streaming"}
 
 
