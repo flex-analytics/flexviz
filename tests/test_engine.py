@@ -16,6 +16,7 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
 from flexviz.trace.bar import BarPlot
 from flexviz.trace.box import BoxPlot
+from flexviz.trace._hist_helpers import _snap_range
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.hist import Histogram
 from flexviz.trace.hist2d import Histogram2D
@@ -1704,7 +1705,8 @@ class TestEngineHistogramBinAlignment:
         d1 = next(d for d in deltas if d.uid == h1.uid)
         d2 = next(d for d in deltas if d.uid == h2.uid)
         assert d1.updates["x"] == d2.updates["x"]
-        assert len(d1.updates["x"]) == 8
+        # The viewport is not lattice-aligned, so the snap buys one extra bin.
+        assert len(d1.updates["x"]) == _snap_range(50.0, 300.0, 8)[2] == 9
 
     def test_hist_aligned_on_autorange_null_viewport(self):
         """A double-click autorange posts ``axis_ranges={"x": None}`` (unzoomed).

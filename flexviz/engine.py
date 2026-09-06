@@ -27,7 +27,7 @@ from .spec import SelectionState
 from .trace.base import (
     FlexTrace,
     _dtype_for_col,
-    _typed_temporal_lit,
+    _physical_bound_expr,
     child_uid_from_group_key,
 )
 from .trace.hist import _HIST_BIN_EPSILON
@@ -585,34 +585,33 @@ class FlexEngine:
         None (unzoomed).
 
         Reads the same per-figure viewport mapping that ``process`` consumes
-        for ``update_range``. Temporal viewports arrive as date strings —
-        with ``schema`` and ``column`` given they are parsed into the
-        column's physical representation (contract G; previously they
-        silently resolved to the full domain — wrong for a zoomed temporal
-        source). Other non-numeric values (map coordinates, autorange
-        ``None``) yield ``None`` — i.e. the full data domain.
+        for ``update_range``. A temporal column's bounds go through
+        ``_physical_bound_expr``, the one conversion the display path uses
+        (contract G): a date string and an epoch-ms number both land in the
+        column's physical unit, so a cube grid cannot miss the display grid by
+        the unit factor. Unparsable bounds and other non-numeric values (map
+        coordinates, autorange ``None``) yield ``None`` — i.e. the full data
+        domain.
         """
         if figure_uid is None or anchor is None:
             return None
         rng = (viewports_by_figure.get(figure_uid) or {}).get(anchor)
         if not (isinstance(rng, (tuple, list)) and len(rng) == 2):
             return None
+        dtype = _dtype_for_col(schema, column) if column is not None else None
+        if dtype is not None and dtype.is_temporal():
+            try:
+                lo, hi = (
+                    pl.select(_physical_bound_expr(v, dtype).cast(pl.Float64)).item()
+                    for v in rng
+                )
+            except Exception:
+                return None
+            if lo is None or hi is None:
+                return None
+            return (float(lo), float(hi))
         if all(isinstance(v, (int, float)) for v in rng):
             return (float(rng[0]), float(rng[1]))
-        if column is not None and all(isinstance(v, str) for v in rng):
-            dtype = _dtype_for_col(schema, column)
-            if dtype is not None and dtype.is_temporal():
-                try:
-                    lo, hi = (
-                        pl.select(
-                            _typed_temporal_lit(v, dtype).to_physical().cast(pl.Float64)
-                        ).item()
-                        for v in rng
-                    )
-                except Exception:
-                    return None
-                if lo is not None and hi is not None:
-                    return (float(lo), float(hi))
         return None
 
     def _resolve_cube_domains(

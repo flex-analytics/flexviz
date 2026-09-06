@@ -10,8 +10,8 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.base import _range_filter_expr
-from flexviz.trace.hist import Histogram, _streaming_hist_plan
+from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -229,19 +229,19 @@ class TestHistogramBinAlignment:
         assert centers_pos == centers_neg
 
     def test_viewport_range_produces_correct_bin_centers(self, small_df: pl.DataFrame):
-        """With a viewport range the bin centers must equal lo + (i + 0.5) * step."""
-        from flexviz.trace.hist import _HIST_BIN_EPSILON
-
+        """With a viewport range the bin centers must equal lo + (i + 0.5) * step
+        over the SNAPPED range, which can hold one bin more than asked for."""
         lf = LFQueryBuilder(small_df)
         bins = 5
-        lo, hi = 100.0, 400.0
         trace = Histogram(x="val", bins=bins)
-        spec = trace.get_aggregation_spec({"x": [lo, hi]}, schema=lf.schema)
+        spec = trace.get_aggregation_spec({"x": [100.0, 400.0]}, schema=lf.schema)
         df_agg, _ = lf.aggregate([], [spec])
         centers = list(trace._to_update(df_agg).updates["x"])
-        step = (hi - lo + _HIST_BIN_EPSILON) / bins
-        expected = [lo + (i + 0.5) * step for i in range(bins)]
-        assert len(centers) == bins
+        lo, hi, n = _snap_range(100.0, 400.0, bins)
+        assert n == bins + 1
+        step = (hi - lo + _HIST_BIN_EPSILON) / n
+        expected = [lo + (i + 0.5) * step for i in range(n)]
+        assert len(centers) == n
         for got, want in zip(centers, expected):
             assert abs(got - want) < 1e-6
 
@@ -330,6 +330,120 @@ class TestHistogramBinAlignment:
         assert (
             centers_cos_base == centers_cos_filtered
         ), "cos histogram bin centers must not change under cross-filtering"
+
+
+class TestHistogramViewportSnap:
+    """A zoomed histogram bins on the viewport snapped outward to a lattice."""
+
+    _DF = pl.DataFrame({"val": [float(i) / 4 for i in range(400)]})
+
+    def _centers(self, x_range, bins=10, df=None, x="val"):
+        return list(
+            _aggregate_hist(
+                self._DF if df is None else df, bins=bins, x=x, x_range=x_range
+            )["x"]
+        )
+
+    def test_lattice_aligned_viewport_is_unchanged(self):
+        # 20..60 over 10 bins has width 4 and both bounds are multiples of it.
+        assert _snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)
+        centers = self._centers((20.0, 60.0))
+        assert len(centers) == 10
+        assert centers[0] == pytest.approx(22.0)
+
+    def test_offset_viewport_snaps_outward_and_gains_a_bin(self):
+        lo, hi, n = _snap_range(21.0, 61.0, 10)
+        assert (lo, hi, n) == (20.0, 64.0, 11)
+        centers = self._centers((21.0, 61.0))
+        assert len(centers) == 11
+        assert centers[0] == pytest.approx(22.0)  # same lattice as the aligned case
+
+    def test_half_bin_pan_keeps_the_shared_edges(self):
+        # Panning by half a bin keeps the span, so the lattice does not move:
+        # every edge the two viewports have in common stays put.
+        before = self._centers((20.0, 60.0))
+        after = self._centers((22.0, 62.0))
+        for c in before:
+            assert min(abs(c - o) for o in after) < 1e-6
+
+    def test_counts_equal_the_kernel_at_the_snapped_edges(self):
+        x_range = (21.0, 61.0)
+        counts = list(_aggregate_hist(self._DF, bins=10, x_range=x_range)["y"])
+        lo, hi, n = _snap_range(*x_range, 10)
+        inside = self._DF.filter(pl.col("val").is_between(lo, hi))
+        ref = (
+            inside.select(
+                pl.col("val")
+                .flexviz.fixed_hist(
+                    pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), n_bins=n
+                )
+                .implode()
+                .alias("u")
+            )["u"]
+            .item()
+            .explode()
+            .struct.field("count")
+            .to_list()
+        )
+        assert counts == ref
+
+    def test_temporal_axis_snaps_in_physical_units(self):
+        import datetime
+
+        ts = pl.datetime_range(
+            datetime.datetime(2020, 1, 1),
+            datetime.datetime(2020, 1, 5),
+            interval="1h",
+            eager=True,
+        ).rename("t")
+        df = pl.DataFrame([ts])
+        # A window offset by 30 minutes from the 6-hour lattice: 12 bins over
+        # 3 days is a 6-hour width, so the snap must widen it by one bin.
+        update = _aggregate_hist(
+            df,
+            bins=12,
+            x="t",
+            x_range=("2020-01-01 00:30:00", "2020-01-04 00:30:00"),
+        )
+        centers = update["x"].to_list()
+        assert len(centers) == 13
+        # Snapped edges are whole 6-hour steps from the epoch, so every center
+        # sits on a 3-hour offset: 03:00, 09:00, ...
+        assert all(c.minute == 0 and c.hour % 6 == 3 for c in centers)
+
+    def test_grouped_snaps_the_same_for_every_group(self):
+        df = pl.DataFrame(
+            {"val": [float(i) for i in range(40)], "cat": ["A", "B"] * 20}
+        )
+        lf = LFQueryBuilder(df)
+        trace = Histogram(x="val", bins=10, group_by="cat")
+        update_range = {"x": [1.0, 21.0]}
+        spec = trace.get_aggregation_spec(
+            update_range, schema=lf.schema, domains=_domains(lf, trace, update_range)
+        )
+        _, grouped = lf.aggregate([], [spec])
+        results = trace._to_grouped_update(grouped[trace.uid]).group_results
+        lo, hi, n = _snap_range(1.0, 21.0, 10)
+        assert n == 11
+        centers = [list(cr.updates["x"]) for cr in results]
+        assert len(centers) == 2 and centers[0] == centers[1]
+        assert len(centers[0]) == n
+        assert centers[0][0] == pytest.approx(lo + (hi - lo) / n / 2)
+
+    def test_scan_plan_matches_the_kernel_under_a_snapped_viewport(self):
+        lf = LFQueryBuilder(self._DF)
+        trace = Histogram(x="val", bins=10)
+        update_range = {"x": [21.0, 61.0]}
+        out = []
+        for scan_source in (False, True):
+            spec = trace.get_aggregation_spec(
+                update_range, schema=lf.schema, scan_source=scan_source
+            )
+            df_agg, _ = lf.aggregate([], [spec])
+            updates = trace._to_update(df_agg).updates
+            out.append((updates["x"].to_list(), updates["y"].to_list()))
+        assert out[0] == out[1]
+        assert len(out[0][0]) == 11
 
 
 class TestHistogramGroupedBinAlignment:
@@ -764,8 +878,9 @@ class TestCubeDescriptors:
         dim = spec.target_dims[0]
         assert dim.column == "val"
         assert dim.kind == "binned"
-        assert dim.bins == 25
-        assert tuple(dim.domain) == (2.0, 8.0)
+        lo, hi, n = _snap_range(2.0, 8.0, 25)
+        assert dim.bins == n
+        assert tuple(dim.domain) == (lo, hi)
         assert spec.measure.agg == "count"
 
     def test_target_spec_unzoomed_domain_none(self):
@@ -774,13 +889,55 @@ class TestCubeDescriptors:
         assert spec is not None
         assert spec.target_dims[0].domain is None
 
-    def test_target_domain_is_axis_range_verbatim_no_epsilon(self):
+    def test_target_domain_is_the_snapped_range_no_epsilon(self):
         # The ENGINE adds _HIST_BIN_EPSILON when resolving domains; the trace
-        # must pass the viewport through unchanged.
+        # emits the snapped viewport, the display grid, and nothing else.
         trace = Histogram(x="val", bins=10)
         spec = trace.get_cube_target_spec((100.0, 400.0))
         assert spec is not None
-        assert tuple(spec.target_dims[0].domain) == (100.0, 400.0)
+        lo, hi, n = _snap_range(100.0, 400.0, 10)
+        assert tuple(spec.target_dims[0].domain) == (lo, hi)
+        assert spec.target_dims[0].bins == n
+
+    def test_target_grid_equals_the_display_grid(self):
+        # The client derives bar centers from (domain, bins), so a cube-served
+        # bar lands on the server's bar only if both grids agree.
+        trace = Histogram(x="val", bins=10)
+        axis_range = (100.0, 400.0)
+        spec = trace.get_cube_target_spec(axis_range)
+        lo_expr, hi_expr, n_bins, _ = trace._histogram_bounds_exprs(axis_range, None)
+        lo, hi = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+        dim = spec.target_dims[0]
+        # The engine pads the cube dim's hi exactly like the display path.
+        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert dim.bins == n_bins
+
+    @pytest.mark.parametrize(
+        "viewport",
+        [
+            ("2024-01-02 03:00:00", "2024-01-05 07:30:00"),
+            (1704164400000.0, 1704439800000.0),  # the same instants, epoch-ms
+        ],
+        ids=["date_string", "epoch_ms"],
+    )
+    def test_temporal_target_grid_equals_the_display_grid(self, viewport):
+        # A temporal viewport reaches the descriptor through the engine, which
+        # converts it to physical units. Both spellings must land on the
+        # display grid, not one unit factor away from it.
+        from flexviz.engine import FlexEngine
+
+        schema = pl.Schema({"t": pl.Datetime("us")})
+        trace = Histogram(x="t", bins=7)
+        cube_range = FlexEngine._cube_axis_range(
+            {"fig": {"x": list(viewport)}}, "fig", "x", schema=schema, column="t"
+        )
+        dim = trace.get_cube_target_spec(cube_range, schema=schema).target_dims[0]
+        lo_expr, hi_expr, n_bins, _ = trace._histogram_bounds_exprs(
+            viewport, None, schema
+        )
+        lo, hi = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert dim.bins == n_bins
 
     def test_grouped_hist_target_dims_binned_then_groups(self):
         # Pinned target-dim order (Phase 2): binned data col first, then the
@@ -990,15 +1147,17 @@ class TestHistogramGroupedPlanEquivalence:
         got = self._children(trace._to_grouped_update(grouped[trace.uid]))
 
         cols = list(trace.group_by_cols)
-        lo_expr, hi_expr = trace._histogram_bounds_exprs(x_range, domains, None)
+        lo_expr, hi_expr, n_bins, mask = trace._histogram_bounds_exprs(
+            x_range, domains, lf.schema
+        )
         ldf = df.lazy()
-        if x_range is not None:
-            ldf = ldf.filter(_range_filter_expr("v", list(x_range), schema=lf.schema))
+        if mask is not None:
+            ldf = ldf.filter(mask)
         ref_df = (
             ldf.group_by(cols)
             .agg(
                 pl.col("v")
-                .flexviz.fixed_hist(lo_expr, hi_expr, n_bins=bins)
+                .flexviz.fixed_hist(lo_expr, hi_expr, n_bins=n_bins)
                 .implode()
                 .alias(trace.uid)
             )

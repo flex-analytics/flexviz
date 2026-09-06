@@ -205,6 +205,25 @@ def _snapped_axis_mask(
     return pl.col(col).is_between(*_typed_range_bounds(col, (lo, hi), schema))
 
 
+def _snapped_axis(
+    col: str, range_: tuple, n: int, schema: pl.Schema | None
+) -> tuple[float, float, int, pl.DataType | None]:
+    """A zoomed axis in the kernel's data space: snapped bounds, bin count, and
+    the column's temporal dtype (``None`` when numeric).
+
+    A viewport bound can be a date string or an epoch number, so it is evaluated
+    into that space first. One lattice rule then serves temporal and numeric
+    axes alike. This is the only place a viewport is snapped, so a 1-D display
+    grid, a 2-D display grid, and a cube target cannot land on different edges.
+    """
+    dtype = _temporal_dtype_for_col(col, schema)
+    # Both bounds are literals, so this selects no data.
+    lo_expr, hi_expr = _hist2d_bound_lits(range_, dtype)
+    raw = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+    lo, hi, n = _snap_range(float(raw[0]), float(raw[1]), n)
+    return lo, hi, n, dtype
+
+
 def _axis_edges(
     col: str,
     range_: tuple | None,
@@ -224,13 +243,7 @@ def _axis_edges(
         # The kernel adds its own EPS to the span, so pass the raw bounds.
         lo_lit, hi_lit = _domain_lits(domains, col)
         return lo_lit, hi_lit, None, n
-    dtype = _temporal_dtype_for_col(col, schema)
-    # A viewport bound can be a date string or an epoch number, so evaluate it
-    # into the kernel's data space first. One lattice rule then serves temporal
-    # and numeric axes alike. Both bounds are literals, so this selects no data.
-    lo_expr, hi_expr = _hist2d_bound_lits(range_, dtype)
-    raw = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
-    lo, hi, n = _snap_range(float(raw[0]), float(raw[1]), n)
+    lo, hi, n, dtype = _snapped_axis(col, range_, n, schema)
     return pl.lit(lo), pl.lit(hi), _snapped_axis_mask(col, lo, hi, dtype, schema), n
 
 

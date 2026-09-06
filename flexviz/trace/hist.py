@@ -42,13 +42,12 @@ from .base import (
     _group_value_key,
     _group_values_from_frame,
     _phys_epoch_ms_factor,
-    _physical_bound_expr,
     _physical_to_temporal_series,
     _temporal_dtype_for_col,
     _to_col_tuple,
-    _range_filter_expr,
 )
 from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
+from ._hist_helpers import _snap_range, _snapped_axis, _snapped_axis_mask
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -59,9 +58,10 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 # ---------------------------------------------------------------------------
 
 #: Small offset added to the upper bound (``hi``) so the maximum data point
-#: always falls inside the last bin and bin edges are never degenerate.
-#: Distinct from the cube's ``_FIXED_HIST_ROUND_EPS``, which pads the bin
-#: index instead of ``hi``.
+#: always falls inside the last bin and bin edges are never degenerate. On a
+#: zoomed axis it pads the *snapped* ``hi``, so a value sitting exactly on it
+#: still lands in the last bin. Distinct from the cube's
+#: ``_FIXED_HIST_ROUND_EPS``, which pads the bin index instead of ``hi``.
 _HIST_BIN_EPSILON: float = 1e-10
 
 
@@ -289,11 +289,15 @@ class Histogram(FlexTrace):
     ) -> CubeTargetSpec | None:
         """An ungrouped histogram is a binned-count cube target.
 
-        ``domain`` is ``axis_range`` verbatim — ``None`` when unzoomed, the
-        raw viewport tuple when zoomed. The trace never adds
-        ``_HIST_BIN_EPSILON`` here: the **engine** epsilon-pads the upper
-        bound uniformly when resolving domains (both ``None``-resolved full
-        domains and zoomed viewports), mirroring
+        ``domain`` is ``None`` when unzoomed. Zoomed it is the viewport
+        snapped to the display lattice, with the bin count the snap yields
+        (``bins`` or ``bins + 1``): the client derives bar centers from
+        ``domain`` and ``bins``, so a cube-served bar would otherwise miss the
+        server's bar. ``axis_range`` is already physical here
+        (``FlexEngine._cube_axis_range``), so only the lattice rule applies.
+        The trace never adds ``_HIST_BIN_EPSILON``: the **engine**
+        epsilon-pads the upper bound uniformly when resolving domains (both
+        ``None``-resolved full domains and snapped viewports), mirroring
         ``_histogram_bounds_exprs`` so cube bins align with display bins.
 
         A **grouped** histogram appends one categorical dim per ``group_by``
@@ -307,13 +311,19 @@ class Histogram(FlexTrace):
         group_cols = self.group_by_cols or ()
         if group_cols and not _categorical_dims_ok(schema, group_cols):
             return None
+        bins, domain = self.bins, None
+        if axis_range is not None:
+            lo, hi, bins = _snap_range(
+                float(axis_range[0]), float(axis_range[1]), self.bins
+            )
+            domain = (lo, hi)
         return CubeTargetSpec(
             target_dims=(
                 TargetDimSpec(
                     column=self.data_col,
                     kind="binned",
-                    bins=self.bins,
-                    domain=axis_range,
+                    bins=bins,
+                    domain=domain,
                 ),
                 *(TargetDimSpec(column=c, kind="categorical") for c in group_cols),
             ),
@@ -344,9 +354,10 @@ class Histogram(FlexTrace):
         same figure, or bg/fg layers in overlay mode, produce aligned bins:
 
         - When a viewport axis range is present in ``update_range`` the edges
-          are ``pl.lit(lo)`` / ``pl.lit(hi)`` scalar expressions derived from
-          that range.  Both bg and fg overlay layers use the same spec (and
-          therefore the same edges).
+          are that range snapped outward to a fixed lattice, so the grid stands
+          still while the user pans; the count is then ``bins`` or ``bins + 1``.
+          Both bg and fg overlay layers use the same spec (and therefore the
+          same edges).
         - When no viewport range is available (e.g. ``init`` with no prior
           zoom) the edges come from ``domains``: the unfiltered ``(min, max)``
           the engine resolved for this trace. It holds one entry per
@@ -363,31 +374,26 @@ class Histogram(FlexTrace):
         bounded memory. A grouped histogram takes that plan on both source
         kinds, so the kernel serves only the ungrouped resident case.
         """
-        filter_expr = _range_filter_expr(
-            self.data_col, update_range.get(self.prop_key), schema=schema
-        )
         axis_range = update_range.get(self.prop_key)
 
         # Temporal data columns are binned on their physical representation (the
         # numeric kernel rejects temporal dtypes); _to_update restores datetimes.
         self._data_temporal_dtype = _temporal_dtype_for_col(self.data_col, schema)
-        temporal = self._data_temporal_dtype
         data_col_expr = (
             pl.col(self.data_col).to_physical()
-            if temporal is not None
+            if self._data_temporal_dtype is not None
             else pl.col(self.data_col)
+        )
+        lo_expr, hi_expr, n_bins, filter_expr = self._histogram_bounds_exprs(
+            axis_range, domains, schema
         )
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
             # ------------------------------------------------------------------
-            # Grouped path: viewport filter applied via pre_group_filters so it
-            # runs before the group_by split.  The plan uses shared bin edges so
-            # all groups align.
-            # ------------------------------------------------------------------
-            lo_expr, hi_expr = self._histogram_bounds_exprs(
-                axis_range, domains, temporal
-            )
+            # Grouped path: the viewport mask runs as a pre_group_filter, before
+            # the group_by split, and every group shares the same bin edges.
+            #
             # One plan per grouped histogram, on both source kinds: the kernel
             # would hold every group's column in memory at once. A plan spec
             # runs alone and never joins the fused query, so it carries no
@@ -403,7 +409,7 @@ class Histogram(FlexTrace):
                     data_col_expr,
                     lo_expr,
                     hi_expr,
-                    self.bins,
+                    n_bins,
                     self.uid,
                     None,
                     group_cols=group_by_cols,
@@ -411,43 +417,47 @@ class Histogram(FlexTrace):
             )
 
         # ----------------------------------------------------------------------
-        # Ungrouped path: apply viewport filter directly inside the expression.
+        # Ungrouped path: the viewport mask runs inside the kernel expression;
+        # the scan plan filters the frame, so the scan itself rejects the rows.
         # ----------------------------------------------------------------------
-        lo_expr, hi_expr = self._histogram_bounds_exprs(axis_range, domains, temporal)
-
         if scan_source:
             return AggregationSpec(
                 uid=self.uid,
                 plan=_streaming_hist_plan(
-                    data_col_expr, lo_expr, hi_expr, self.bins, self.uid, filter_expr
+                    data_col_expr, lo_expr, hi_expr, n_bins, self.uid, filter_expr
                 ),
             )
 
         data_expr = data_col_expr
         if filter_expr is not None:
             data_expr = data_expr.filter(filter_expr)
-        hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
+        hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=n_bins)
         return AggregationSpec(expr=hist_expr.implode().alias(self.uid), uid=self.uid)
 
     def _histogram_bounds_exprs(
         self,
         axis_range: Any,
         domains: Mapping[str, tuple[Any, Any]] | None,
-        temporal_dtype: pl.DataType | None = None,
-    ) -> tuple[pl.Expr, pl.Expr]:
+        schema: pl.Schema | None = None,
+    ) -> tuple[pl.Expr, pl.Expr, int, pl.Expr | None]:
+        """Bin edges in the kernel's data space, the bin count, and the viewport
+        mask (``None`` when unzoomed).
+
+        Zoomed, the edges are the viewport snapped outward to the lattice of
+        width ``(hi - lo) / bins``, so the grid stands still while the user pans,
+        and the mask restricts the rows to that same span, so an edge bin is
+        complete. Snapping costs at most one extra bin, which is why the count
+        comes back too.
+        """
         if axis_range is not None:
-            if temporal_dtype is not None:
-                # Viewport bounds arrive as date strings / epoch-ms; convert to
-                # the column's physical unit so the bin edges align with the
-                # physical (to_physical) data column. _typed_temporal_lit handles
-                # naive, Z and offset (±HH:MM) spellings against any column tz —
-                # the same conversion the viewport filter already applied.
-                lo = _physical_bound_expr(axis_range[0], temporal_dtype)
-                hi = _physical_bound_expr(axis_range[1], temporal_dtype)
-                return lo, hi + _HIST_BIN_EPSILON
+            lo, hi, n, dtype = _snapped_axis(
+                self.data_col, axis_range, self.bins, schema
+            )
             return (
-                pl.lit(float(axis_range[0])),
-                pl.lit(float(axis_range[1]) + _HIST_BIN_EPSILON),
+                pl.lit(lo),
+                pl.lit(hi + _HIST_BIN_EPSILON),
+                n,
+                _snapped_axis_mask(self.data_col, lo, hi, dtype, schema),
             )
 
         # The trace's own column must be a resolved key; a missing key means
@@ -463,7 +473,7 @@ class Histogram(FlexTrace):
         his = [hi for _, hi in bounds if hi is not None]
         lo = min(los) if los else 0.0
         hi = max(his) if his else 1.0
-        return pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON)
+        return pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), self.bins, None
 
     def _to_update(
         self,
