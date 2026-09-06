@@ -16,7 +16,10 @@ Viewport filtering
 ------------------
 ``recompute_axes = ("coordinates",)`` — recomputed on each map viewport change.
 The viewport is expected as ``update_range["coordinates"]``, a list of
-``[lon, lat]`` corner points describing the visible bounding box.
+``[lon, lat]`` corner points describing the visible bounding box.  Unzoomed,
+the bin edges span the engine-resolved data range.  Zoomed, they span the
+viewport snapped outward to a fixed lattice, so the grid stands still while the
+user pans.
 
 Cross-filter convention
 -----------------------
@@ -29,27 +32,25 @@ enforced by the Plotly adapter when building ``SelectionState``.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Dict, Literal
+from typing import Any, Dict
 
 import polars as pl
 
 from ..LF import AggregationSpec
 from ..spec import TraceHoverSpec, TraceSelectionSpec, TraceSpec
-from .base import FlexTrace, TraceResult, _typed_range_bounds
+from .base import FlexTrace, TraceResult
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
+    _hist2d_agg_spec,
     apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
 
-import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
-
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
 
-_BIN_BOUNDARIES_OPTIONS = ("data", "viewport")
 # Reducers backed by the flexviz_polars Rust kernel (fixed_hist2d_reduce).
 # `median` and `n_unique` are intentionally unsupported on this fast path —
 # mirrors Histogram2D. See the roadmap note in Architecture.md.
@@ -80,13 +81,6 @@ class GeoHistogram2D(FlexTrace):
         Normalization applied after aggregation.
     name:
         Legend / series name.
-    bin_boundaries:
-        How bin edges are chosen when a map viewport is present:
-
-        - ``"data"`` (default): after filtering to the viewport, bin edges span
-          the min/max of the visible points (bins shift when panning/zooming).
-        - ``"viewport"``: bin edges span the viewport bounds (stable grid on
-          pan/zoom, like plotly-flex ``bin_boundaries="viewport"``).
     """
 
     trace_type: str = "geo_histogram2d"
@@ -106,7 +100,6 @@ class GeoHistogram2D(FlexTrace):
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | str | None = None,
-        bin_boundaries: Literal["data", "viewport"] = "data",
     ) -> None:
         if z is None and histfunc is not None:
             raise ValueError("histfunc is only meaningful when z is given.")
@@ -116,11 +109,6 @@ class GeoHistogram2D(FlexTrace):
             raise ValueError(f"histfunc must be one of {_GEO_HIST2D_HISTFUNC_OPTIONS}.")
         if histnorm not in _HISTNORM_OPTIONS:
             raise ValueError(f"histnorm must be one of {_HISTNORM_OPTIONS}.")
-        if bin_boundaries not in _BIN_BOUNDARIES_OPTIONS:
-            raise ValueError(
-                f"bin_boundaries must be one of {_BIN_BOUNDARIES_OPTIONS}, "
-                f"got {bin_boundaries!r}"
-            )
 
         backend_data: Dict[str, str] = {"lat": lat, "lon": lon}
         if z is not None:
@@ -142,10 +130,13 @@ class GeoHistogram2D(FlexTrace):
                 "lon_bins": lon_bins,
                 "histfunc": histfunc,
                 "histnorm": histnorm,
-                "bin_boundaries": bin_boundaries,
             },
             axes=None,
         )
+        # The grid the last request actually binned on: a zoomed request snaps
+        # its edges to a lattice, which can add one bin per axis. _to_update
+        # unpacks z_flat with this, not with the configured bin counts.
+        self._grid: tuple[int, int] = (lat_bins, lon_bins)
 
     def _default_recompute_axes(self) -> tuple[str, ...]:
         return ("coordinates",)  # re-bins on each map viewport change
@@ -197,10 +188,6 @@ class GeoHistogram2D(FlexTrace):
         return self._params["histnorm"]
 
     @property
-    def bin_boundaries(self) -> Literal["data", "viewport"]:
-        return self._params["bin_boundaries"]
-
-    @property
     def color_scale(self) -> str:
         return self._display["color_scale"]
 
@@ -233,6 +220,12 @@ class GeoHistogram2D(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
+    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
+        # A map viewport supplies both bounds at once, so it is all or nothing.
+        if update_range.get("coordinates"):
+            return ()
+        return (self.lat_col, self.lon_col)
+
     def get_aggregation_spec(
         self,
         update_range: Dict[str, Any],
@@ -242,26 +235,32 @@ class GeoHistogram2D(FlexTrace):
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
+        """Return the geo 2-D histogram aggregation spec.
+
+        lat maps to the kernel x (inner) axis and lon to its y (outer) axis, so
+        ``z_flat`` comes back in the lon-major order the GeoJSON builder wants.
+        Binning itself is the shared path (see ``_hist2d_agg_spec``).
+        """
         lat_range, lon_range = self._extract_lat_lon_range(update_range)
-        expr = _geo_hist2d_expr(
+        spec, self._grid = _hist2d_agg_spec(
             self.lat_col,
             self.lon_col,
-            self.lat_bins,
-            self.lon_bins,
+            self.z_col,
+            self.histfunc,
             lat_range,
             lon_range,
+            self.lat_bins,
+            self.lon_bins,
             self.uid,
-            histfunc=self.histfunc,
-            z_col=self.z_col,
-            bin_boundaries=self.bin_boundaries,
-            schema=schema,
+            domains,
+            schema,
+            scan_source,
         )
-        return AggregationSpec(expr=expr, uid=self.uid)
+        return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
         raw = df[self.uid][0]
-        nb_lat = self.lat_bins
-        nb_lon = self.lon_bins
+        nb_lat, nb_lon = self._grid
 
         # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}.
         # We map lat -> kernel x (inner axis), lon -> kernel y (outer axis), so
@@ -345,89 +344,9 @@ class GeoHistogram2D(FlexTrace):
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),
             color_range=spec.display.get("color_range"),
-            bin_boundaries=spec.params.get("bin_boundaries", "data"),
         )
         trace.uid = spec.uid
         return trace
-
-
-# ---------------------------------------------------------------------------
-# Pure-Polars expression builder
-# ---------------------------------------------------------------------------
-
-
-def _geo_hist2d_expr(
-    lat_col: str,
-    lon_col: str,
-    nb_lat: int,
-    nb_lon: int,
-    lat_range: tuple[float, float] | None,
-    lon_range: tuple[float, float] | None,
-    uid: str,
-    histfunc: str | None = None,
-    z_col: str | None = None,
-    bin_boundaries: Literal["data", "viewport"] = "data",
-    schema: pl.Schema | None = None,
-) -> pl.Expr:
-    """Build a geo 2D histogram expression backed by the Rust kernel.
-
-    lat is mapped to the kernel's x (inner) axis and lon to its y (outer) axis,
-    so the kernel's row-major ``z_flat[yi * nb_x + xi]`` becomes
-    ``z_flat[lon_idx * nb_lat + lat_idx]`` — the layout the GeoJSON builder
-    expects.  The expression aliases to *uid* and yields a length-1 struct
-    ``{z_flat, x_lo, x_hi, y_lo, y_hi}`` (x = lat bounds, y = lon bounds).
-
-    Bin edges follow ``bin_boundaries``:
-
-    - ``"viewport"`` (with a viewport): edges span the viewport rectangle, so
-      the grid is stable on pan/zoom.
-    - ``"data"`` (default): edges span the min/max of the visible (viewport- and
-      cross-filter-filtered) points, matching the prior pure-Polars behaviour.
-    """
-    has_viewport = lat_range is not None and lon_range is not None
-
-    if has_viewport:
-        # Cast the viewport bounds to each column's dtype so the is_between
-        # comparison runs in the column's native type. With raw f64 Python
-        # floats, Polars widens every f32/integer element to f64 for the
-        # comparison (no f32 SIMD), which is ~4-9x slower on the hot pan/zoom
-        # path. Mirrors Histogram2D's _hist2d_bounds. The integer ceil/floor
-        # logic in _typed_range_bounds also keeps is_between semantics correct.
-        lat_bounds = _typed_range_bounds(lat_col, (lat_range[0], lat_range[1]), schema)
-        lon_bounds = _typed_range_bounds(lon_col, (lon_range[0], lon_range[1]), schema)
-        mask = pl.col(lat_col).is_between(*lat_bounds) & pl.col(lon_col).is_between(
-            *lon_bounds
-        )
-        lat_expr = pl.col(lat_col).filter(mask)
-        lon_expr = pl.col(lon_col).filter(mask)
-    else:
-        lat_expr = pl.col(lat_col)
-        lon_expr = pl.col(lon_col)
-
-    if bin_boundaries == "viewport" and has_viewport:
-        lat_lo: pl.Expr = pl.lit(float(lat_range[0]))
-        lat_hi: pl.Expr = pl.lit(float(lat_range[1]))
-        lon_lo: pl.Expr = pl.lit(float(lon_range[0]))
-        lon_hi: pl.Expr = pl.lit(float(lon_range[1]))
-    else:
-        # "data" mode: bins span the (filtered) data extent. fill_null keeps the
-        # kernel's lo <= hi contract satisfied when no rows survive filtering.
-        lat_lo = lat_expr.min().fill_null(0.0)
-        lat_hi = lat_expr.max().fill_null(1.0)
-        lon_lo = lon_expr.min().fill_null(0.0)
-        lon_hi = lon_expr.max().fill_null(1.0)
-
-    if z_col is None:
-        expr = lat_expr.flexviz.fixed_hist2d(
-            lon_expr, lat_lo, lat_hi, lon_lo, lon_hi, nb_lat, nb_lon
-        )
-    else:
-        assert histfunc is not None
-        z_expr = pl.col(z_col).filter(mask) if has_viewport else pl.col(z_col)
-        expr = lat_expr.flexviz.fixed_hist2d_reduce(
-            lon_expr, z_expr, lat_lo, lat_hi, lon_lo, lon_hi, nb_lat, nb_lon, histfunc
-        )
-    return expr.alias(uid)
 
 
 # ---------------------------------------------------------------------------

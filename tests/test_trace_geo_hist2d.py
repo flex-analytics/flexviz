@@ -12,6 +12,7 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
+from flexviz.trace import _hist_helpers as helpers_mod
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.line import LinePlot
 from flexviz.trace.base import TraceResult
@@ -19,7 +20,7 @@ from flexviz.trace import build_trace_from_spec
 
 
 def _aggregate_geo_hist2d(
-    df: pl.DataFrame,
+    df: pl.DataFrame | pl.LazyFrame,
     lat: str = "lat",
     lon: str = "lon",
     lat_bins: int = 5,
@@ -28,7 +29,7 @@ def _aggregate_geo_hist2d(
     histfunc: str | None = None,
     histnorm: str | None = None,
     update_range: dict | None = None,
-    bin_boundaries: str = "data",
+    filter_exprs: list | None = None,
 ) -> TraceResult:
     lf = LFQueryBuilder(df)
     trace = GeoHistogram2D(
@@ -39,10 +40,18 @@ def _aggregate_geo_hist2d(
         z=z,
         histfunc=histfunc,
         histnorm=histnorm,
-        bin_boundaries=bin_boundaries,
     )
-    spec = trace.get_aggregation_spec(update_range or {}, schema=lf.schema)
-    regular_df, _ = lf.aggregate([], [spec])
+    update_range = update_range or {}
+    cols = trace.domain_cols(update_range)
+    spec = trace.get_aggregation_spec(
+        update_range,
+        schema=lf.schema,
+        domains=(
+            lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+        ),
+        scan_source=lf.is_scan,
+    )
+    regular_df, _ = lf.aggregate(filter_exprs or [], [spec])
     return trace._to_update(regular_df)
 
 
@@ -121,10 +130,6 @@ class TestGeoHist2DConstructor:
     def test_invalid_histnorm(self):
         with pytest.raises(ValueError, match="histnorm"):
             GeoHistogram2D(lat="lat", lon="lon", histnorm="invalid")
-
-    def test_invalid_bin_boundaries(self):
-        with pytest.raises(ValueError, match="bin_boundaries"):
-            GeoHistogram2D(lat="lat", lon="lon", **{"bin_boundaries": "fixed"})
 
     def test_custom_color_style(self):
         t = GeoHistogram2D(
@@ -442,51 +447,6 @@ class TestGeoHist2DEngine:
         assert deltas[0].uid == geo.uid
 
 
-class TestGeoHist2DBinBoundaries:
-    def test_data_vs_viewport_changes_bin_geometry(self):
-        df = pl.DataFrame(
-            {
-                "lat": [40.1, 40.85],
-                "lon": [-73.9, -72.15],
-            }
-        )
-        viewport = {
-            "coordinates": [
-                [-74.0, 40.0],
-                [-72.0, 40.0],
-                [-72.0, 42.0],
-                [-74.0, 42.0],
-            ]
-        }
-        r_data = _aggregate_geo_hist2d(
-            df,
-            lat_bins=2,
-            lon_bins=2,
-            update_range=viewport,
-            bin_boundaries="data",
-        )
-        r_vp = _aggregate_geo_hist2d(
-            df,
-            lat_bins=2,
-            lon_bins=2,
-            update_range=viewport,
-            bin_boundaries="viewport",
-        )
-        assert sum(r_data.updates["z"]) == sum(r_vp.updates["z"]) == 2
-
-        def _max_lat_span(geojson: dict) -> float:
-            best = 0.0
-            for feat in geojson["features"]:
-                ring = feat["geometry"]["coordinates"][0]
-                lats = [p[1] for p in ring]
-                best = max(best, max(lats) - min(lats))
-            return best
-
-        assert _max_lat_span(r_vp.updates["geojson"]) > _max_lat_span(
-            r_data.updates["geojson"]
-        )
-
-
 class TestGeoHist2DTypedViewportBounds:
     """The viewport mask must compare against column-dtype bounds.
 
@@ -507,7 +467,7 @@ class TestGeoHist2DTypedViewportBounds:
     }
 
     def test_viewport_mask_uses_typed_bounds(self, monkeypatch):
-        import flexviz.trace.geo_hist2d as mod
+        import flexviz.trace._hist_helpers as mod
 
         calls: list = []
         real = mod._typed_range_bounds
@@ -528,7 +488,6 @@ class TestGeoHist2DTypedViewportBounds:
             lat_bins=4,
             lon_bins=4,
             update_range=self._VIEWPORT,
-            bin_boundaries="viewport",
         )
         cols = [c[0] for c in calls]
         assert "lat" in cols and "lon" in cols
@@ -540,7 +499,7 @@ class TestGeoHist2DTypedViewportBounds:
         n = 5000
         lat = rng.uniform(40.0, 42.0, n)
         lon = rng.uniform(-74.0, -72.0, n)
-        for mode in ("viewport", "data"):
+        for update_range in (self._VIEWPORT, {}):
             r64 = _aggregate_geo_hist2d(
                 pl.DataFrame(
                     {
@@ -550,8 +509,7 @@ class TestGeoHist2DTypedViewportBounds:
                 ),
                 lat_bins=8,
                 lon_bins=8,
-                update_range=self._VIEWPORT,
-                bin_boundaries=mode,
+                update_range=update_range,
             )
             r32 = _aggregate_geo_hist2d(
                 pl.DataFrame(
@@ -562,8 +520,7 @@ class TestGeoHist2DTypedViewportBounds:
                 ),
                 lat_bins=8,
                 lon_bins=8,
-                update_range=self._VIEWPORT,
-                bin_boundaries=mode,
+                update_range=update_range,
             )
             # Totals are preserved exactly; per-bin counts may differ by f32
             # storage jitter, which is inherent to the f32 column, not the path.
@@ -604,7 +561,7 @@ class TestGeoHist2DSpec:
         assert spec.params["lon_bins"] == 48
         assert spec.params["histfunc"] == "sum"
         assert spec.params["histnorm"] == "percent"
-        assert spec.params.get("bin_boundaries", "data") == "data"
+        assert "bin_boundaries" not in spec.params
 
         t2 = GeoHistogram2D.from_trace_spec(spec)
         assert t2.lat_col == "lat_col"
@@ -616,14 +573,6 @@ class TestGeoHist2DSpec:
         assert t2.z_col == "value"
         assert t2.color_scale == "plasma"
         assert t2.color_range == (0.0, 100.0)
-        assert t2.bin_boundaries == "data"
-
-    def test_roundtrip_bin_boundaries_viewport(self):
-        t = GeoHistogram2D(lat="a", lon="b", bin_boundaries="viewport")
-        spec = t.to_trace_spec()
-        assert spec.params["bin_boundaries"] == "viewport"
-        t2 = GeoHistogram2D.from_trace_spec(spec)
-        assert t2.bin_boundaries == "viewport"
 
     def test_build_from_registry(self):
         t = GeoHistogram2D(lat="lat", lon="lon")
@@ -647,7 +596,6 @@ class TestGeoHist2DSpec:
         assert trace.color_range == "auto"
         assert trace.histfunc is None
         assert trace.histnorm is None
-        assert trace.bin_boundaries == "data"
 
 
 class TestGeoHist2DAdapter:
@@ -731,3 +679,267 @@ class TestGeoHist2DEdgeCenterConsistency:
 
         assert len(lat_heights) == 1, f"non-uniform lat bin heights: {lat_heights}"
         assert len(lon_widths) == 1, f"non-uniform lon bin widths: {lon_widths}"
+
+
+# ---------------------------------------------------------------------------
+# Domains and the scan batch fold
+# ---------------------------------------------------------------------------
+
+
+class TestGeoHist2DDomainCols:
+    def test_unzoomed_asks_for_both_columns(self):
+        t = GeoHistogram2D(lat="lat", lon="lon")
+        assert t.domain_cols({}) == ("lat", "lon")
+
+    def test_a_map_viewport_supplies_the_bounds(self):
+        t = GeoHistogram2D(lat="lat", lon="lon")
+        coords = [[-74.0, 40.0], [-72.0, 40.0], [-72.0, 42.0], [-74.0, 42.0]]
+        assert t.domain_cols({"coordinates": coords}) == ()
+
+    def test_a_cross_filter_does_not_move_the_bin_edges(self):
+        """Unzoomed edges come from the unfiltered domain, so a selection
+        recolors the grid instead of re-binning it."""
+        df = pl.DataFrame(
+            {
+                "lat": [40.0, 41.0, 42.0, 43.0],
+                "lon": [-74.0, -73.0, -72.0, -71.0],
+            }
+        )
+        full = _aggregate_geo_hist2d(df, lat_bins=2, lon_bins=2)
+        filtered = _aggregate_geo_hist2d(
+            df,
+            lat_bins=2,
+            lon_bins=2,
+            filter_exprs=[pl.col("lat").is_between(40.0, 41.0)],
+        )
+
+        def _rings(result):
+            return {
+                feat["id"]: feat["geometry"]["coordinates"][0]
+                for feat in result.updates["geojson"]["features"]
+            }
+
+        full_rings, filtered_rings = _rings(full), _rings(filtered)
+        assert set(filtered_rings) <= set(full_rings)
+        assert filtered_rings
+        for bin_id, ring in filtered_rings.items():
+            assert ring == full_rings[bin_id]
+
+
+_NAN = float("nan")
+_LAT = [40.0, 40.5, 41.0, 41.25, 41.5, 42.0, 42.5, 43.0]
+_LON = [-74.0, -73.5, -73.0, -72.0, -72.5, -71.5, -71.0, -70.0]
+_Z = [1.5, -2.0, 3.25, 0.0, 7.5, -1.25, 4.0, 9.0]
+
+_MAP_VIEWPORT = {
+    "coordinates": [
+        [-73.5, 40.5],
+        [-71.5, 40.5],
+        [-71.5, 42.5],
+        [-73.5, 42.5],
+    ]
+}
+_EMPTY_VIEWPORT = {
+    "coordinates": [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]]
+}
+
+
+def _geo_df(lat=None, lon=None, z=None) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "lat": pl.Series("lat", _LAT) if lat is None else lat,
+            "lon": pl.Series("lon", _LON) if lon is None else lon,
+            "z": pl.Series("z", _Z) if z is None else z,
+        }
+    )
+
+
+def _geo_updates(df: pl.DataFrame, **kwargs) -> tuple[dict, dict]:
+    """The ``_to_update`` output of the resident kernel and of the scan fold."""
+    lf = LFQueryBuilder(df)
+    trace = GeoHistogram2D(
+        lat="lat",
+        lon="lon",
+        lat_bins=kwargs.pop("lat_bins", 4),
+        lon_bins=kwargs.pop("lon_bins", 3),
+        z=kwargs.pop("z", None),
+        histfunc=kwargs.pop("histfunc", None),
+        histnorm=kwargs.pop("histnorm", None),
+    )
+    update_range = kwargs.pop("update_range", None) or {}
+    assert not kwargs, kwargs
+    cols = trace.domain_cols(update_range)
+    domains = lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    out = []
+    for scan_source in (False, True):
+        spec = trace.get_aggregation_spec(
+            update_range,
+            schema=lf.schema,
+            domains=domains,
+            scan_source=scan_source,
+        )
+        assert (spec.plan is not None) is scan_source
+        agg, _ = lf.aggregate([], [spec])
+        out.append(trace._to_update(agg).updates)
+    return out[0], out[1]
+
+
+def _assert_geo_grids_match(resident: dict, scanned: dict, *, exact: bool) -> None:
+    # A null cell draws no rectangle, so an identical locations list is an
+    # identical null pattern.
+    assert resident["locations"] == scanned["locations"]
+    assert resident["geojson"] == scanned["geojson"]
+    if exact:
+        assert resident["z"] == scanned["z"]
+        return
+    for a, b in zip(resident["z"], scanned["z"]):
+        assert math.isclose(a, b, rel_tol=1e-9)
+
+
+class TestGeoHist2DScanFoldEquivalence:
+    """A scan source folds the kernel over batches; the grid must match.
+
+    ``scan_source`` picks a formulation, never a result. Count, min and max are
+    exact; sum and mean fold in a different order, so they are compared with a
+    relative tolerance and an identical null pattern.
+    """
+
+    @pytest.mark.parametrize(
+        "name,df,kwargs",
+        [
+            ("clean", _geo_df(), {}),
+            (
+                "f32_axes",
+                _geo_df(
+                    lat=pl.Series("lat", _LAT, dtype=pl.Float32),
+                    lon=pl.Series("lon", _LON, dtype=pl.Float32),
+                ),
+                {},
+            ),
+            ("nan_lat", _geo_df(lat=[_NAN] + _LAT[1:]), {}),
+            ("null_lat", _geo_df(lat=[None] + _LAT[1:]), {}),
+            ("nan_lon", _geo_df(lon=[_NAN] + _LON[1:]), {}),
+            ("null_lon", _geo_df(lon=[None] + _LON[1:]), {}),
+            ("map_viewport", _geo_df(), {"update_range": _MAP_VIEWPORT}),
+            ("empty_viewport", _geo_df(), {"update_range": _EMPTY_VIEWPORT}),
+            ("one_lat_bin", _geo_df(), {"lat_bins": 1}),
+            (
+                "empty",
+                pl.DataFrame(
+                    schema={"lat": pl.Float64, "lon": pl.Float64, "z": pl.Float64}
+                ),
+                {},
+            ),
+            ("histnorm", _geo_df(), {"histnorm": "probability density"}),
+        ],
+    )
+    def test_count_matches_kernel(self, name, df, kwargs):
+        resident, scanned = _geo_updates(df, **kwargs)
+        # A count grid, and any normalization of it, is exact on both paths.
+        _assert_geo_grids_match(resident, scanned, exact=True)
+
+    @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
+    @pytest.mark.parametrize(
+        "name,df,kwargs",
+        [
+            ("clean", _geo_df(), {}),
+            ("nan_z", _geo_df(z=[_NAN] + _Z[1:]), {}),
+            ("null_z", _geo_df(z=[None] + _Z[1:]), {}),
+            ("all_null_z", _geo_df(z=[None] * 8), {}),
+            ("nan_lat", _geo_df(lat=[_NAN] + _LAT[1:]), {}),
+            ("null_lon", _geo_df(lon=[None] + _LON[1:]), {}),
+            ("map_viewport", _geo_df(), {"update_range": _MAP_VIEWPORT}),
+            ("empty_viewport", _geo_df(), {"update_range": _EMPTY_VIEWPORT}),
+            (
+                "empty",
+                pl.DataFrame(
+                    schema={"lat": pl.Float64, "lon": pl.Float64, "z": pl.Float64}
+                ),
+                {},
+            ),
+        ],
+    )
+    def test_reducer_matches_kernel(self, name, df, kwargs, histfunc):
+        resident, scanned = _geo_updates(df, z="z", histfunc=histfunc, **kwargs)
+        _assert_geo_grids_match(resident, scanned, exact=histfunc in ("min", "max"))
+
+    @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
+    def test_fold_merges_across_batches(self, monkeypatch, histfunc):
+        """A frame larger than one chunk must fold to the single-batch grid."""
+        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
+        seen: list[tuple[int, int]] = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(self, *args, **kwargs):
+            batches = list(original(self, *args, **kwargs))
+            seen.append((kwargs["chunk_size"], len(batches)))
+            return batches
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+
+        n = 50
+        df = pl.DataFrame(
+            {
+                "lat": [40.0 + (i % 11) * 0.2 for i in range(n)],
+                "lon": [-74.0 + (i % 7) * 0.3 for i in range(n)],
+                "z": [float((i * 13) % 17) - 8.0 for i in range(n)],
+            }
+        )
+        resident, scanned = _geo_updates(
+            df, z=None if histfunc is None else "z", histfunc=histfunc
+        )
+        _assert_geo_grids_match(
+            resident, scanned, exact=histfunc in (None, "min", "max")
+        )
+        assert seen == [(7, 8)], seen
+
+
+class TestGeoHist2DResidencySeam:
+    """A scan geo histogram folds the kernel over batches, through the engine."""
+
+    @staticmethod
+    def _geo_delta(src, event, coords):
+        lf = LFQueryBuilder(src)
+        geo = GeoHistogram2D(lat="lat", lon="lon", lat_bins=6, lon_bins=5)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={geo.uid: geo})
+        infos = [
+            TraceInfo(
+                uid=geo.uid,
+                axes=None,
+                trace_type="geo_histogram2d",
+                figure_uid="fig_map",
+            )
+        ]
+        viewports = {"fig_map": {"coordinates": coords}} if coords else {}
+        deltas = engine.process(event, infos, viewports_by_figure=viewports)
+        return deltas[0].updates, lf.is_scan
+
+    @pytest.mark.parametrize("zoomed", [False, True], ids=["init", "viewport"])
+    def test_scan_matches_resident(self, tmp_path, zoomed):
+        n = 20_000
+        df = pl.DataFrame(
+            {
+                "lat": [40.0 + ((i * 7919) % 9973) / 4986.5 for i in range(n)],
+                "lon": [-74.0 + ((i * 31) % 97) / 48.5 for i in range(n)],
+            }
+        )
+        path = tmp_path / "geo.parquet"
+        df.write_parquet(path)
+
+        coords = [[-73.5, 40.5], [-72.5, 40.5], [-72.5, 41.5], [-73.5, 41.5]]
+        if zoomed:
+            event = InteractionEvent(
+                type="viewport",
+                axis_ranges={"coordinates": coords},
+                figure_uid="fig_map",
+            )
+        else:
+            event = InteractionEvent(type="init", force_update=True)
+            coords = None
+
+        resident, resident_is_scan = self._geo_delta(df, event, coords)
+        scanned, scan_is_scan = self._geo_delta(pl.scan_parquet(path), event, coords)
+        assert resident_is_scan is False and scan_is_scan is True
+        assert resident["geojson"] == scanned["geojson"]
+        assert resident["locations"] == scanned["locations"]
+        assert resident["z"] == scanned["z"]

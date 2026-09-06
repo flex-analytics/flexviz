@@ -15,16 +15,16 @@ Supported *histnorm* values: ``None`` (no normalization, default), ``"percent"``
 Viewport filtering
 ------------------
 ``recompute_axes = (x, y)`` — the histogram is recomputed on each viewport
-change (same behaviour as 1D Histogram).  Bin edges always span the
-viewport range (or the data range on init).
+change (same behaviour as 1D Histogram).  Unzoomed, the bin edges span the
+engine-resolved data range.  Zoomed, they span the viewport snapped outward to
+a fixed lattice, so the grid stands still while the user pans.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
-import numpy as np
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
@@ -36,20 +36,17 @@ from .base import (
     _CUBE_RESERVED_COLS,
     _dtype_for_col,
     _phys_epoch_ms_factor,
-    _physical_bound_expr,
     _physical_to_temporal_series,
     _temporal_dtype_for_col,
-    _typed_range_bounds,
 )
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
+    _hist2d_agg_spec,
     apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
-
-import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
@@ -140,6 +137,10 @@ class Histogram2D(FlexTrace):
         # to restore datetime bin centers. None ⇒ that axis is non-temporal.
         self._x_temporal_dtype: pl.DataType | None = None
         self._y_temporal_dtype: pl.DataType | None = None
+        # The grid the last request actually binned on: a zoomed request snaps
+        # its edges to a lattice, which can add one bin per axis. _to_update
+        # unpacks z_flat with this, not with the configured bin counts.
+        self._grid: tuple[int, int] = (x_bins, y_bins)
 
     def _default_recompute_axes(self) -> tuple[str, ...]:
         return tuple(self._axes)  # both axes bin the 2-D histogram
@@ -320,77 +321,30 @@ class Histogram2D(FlexTrace):
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
-        """Return the 2-D histogram aggregation spec.
-
-        An unzoomed trace requires both ``x_col`` and ``y_col`` in
-        ``domains``; a ``(None, None)`` entry means an empty or all-null
-        column.
-
-        ``scan_source`` says the rows come from storage rather than a resident
-        frame. The kernels need both axis columns in memory at once, so a scan
-        takes ``_batch_fold_plan`` instead: the same kernels, run over streamed
-        batches and folded in NumPy, at bounded memory. A resident frame keeps
-        the plain kernel expression, which joins the shared select.
-        """
-        x_range = update_range.get("x")
-        y_range = update_range.get("y")
+        """Return the 2-D histogram aggregation spec (see ``_hist2d_agg_spec``)."""
         # Temporal axes bin on their physical representation; _to_update restores
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
-        x_lo, x_hi, y_lo, y_hi, mask = _hist2d_bounds(
-            self.x_col, self.y_col, x_range, y_range, domains, schema
+        spec, self._grid = _hist2d_agg_spec(
+            self.x_col,
+            self.y_col,
+            self.z_col,
+            self.histfunc,
+            update_range.get("x"),
+            update_range.get("y"),
+            self.x_bins,
+            self.y_bins,
+            self.uid,
+            domains,
+            schema,
+            scan_source,
         )
-        edges = (x_lo, x_hi, y_lo, y_hi)
-
-        if scan_source:
-            return AggregationSpec(
-                uid=self.uid,
-                plan=_batch_fold_plan(
-                    self.x_col,
-                    self.y_col,
-                    self.z_col,
-                    self.x_bins,
-                    self.y_bins,
-                    self.histfunc,
-                    edges,
-                    mask,
-                    self.uid,
-                    schema,
-                ),
-            )
-
-        if self.z_col is None:
-            expr = _hist2d_count_expr(
-                self.x_col,
-                self.y_col,
-                self.x_bins,
-                self.y_bins,
-                edges,
-                mask,
-                self.uid,
-                schema,
-            )
-        else:
-            assert self.histfunc is not None
-            expr = _hist2d_reduce_expr(
-                self.x_col,
-                self.y_col,
-                self.z_col,
-                self.x_bins,
-                self.y_bins,
-                edges,
-                mask,
-                self.uid,
-                self.histfunc,
-                schema,
-            )
-        return AggregationSpec(expr=expr, uid=self.uid)
+        return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
         raw = df[self.uid][0]
-        nb_x = self.x_bins
-        nb_y = self.y_bins
+        nb_x, nb_y = self._grid
 
         # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}
         z_flat_raw: list = raw["z_flat"]
@@ -519,289 +473,3 @@ class Histogram2D(FlexTrace):
 def _centers(lo: float, hi: float, n: int) -> list[float]:
     step = (hi - lo) / n
     return [lo + (i + 0.5) * step for i in range(n)]
-
-
-def _hist2d_phys_col(col: str, schema: pl.Schema | None) -> pl.Expr:
-    """The data expression to feed the numeric kernel: physical representation
-    for a temporal column (the kernel needs numeric data), else the raw column.
-    """
-    dtype = _temporal_dtype_for_col(col, schema)
-    return pl.col(col).to_physical() if dtype is not None else pl.col(col)
-
-
-def _hist2d_bound_lits(
-    range_: tuple, dtype: pl.DataType | None
-) -> tuple[pl.Expr, pl.Expr]:
-    """Viewport bin-edge literals matching the kernel's data space: physical
-    units for a temporal axis, plain floats otherwise."""
-    if dtype is not None:
-        return (
-            _physical_bound_expr(range_[0], dtype),
-            _physical_bound_expr(range_[1], dtype),
-        )
-    return pl.lit(float(range_[0])), pl.lit(float(range_[1]))
-
-
-def _hist2d_bounds(
-    x_col: str,
-    y_col: str,
-    x_range: tuple | None,
-    y_range: tuple | None,
-    domains: Mapping[str, tuple[Any, Any]] | None,
-    schema: pl.Schema | None = None,
-) -> tuple:
-    """Resolve the bin-edge literals and the viewport mask for the kernels.
-
-    With a viewport, the bounds are the viewport and the mask restricts the
-    data. Without one, the bounds are the engine-resolved unfiltered
-    ``(min, max)`` per axis and no mask applies, so cross-filtering cannot move
-    the bin edges.
-
-    Returns ``(x_lo, x_hi, y_lo, y_hi, viewport_mask_or_None)``.
-
-    Boundary note: ``is_between`` is inclusive on both ends, so a value equal
-    to ``x_hi`` passes the filter and is placed in the last bin by the Rust
-    kernel's ``min(xi, max_xi)`` clamp — both sides must agree on this
-    inclusive-right semantics.
-    """
-    # Histogram2D has both x and y axes; the engine always supplies both
-    # or neither. Partial viewport (one axis only) cannot occur here.
-    if x_range is not None and y_range is not None:
-        x_dtype = _temporal_dtype_for_col(x_col, schema)
-        y_dtype = _temporal_dtype_for_col(y_col, schema)
-        # Cast bounds to column dtype to avoid upcasting Float32 columns to
-        # Float64 during the filter (which doubles memory bandwidth and disables
-        # Float32 SIMD). Falls back to plain pl.lit() when schema is unavailable.
-        x_filter = _typed_range_bounds(x_col, (x_range[0], x_range[1]), schema)
-        y_filter = _typed_range_bounds(y_col, (y_range[0], y_range[1]), schema)
-        viewport_mask = pl.col(x_col).is_between(*x_filter) & pl.col(y_col).is_between(
-            *y_filter
-        )
-        # Bin edges must be in the same space as the (possibly physical) data
-        # columns the kernel sees: physical units for temporal axes, the raw
-        # numeric range otherwise.
-        x_lo, x_hi = _hist2d_bound_lits(x_range, x_dtype)
-        y_lo, y_hi = _hist2d_bound_lits(y_range, y_dtype)
-        return (x_lo, x_hi, y_lo, y_hi, viewport_mask)
-
-    # The kernel adds its own EPS to the span, so pass the raw bounds.
-    x_lo, x_hi = _domain_lits(domains, x_col)
-    y_lo, y_hi = _domain_lits(domains, y_col)
-    return (x_lo, x_hi, y_lo, y_hi, None)
-
-
-def _domain_lits(
-    domains: Mapping[str, tuple[Any, Any]] | None, col: str
-) -> tuple[pl.Expr, pl.Expr]:
-    lo, hi = (domains or {})[col]
-    return pl.lit(0.0 if lo is None else lo), pl.lit(1.0 if hi is None else hi)
-
-
-#: The (x_lo, x_hi, y_lo, y_hi) bin-edge literal expressions from _hist2d_bounds.
-_Edges = tuple[pl.Expr, pl.Expr, pl.Expr, pl.Expr]
-
-
-def _hist2d_count_expr(
-    x_col: str,
-    y_col: str,
-    nb_x: int,
-    nb_y: int,
-    edges: _Edges,
-    mask: pl.Expr | None,
-    alias: str,
-    schema: pl.Schema | None = None,
-) -> pl.Expr:
-    """Build a count-only 2D histogram expression using fixed_hist2d.
-
-    ``edges`` are the raw bounds from ``_hist2d_bounds``: the Rust kernel adds
-    its own internal EPS to ``(x_hi - x_lo)`` when computing the bin scale, so
-    they must not be EPS-adjusted. ``mask`` restricts the rows inside the
-    expression; the batch fold passes None and filters the frame instead.
-    """
-    x_phys = _hist2d_phys_col(x_col, schema)
-    y_phys = _hist2d_phys_col(y_col, schema)
-    x_expr = x_phys.filter(mask) if mask is not None else x_phys
-    y_expr = y_phys.filter(mask) if mask is not None else y_phys
-    return x_expr.flexviz.fixed_hist2d(y_expr, *edges, nb_x, nb_y).alias(alias)
-
-
-def _hist2d_reduce_expr(
-    x_col: str,
-    y_col: str,
-    z_col: str,
-    nb_x: int,
-    nb_y: int,
-    edges: _Edges,
-    mask: pl.Expr | None,
-    alias: str,
-    histfunc: str,
-    schema: pl.Schema | None = None,
-) -> pl.Expr:
-    """Build a z-reduced 2D histogram expression using fixed_hist2d_reduce.
-
-    Same ``edges`` and ``mask`` contract as ``_hist2d_count_expr``.
-    """
-    x_phys = _hist2d_phys_col(x_col, schema)
-    y_phys = _hist2d_phys_col(y_col, schema)
-    x_expr = x_phys.filter(mask) if mask is not None else x_phys
-    y_expr = y_phys.filter(mask) if mask is not None else y_phys
-    z_expr = pl.col(z_col).filter(mask) if mask is not None else pl.col(z_col)
-    return x_expr.flexviz.fixed_hist2d_reduce(
-        y_expr, z_expr, *edges, nb_x, nb_y, histfunc
-    ).alias(alias)
-
-
-# ---------------------------------------------------------------------------
-# Batch fold (scan sources)
-# ---------------------------------------------------------------------------
-
-#: Rows per streamed batch. About 64 MB for a two-column Float64 batch. Larger
-#: chunks only cost memory; smaller ones cost per-batch Python and kernel
-#: overhead.
-_FOLD_CHUNK_ROWS = 4_000_000
-
-
-def _fold_result_frame(
-    uid: str, z_flat: list, bounds: tuple[float, float, float, float], count: bool
-) -> pl.DataFrame:
-    """The one-row, one-column frame the kernel expression would have produced."""
-    x_lo, x_hi, y_lo, y_hi = bounds
-    dtype = pl.Struct(
-        {
-            "z_flat": pl.List(pl.UInt32 if count else pl.Float64),
-            "x_lo": pl.Float64,
-            "x_hi": pl.Float64,
-            "y_lo": pl.Float64,
-            "y_hi": pl.Float64,
-        }
-    )
-    row = {"z_flat": z_flat, "x_lo": x_lo, "x_hi": x_hi, "y_lo": y_lo, "y_hi": y_hi}
-    return pl.DataFrame([pl.Series(uid, [row], dtype=dtype)])
-
-
-def _finite_z_expr(z_col: str, schema: pl.Schema | None) -> pl.Expr:
-    """Rows whose ``z`` the reduce kernel accepts: not null, and not NaN for a
-    float column."""
-    usable = pl.col(z_col).is_not_null()
-    dtype = _dtype_for_col(schema, z_col)
-    if dtype is not None and dtype.is_float():
-        usable = usable & pl.col(z_col).is_not_nan()
-    return usable
-
-
-def _batch_fold_plan(
-    x_col: str,
-    y_col: str,
-    z_col: str | None,
-    nb_x: int,
-    nb_y: int,
-    histfunc: str | None,
-    edges: _Edges,
-    mask: pl.Expr | None,
-    uid: str,
-    schema: pl.Schema | None = None,
-) -> Callable[[pl.LazyFrame], pl.DataFrame]:
-    """The kernel grid folded over streamed batches, for a scan source.
-
-    As one expression the kernels need whole Series, so a scan materializes
-    both axis columns before binning. This runs the same kernels on one batch
-    at a time and accumulates the grid in NumPy, so peak memory is one batch
-    plus the grid. A streaming ``group_by`` on the flattened cell key is the
-    obvious alternative, but it is unbounded above the Polars hot table size
-    (measured), and ``collect_batches`` is the Polars escape hatch for custom
-    logic over streamed batches.
-
-    Count, min and max are exact. Sum and mean fold in a different order than
-    the kernel, so they agree to about 1e-13 relative.
-
-    ``collect_batches`` is marked unstable in Polars; a semantics test pins the
-    chunking this relies on.
-    """
-    # Both bounds are literal expressions, so this selects no data. The kernel
-    # reads them as f64, and the result frame echoes them back.
-    bounds = tuple(
-        float(v)
-        for v in pl.select(
-            *(e.alias(name) for e, name in zip(edges, ("xl", "xh", "yl", "yh")))
-        ).row(0)
-    )
-    lits = tuple(pl.lit(v) for v in bounds)
-    n_cells = nb_x * nb_y
-    cols = [c for c in (x_col, y_col, z_col) if c is not None]
-
-    if z_col is None:
-        exprs = [_hist2d_count_expr(x_col, y_col, nb_x, nb_y, lits, None, "g", schema)]
-    else:
-        assert histfunc is not None
-        exprs = [
-            _hist2d_reduce_expr(
-                x_col,
-                y_col,
-                z_col,
-                nb_x,
-                nb_y,
-                lits,
-                None,
-                "g",
-                "sum" if histfunc == "mean" else histfunc,
-                schema,
-            )
-        ]
-        if histfunc == "mean":
-            # The reduce kernel skips null/NaN z, so the mean denominator is the
-            # count of the rows with a usable z, not the count of all rows.
-            exprs.append(
-                _hist2d_count_expr(
-                    x_col,
-                    y_col,
-                    nb_x,
-                    nb_y,
-                    lits,
-                    _finite_z_expr(z_col, schema),
-                    "c",
-                    schema,
-                )
-            )
-
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
-        acc = np.zeros(n_cells, dtype=np.int64 if z_col is None else np.float64)
-        seen = np.zeros(n_cells, dtype=bool)
-        cnt = np.zeros(n_cells, dtype=np.int64)
-        for batch in src.select(cols).collect_batches(
-            chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
-        ):
-            out = batch.select(exprs)
-            grid = np.asarray(out["g"][0]["z_flat"], dtype=np.float64)
-            if z_col is None:
-                acc += grid.astype(np.int64)
-                continue
-            if histfunc == "mean":
-                cnt += np.asarray(out["c"][0]["z_flat"], dtype=np.int64)
-            # An empty cell comes back null, which lands here as NaN.
-            filled = ~np.isnan(grid)
-            if histfunc in ("sum", "mean"):
-                acc[filled] += grid[filled]
-            elif histfunc == "min":
-                acc[filled] = np.where(
-                    seen[filled], np.fmin(acc[filled], grid[filled]), grid[filled]
-                )
-            else:
-                acc[filled] = np.where(
-                    seen[filled], np.fmax(acc[filled], grid[filled]), grid[filled]
-                )
-            seen |= filled
-
-        # No batches (an empty frame) leaves the zero grid, which is what the
-        # kernel returns for empty input: zero counts, null reducer cells.
-        if z_col is None:
-            z_flat = acc.tolist()
-        elif histfunc == "mean":
-            z_flat = [
-                float(acc[i]) / cnt[i] if cnt[i] else None for i in range(n_cells)
-            ]
-        else:
-            z_flat = [float(acc[i]) if seen[i] else None for i in range(n_cells)]
-        return _fold_result_frame(uid, z_flat, bounds, count=z_col is None)
-
-    return run

@@ -495,7 +495,6 @@ def _dashboard_url_geo(port: int, renderer: str = "plotly") -> str:
         lon="lon",
         lat_bins=4,
         lon_bins=4,
-        bin_boundaries="viewport",
     )
     spec = dash.to_spec(source_name="_browser_test")
 
@@ -519,7 +518,6 @@ def _dashboard_url_geo_with_line(port: int, renderer: str = "plotly") -> str:
         lon="lon",
         lat_bins=4,
         lon_bins=4,
-        bin_boundaries="viewport",
     )
     fig_line = dash.add_figure(title="Line")
     fig_line.add_line(x="ts", y="val", n_points=1000)

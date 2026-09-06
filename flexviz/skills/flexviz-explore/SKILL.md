@@ -152,13 +152,10 @@ fig.add_histogram2d(x, y, x_bins=20, y_bins=20,
                                              #   rows per cell.
 fig.add_corr_heatmap(columns=None, method="pearson", triangular=False)
 fig.add_geo_histogram2d(lat, lon, lat_bins=64, lon_bins=64,
-                        z=None, histfunc=None,  # same pair rule as above
-                        bin_boundaries="data")
-# bin_boundaries picks what the bin grid is anchored to, and the default is
-#   often wrong. "data" spans the full data extent, so a handful of far-out
-#   points push every real point into one cell. "viewport" anchors the grid to
-#   the map bounds instead. Read the lat/lon min and max first, and pass
-#   "viewport" when the extent is much wider than the region you care about.
+                        z=None, histfunc=None)  # same pair rule as above
+# The bin grid spans the full lat/lon extent, so a handful of far-out points
+#   push every real point into one cell. Zoom the map to the region you care
+#   about: the grid then spans the map bounds instead.
 fig.add_geo_line(lat, lon, n_points=1000)
 
 fig.title(text); fig.xlabel(text); fig.ylabel(text); fig.legend(show=True)
