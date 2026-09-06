@@ -73,7 +73,15 @@ def _check_port_free(host: str, port: int) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
+    import os
     import sys
+
+    # This process only serves flexviz sources, mostly scans. A small prefetch
+    # window keeps a scan fold's peak memory at a few hundred MB instead of
+    # the reader's default window (1.7 GB at 200M rows, measured) and is
+    # faster for it. Polars reads the variable per scan, so it applies to the
+    # sources registered below. A full read_parquet is about a quarter slower.
+    os.environ.setdefault("POLARS_ROW_GROUP_PREFETCH_SIZE", "4")
 
     names = _register_files(args.files, cache=args.cache)
 
