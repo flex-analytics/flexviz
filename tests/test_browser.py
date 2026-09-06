@@ -740,6 +740,43 @@ window.__renders = [];
 """
 
 
+# Records every Plotly draw (with or without data) and when the init request
+# went out, so a test can assert the order of the two.
+_TRACE_DRAWS_JS = """
+window.__draws = [];
+window.__updateSentAt = null;
+(function () {
+  var origFetch = window.fetch;
+  window.fetch = function (input) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf('/dashboard/update') !== -1 && window.__updateSentAt === null) {
+      window.__updateSentAt = performance.now();
+    }
+    return origFetch.apply(this, arguments);
+  };
+  var wrap = function (plotly) {
+    ['react', 'newPlot'].forEach(function (m) {
+      var orig = plotly[m].bind(plotly);
+      plotly[m] = function () {
+        var call = { method: m, startedAt: performance.now(), doneAt: null };
+        window.__draws.push(call);
+        return Promise.resolve(orig.apply(this, arguments)).then(function (r) {
+          call.doneAt = performance.now();
+          return r;
+        });
+      };
+    });
+  };
+  var held;
+  Object.defineProperty(window, 'Plotly', {
+    configurable: true,
+    get: function () { return held; },
+    set: function (v) { held = v; if (v && v.react) wrap(v); }
+  });
+})();
+"""
+
+
 @pytest.fixture(scope="module")
 def server_port() -> Generator[int, None, None]:
     port = _free_port()
@@ -803,6 +840,28 @@ class TestPlotlyBrowser:
         assert (
             len(renders) == 2
         ), f"expected one data render per figure, got {len(renders)}: {renders}"
+
+    def test_open_draws_once_per_figure_after_the_request(
+        self, page: Page, server_port: int
+    ):
+        """The init request must go out before any Plotly draw, and each figure
+        must be handed to Plotly exactly once.
+
+        Plotly.react plots a div that was never plotted, so no stub render is
+        needed to hold a place for the response.
+        """
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        page.add_init_script(_TRACE_DRAWS_JS)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        draws = page.evaluate("() => window.__draws")
+        sent_at = page.evaluate("() => window.__updateSentAt")
+        # react() plots an unplotted div through its own module reference, so
+        # the hook on window.Plotly only ever sees the react call.
+        assert [d["method"] for d in draws] == ["react", "react"], draws
+        assert sent_at is not None, "no /dashboard/update request was sent"
+        assert sent_at < min(d["startedAt"] for d in draws), (sent_at, draws)
 
     def test_saved_viewport_is_applied_on_open(self, page: Page, server_port: int):
         """A saved viewport must reach Plotly's axes in one request and one render.

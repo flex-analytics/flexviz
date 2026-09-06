@@ -1373,7 +1373,7 @@ adapters/js/
 │   ├── render.js             ← _fvRenderFigure, axis helpers, lock/capture
 │   ├── events.js             ← relayout/selected/deselect/click handlers
 │   ├── hover.js              ← Plotly crosshair helpers
-│   └── init.js               ← Plotly.newPlot calls, event wiring, startup IIFE
+│   └── init.js               ← bindFigure (per-figure event wiring), startup IIFE
 └── echarts/
     ├── series.js             ← chartsByFig, series template builders
     ├── render.js             ← _fvRenderFigure, brush/zoom helpers
