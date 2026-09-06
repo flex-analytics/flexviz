@@ -19,6 +19,11 @@ from flexviz.trace.base import TraceResult
 from flexviz.trace import build_trace_from_spec
 
 
+def _cells(updates: dict) -> list[float]:
+    """The non-empty cells: the values the client draws a rectangle for."""
+    return [v for v in updates["z"] if v is not None]
+
+
 def _aggregate_geo_hist2d(
     df: pl.DataFrame | pl.LazyFrame,
     lat: str = "lat",
@@ -143,37 +148,29 @@ class TestGeoHist2DConstructor:
 
 
 class TestGeoHist2DAggregation:
-    def test_output_has_geojson_structure(self, geo_df):
+    def test_output_has_edge_triples_and_a_flat_z(self, geo_df):
         result = _aggregate_geo_hist2d(geo_df, lat_bins=3, lon_bins=3)
-        assert "geojson" in result.updates
-        assert "locations" in result.updates
-        assert "z" in result.updates
-        geojson = result.updates["geojson"]
-        assert geojson["type"] == "FeatureCollection"
-        assert isinstance(geojson["features"], list)
+        lat_lo, lat_step, nb_lat = result.updates["lat_edges"]
+        lon_lo, lon_step, nb_lon = result.updates["lon_edges"]
+        assert (nb_lat, nb_lon) == (3, 3), "the triples carry the grid"
+        assert lat_step > 0 and lon_step > 0
+        assert math.isfinite(lat_lo) and math.isfinite(lon_lo)
+        # One entry per cell, empty cells included: the client skips the nulls.
+        assert len(result.updates["z"]) == nb_lat * nb_lon
 
     def test_total_count(self, geo_df):
         result = _aggregate_geo_hist2d(geo_df, lat_bins=5, lon_bins=5)
-        total = sum(result.updates["z"])
+        total = sum(_cells(result.updates))
         assert total == len(geo_df)
 
-    def test_locations_match_features(self, geo_df):
-        result = _aggregate_geo_hist2d(geo_df, lat_bins=3, lon_bins=3)
-        locations = result.updates["locations"]
-        features = result.updates["geojson"]["features"]
-        assert len(locations) == len(features)
-        for loc, feat in zip(locations, features):
-            assert feat["id"] == loc
-
-    def test_feature_geometry_is_polygon(self, geo_df):
-        result = _aggregate_geo_hist2d(geo_df, lat_bins=3, lon_bins=3)
-        for feat in result.updates["geojson"]["features"]:
-            assert feat["geometry"]["type"] == "Polygon"
-            coords = feat["geometry"]["coordinates"]
-            assert len(coords) == 1
-            ring = coords[0]
-            assert len(ring) == 5
-            assert ring[0] == ring[4]
+    def test_z_is_lon_major(self, geo_df):
+        """z[j * nb_lat + i] is cell (lat i, lon j): the order the client's
+        rectangle builder walks."""
+        df = pl.DataFrame({"lat": [40.25, 40.75], "lon": [-74.75, -74.25]})
+        result = _aggregate_geo_hist2d(df, lat_bins=2, lon_bins=2)
+        # Two rows on the diagonal: the lowest lat with the lowest lon, and the
+        # highest lat with the highest lon.
+        assert result.updates["z"] == [1.0, None, None, 1.0]
 
     def test_viewport_filters_data(self, geo_df):
         viewport = {
@@ -191,19 +188,17 @@ class TestGeoHist2DAggregation:
             lon_bins=3,
             update_range=viewport,
         )
-        full_total = sum(full.updates["z"])
-        zoomed_total = sum(zoomed.updates["z"])
+        full_total = sum(_cells(full.updates))
+        zoomed_total = sum(_cells(zoomed.updates))
         assert zoomed_total <= full_total
 
-    def test_empty_data_returns_empty_geojson(self):
+    def test_empty_data_returns_all_empty_cells(self):
         df = pl.DataFrame(
             {"lat": [None, None], "lon": [None, None]},
             schema={"lat": pl.Float64, "lon": pl.Float64},
         )
         result = _aggregate_geo_hist2d(df, lat_bins=2, lon_bins=2)
-        assert result.updates["geojson"]["features"] == []
-        assert result.updates["locations"] == []
-        assert result.updates["z"] == []
+        assert result.updates["z"] == [None] * 4
 
 
 class TestGeoHist2DHistfunc:
@@ -215,7 +210,7 @@ class TestGeoHist2DHistfunc:
             z="z",
             histfunc="sum",
         )
-        total_z = sum(result.updates["z"])
+        total_z = sum(_cells(result.updates))
         expected_total = geo_df_with_z["z"].sum()
         assert abs(total_z - expected_total) < 1.0
 
@@ -227,7 +222,7 @@ class TestGeoHist2DHistfunc:
             z="z",
             histfunc="mean",
         )
-        for v in result.updates["z"]:
+        for v in _cells(result.updates):
             assert 1.0 <= v <= 100.0
 
     def test_median_not_supported(self):
@@ -267,7 +262,7 @@ class TestGeoHist2DHistfunc:
             z="z",
             histfunc="max",
         )
-        for vmin, vmax in zip(result_min.updates["z"], result_max.updates["z"]):
+        for vmin, vmax in zip(_cells(result_min.updates), _cells(result_max.updates)):
             assert vmin <= vmax
 
 
@@ -279,7 +274,7 @@ class TestGeoHist2DHistnorm:
             lon_bins=5,
             histnorm="percent",
         )
-        total = sum(result.updates["z"])
+        total = sum(_cells(result.updates))
         assert abs(total - 100.0) < 0.1
 
     def test_probability(self, geo_df):
@@ -289,7 +284,7 @@ class TestGeoHist2DHistnorm:
             lon_bins=5,
             histnorm="probability",
         )
-        total = sum(result.updates["z"])
+        total = sum(_cells(result.updates))
         assert abs(total - 1.0) < 0.01
 
     def test_density(self, geo_df):
@@ -299,7 +294,7 @@ class TestGeoHist2DHistnorm:
             lon_bins=3,
             histnorm="density",
         )
-        for v in result.updates["z"]:
+        for v in _cells(result.updates):
             assert v >= 0
 
     def test_probability_density(self, geo_df):
@@ -309,7 +304,7 @@ class TestGeoHist2DHistnorm:
             lon_bins=3,
             histnorm="probability density",
         )
-        for v in result.updates["z"]:
+        for v in _cells(result.updates):
             assert v >= 0
 
 
@@ -524,7 +519,7 @@ class TestGeoHist2DTypedViewportBounds:
             )
             # Totals are preserved exactly; per-bin counts may differ by f32
             # storage jitter, which is inherent to the f32 column, not the path.
-            assert sum(r64.updates["z"]) == sum(r32.updates["z"]) == n
+            assert sum(_cells(r64.updates)) == sum(_cells(r32.updates)) == n
 
 
 class TestGeoHist2DExtractLatLonRange:
@@ -622,63 +617,19 @@ class TestGeoHist2DAdapter:
         assert obj["colorscale"] == "viridis"
 
 
-class TestGeoHist2DEdgeCenterConsistency:
-    """Polygon edges returned by _to_update must be the midpoints of bin centers."""
+class TestGeoHist2DEdgeTriples:
+    """The triples must span the grid the kernel binned on, so the client's
+    ``lo + i * step`` rectangles land on the server's cells."""
 
-    def test_lat_edges_are_midpoints_of_centers(self, geo_df):
-        result = _aggregate_geo_hist2d(geo_df, lat_bins=4, lon_bins=4)
-        geojson = result.updates["geojson"]
-        # Collect unique lat_bottom values from all features (= lat_edges[:-1])
-        # and verify they form an arithmetic sequence consistent with the centers
-        # encoded in the feature polygons.
-        features = geojson["features"]
-        if not features:
-            pytest.skip("no non-null bins to inspect")
-
-        # Each feature's polygon has coords [[lon_left, lat_bottom], [lon_right, lat_bottom],
-        # [lon_right, lat_top], [lon_left, lat_top], [lon_left, lat_bottom]]
-        for feat in features:
-            ring = feat["geometry"]["coordinates"][0]
-            lat_bottom = ring[0][1]
-            lat_top = ring[2][1]
-            # The center should be the midpoint of the two lat edges
-            lat_center_from_edges = (lat_bottom + lat_top) / 2
-            # The center must be consistent (edges derived from same step as centers)
-            assert lat_top > lat_bottom, "lat_top must exceed lat_bottom"
-            # Midpoint must be finite
-            assert math.isfinite(lat_center_from_edges)
-
-    def test_lon_edges_are_midpoints_of_centers(self, geo_df):
-        result = _aggregate_geo_hist2d(geo_df, lat_bins=4, lon_bins=4)
-        geojson = result.updates["geojson"]
-        features = geojson["features"]
-        if not features:
-            pytest.skip("no non-null bins to inspect")
-
-        for feat in features:
-            ring = feat["geometry"]["coordinates"][0]
-            lon_left = ring[0][0]
-            lon_right = ring[1][0]
-            assert lon_right > lon_left, "lon_right must exceed lon_left"
-            assert math.isfinite((lon_left + lon_right) / 2)
-
-    def test_uniform_bin_widths(self, geo_df):
-        """All lat bins and all lon bins should have the same width."""
-        result = _aggregate_geo_hist2d(geo_df, lat_bins=5, lon_bins=5)
-        geojson = result.updates["geojson"]
-        features = geojson["features"]
-        if len(features) < 2:
-            pytest.skip("need at least 2 non-null bins")
-
-        lat_heights = set()
-        lon_widths = set()
-        for feat in features:
-            ring = feat["geometry"]["coordinates"][0]
-            lat_heights.add(round(ring[2][1] - ring[0][1], 10))
-            lon_widths.add(round(ring[1][0] - ring[0][0], 10))
-
-        assert len(lat_heights) == 1, f"non-uniform lat bin heights: {lat_heights}"
-        assert len(lon_widths) == 1, f"non-uniform lon bin widths: {lon_widths}"
+    def test_the_triples_span_the_binned_grid(self, geo_df):
+        result = _aggregate_geo_hist2d(geo_df, lat_bins=4, lon_bins=3)
+        lat_lo, lat_step, nb_lat = result.updates["lat_edges"]
+        lon_lo, lon_step, nb_lon = result.updates["lon_edges"]
+        assert (nb_lat, nb_lon) == (4, 3)
+        assert lat_lo + nb_lat * lat_step == pytest.approx(geo_df["lat"].max())
+        assert lon_lo + nb_lon * lon_step == pytest.approx(geo_df["lon"].max())
+        assert lat_lo == pytest.approx(geo_df["lat"].min())
+        assert lon_lo == pytest.approx(geo_df["lon"].min())
 
 
 # ---------------------------------------------------------------------------
@@ -713,17 +664,10 @@ class TestGeoHist2DDomainCols:
             filter_exprs=[pl.col("lat").is_between(40.0, 41.0)],
         )
 
-        def _rings(result):
-            return {
-                feat["id"]: feat["geometry"]["coordinates"][0]
-                for feat in result.updates["geojson"]["features"]
-            }
-
-        full_rings, filtered_rings = _rings(full), _rings(filtered)
-        assert set(filtered_rings) <= set(full_rings)
-        assert filtered_rings
-        for bin_id, ring in filtered_rings.items():
-            assert ring == full_rings[bin_id]
+        for axis in ("lat_edges", "lon_edges"):
+            assert full.updates[axis] == filtered.updates[axis], axis
+        # The selection empties cells, it does not move them.
+        assert len(_cells(filtered.updates)) < len(_cells(full.updates))
 
 
 _NAN = float("nan")
@@ -785,15 +729,16 @@ def _geo_updates(df: pl.DataFrame, **kwargs) -> tuple[dict, dict]:
 
 
 def _assert_geo_grids_match(resident: dict, scanned: dict, *, exact: bool) -> None:
-    # A null cell draws no rectangle, so an identical locations list is an
-    # identical null pattern.
-    assert resident["locations"] == scanned["locations"]
-    assert resident["geojson"] == scanned["geojson"]
+    assert resident["lat_edges"] == scanned["lat_edges"]
+    assert resident["lon_edges"] == scanned["lon_edges"]
     if exact:
         assert resident["z"] == scanned["z"]
         return
+    # A null cell draws no rectangle, so an identical null pattern is required.
     for a, b in zip(resident["z"], scanned["z"]):
-        assert math.isclose(a, b, rel_tol=1e-9)
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert math.isclose(a, b, rel_tol=1e-9)
 
 
 class TestGeoHist2DScanFoldEquivalence:
@@ -940,6 +885,6 @@ class TestGeoHist2DResidencySeam:
         resident, resident_is_scan = self._geo_delta(df, event, coords)
         scanned, scan_is_scan = self._geo_delta(pl.scan_parquet(path), event, coords)
         assert resident_is_scan is False and scan_is_scan is True
-        assert resident["geojson"] == scanned["geojson"]
-        assert resident["locations"] == scanned["locations"]
+        assert resident["lat_edges"] == scanned["lat_edges"]
+        assert resident["lon_edges"] == scanned["lon_edges"]
         assert resident["z"] == scanned["z"]

@@ -671,9 +671,9 @@ function fvCubeMatchCategoryCodes(freeHeader, predicates) {
 }
 
 // Reproduce Histogram._to_update for the ungrouped case: centers at
-// lo + (i+0.5)*width over the header's target domain (the server's
-// breakpoint-minus-half-width arithmetic), histnorm normalization,
-// hover_bounds, horizontal orientation when the trace's prop key is y.
+// lo + (i+0.5)*width over the header's target domain (the server's own center
+// arithmetic), histnorm normalization, the [lo, step, n] bin-edge triple,
+// horizontal orientation when the trace's prop key is y.
 // The result is shaped exactly like a server TraceDelta entry.
 function histDeltaFromCounts(traceSpec, header, counts) {
   const dim = header.target_dims[0];
@@ -699,7 +699,9 @@ function histDeltaFromCounts(traceSpec, header, counts) {
     }
   }
 
-  const halfW = width / 2;
+  // Per-axis [lo, step, n]: the client derives the per-bin hover bounds, the
+  // same triple the server sends.
+  const edges = [lo, width, dim.bins];
   // Prop key = the single backend_data key, exactly how the adapter
   // (Histogram.from_trace_spec) determines orientation.
   const propKey = Object.keys(traceSpec.backend_data || {})[0] || 'x';
@@ -709,7 +711,7 @@ function histDeltaFromCounts(traceSpec, header, counts) {
       updates: {
         x: centers,
         y: values,
-        hover_bounds: centers.map(c => ({ x0: c - halfW, x1: c + halfW })),
+        x_edges: edges,
       },
     };
   }
@@ -719,7 +721,7 @@ function histDeltaFromCounts(traceSpec, header, counts) {
       x: values,
       y: centers,
       orientation: 'h',
-      hover_bounds: centers.map(c => ({ y0: c - halfW, y1: c + halfW })),
+      y_edges: edges,
     },
   };
 }
@@ -1238,7 +1240,16 @@ function hist2dDeltaFromEntry(traceSpec, entry, binRanges) {
   const yCenters = _fvCenters(yLo, yHi, nbY);
   const z = [];
   for (let j = 0; j < nbY; j++) z.push(values.slice(j * nbX, (j + 1) * nbX));
-  return { uid: traceSpec.uid, updates: { x: xCenters, y: yCenters, z } };
+  return {
+    uid: traceSpec.uid,
+    updates: {
+      x: xCenters,
+      y: yCenters,
+      z,
+      x_edges: [xLo, (xHi - xLo) / nbX, nbX],
+      y_edges: [yLo, (yHi - yLo) / nbY, nbY],
+    },
+  };
 }
 
 // Cell centers: lo + (i + 0.5) * (hi - lo) / n — mirrors hist2d.py _centers.

@@ -204,6 +204,10 @@ class Histogram(FlexTrace):
         # temporal (binning runs on the physical representation); read back in
         # _to_update to restore datetime bin centers. None ⇒ non-temporal.
         self._data_temporal_dtype: pl.DataType | None = None
+        # Resolved per-request in get_aggregation_spec: the exact bounds and bin
+        # count the kernel bins with. _to_update derives the bin centers and the
+        # wire-format bin edges from them.
+        self._bin_edges: tuple[float, float, int] = (0.0, 1.0, bins)
 
         super().__init__(
             backend_data={prop_key: col},
@@ -384,9 +388,11 @@ class Histogram(FlexTrace):
             if self._data_temporal_dtype is not None
             else pl.col(self.data_col)
         )
-        lo_expr, hi_expr, n_bins, filter_expr = self._histogram_bounds_exprs(
+        lo, hi, n_bins, filter_expr = self._histogram_bounds_exprs(
             axis_range, domains, schema
         )
+        self._bin_edges = (lo, hi, n_bins)
+        lo_expr, hi_expr = pl.lit(lo), pl.lit(hi)
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
@@ -439,7 +445,7 @@ class Histogram(FlexTrace):
         axis_range: Any,
         domains: Mapping[str, tuple[Any, Any]] | None,
         schema: pl.Schema | None = None,
-    ) -> tuple[pl.Expr, pl.Expr, int, pl.Expr | None]:
+    ) -> tuple[float, float, int, pl.Expr | None]:
         """Bin edges in the kernel's data space, the bin count, and the viewport
         mask (``None`` when unzoomed).
 
@@ -454,8 +460,8 @@ class Histogram(FlexTrace):
                 self.data_col, axis_range, self.bins, schema
             )
             return (
-                pl.lit(lo),
-                pl.lit(hi + _HIST_BIN_EPSILON),
+                lo,
+                hi + _HIST_BIN_EPSILON,
                 n,
                 _snapped_axis_mask(self.data_col, lo, hi, dtype, schema),
             )
@@ -473,93 +479,57 @@ class Histogram(FlexTrace):
         his = [hi for _, hi in bounds if hi is not None]
         lo = min(los) if los else 0.0
         hi = max(his) if his else 1.0
-        return pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), self.bins, None
+        return lo, hi + _HIST_BIN_EPSILON, self.bins, None
 
     def _to_update(
         self,
         df_agg: pl.DataFrame,
     ) -> TraceResult:
         """Unpack the histogram struct and apply normalization."""
-        raw: pl.Series = df_agg[self.uid].item()
-        df_hist = (
-            raw.explode()
-            .struct.unnest()
-            .with_columns(pl.col("breakpoint") - pl.col("breakpoint").diff().mean() / 2)
-            .rename({"breakpoint": "center"})
-        )
+        counts: pl.Series = df_agg[self.uid].item().explode().struct.field("count")
 
-        # -- normalize the counts (if needed)
-        bin_width = df_hist["center"].diff().drop_nulls().mean()
-        if bin_width is None or bin_width == 0.0:
-            # Degenerate case: bins=1, or all data in a single bin.
-            # Use 1.0 so density-normalized values stay finite.
-            bin_width = 1.0
-        total = df_hist["count"].sum()
+        lo, hi, n_bins = self._bin_edges
+        step = (hi - lo) / n_bins
+        # hi == lo is the kernel's degenerate span: its epsilon pad vanishes at
+        # the column's magnitude. Use 1.0 so density norms stay finite.
+        bin_width = step if step > 0.0 else 1.0
+        centers = (pl.int_range(0, n_bins, eager=True) + 0.5) * step + lo
 
+        total = counts.sum()
         if self.histnorm == "percent":
-            df_hist = df_hist.with_columns(pl.col("count") / total * 100)
+            counts = counts / total * 100
         elif self.histnorm == "probability":
-            df_hist = df_hist.with_columns(pl.col("count") / total)
+            counts = counts / total
         elif self.histnorm == "density":
-            df_hist = df_hist.with_columns(pl.col("count") / bin_width)
+            counts = counts / bin_width
         elif self.histnorm == "probability density":
-            df_hist = df_hist.with_columns(pl.col("count") / (total * bin_width))
-
-        # -- hover_bounds: explicit bin edges for cell hover
-        half_w = bin_width / 2.0
-        centers = df_hist["center"].to_list()
+            counts = counts / (total * bin_width)
 
         # Temporal data axis: emit datetime bin centers (so the renderer auto-
-        # detects a date axis) and epoch-ms hover bounds (Plotly's numeric date
+        # detects a date axis) and epoch-ms bin edges (Plotly's numeric date
         # coordinate, what hover-band matching compares against).
         temporal = self._data_temporal_dtype
         if temporal is not None:
-            data_axis = _physical_to_temporal_series(
-                df_hist["center"], temporal, self.data_col
-            )
+            data_axis = _physical_to_temporal_series(centers, temporal, self.data_col)
             factor = _phys_epoch_ms_factor(temporal)
-
-            def _edge(v: Any) -> float | None:
-                return None if v is None else float(v) * factor
-
         else:
-            data_axis = df_hist["center"]
+            data_axis = centers
+            factor = 1.0
 
-            def _edge(v: Any) -> float | None:
-                return None if v is None else float(v)
+        # The client derives one {x0,x1} per bin from this triple; sending the
+        # per-bin objects instead is most of a histogram response.
+        edges = [float(lo) * factor, step * factor, n_bins]
 
         if self.prop_key == "x":
-            hover_bounds = [
-                (
-                    {"x0": _edge(c - half_w), "x1": _edge(c + half_w)}
-                    if c is not None
-                    else {"x0": None, "x1": None}
-                )
-                for c in centers
-            ]
-            return TraceResult(
-                updates={
-                    "x": data_axis,
-                    "y": df_hist["count"],
-                    "hover_bounds": hover_bounds,
-                }
-            )
+            return TraceResult(updates={"x": data_axis, "y": counts, "x_edges": edges})
 
         assert self.prop_key == "y"
-        hover_bounds = [
-            (
-                {"y0": _edge(c - half_w), "y1": _edge(c + half_w)}
-                if c is not None
-                else {"y0": None, "y1": None}
-            )
-            for c in centers
-        ]
         return TraceResult(
             updates={
-                "x": df_hist["count"],
+                "x": counts,
                 "y": data_axis,
                 "orientation": "h",
-                "hover_bounds": hover_bounds,
+                "y_edges": edges,
             }
         )
 

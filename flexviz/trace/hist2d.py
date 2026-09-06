@@ -366,9 +366,10 @@ class Histogram2D(FlexTrace):
         x_centers = _centers(x_lo, x_hi, nb_x)
         y_centers = _centers(y_lo, y_hi, nb_y)
 
+        x_step = (x_hi - x_lo) / nb_x
+        y_step = (y_hi - y_lo) / nb_y
+
         if self.histnorm is not None:
-            x_step = (x_hi - x_lo) / nb_x
-            y_step = (y_hi - y_lo) / nb_y
             z_series = pl.Series("value", z_flat, dtype=pl.Float64)
             z_df = apply_histnorm(
                 pl.DataFrame({"value": z_series}),
@@ -388,32 +389,15 @@ class Histogram2D(FlexTrace):
         x_edge = self._edge_scale(self._x_temporal_dtype)
         y_edge = self._edge_scale(self._y_temporal_dtype)
 
-        # -- hover_bounds: 2D array of cell bounds matching z shape
-        x_step = (x_hi - x_lo) / nb_x
-        y_step = (y_hi - y_lo) / nb_y
-        hover_bounds = []
-        for row in range(nb_y):
-            hover_bounds.append([])
-            for col in range(nb_x):
-                x0 = x_lo + col * x_step
-                x1 = x0 + x_step
-                y0 = y_lo + row * y_step
-                y1 = y0 + y_step
-                hover_bounds[-1].append(
-                    {
-                        "x0": x_edge(x0),
-                        "x1": x_edge(x1),
-                        "y0": y_edge(y0),
-                        "y1": y_edge(y1),
-                    }
-                )
-
+        # The client derives one {x0,x1,y0,y1} per cell from these triples;
+        # sending the per-cell objects instead is most of a hist2d response.
         return TraceResult(
             updates={
                 "x": x_out,
                 "y": y_out,
                 "z": z,
-                "hover_bounds": hover_bounds,
+                "x_edges": [x_edge(x_lo), x_edge(x_step), nb_x],
+                "y_edges": [y_edge(y_lo), y_edge(y_step), nb_y],
             }
         )
 

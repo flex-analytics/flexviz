@@ -265,7 +265,7 @@ class GeoHistogram2D(FlexTrace):
         # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}.
         # We map lat -> kernel x (inner axis), lon -> kernel y (outer axis), so
         # z_flat is laid out as z_flat[lon_idx * nb_lat + lat_idx] — exactly the
-        # row-major (lon-major) order _build_geojson_rectangles expects.
+        # row-major (lon-major) order the client's rectangle builder expects.
         z_flat_raw: list = raw["z_flat"]
         lat_lo: float = raw["x_lo"]
         lat_hi: float = raw["x_hi"]
@@ -274,7 +274,7 @@ class GeoHistogram2D(FlexTrace):
 
         if self.z_col is None:
             # Count kernel returns UInt32; 0 marks an empty bin → emit None so
-            # _build_geojson_rectangles skips it (no rectangle drawn).
+            # the client skips it (no rectangle drawn).
             z_flat = [None if v == 0 else float(v) for v in z_flat_raw]
         else:
             # Reducer kernel returns nullable Float64 values directly.
@@ -293,24 +293,13 @@ class GeoHistogram2D(FlexTrace):
             )
             z_flat = z_df["value"].to_list()
 
-        lat_centers = [lat_lo + (i + 0.5) * lat_step for i in range(nb_lat)]
-        lon_centers = [lon_lo + (j + 0.5) * lon_step for j in range(nb_lon)]
-        lat_edges = [lat_lo + i * lat_step for i in range(nb_lat + 1)]
-        lon_edges = [lon_lo + j * lon_step for j in range(nb_lon + 1)]
-
-        geojson, locations, values = _build_geojson_rectangles(
-            lat_centers,
-            lon_centers,
-            lat_edges,
-            lon_edges,
-            z_flat,
-        )
-
+        # The client builds one GeoJSON rectangle per non-empty cell from these
+        # triples and the flat z; the rectangles are most of a geo response.
         return TraceResult(
             updates={
-                "geojson": geojson,
-                "locations": locations,
-                "z": values,
+                "lat_edges": [lat_lo, lat_step, nb_lat],
+                "lon_edges": [lon_lo, lon_step, nb_lon],
+                "z": z_flat,
             }
         )
 
@@ -347,65 +336,3 @@ class GeoHistogram2D(FlexTrace):
         )
         trace.uid = spec.uid
         return trace
-
-
-# ---------------------------------------------------------------------------
-# GeoJSON rectangle builder
-# ---------------------------------------------------------------------------
-
-
-def _build_geojson_rectangles(
-    lat_centers: list[float],
-    lon_centers: list[float],
-    lat_edges: list[float],
-    lon_edges: list[float],
-    z_flat: list,
-) -> tuple[dict, list, list]:
-    """Build a GeoJSON FeatureCollection of rectangle polygons.
-
-    *z_flat* is in row-major (lon-major) order: ``z_flat[j * nb_lat + i]``
-    corresponds to bin ``(lat_i, lon_j)``.
-
-    Returns ``(geojson, locations, values)`` where *locations* are feature IDs
-    and *values* are the filtered (non-null) z values.
-    """
-    nb_lat = len(lat_centers)
-    nb_lon = len(lon_centers)
-    features: list[dict] = []
-    locations: list[str] = []
-    values: list[float] = []
-
-    for j in range(nb_lon):
-        lon_left = lon_edges[j]
-        lon_right = lon_edges[j + 1]
-        for i in range(nb_lat):
-            idx = j * nb_lat + i
-            val = z_flat[idx]
-            if val is None:
-                continue
-
-            lat_bottom = lat_edges[i]
-            lat_top = lat_edges[i + 1]
-            bin_id = f"r{i}_c{j}"
-            locations.append(bin_id)
-            values.append(val)
-
-            coordinates = [
-                [
-                    [lon_left, lat_bottom],
-                    [lon_right, lat_bottom],
-                    [lon_right, lat_top],
-                    [lon_left, lat_top],
-                    [lon_left, lat_bottom],
-                ]
-            ]
-            features.append(
-                {
-                    "type": "Feature",
-                    "id": bin_id,
-                    "geometry": {"type": "Polygon", "coordinates": coordinates},
-                }
-            )
-
-    geojson = {"type": "FeatureCollection", "features": features}
-    return geojson, locations, values

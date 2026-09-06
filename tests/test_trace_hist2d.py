@@ -212,8 +212,8 @@ class TestHist2DViewportSnap:
 
     @staticmethod
     def _edges(result: TraceResult) -> tuple[float, float, int]:
-        cells = result.updates["hover_bounds"]
-        return (cells[0][0]["x0"], cells[0][-1]["x1"], len(cells[0]))
+        lo, step, n = result.updates["x_edges"]
+        return (lo, lo + n * step, n)
 
     def test_lattice_aligned_viewport_is_unchanged(self, grid_df):
         # width 1.0, and both bounds are multiples of it.
@@ -248,7 +248,8 @@ class TestHist2DViewportSnap:
                 y_bins=5,
                 update_range={"x": (x_lo, x_hi), "y": (0.0, 10.0)},
             )
-            return [c["x0"] for c in res.updates["hover_bounds"][0]]
+            lo, step, n = res.updates["x_edges"]
+            return [lo + i * step for i in range(n)]
 
         before = _bounds(2.0, 6.0)
         after = _bounds(2.3, 6.3)
@@ -279,10 +280,8 @@ class TestHist2DPartialViewport:
 
     @staticmethod
     def _axis_edges(result: TraceResult, axis: str) -> tuple[float, float, int]:
-        cells = result.updates["hover_bounds"]
-        if axis == "x":
-            return (cells[0][0]["x0"], cells[0][-1]["x1"], len(cells[0]))
-        return (cells[0][0]["y0"], cells[-1][0]["y1"], len(cells))
+        lo, step, n = result.updates[f"{axis}_edges"]
+        return (lo, lo + n * step, n)
 
     @pytest.mark.parametrize("zoomed", [(), ("x",), ("y",), ("x", "y")])
     def test_each_axis_resolves_on_its_own(self, grid_df, zoomed):
@@ -589,9 +588,11 @@ class TestHist2DZSliceDimensions:
         assert int(total) == len(grid_df)
 
 
-class TestHistogram2DHoverBounds:
-    def test_hist2d_has_hover_bounds(self):
-        """_to_update must include hover_bounds as a 2D list matching z shape."""
+class TestHistogram2DBinEdges:
+    """The wire format sends one ``[lo, step, n]`` triple per axis; the client
+    derives the per-cell hover bounds from them."""
+
+    def test_hist2d_has_both_edge_triples(self):
         df = pl.DataFrame(
             {
                 "a": [float(i % 10) for i in range(40)],
@@ -599,40 +600,28 @@ class TestHistogram2DHoverBounds:
             }
         )
         tr = _aggregate_hist2d(df, x="a", y="b", x_bins=4, y_bins=3)
-        assert "hover_bounds" in tr.updates, "hover_bounds must be in updates"
-        bounds = tr.updates["hover_bounds"]
-        assert isinstance(bounds, list), "hover_bounds must be a list"
-        assert len(bounds) == 3, "outer dimension must equal y_bins"
-        assert len(bounds[0]) == 4, "inner dimension must equal x_bins"
-
-    def test_hist2d_hover_bounds_cell_shape(self):
-        """Each cell must have x0, x1, y0, y1."""
-        df = pl.DataFrame(
-            {
-                "a": [float(i) for i in range(30)],
-                "b": [float(i % 6) for i in range(30)],
-            }
+        x_lo, x_step, nb_x = tr.updates["x_edges"]
+        y_lo, y_step, nb_y = tr.updates["y_edges"]
+        assert (nb_x, nb_y) == (4, 3), "the triples carry the grid"
+        assert x_step > 0 and y_step > 0
+        # The triples span the same grid the centers sit on.
+        assert tr.updates["x"] == pytest.approx(
+            [x_lo + (i + 0.5) * x_step for i in range(nb_x)]
         )
-        tr = _aggregate_hist2d(df, x="a", y="b", x_bins=3, y_bins=2)
-        bounds = tr.updates["hover_bounds"]
-        for row in bounds:
-            for cell in row:
-                for key in ("x0", "x1", "y0", "y1"):
-                    assert key in cell, f"cell bounds must have {key}"
-                assert cell["x1"] > cell["x0"]
-                assert cell["y1"] > cell["y0"]
+        assert tr.updates["y"] == pytest.approx(
+            [y_lo + (j + 0.5) * y_step for j in range(nb_y)]
+        )
+        assert len(tr.updates["z"]) == nb_y
+        assert len(tr.updates["z"][0]) == nb_x
 
-    def test_hist2d_hover_bounds_not_in_z(self):
-        """hover_bounds must not be placed in the z array."""
+    def test_hist2d_edges_are_not_in_z(self):
+        """The z array stays numbers only."""
         df = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [1.0, 2.0, 3.0, 4.0]})
         tr = _aggregate_hist2d(df, x="a", y="b", x_bins=2, y_bins=2)
         assert "z" in tr.updates
-        # z must be a 2D array of numbers/None, not dicts
         for row in tr.updates["z"]:
             for v in row:
-                assert v is None or isinstance(
-                    v, (int, float)
-                ), "z values must be numbers, not dicts"
+                assert v is None or isinstance(v, (int, float))
 
 
 class TestHistogram2DHoverSpec:
@@ -789,7 +778,8 @@ def _assert_grids_match(resident: dict, scanned: dict, *, exact: bool) -> float:
     """Compare the two grids and return the largest relative deviation seen."""
     assert resident["x"] == scanned["x"]
     assert resident["y"] == scanned["y"]
-    assert resident["hover_bounds"] == scanned["hover_bounds"]
+    assert resident["x_edges"] == scanned["x_edges"]
+    assert resident["y_edges"] == scanned["y_edges"]
     if exact:
         assert resident["z"] == scanned["z"]
         return 0.0

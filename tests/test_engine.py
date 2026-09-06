@@ -129,14 +129,14 @@ def _key_extent(key: str):
     return lambda updates: _extent(updates[key])
 
 
-def _geojson_extent(index: int):
-    """The lon (0) or lat (1) span of the rectangles a geo delta draws."""
-    return lambda updates: _extent(
-        point[index]
-        for feature in updates["geojson"]["features"]
-        for ring in feature["geometry"]["coordinates"]
-        for point in ring
-    )
+def _edges_extent(key: str):
+    """The span an axis triple covers: lo to lo + n * step."""
+
+    def extent(updates):
+        lo, step, n = updates[key]
+        return lo, lo + n * step
+
+    return extent
 
 
 def _partial_viewport_df() -> pl.DataFrame:
@@ -183,8 +183,8 @@ _PARTIAL_VIEWPORT_CASES = [
         {"coordinates": [[-60.0, -40.0], [-20.0, 0.0]]},
         {
             "coordinates": [
-                (_geojson_extent(0), -60.0, -20.0),
-                (_geojson_extent(1), -40.0, 0.0),
+                (_edges_extent("lon_edges"), -60.0, -20.0),
+                (_edges_extent("lat_edges"), -40.0, 0.0),
             ]
         },
         id="geo_hist2d",
@@ -2246,7 +2246,7 @@ class TestHistogramResidencySeam:
         )
         assert resident_is_scan is False and scan_is_scan is True
 
-        for key in ("x", "y", "hover_bounds"):
+        for key in ("x", "y", "x_edges"):
             assert resident[key] == scanned[key], key
 
     def test_scan_matches_resident_on_a_datetime_column(self, tmp_path):
@@ -2269,7 +2269,7 @@ class TestHistogramResidencySeam:
             pl.scan_parquet(path), "ts", "count", event
         )
         assert is_scan is True
-        for key in ("x", "y", "hover_bounds"):
+        for key in ("x", "y", "x_edges"):
             assert resident[key] == scanned[key], key
 
     def test_scan_selects_the_streaming_plan(self):
@@ -2388,7 +2388,8 @@ class TestHistogram2DResidencySeam:
 
         assert resident["x"] == scanned["x"]
         assert resident["y"] == scanned["y"]
-        assert resident["hover_bounds"] == scanned["hover_bounds"]
+        assert resident["x_edges"] == scanned["x_edges"]
+        assert resident["y_edges"] == scanned["y_edges"]
         if z is None:
             assert resident["z"] == scanned["z"]
             return
