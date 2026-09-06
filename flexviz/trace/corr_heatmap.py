@@ -281,9 +281,10 @@ def _corr_expr(
         matrix = [[0.0] * n for _ in range(n)]
         for i in range(n):
             matrix[i][i] = 1.0
+        pairs = df.row(0)
         pair_idx = 0
         for i, j in combinations(range(n), 2):
-            val = df.row(0)[pair_idx]
+            val = pairs[pair_idx]
             if val is None:
                 val = 0.0
             matrix[i][j] = val
