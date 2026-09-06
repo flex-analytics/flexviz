@@ -47,7 +47,12 @@ from .base import (
     _to_col_tuple,
 )
 from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
-from ._hist_helpers import _snap_range, _snapped_axis, _snapped_axis_mask
+from ._hist_helpers import (
+    _hist1d_fold_plan,
+    _snap_range,
+    _snapped_axis,
+    _snapped_axis_mask,
+)
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -71,27 +76,24 @@ def _streaming_hist_plan(
     hi_expr: pl.Expr,
     bins: int,
     uid: str,
-    filter_expr: pl.Expr | None,
-    *,
-    group_cols: tuple[str, ...] | None = None,
+    group_cols: tuple[str, ...],
 ):
-    """The kernel's histogram as a streaming ``group_by``.
+    """The grouped kernel histogram as a streaming ``group_by``.
 
-    The ``fixed_hist`` kernel materializes the whole column; this reads it in
+    The ``fixed_hist`` kernel materializes the whole column, and a grouped
+    histogram would hold every group's column at once; this reads the frame in
     batches instead. The bin index comes from the cube's
     ``_fixed_hist_bin_expr``, the one Python mirror of the kernel arithmetic;
     its non-strict cast turns NaN into null so NaN and null both drop out at
     the dense join. Empty bins come back as zero, ordered, so ``_to_update``
     sees the kernel's shape.
 
-    Ungrouped it returns one row holding every bin. Grouped it returns one row
-    per group, sorted by group value, each holding that group's bins: the shape
-    the fused grouped query returns. A null group value keeps its own child,
-    because the dense join compares null keys as equal. ``filter_expr`` must be
-    None then: a grouped plan already gets the viewport through
-    ``pre_group_filters``.
+    It returns one row per group, sorted by group value, each holding that
+    group's bins: the shape the fused grouped query returns. A null group value
+    keeps its own child, because the dense join compares null keys as equal. The
+    viewport arrives through ``pre_group_filters``, before the group split, so
+    the plan takes no filter of its own.
     """
-    assert group_cols is None or filter_expr is None
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
         # Both bounds are literal expressions, so this selects no data.
@@ -106,29 +108,15 @@ def _streaming_hist_plan(
         # and every breakpoint is lo.
         step = (hi - lo) / bins if hi > lo else 0.0
         bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
-        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
         all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
         dense_cols = (
             (pl.lit(lo) + (pl.col("__b") + 1) * step).alias("breakpoint"),
             pl.col("count").fill_null(0).cast(pl.UInt32),
         )
 
-        if group_cols is None:
-            counted = (
-                src.group_by(bin_idx)
-                .agg(pl.len().alias("count"))
-                .collect(engine="streaming")
-            )
-            return (
-                all_bins.join(counted, on="__b", how="left")
-                .sort("__b")
-                .with_columns(*dense_cols)
-                .select(pl.struct("breakpoint", "count").implode().alias(uid))
-            )
-
         cols = list(group_cols)
         counted = (
-            src.group_by([*cols, bin_idx])
+            filtered_ldf.group_by([*cols, bin_idx])
             .agg(pl.len().alias("count"))
             .collect(engine="streaming")
         )
@@ -373,10 +361,11 @@ class Histogram(FlexTrace):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The ``fixed_hist`` kernel needs the whole column in memory, so an
-        ungrouped histogram on a scan takes ``_streaming_hist_plan`` instead: the
-        same bin arithmetic as a streaming ``group_by``, bit-identical output at
-        bounded memory. A grouped histogram takes that plan on both source
-        kinds, so the kernel serves only the ungrouped resident case.
+        ungrouped histogram on a scan takes ``_hist1d_fold_plan`` instead: the
+        same kernel, run per streamed batch and summed, at bounded memory. A
+        grouped histogram takes the streaming ``group_by`` plan on both source
+        kinds, because one kernel per group would hold every group's column at
+        once.
         """
         axis_range = update_range.get(self.prop_key)
 
@@ -417,20 +406,19 @@ class Histogram(FlexTrace):
                     hi_expr,
                     n_bins,
                     self.uid,
-                    None,
-                    group_cols=group_by_cols,
+                    group_by_cols,
                 ),
             )
 
         # ----------------------------------------------------------------------
         # Ungrouped path: the viewport mask runs inside the kernel expression;
-        # the scan plan filters the frame, so the scan itself rejects the rows.
+        # the scan fold filters the frame, so the scan itself rejects the rows.
         # ----------------------------------------------------------------------
         if scan_source:
             return AggregationSpec(
                 uid=self.uid,
-                plan=_streaming_hist_plan(
-                    data_col_expr, lo_expr, hi_expr, n_bins, self.uid, filter_expr
+                plan=_hist1d_fold_plan(
+                    data_col_expr, lo, hi, n_bins, self.uid, filter_expr
                 ),
             )
 

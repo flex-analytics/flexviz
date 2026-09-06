@@ -1,11 +1,13 @@
-"""Shared helpers for 2D histogram traces (Histogram2D, GeoHistogram2D, CorrHeatmap).
+"""Shared helpers for the histogram traces.
+
+Histogram, Histogram2D, GeoHistogram2D and CorrHeatmap all bin through here.
 
 Holds the histfunc/histnorm constants and type aliases, the ``apply_histnorm``
 normalization function, the color-scale/color-range validation helpers, and the
 2D histogram binning itself: bin-edge resolution, the kernel expressions, and
 the streamed batch fold a scan source runs instead. ``Histogram2D`` and
 ``GeoHistogram2D`` bin the same way over different column pairs, so both drive
-this one path.
+this one path; ``Histogram`` shares the batch fold and the lattice snap.
 """
 
 from __future__ import annotations
@@ -373,6 +375,54 @@ def _finite_z_expr(z_col: str, schema: pl.Schema | None) -> pl.Expr:
     if dtype is not None and dtype.is_float():
         usable = usable & pl.col(z_col).is_not_nan()
     return usable
+
+
+def _hist1d_fold_plan(
+    value_expr: pl.Expr,
+    lo: float,
+    hi: float,
+    bins: int,
+    uid: str,
+    mask: pl.Expr | None,
+) -> Callable[[pl.LazyFrame], pl.DataFrame]:
+    """The ``fixed_hist`` kernel folded over streamed batches, for a scan source.
+
+    The 2-D fold one dimension down: the kernel materializes the whole column,
+    so a scan runs it on one batch at a time and sums the counts in NumPy, over
+    the batches in flight rather than the whole column. Peak memory is the
+    reader's row-group prefetch window (``POLARS_ROW_GROUP_PREFETCH_SIZE``),
+    which does not grow with the file. Counts add exactly, so the grid equals
+    the kernel's. A streaming ``group_by`` on the bin index is
+    the obvious alternative and was measured at about twice the time, and worse
+    as the bin count grows, where the fold is flat.
+
+    The frame is filtered before the batches, so the scan itself rejects the
+    rows outside the viewport, and the imploded ``{breakpoint, count}`` struct
+    matches the kernel's own output shape.
+    """
+    hist_expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
+    # The kernel's breakpoints, computed its way: a degenerate span has no step.
+    step = (hi - lo) / bins if hi > lo else 0.0
+    breakpoints = lo + np.arange(1, bins + 1, dtype=np.float64) * step
+
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
+        acc = np.zeros(bins, dtype=np.int64)
+        for batch in src.select(value_expr.alias("v")).collect_batches(
+            chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
+        ):
+            counts = batch.select(hist_expr.alias("h"))["h"].struct.field("count")
+            acc += counts.to_numpy()
+        return pl.select(
+            pl.struct(
+                pl.Series("breakpoint", breakpoints),
+                pl.Series("count", acc, dtype=pl.UInt32),
+            )
+            .implode()
+            .alias(uid)
+        )
+
+    return run
 
 
 def _batch_fold_plan(

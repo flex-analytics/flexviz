@@ -485,10 +485,10 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
-- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
+- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel over the whole column. On a scan source (`scan_source`) it folds the same kernel over streamed batches, carried on `AggregationSpec.plan` (`_hist1d_fold_plan` in `trace/_hist_helpers.py`, the 1-D twin of the 2-D fold below): one `fixed_hist` per batch, counts summed in a NumPy accumulator, the viewport filter applied to the frame so the scan rejects the rows. Counts add exactly, so the output equals the kernel's. Measured at 200M rows on a 32-core Linux host: fold 265 ms at 100 bins and 302 ms at 100k bins, against 484 ms and 628 ms for the streaming `group_by(bin)` plan it replaced, which pays for its bin keys while the fold is flat. The fold's peak memory is the Parquet reader's row-group prefetch window, not the batches: with these 1M-row row groups it was 1.7 GB at the Polars default against 735 MB for the plan, and 381 MB (and 18% faster) with `POLARS_ROW_GROUP_PREFETCH_SIZE=4`. That variable is process-wide and slows a full `read_parquet` by about a quarter at 4, so the library leaves it alone; `flexviz serve` sets it for its own process.
 - **Bin edges on the wire**: the delta carries one `[lo, step, n]` triple per binned axis (`x_edges`, or `y_edges` for a horizontal histogram; `Histogram2D` sends both). The bins are uniform, so the client derives every bin bound as `lo + i * step` (`_hoverBoundsFromEdges` in `plotly/traces.js`) and builds the `customdata` and hover cells linked hover matches on. Sending one bound object per bin or per cell instead was most of a histogram response.
 - `_FIXED_HIST_ROUND_EPS` (`cube.py`) mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
-- A **grouped** histogram runs the streaming plan on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. The kernel would hold every group's column in memory at once. So the kernel serves only the ungrouped resident case.
+- A **grouped** histogram runs the streaming `group_by` plan (`_streaming_hist_plan` in `trace/hist.py`) on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. It uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical. The kernel would hold every group's column in memory at once, and a per-group kernel fold was measured as a dead end. So the plan serves the grouped case only.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the engine-resolved
@@ -694,10 +694,10 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
 │     instead of binary search. Returns Struct{breakpoint: Float64, count: UInt32}
 │     of length n_bins — identical output shape to polars.hist(include_breakpoint=True).
-│     Used by the Histogram trace for an ungrouped aggregation on a resident
-│     frame, to guarantee O(n) bin assignment with stable, pre-specified edges.
-│     An ungrouped histogram on a scan source, and a grouped one on either source
-│     kind, take the equivalent streaming plan instead.
+│     Used by the Histogram trace for every ungrouped aggregation, to guarantee
+│     O(n) bin assignment with stable, pre-specified edges: over the whole column
+│     on a resident frame, per streamed batch on a scan source. A grouped
+│     histogram takes the equivalent streaming plan instead.
 │
 ├── fixed_hist2d(y_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y) → pl.Expr
 │     O(n) fixed-bin 2D count histogram. Uses typed dispatch (avoids f64 cast for
@@ -741,7 +741,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Integration with LinePlot**: `line.py` imports `flexviz_polars` at module level, and the grid and the bucket plan live next to it in `line_buckets.py`. `LinePlot.get_aggregation_spec()` dispatches on `self.downsample` and on the source kind. Every x-width strategy takes the same stage 1: `_plugin_pairs_agg_expr` (the kernel) for an ungrouped resident frame, `pairs_plan` for a scan and for a grouped line, both with `_bucket_budget(n_points, downsample)` buckets. `nth` takes `_plugin_nth_agg_expr`, ungrouped and inside `group_by().agg()`. `lttb` and `fpcs` then finish in `_to_update` (`_lttb`, `_fpcs_walk`).
 
-**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped resident path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning. Every other path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
+**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning — as one expression on a resident frame, inside `_hist1d_fold_plan` on a scan. Only the grouped path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
 
 **Integration with Histogram2D / GeoHistogram2D**: `_hist_helpers.py`, which both traces bin through, imports `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. Both traces share one binding in `_hist_helpers.py`, so where those calls run depends only on the source kind: a resident frame builds one kernel expression that joins the shared select, and a scan source runs the same kernel per streamed batch inside `_batch_fold_plan`. `GeoHistogram2D` maps lat→x and lon→y and passes the resolved domain (or the snapped map bounds) as the kernel `lo`/`hi`.
 

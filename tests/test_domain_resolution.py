@@ -120,12 +120,11 @@ class TestResolveCount:
         assert len(collects.minmax) == 1
         plan = collects.minmax[0][1]
         assert all(f"__min_{c}__" in plan for c in ("a", "b", "ts"))
-        # min/max + one streaming plan per ungrouped histogram + the line
-        # envelope group_by. A plan spec cannot join the batched select, so each
-        # brings its own collect. The hist2d adds none: on a scan it folds
-        # through collect_batches, which is not a collect. A fifth would mean the
-        # line plan re-probed its own x domain instead of taking the resolved one.
-        assert len(collects.calls) == 4
+        # min/max + the line envelope group_by. Both histograms and the hist2d
+        # add none: on a scan they fold through collect_batches, which is not a
+        # collect. A third would mean the line plan re-probed its own x domain
+        # instead of taking the resolved one.
+        assert len(collects.calls) == 2
 
     def test_resident_line_resolves_its_x_domain(self, collects):
         """A resident minmax line bins in x too, so it needs the domain."""
@@ -165,8 +164,8 @@ class TestResolveCount:
 
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
-        """The footer resolves the bounds, so a Parquet scan pays one streaming
-        plan per ungrouped histogram and no min/max scan."""
+        """The footer resolves the bounds and the histograms fold over batches,
+        so a Parquet scan of any number of them collects nothing."""
         src = _write(
             tmp_path / "d.parquet",
             pl.DataFrame({"a": [float(i) for i in range(200)]}),
@@ -177,8 +176,8 @@ class TestResolveCount:
         _init(engine, infos)
 
         assert collects.minmax == []
-        # A plan spec runs alone: it trades the shared select for bounded memory.
-        assert len(collects.calls) == n_traces
+        # collect_batches is not a collect: the fold never enters the spy.
+        assert collects.calls == []
 
 
 # ---- fixed engine per source kind ------------------------------------------
@@ -194,11 +193,13 @@ class TestEnginePinning:
         assert set(collects.engines) == {"in-memory"}
 
     def test_scan_collects_streaming(self, tmp_path, collects):
+        # A line, not a histogram: a scanned histogram folds over batches and
+        # never collects, so it has no engine to pin.
         src = _write(
             tmp_path / "d.parquet",
-            pl.DataFrame({"a": [float(i) for i in range(200)]}),
+            pl.DataFrame({"ts": list(range(200)), "a": [float(i) for i in range(200)]}),
         )
-        engine, infos = _engine(src, [Histogram(x="a", bins=10)])
+        engine, infos = _engine(src, [LinePlot(x="ts", y="a", n_points=20)])
         _init(engine, infos)
 
         assert collects.minmax == []  # the footer answered

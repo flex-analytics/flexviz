@@ -10,6 +10,7 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
+from flexviz.trace import _hist_helpers as helpers_mod
 from flexviz.trace._hist_helpers import _snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
 
@@ -1028,11 +1029,11 @@ class TestCubeDescriptors:
 
 
 class TestHistogramScanPlanEquivalence:
-    """The streaming plan a scan source takes must equal the kernel exactly.
+    """The batch fold a scan source takes must equal the kernel exactly.
 
-    ``scan_source`` only picks a formulation, never a result. The plan collects
-    with the streaming engine on a resident frame too, which is fine here: the
-    point is the arithmetic, not the source kind.
+    ``scan_source`` only picks a formulation, never a result. The fold runs the
+    same kernel per batch, so it counts exactly; it streams a resident frame
+    too, which is fine here: the point is the arithmetic, not the source kind.
     """
 
     _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
@@ -1120,6 +1121,51 @@ class TestHistogramScanPlanEquivalence:
         ).rename("v")
         resident, scanned = self._both_updates(pl.DataFrame([series]))
         assert resident == scanned
+
+    def test_fold_merges_across_batches(self, monkeypatch):
+        """A frame larger than one chunk must fold to the single-batch counts."""
+        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
+        seen: list[tuple[int, int]] = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(self, *args, **kwargs):
+            batches = list(original(self, *args, **kwargs))
+            seen.append((kwargs["chunk_size"], len(batches)))
+            return batches
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+
+        df = pl.DataFrame({"v": [float(i % 13) for i in range(50)]})
+        resident, scanned = self._both_updates(df)
+        assert resident == scanned
+        assert seen == [(7, 8)], seen
+
+    def test_scan_source_with_a_viewport_matches_the_resident_kernel(self, tmp_path):
+        """The fold rejects the out-of-viewport rows in the scan; the kernel
+        filters inside its expression. Both must count the same rows."""
+        df = pl.DataFrame({"v": [float(i) / 4 for i in range(200)]})
+        path = tmp_path / "d.parquet"
+        df.write_parquet(path)
+        update_range = {"x": (7.3, 31.8)}
+
+        out = []
+        for src in (df, pl.scan_parquet(path)):
+            lf = LFQueryBuilder(src)
+            trace = Histogram(x="v", bins=8)
+            spec = trace.get_aggregation_spec(
+                update_range,
+                schema=lf.schema,
+                domains=_domains(lf, trace, update_range),
+                scan_source=lf.is_scan,
+            )
+            assert (spec.plan is not None) is lf.is_scan
+            df_agg, _ = lf.aggregate([], [spec])
+            updates = trace._to_update(df_agg).updates
+            out.append((updates["x"].to_list(), updates["y"].to_list()))
+
+        assert out[0] == out[1]
+        # The viewport must actually drop rows, else the test proves nothing.
+        assert sum(out[0][1]) < df.height
 
 
 class TestHistogramGroupedPlanEquivalence:
@@ -1270,12 +1316,19 @@ class TestHistogramGroupedPlanEquivalence:
 
 
 class TestHistogramStreamingPlanArithmetic:
-    """Bounds the trace itself cannot build, checked plan against kernel."""
+    """Bounds the trace itself cannot build, checked plan against kernel.
+
+    The plan serves the grouped path only, so it bins one constant group here:
+    the bin arithmetic under test is the same either way.
+    """
 
     @staticmethod
     def _plan_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
-        run = _streaming_hist_plan(pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", None)
-        return run(df.lazy())["u"].item().explode().struct.unnest().rows()
+        run = _streaming_hist_plan(
+            pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", ("g",)
+        )
+        out = run(df.with_columns(g=pl.lit("a")).lazy())
+        return out["u"].item().struct.unnest().rows()
 
     @staticmethod
     def _kernel_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
