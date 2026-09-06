@@ -345,21 +345,24 @@ _FOLD_CHUNK_ROWS = 4_000_000
 
 
 def _fold_result_frame(
-    uid: str, z_flat: list, bounds: tuple[float, float, float, float], count: bool
+    uid: str, z_flat: pl.Series, bounds: tuple[float, float, float, float]
 ) -> pl.DataFrame:
-    """The one-row, one-column frame the kernel expression would have produced."""
+    """The one-row, one-column frame the kernel expression would have produced.
+
+    ``z_flat`` already carries the kernel's dtype (UInt32 counts, nullable
+    Float64 reducer cells), so the struct is built from the Series itself: a
+    Python list of a million cells costs more than the fold.
+    """
     x_lo, x_hi, y_lo, y_hi = bounds
-    dtype = pl.Struct(
-        {
-            "z_flat": pl.List(pl.UInt32 if count else pl.Float64),
-            "x_lo": pl.Float64,
-            "x_hi": pl.Float64,
-            "y_lo": pl.Float64,
-            "y_hi": pl.Float64,
-        }
+    return pl.select(
+        pl.struct(
+            z_flat.implode().alias("z_flat"),
+            pl.lit(x_lo).alias("x_lo"),
+            pl.lit(x_hi).alias("x_hi"),
+            pl.lit(y_lo).alias("y_lo"),
+            pl.lit(y_hi).alias("y_hi"),
+        ).alias(uid)
     )
-    row = {"z_flat": z_flat, "x_lo": x_lo, "x_hi": x_hi, "y_lo": y_lo, "y_hi": y_hi}
-    return pl.DataFrame([pl.Series(uid, [row], dtype=dtype)])
 
 
 def _finite_z_expr(z_col: str, schema: pl.Schema | None) -> pl.Expr:
@@ -455,12 +458,14 @@ def _batch_fold_plan(
             chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
         ):
             out = batch.select(exprs)
-            grid = np.asarray(out["g"][0]["z_flat"], dtype=np.float64)
+            # Through Arrow, not Python: ``out["g"][0]`` would build a dict and
+            # a list of every cell once per batch.
+            grid = out["g"].struct.field("z_flat").item().to_numpy()
             if z_col is None:
-                acc += grid.astype(np.int64)
+                acc += grid
                 continue
             if histfunc == "mean":
-                cnt += np.asarray(out["c"][0]["z_flat"], dtype=np.int64)
+                cnt += out["c"].struct.field("z_flat").item().to_numpy()
             # An empty cell comes back null, which lands here as NaN.
             filled = ~np.isnan(grid)
             if histfunc in ("sum", "mean"):
@@ -477,15 +482,17 @@ def _batch_fold_plan(
 
         # No batches (an empty frame) leaves the zero grid, which is what the
         # kernel returns for empty input: zero counts, null reducer cells.
+        # An empty reducer cell is NaN here and null in the result, as in the
+        # kernel's own output.
         if z_col is None:
-            z_flat = acc.tolist()
+            z_flat = pl.Series(acc, dtype=pl.UInt32)
         elif histfunc == "mean":
-            z_flat = [
-                float(acc[i]) / cnt[i] if cnt[i] else None for i in range(n_cells)
-            ]
+            mean = np.full(n_cells, np.nan)
+            np.divide(acc, cnt, out=mean, where=cnt > 0)
+            z_flat = pl.Series(mean).fill_nan(None)
         else:
-            z_flat = [float(acc[i]) if seen[i] else None for i in range(n_cells)]
-        return _fold_result_frame(uid, z_flat, bounds, count=z_col is None)
+            z_flat = pl.Series(np.where(seen, acc, np.nan)).fill_nan(None)
+        return _fold_result_frame(uid, z_flat, bounds)
 
     return run
 
