@@ -266,6 +266,56 @@ class TestHist2DViewportSnap:
         assert total == 3
 
 
+class TestHist2DPartialViewport:
+    """The client sends only the axes a zoom moved, so each axis re-bins on its
+    own: a zoom on x alone must not drag y back to the full domain."""
+
+    X_RANGE = (2.0, 6.0)
+    Y_RANGE = (3.0, 7.0)
+    # x_bins=5 over a span of 4.0 gives width 0.8, so [2.0, 6.0] snaps outward
+    # to [1.6, 6.4] over 6 bins. y_bins=4 over 4.0 gives width 1.0, a lattice
+    # multiple, so [3.0, 7.0] stays put.
+    SNAPPED = {"x": (1.6, 6.4, 6), "y": (3.0, 7.0, 4)}
+
+    @staticmethod
+    def _axis_edges(result: TraceResult, axis: str) -> tuple[float, float, int]:
+        cells = result.updates["hover_bounds"]
+        if axis == "x":
+            return (cells[0][0]["x0"], cells[0][-1]["x1"], len(cells[0]))
+        return (cells[0][0]["y0"], cells[-1][0]["y1"], len(cells))
+
+    @pytest.mark.parametrize("zoomed", [(), ("x",), ("y",), ("x", "y")])
+    def test_each_axis_resolves_on_its_own(self, grid_df, zoomed):
+        ranges = {"x": self.X_RANGE, "y": self.Y_RANGE}
+        update_range = {ax: ranges[ax] for ax in zoomed}
+        trace = Histogram2D(x="x", y="y", x_bins=5, y_bins=4)
+        assert trace.domain_cols(update_range) == tuple(
+            ax for ax in ("x", "y") if ax not in zoomed
+        )
+
+        result = _aggregate_hist2d(
+            grid_df, x_bins=5, y_bins=4, update_range=update_range
+        )
+        for axis in ("x", "y"):
+            lo, hi, n = self._axis_edges(result, axis)
+            if axis in zoomed:
+                assert (lo, hi, n) == pytest.approx(self.SNAPPED[axis])
+            else:
+                assert (lo, hi) == pytest.approx(
+                    (grid_df[axis].min(), grid_df[axis].max())
+                )
+
+    def test_an_x_only_zoom_masks_x_alone(self, grid_df):
+        """Every row inside the snapped x band is counted, whatever its y."""
+        result = _aggregate_hist2d(
+            grid_df, x_bins=5, y_bins=4, update_range={"x": self.X_RANGE}
+        )
+        x_lo, x_hi, _ = self.SNAPPED["x"]
+        expected = grid_df.filter(pl.col("x").is_between(x_lo, x_hi)).height
+        total = sum(v for row in result.updates["z"] for v in row if v is not None)
+        assert total == expected
+
+
 class TestHist2DHistfunc:
     @pytest.fixture()
     def exact_z_df(self) -> pl.DataFrame:

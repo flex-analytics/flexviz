@@ -249,9 +249,12 @@ class FlexTrace(ABC):
         Parameters
         ----------
         update_range:
-            Viewport axis ranges.  Keys are single-letter axis names
-            (``"x"``, ``"y"``) with ``(min, max)`` tuple values.
-            May be empty (e.g. on init or force-update).
+            Viewport axis ranges, keyed by axis name (``"x"``, ``"y"``,
+            ``"coordinates"``) with ``(min, max)`` tuple values.  It holds any
+            subset of the trace's recompute axes: the client sends only the
+            axes a zoom moved, and it is empty on init, reset, or a
+            force-update.  A trace resolves each of its recompute axes on its
+            own; a missing axis is unzoomed.
         schema:
             The source schema, or ``None`` when it is unavailable.
         domains:

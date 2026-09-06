@@ -358,8 +358,9 @@ FlexTrace (ABC)
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
 ├── domain_cols(update_range) → tuple[str, ...]
-│     ← columns whose unfiltered (min, max) the spec needs; () when the
-│       viewport supplies bounds
+│     ← columns whose unfiltered (min, max) the spec needs; a column drops
+│       out once the viewport supplies its axis. update_range holds any
+│       subset of the trace's recompute axes
 ├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
 │     ← the engine calls every trace the same way; a trace ignores what it
@@ -592,7 +593,7 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges: unzoomed they span the engine-resolved unfiltered domain of each axis (`domain_cols`), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to a fixed lattice**: for a viewport `[lo, hi]` and `n` bins, `w = (hi - lo) / n`, `k0 = floor(lo / w + 1e-9)`, `k1 = max(ceil(hi / w - 1e-9), k0 + 1)`, and the edges become `k0 * w, k1 * w` over `k1 - k0` bins (`n` or `n + 1`). A pan keeps the span, so `w` and the lattice stay fixed and every cell keeps its place instead of sliding under the data. The viewport mask filters on the snapped rectangle, so an edge cell is complete. A degenerate span (`w <= 0`) is left alone, and unzoomed domain edges are never snapped. Because the lattice is fixed, a client can request a margin around its viewport and skip requests while the user pans inside it. Not implemented yet.
+- Bin edges: each axis resolves on its own, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`), so a cross-filter cannot move its edges. Zoomed they span the viewport **snapped outward to a fixed lattice**: for a viewport `[lo, hi]` and `n` bins, `w = (hi - lo) / n`, `k0 = floor(lo / w + 1e-9)`, `k1 = max(ceil(hi / w - 1e-9), k0 + 1)`, and the edges become `k0 * w, k1 * w` over `k1 - k0` bins (`n` or `n + 1`). A pan keeps the span, so `w` and the lattice stay fixed and every cell keeps its place instead of sliding under the data. The viewport mask filters on the snapped rectangle, so an edge cell is complete. A degenerate span (`w <= 0`) is left alone, and unzoomed domain edges are never snapped. Because the lattice is fixed, a client can request a margin around its viewport and skip requests while the user pans inside it. Not implemented yet.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale` and `color_range`; trace-owned defaults are `"viridis"` and `"auto"`.

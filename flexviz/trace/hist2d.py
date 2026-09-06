@@ -306,11 +306,13 @@ class Histogram2D(FlexTrace):
     # ------------------------------------------------------------------
 
     def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
-        # Both axes or neither: the kernel bins over one rectangle, and the
-        # engine never supplies a partial viewport here.
-        if update_range.get("x") is not None and update_range.get("y") is not None:
-            return ()
-        return (self.x_col, self.y_col)
+        # Each axis re-bins on its own, so only an axis the viewport leaves
+        # out still needs its unfiltered domain.
+        return tuple(
+            col
+            for axis, col in (("x", self.x_col), ("y", self.y_col))
+            if update_range.get(axis) is None
+        )
 
     def get_aggregation_spec(
         self,

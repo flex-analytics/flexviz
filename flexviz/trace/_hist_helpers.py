@@ -205,6 +205,35 @@ def _snapped_axis_mask(
     return pl.col(col).is_between(*_typed_range_bounds(col, (lo, hi), schema))
 
 
+def _axis_edges(
+    col: str,
+    range_: tuple | None,
+    n: int,
+    domains: Mapping[str, tuple[Any, Any]] | None,
+    schema: pl.Schema | None,
+) -> tuple[pl.Expr, pl.Expr, pl.Expr | None, int]:
+    """One axis's bin-edge literals, its viewport mask, and its bin count.
+
+    Without a range the axis spans the engine-resolved unfiltered ``(min, max)``
+    and needs no mask, so cross-filtering cannot move its bin edges. With one,
+    the bounds are the viewport snapped outward to a fixed lattice and the mask
+    restricts the data to that same span, so every edge bin is complete.
+    Snapping costs at most one extra bin, which is why the count comes back too.
+    """
+    if range_ is None:
+        # The kernel adds its own EPS to the span, so pass the raw bounds.
+        lo_lit, hi_lit = _domain_lits(domains, col)
+        return lo_lit, hi_lit, None, n
+    dtype = _temporal_dtype_for_col(col, schema)
+    # A viewport bound can be a date string or an epoch number, so evaluate it
+    # into the kernel's data space first. One lattice rule then serves temporal
+    # and numeric axes alike. Both bounds are literals, so this selects no data.
+    lo_expr, hi_expr = _hist2d_bound_lits(range_, dtype)
+    raw = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+    lo, hi, n = _snap_range(float(raw[0]), float(raw[1]), n)
+    return pl.lit(lo), pl.lit(hi), _snapped_axis_mask(col, lo, hi, dtype, schema), n
+
+
 def _hist2d_bounds(
     x_col: str,
     y_col: str,
@@ -217,44 +246,22 @@ def _hist2d_bounds(
 ) -> tuple[_Edges, pl.Expr | None, tuple[int, int]]:
     """Resolve the bin edges, the viewport mask, and the grid for the kernels.
 
-    With a viewport, the bounds are the viewport snapped outward to a fixed
-    lattice, and the mask restricts the data to that same rectangle so every
-    edge cell is complete. Snapping costs at most one extra bin per axis, which
-    is why the grid comes back with the edges. Without a viewport, the bounds
-    are the engine-resolved unfiltered ``(min, max)`` per axis and no mask
-    applies, so cross-filtering cannot move the bin edges.
+    ``update_range`` holds any subset of the figure's axes, because the client
+    sends only the axes a zoom moved. So each axis resolves on its own through
+    ``_axis_edges``: a zoom on x alone re-bins x to the viewport and leaves y on
+    its full domain. The mask is the conjunction of the masks that exist, and
+    the grid comes back with the edges because snapping can add a bin per axis.
 
     Boundary note: ``is_between`` is inclusive on both ends, so a value equal
     to ``x_hi`` passes the filter and is placed in the last bin by the Rust
     kernel's ``min(xi, max_xi)`` clamp — both sides must agree on this
     inclusive-right semantics.
     """
-    # Both axes or neither: the kernel bins over one rectangle, and the engine
-    # never supplies a partial viewport here.
-    if x_range is not None and y_range is not None:
-        x_dtype = _temporal_dtype_for_col(x_col, schema)
-        y_dtype = _temporal_dtype_for_col(y_col, schema)
-        # A viewport bound can be a date string or an epoch number, so evaluate
-        # it into the kernel's data space first. One lattice rule then serves
-        # temporal and numeric axes alike. Both bounds are literals, so this
-        # selects no data.
-        names = ("xl", "xh", "yl", "yh")
-        lits = _hist2d_bound_lits(x_range, x_dtype) + _hist2d_bound_lits(
-            y_range, y_dtype
-        )
-        raw = pl.select(*(e.alias(n) for e, n in zip(lits, names))).row(0)
-        x_lo, x_hi, nb_x = _snap_range(float(raw[0]), float(raw[1]), nb_x)
-        y_lo, y_hi, nb_y = _snap_range(float(raw[2]), float(raw[3]), nb_y)
-        mask = _snapped_axis_mask(
-            x_col, x_lo, x_hi, x_dtype, schema
-        ) & _snapped_axis_mask(y_col, y_lo, y_hi, y_dtype, schema)
-        edges = (pl.lit(x_lo), pl.lit(x_hi), pl.lit(y_lo), pl.lit(y_hi))
-        return edges, mask, (nb_x, nb_y)
-
-    # The kernel adds its own EPS to the span, so pass the raw bounds.
-    x_edges = _domain_lits(domains, x_col)
-    y_edges = _domain_lits(domains, y_col)
-    return x_edges + y_edges, None, (nb_x, nb_y)
+    x_lo, x_hi, x_mask, nb_x = _axis_edges(x_col, x_range, nb_x, domains, schema)
+    y_lo, y_hi, y_mask, nb_y = _axis_edges(y_col, y_range, nb_y, domains, schema)
+    masks = [m for m in (x_mask, y_mask) if m is not None]
+    mask = masks[0] & masks[1] if len(masks) == 2 else (masks[0] if masks else None)
+    return (x_lo, x_hi, y_lo, y_hi), mask, (nb_x, nb_y)
 
 
 def _domain_lits(
@@ -486,11 +493,12 @@ def _hist2d_agg_spec(
 ) -> tuple[AggregationSpec, tuple[int, int]]:
     """The 2-D histogram aggregation spec, plus the grid it bins on.
 
-    Both 2-D traces come through here over their own column pair. An unzoomed
-    request needs both columns in ``domains``; a ``(None, None)`` entry means an
-    empty or all-null column. A zoomed request snaps its edges to a lattice,
-    which can add one bin per axis, so the caller must keep the returned grid
-    and unpack ``z_flat`` with it.
+    Both 2-D traces come through here over their own column pair. Each axis
+    resolves on its own: an axis without a range needs its column in
+    ``domains``, where a ``(None, None)`` entry means an empty or all-null
+    column, and an axis with one snaps its edges to a lattice, which can add a
+    bin. So the caller must keep the returned grid and unpack ``z_flat`` with
+    it.
 
     ``scan_source`` says the rows come from storage rather than a resident
     frame. The kernels need both axis columns in memory at once, so a scan takes
