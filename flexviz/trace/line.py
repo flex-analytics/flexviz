@@ -40,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Literal, get_args
 
 import polars as pl
+import polars.selectors as cs
 
 from ..cube import (
     CubeTargetSpec,
@@ -827,10 +828,10 @@ class LinePlot(FlexTrace):
         # A bucket whose y is all null or all NaN still emits that value as its
         # extremum, and a line skips a null or NaN point on every path.
         df_line = df_line.drop_nulls()
+        # A selector, not a dtype list: Float16 is a float too, and a list here
+        # would have to grow with Polars.
         if any(dtype.is_float() for dtype in df_line.dtypes):
-            df_line = df_line.filter(
-                pl.all_horizontal(pl.col(pl.Float32, pl.Float64).is_not_nan())
-            )
+            df_line = df_line.filter(pl.all_horizontal(cs.float().is_not_nan()))
 
         if self.downsample == "fpcs":
             # The walk orders each pair by x, so it reads the pairs whole.

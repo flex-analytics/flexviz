@@ -1783,6 +1783,19 @@ class TestLineDownsampleValidation:
 class TestStageTwoDropsNaN:
     """A whole NaN bucket still emits its NaN extremum from stage 1."""
 
+    @pytest.mark.parametrize("dtype", [pl.Float16, pl.Float32, pl.Float64])
+    def test_an_all_nan_y_gives_an_empty_line(self, tmp_path, dtype):
+        # Every float dtype, not a hand-kept list of two of them.
+        df = pl.DataFrame(
+            {
+                "ts": list(range(200)),
+                "val": pl.Series([float("nan")] * 200, dtype=dtype),
+            }
+        )
+        for lf in _both_sources(df, tmp_path / "nan_y.parquet"):
+            deltas = _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+            assert list(deltas[0].updates["y"]) == []
+
     @pytest.mark.parametrize("downsample", ["lttb", "fpcs"])
     def test_nan_y_never_reaches_the_output(self, downsample):
         n = 2_000
