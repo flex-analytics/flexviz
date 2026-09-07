@@ -414,7 +414,7 @@ class Histogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec:
         """Return the 2-D histogram aggregation spec (see ``hist2d_agg_spec``)."""
         # Temporal axes bin on their physical representation; _to_update restores

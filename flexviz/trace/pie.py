@@ -12,7 +12,7 @@ events, brush selection, or linked hover.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import polars as pl
@@ -186,10 +186,7 @@ class PiePlot(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
-        *,
-        domains: Mapping[str, tuple[Any, Any]] | None = None,
-        scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> GroupedAggregationSpec:
         if self.values_col is None:
             agg_expr = pl.len().alias(self.uid)

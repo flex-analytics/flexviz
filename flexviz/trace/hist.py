@@ -328,7 +328,7 @@ class Histogram(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 

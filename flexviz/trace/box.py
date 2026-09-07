@@ -8,7 +8,7 @@ plus ``orientation`` and ``x0`` / ``y0`` for the orthogonal category label.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, Dict
 
 import polars as pl
@@ -164,10 +164,7 @@ class BoxPlot(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
-        *,
-        domains: Mapping[str, tuple[Any, Any]] | None = None,
-        scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped box aggregation spec."""
         expr = pl.col(self.data_col)

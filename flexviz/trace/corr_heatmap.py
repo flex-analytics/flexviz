@@ -14,7 +14,6 @@ cross-filtered.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, ClassVar, Dict, Literal
 
 import polars as pl
@@ -150,10 +149,7 @@ class CorrHeatmap(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
-        *,
-        domains: Mapping[str, tuple[Any, Any]] | None = None,
-        scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec:
         cols = self._columns
         if cols is None and schema is not None:
