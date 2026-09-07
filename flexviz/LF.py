@@ -235,7 +235,8 @@ class LFQueryBuilder:
 
         Fixed per source kind rather than left to ``"auto"``: a file scan must
         stream, a resident frame must not pay the streaming machinery. The line
-        bucket plan is the exception: it streams on both source kinds.
+        bucket plan and the grouped histogram plan are the exceptions: both
+        stream on both source kinds.
         """
         return "streaming" if self.is_scan else "in-memory"
 

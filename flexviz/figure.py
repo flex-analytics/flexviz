@@ -283,16 +283,12 @@ class Figure:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            The engine checks every x-width line on its dtype, on every
-            request. It reads the data as well for an ungrouped x-width line on
-            a resident frame: one pass over the column for nulls, NaN and
-            ascending order. It raises `ValueError` when the column fails. A
-            cached source keeps the sorted flag, so it pays that pass once per
-            source and column. An uncached source pays it on every request that
-            reaches aggregation, zoomed or not. Set True to skip the data pass
-            by marking the column sorted via `set_sorted`. Only use it if you
-            guarantee `x` meets the contract. A column that does not then gives
-            wrong results.
+            The engine reads x for nulls, NaN and ascending order, and raises
+            `ValueError` when the column fails. That pass runs once per source
+            and column, and only for an ungrouped x-width line on a resident
+            frame. Set True to skip it by marking the column sorted. Only pass
+            it if you guarantee `x` meets the contract: a column that breaks it
+            then gives wrong results.
         """
         trace = LinePlot(
             x=x,
@@ -332,7 +328,8 @@ class Figure:
         y:
             Column name for the data axis (produces horizontal bars).
         bins:
-            Number of bins.
+            Number of bins. A zoomed axis can show one more, because the grid snaps to a
+            fixed lattice.
         histnorm:
             Normalization: ``"count"``, ``"percent"``, ``"probability"``,
             ``"density"``, or ``"probability density"``.
@@ -532,9 +529,11 @@ class Figure:
         y:
             Column name for the vertical axis.
         x_bins:
-            Number of bins along x (default 20).
+            Number of bins along x (default 20). A zoomed axis can show one more,
+            because the grid snaps to a fixed lattice.
         y_bins:
-            Number of bins along y (default 20).
+            Number of bins along y (default 20). A zoomed axis can show one more,
+            because the grid snaps to a fixed lattice.
         z:
             Column name for the value to aggregate per bin.  When ``None``
             (default) the trace counts rows per bin.
@@ -592,9 +591,11 @@ class Figure:
         lon:
             Column name for longitude.
         lat_bins:
-            Number of bins along latitude (default 64).
+            Number of bins along latitude (default 64). A zoomed axis can show one more,
+            because the grid snaps to a fixed lattice.
         lon_bins:
-            Number of bins along longitude (default 64).
+            Number of bins along longitude (default 64). A zoomed axis can show one
+            more, because the grid snaps to a fixed lattice.
         z:
             Column name for the value to aggregate per bin.  When ``None``
             (default) the trace counts rows per bin.

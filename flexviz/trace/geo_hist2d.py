@@ -66,9 +66,11 @@ class GeoHistogram2D(FlexTrace):
     lon:
         Column name for longitude.
     lat_bins:
-        Number of bins along latitude (default 64).
+        Number of bins along latitude (default 64). A zoomed axis can show one more,
+        because the grid snaps to a fixed lattice.
     lon_bins:
-        Number of bins along longitude (default 64).
+        Number of bins along longitude (default 64). A zoomed axis can show one more,
+        because the grid snaps to a fixed lattice.
     z:
         Column name for the value to aggregate per bin.  When ``None``
         (default) the trace counts rows per bin.

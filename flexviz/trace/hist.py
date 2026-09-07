@@ -135,7 +135,8 @@ class Histogram(FlexTrace):
     y:
         Column name for the data axis when orientation is horizontal.
     bins:
-        Number of bins.
+        Number of bins. A zoomed axis can show one more, because the grid snaps to a
+        fixed lattice.
     histnorm:
         Normalization mode.  One of ``"count"``, ``"percent"``,
         ``"probability"``, ``"density"``, ``"probability density"``.

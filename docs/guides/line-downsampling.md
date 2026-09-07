@@ -57,6 +57,10 @@ ascending and free of nulls and NaN. The engine verifies this before it
 aggregates and raises `ValueError` when the column breaks the contract.
 `Figure.add_line` itself checks nothing.
 
+A `UInt64` x whose values go above `i64::MAX` fails on a resident frame,
+because the kernel reads its bounds as signed 64-bit integers. Cast the column
+to `Int64` or `Float64` first.
+
 A file source runs an order-independent plan that drops null and NaN x, so only
 its dtype is gated.
 
@@ -66,10 +70,9 @@ file-source plan can, so without the gate the same line would work on one source
 kind and fail on the other. An `"lttb"` line asks for more, a numeric, temporal
 or Boolean y, because the triangle rule does arithmetic on it.
 
-- The order, null, and NaN check costs one pass over x. A `cache=True` source
-  pays it once per source and column. A `cache=False` source may have changed
-  since the last request, so it pays it on every request that reaches
-  aggregation, zoomed or not.
+- The order, null, and NaN check costs one pass over x, and only an ungrouped
+  x-width line on a resident frame runs it. A resident frame is a snapshot, so
+  the check runs once per source and column.
 - `add_line(..., assume_sorted_x=True)` skips the check. Only pass it when you
   can guarantee the column. A column that breaks the contract then produces
   wrong output.
@@ -85,9 +88,10 @@ or Boolean y, because the triangle rule does arithmetic on it.
 
 ### Equal-row-count buckets
 
-An x-width line spends its budget on x width, so a dense burst in a narrow x
-span gets few points. To spend the budget on row count instead, plot against a
-row index:
+`add_line` requires `x`, and x width is the only bucket rule FlexViz offers. An
+x-width line spends its budget on x width, so a dense burst in a narrow x span
+gets few points. To spend the budget on row count instead, plot against a row
+index. There is no separate entry point:
 
 ```python
 df = df.with_row_index("i")

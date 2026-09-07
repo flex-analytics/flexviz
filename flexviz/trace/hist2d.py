@@ -154,9 +154,11 @@ class Histogram2D(FlexTrace):
     y:
         Column name for the vertical axis.
     x_bins:
-        Number of bins along x (default 20).
+        Number of bins along x (default 20). A zoomed axis can show one more, because
+        the grid snaps to a fixed lattice.
     y_bins:
-        Number of bins along y (default 20).
+        Number of bins along y (default 20). A zoomed axis can show one more, because
+        the grid snaps to a fixed lattice.
     z:
         Column name for the value to aggregate per bin.  When ``None``
         (default) the trace counts rows per bin.
