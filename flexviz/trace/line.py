@@ -74,11 +74,12 @@ LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 # pass. Not a public knob until someone needs to tune it.
 _LTTB_MINMAX_RATIO = 4
 
-# Dtypes the pair kernel panics on: it argmin/argmaxes y through a Polars build
-# that carries neither the wide-integer nor the categorical dtype. The plan
-# takes them, so without this gate the same line would work on a file source
-# and fail on a resident frame.
-_LINE_Y_UNSUPPORTED = (pl.Decimal, pl.Int128, pl.Categorical, pl.Enum)
+# Dtypes both Rust kernels panic on: they read a column through a Polars build
+# that carries neither the wide-integer nor the categorical dtype. The pair
+# kernel reads y, so without this gate an x-width line would work on a file
+# source (the plan takes them) and fail on a resident frame; the stride kernel
+# reads x and y, and runs on both source kinds.
+_LINE_KERNEL_UNSUPPORTED = (pl.Decimal, pl.Int128, pl.Categorical, pl.Enum)
 
 # Two points make a line, and 25k already exceeds the pixel width of any screen
 # the browser draws them on.
@@ -624,12 +625,15 @@ class LinePlot(FlexTrace):
                     f"or a temporal for an x-width line, got {x_dtype}. Cast the "
                     f"column first."
                 )
-            # The bucket pass compares y, on both source kinds.
-            if schema[self.y_col] in _LINE_Y_UNSUPPORTED:
+        # The bucket pass compares y and the stride kernel gathers both columns,
+        # so both panic on these dtypes, on both source kinds. An x-width x is
+        # already gated above, on the stricter grid rule.
+        for col in (self.y_col,) if self._x_width else (self.x_col, self.y_col):
+            if schema[col] in _LINE_KERNEL_UNSUPPORTED:
                 raise ValueError(
-                    f"y column '{self.y_col}' must not be a Decimal, an Int128 "
-                    f"or a categorical for an x-width line, got "
-                    f"{schema[self.y_col]}. Cast the column first."
+                    f"column '{col}' must not be a Decimal, an Int128 or a "
+                    f"categorical for a line, got {schema[col]}. Cast the "
+                    f"column first."
                 )
         if self.downsample != "lttb":
             return

@@ -1670,11 +1670,43 @@ class TestCheckSchema:
                 self._schema(pl.Int64, y_dtype=dtype)
             )
 
-    def test_an_nth_line_takes_any_y(self):
-        # A stride gathers rows and compares nothing.
-        LinePlot(x="ts", y="val", downsample="nth").check_schema(
-            self._schema(pl.Int64, y_dtype=pl.Decimal(10, 2))
+    @pytest.mark.parametrize("role", ["x", "y"])
+    @pytest.mark.parametrize(
+        "dtype",
+        [
+            pl.Decimal(10, 2),
+            pl.Int128,
+            pl.Categorical(),
+            pl.Enum([str(i) for i in range(50)]),
+        ],
+    )
+    def test_an_nth_line_rejects_what_its_kernel_panics_on(self, tmp_path, dtype, role):
+        # The stride kernel gathers both columns, so it panics on these dtypes
+        # too, on both source kinds.
+        col = pl.col("i")
+        col = (
+            col.cast(pl.String).cast(dtype)
+            if isinstance(dtype, (pl.Categorical, pl.Enum))
+            else col.cast(dtype)
         )
+        df = pl.DataFrame({"i": list(range(50))}).select(
+            ts=col if role == "x" else pl.col("i"),
+            val=col if role == "y" else pl.col("i").cast(pl.Float64),
+        )
+        for lf in _both_sources(df, tmp_path / "nth.parquet"):
+            with pytest.raises(ValueError, match="must not be a Decimal"):
+                _run_line(lf, LinePlot(x="ts", y="val", n_points=10, downsample="nth"))
+
+    @pytest.mark.parametrize("dtype", [pl.Boolean, pl.String])
+    def test_an_nth_line_still_takes_a_boolean_or_string_y(self, tmp_path, dtype):
+        df = pl.DataFrame({"ts": list(range(50))}).with_columns(
+            val=pl.col("ts").cast(dtype)
+        )
+        for lf in _both_sources(df, tmp_path / "nth_ok.parquet"):
+            deltas = _run_line(
+                lf, LinePlot(x="ts", y="val", n_points=10, downsample="nth")
+            )
+            assert len(deltas[0].updates["x"]) > 0
 
     @pytest.mark.parametrize("downsample", ["minmax", "lttb"])
     def test_a_decimal_y_is_rejected_on_both_source_kinds(self, tmp_path, downsample):
