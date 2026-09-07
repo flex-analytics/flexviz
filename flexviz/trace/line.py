@@ -42,13 +42,7 @@ from typing import Any, Dict, Literal, get_args
 import polars as pl
 import polars.selectors as cs
 
-from ..cube import (
-    CubeTargetSpec,
-    FreeAxisSpec,
-    MeasureSpec,
-    TargetDimSpec,
-    temporal_unit,
-)
+from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
 from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
@@ -61,6 +55,7 @@ from .base import (
     _group_value_key,
     _group_values_from_frame,
     _to_col_tuple,
+    _range_cube_source_spec,
     _range_filter_expr,
     _typed_range_bounds,
 )
@@ -323,36 +318,6 @@ def _bucket_budget(n_points: int, downsample: LineDownsample) -> int:
     if downsample == "lttb":
         return max(n_points * _LTTB_MINMAX_RATIO // 2, 1)
     return max(n_points // 2, 1)
-
-
-def _range_cube_source_spec(
-    column: str,
-    axis_range: tuple[float, float] | None,
-    schema: pl.Schema | None,
-) -> FreeAxisSpec | None:
-    """Shared 1-D range cube-source descriptor (hist-shaped; cube plan step 8).
-
-    Continuous/temporal kind from the schema dtype; temporal axes carry their
-    physical ``unit`` (contract G) and unsupported temporal dtypes
-    (``Datetime("ns")``, ``Time``) gate to ``None``, as do non-numeric dtypes.
-    Without a schema the kind defaults to ``"continuous"``. ``domain`` is the
-    viewport range verbatim (``None`` = unzoomed; engine-resolved).
-
-    A twin lives in ``box.py`` — keep the two in sync (a shared home in
-    ``base.py`` is deliberately out of this step's file scope).
-    """
-    dtype = _dtype_for_col(schema, column)
-    if dtype is not None:
-        if dtype.is_temporal():
-            unit = temporal_unit(dtype)
-            if unit is None:
-                return None
-            return FreeAxisSpec(
-                column=column, kind="temporal", p=2048, domain=axis_range, unit=unit
-            )
-        if not dtype.is_numeric():
-            return None
-    return FreeAxisSpec(column=column, kind="continuous", p=2048, domain=axis_range)
 
 
 # ---------------------------------------------------------------------------
