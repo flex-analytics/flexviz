@@ -999,6 +999,31 @@ class TestLineXWidthBuckets:
         assert len(resident["x"]) == expected
         assert resident["x"].to_list() == scanned["x"].to_list()
 
+    @pytest.mark.parametrize(
+        "value,dtype",
+        [
+            (1e20, pl.Float64),
+            (1.7e18, pl.Float64),
+            (0.5, pl.Float64),
+            (7, pl.Int64),
+            (dt.datetime(2023, 1, 1), pl.Datetime("ns")),
+        ],
+        ids=["float_1e20", "float_epoch_ns", "float_small", "int", "datetime_ns"],
+    )
+    def test_a_constant_x_keeps_its_two_extrema(self, tmp_path, value, dtype):
+        # Past 2**53 the one-unit fallback span rounds away, leaving a zero
+        # bucket width: no points on a frame, a division by zero on a scan.
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([value] * 50, dtype=dtype),
+                "val": [float(i) for i in range(50)],
+            }
+        )
+        resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
+        for out in (resident, scanned):
+            assert sorted(out["y"].to_list()) == [0.0, 49.0]
+            assert set(out["x"].to_list()) == {df["ts"][0]}
+
 
 # ---- equal-x-width buckets (grouped) ----------------------------------------
 

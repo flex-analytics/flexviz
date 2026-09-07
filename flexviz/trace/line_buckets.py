@@ -81,6 +81,11 @@ def bucket_grid(
         )
 
     if hi - lo <= 0:  # a constant x column still gets one bucket
+        # Past 2**53 a float has no ``lo + 1``: the sum rounds back to ``lo``
+        # and the width falls to zero. The next representable float always has
+        # a span, and one bucket is one bucket at any width.
+        if dtype is not None and dtype.is_float():
+            return (lo, math.nextafter(lo, math.inf))
         return (lo, lo + 1)
     return (lo, hi)
 
