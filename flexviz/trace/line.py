@@ -84,7 +84,6 @@ _N_POINTS_MAX = 25_000
 
 # A viewport restriction: either an ``is_between`` mask, or a zero-copy
 # ``(offset, length)`` slice when x is known sorted.
-# TODO: should we not always assume that x is sorted? (KISS)
 Viewport = pl.Expr | tuple[pl.Expr, pl.Expr]
 
 
