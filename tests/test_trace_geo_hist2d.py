@@ -231,17 +231,18 @@ class TestGeoHist2DHistfunc:
         with pytest.raises(ValueError, match="histfunc"):
             GeoHistogram2D(lat="lat", lon="lon", z="z", histfunc="n_unique")
 
-    def test_legacy_median_spec_raises(self):
+    def test_spec_with_a_histfunc_but_no_z_raises(self):
+        """The decoder passes the spec through, so the constructor gates it."""
         spec = TraceSpec(
             uid="geo",
             trace_type="geo_histogram2d",
-            backend_data={"lat": "lat", "lon": "lon", "z": "z"},
-            params={"lat_bins": 5, "lon_bins": 5, "histfunc": "median"},
-            display={"name": "Legacy"},
+            backend_data={"lat": "lat", "lon": "lon"},
+            params={"lat_bins": 5, "lon_bins": 5, "histfunc": "sum"},
+            display={"name": "Stale"},
             axes=None,
             recompute_axes=("coordinates",),
         )
-        with pytest.raises(ValueError, match="no longer supported"):
+        with pytest.raises(ValueError, match="only meaningful when z is given"):
             GeoHistogram2D.from_trace_spec(spec)
 
     def test_min_max(self, geo_df_with_z):

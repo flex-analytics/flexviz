@@ -494,26 +494,13 @@ class Histogram2D(FlexTrace):
 
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> "Histogram2D":
-        z = spec.backend_data.get("z")
-        raw_histfunc = spec.params.get("histfunc")
-        # Backward compat: old specs stored histfunc="count" when z was None.
-        if raw_histfunc == "count" or raw_histfunc is None:
-            histfunc = None
-        elif raw_histfunc in ("median", "n_unique"):
-            raise ValueError(
-                f"histfunc={raw_histfunc!r} is no longer supported by Histogram2D "
-                f"(removed in favour of the Rust kernel). "
-                f"Use one of: {_HIST2D_HISTFUNC_OPTIONS}."
-            )
-        else:
-            histfunc = raw_histfunc
         trace = cls(
             x=spec.backend_data["x"],
             y=spec.backend_data["y"],
             x_bins=spec.params.get("x_bins", 20),
             y_bins=spec.params.get("y_bins", 20),
-            z=z,
-            histfunc=histfunc if z is not None else None,
+            z=spec.backend_data.get("z"),
+            histfunc=spec.params.get("histfunc"),
             histnorm=spec.params.get("histnorm"),
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),

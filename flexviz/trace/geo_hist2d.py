@@ -287,26 +287,13 @@ class GeoHistogram2D(FlexTrace):
 
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> "GeoHistogram2D":
-        z = spec.backend_data.get("z")
-        raw_histfunc = spec.params.get("histfunc")
-        # Backward compat: old specs stored histfunc="count" when z was None.
-        if raw_histfunc == "count" or raw_histfunc is None:
-            histfunc = None
-        elif raw_histfunc in ("median", "n_unique"):
-            raise ValueError(
-                f"histfunc={raw_histfunc!r} is no longer supported by "
-                f"GeoHistogram2D (removed in favour of the Rust kernel). "
-                f"Use one of: {_GEO_HIST2D_HISTFUNC_OPTIONS}."
-            )
-        else:
-            histfunc = raw_histfunc
         trace = cls(
             lat=spec.backend_data["lat"],
             lon=spec.backend_data["lon"],
             lat_bins=spec.params.get("lat_bins", 64),
             lon_bins=spec.params.get("lon_bins", 64),
-            z=z,
-            histfunc=histfunc if z is not None else None,
+            z=spec.backend_data.get("z"),
+            histfunc=spec.params.get("histfunc"),
             histnorm=spec.params.get("histnorm"),
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),

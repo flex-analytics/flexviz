@@ -526,18 +526,18 @@ class TestHist2DSpec:
         assert trace.histfunc is None
         assert trace.histnorm is None
 
-    @pytest.mark.parametrize("histfunc", ["median", "n_unique"])
-    def test_legacy_spec_with_removed_histfunc_raises(self, histfunc):
+    def test_spec_with_a_histfunc_but_no_z_raises(self):
+        """The decoder passes the spec through, so the constructor gates it."""
         spec = TraceSpec(
             uid="hist2d",
             trace_type="histogram2d",
-            backend_data={"x": "x", "y": "y", "z": "w"},
-            params={"x_bins": 10, "y_bins": 10, "histfunc": histfunc},
-            display={"name": "Legacy"},
+            backend_data={"x": "x", "y": "y"},
+            params={"x_bins": 10, "y_bins": 10, "histfunc": "sum"},
+            display={"name": "Stale"},
             axes=("x", "y"),
             recompute_axes=("x", "y"),
         )
-        with pytest.raises(ValueError, match="no longer supported"):
+        with pytest.raises(ValueError, match="only meaningful when z is given"):
             Histogram2D.from_trace_spec(spec)
 
 
