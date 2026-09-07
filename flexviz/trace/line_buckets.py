@@ -19,6 +19,13 @@ from .base import _dtype_for_col, _physical_bound_expr
 # The four fixed struct fields the pair kernel and the pair plan both emit.
 _PAIR_FIELDS = ("x_min", "y_min", "x_max", "y_max")
 
+# Every column the plan adds carries this prefix, so a user column can only
+# collide by using the prefix itself. The plan groups by the user's columns
+# next to its own, and a name clash there is a DuplicateError, not a wrong
+# answer that a caller could notice.
+_ALIAS_PREFIX = "__fv_"
+_BUCKET = _ALIAS_PREFIX + "b"
+
 # Group dtypes whose id in a packed group key is their categorical physical.
 _STRING_LIKE = (pl.String, pl.Categorical, pl.Enum)
 
@@ -87,9 +94,9 @@ def _grouped_bucket_keys(
 ) -> tuple[pl.Expr, list[str], list[pl.Expr]]:
     """The ``group_by`` key of a grouped bucket query.
 
-    Returns ``(key expression aliased "__b", group_by columns, extra
+    Returns ``(key expression aliased ``_BUCKET``, group_by columns, extra
     aggregations)``. Within one group the key is monotone in the bucket, so
-    ``__b`` orders the buckets in either form.
+    the key orders the buckets in either form.
 
     One string-like group column packs with the bucket into a single Int64
     key, so the ``group_by`` hashes one column instead of two. It packs
@@ -99,7 +106,7 @@ def _grouped_bucket_keys(
     """
     dtype = _dtype_for_col(schema, group_cols[0]) if len(group_cols) == 1 else None
     if dtype not in _STRING_LIKE:
-        return (bucket.alias("__b"), [*group_cols, "__b"], [])
+        return (bucket.alias(_BUCKET), [*group_cols, _BUCKET], [])
 
     phys = pl.col(group_cols[0])
     if dtype == pl.String:
@@ -107,8 +114,8 @@ def _grouped_bucket_keys(
     # Physicals are >= 0, so -1 is a free slot for a null group value.
     key = phys.to_physical().cast(pl.Int64).fill_null(-1)
     return (
-        (key * n_buckets + bucket).alias("__b"),
-        ["__b"],
+        (key * n_buckets + bucket).alias(_BUCKET),
+        [_BUCKET],
         [pl.col(group_cols[0]).first()],
     )
 
@@ -127,9 +134,10 @@ def _bucket_extrema(
 ) -> pl.DataFrame:
     """One row per non-empty equal-x-width bucket, in group-by order.
 
-    Columns: ``__b``, ``__lo_<x>``, ``__lo_<y>``, ``__hi_<x>``, ``__hi_<y>``,
-    plus the group columns when ``group_cols`` is given: every group then bins
-    on the one global grid. ``pairs_plan`` orders the rows by bucket.
+    Columns: ``__fv_b``, ``__fv_lo_<x>``, ``__fv_lo_<y>``, ``__fv_hi_<x>``,
+    ``__fv_hi_<y>``, plus the group columns when ``group_cols`` is given: every
+    group then bins on the one global grid. ``pairs_plan`` orders the rows by
+    bucket.
 
     One streaming collect, no intermediate collects. ``min_by``/``max_by``
     locate the x value at each y extremum in a single associative pass, so the
@@ -187,20 +195,20 @@ def _bucket_extrema(
     # n_buckets; the clip folds it back into the last bucket instead of letting
     # it open an n_buckets + 1-th one and overrun the budget.
     bucket = (
-        raw.cast(pl.Int64, strict=False).clip(upper_bound=n_buckets - 1).alias("__b")
+        raw.cast(pl.Int64, strict=False).clip(upper_bound=n_buckets - 1).alias(_BUCKET)
     )
-    src = src.with_columns(bucket).filter(pl.col("__b").is_not_null())
+    src = src.with_columns(bucket).filter(pl.col(_BUCKET).is_not_null())
 
     y = pl.col(y_col)
     extrema = (
-        pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
-        pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
+        pl.col([x_col, y_col]).min_by(y).name.prefix(_ALIAS_PREFIX + "lo_"),
+        pl.col([x_col, y_col]).max_by(y).name.prefix(_ALIAS_PREFIX + "hi_"),
     )
     if group_cols is None:
-        return src.group_by("__b").agg(*extrema).collect(engine="streaming")
+        return src.group_by(_BUCKET).agg(*extrema).collect(engine="streaming")
 
     key, by, group_aggs = _grouped_bucket_keys(
-        group_cols, schema, n_buckets, pl.col("__b")
+        group_cols, schema, n_buckets, pl.col(_BUCKET)
     )
     return (
         src.with_columns(key)
@@ -232,12 +240,19 @@ def pairs_plan(
 
     The pair is the unit ``_to_update`` consumes, so the four columns stay on
     one row and are never deduplicated here.
+
+    The pair names live only as struct fields: grouped, the frame still carries
+    the user's group columns, and a top-level ``x_min`` beside a group column of
+    that name would collide.
     """
-    pair_exprs = (
-        pl.col(f"__lo_{x_col}").alias("x_min"),
-        pl.col(f"__lo_{y_col}").alias("y_min"),
-        pl.col(f"__hi_{x_col}").alias("x_max"),
-        pl.col(f"__hi_{y_col}").alias("y_max"),
+    pair_cols = (
+        f"{_ALIAS_PREFIX}lo_{x_col}",
+        f"{_ALIAS_PREFIX}lo_{y_col}",
+        f"{_ALIAS_PREFIX}hi_{x_col}",
+        f"{_ALIAS_PREFIX}hi_{y_col}",
+    )
+    pair_struct = pl.struct(
+        *(pl.col(c).alias(f) for c, f in zip(pair_cols, _PAIR_FIELDS))
     )
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
@@ -256,22 +271,21 @@ def pairs_plan(
             cols = list(group_cols)
             # The drop is scoped to the pair so a null group value keeps its
             # own child.
-            pairs = result.select(*cols, "__b", *pair_exprs).drop_nulls(_PAIR_FIELDS)
+            pairs = result.drop_nulls(pair_cols)
             # Sorted after the implode: the packed key orders by categorical
             # physical, not by group value.
             return (
                 pairs.group_by(cols)
-                .agg(pl.struct(*_PAIR_FIELDS).sort_by("__b").alias(uid))
+                .agg(pair_struct.sort_by(_BUCKET).alias(uid))
                 .sort(cols)
             )
 
         # An empty frame implodes to one row holding a typed empty list, which
         # is the sentinel shape, so no separate empty branch is needed.
         return (
-            result.sort("__b")
-            .select(*pair_exprs)
-            .drop_nulls()
-            .select(pl.struct(*_PAIR_FIELDS).implode().alias(uid))
+            result.drop_nulls(pair_cols)
+            .sort(_BUCKET)
+            .select(pair_struct.implode().alias(uid))
         )
 
     return run

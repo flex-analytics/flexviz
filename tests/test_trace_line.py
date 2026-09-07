@@ -1236,12 +1236,12 @@ class TestGroupedXWidthBuckets:
     @pytest.mark.parametrize(
         "group_cols,expected",
         [
-            (("g",), ["__b"]),
-            (("gc",), ["__b"]),
-            (("gi",), ["gi", "__b"]),
-            (("val",), ["val", "__b"]),
-            (("g", "site"), ["g", "site", "__b"]),
-            (("g", "gi"), ["g", "gi", "__b"]),
+            (("g",), ["__fv_b"]),
+            (("gc",), ["__fv_b"]),
+            (("gi",), ["gi", "__fv_b"]),
+            (("val",), ["val", "__fv_b"]),
+            (("g", "site"), ["g", "site", "__fv_b"]),
+            (("g", "gi"), ["g", "gi", "__fv_b"]),
         ],
         ids=["str", "cat", "int", "float", "two_str", "str_int"],
     )
@@ -1294,6 +1294,57 @@ class TestPlanDropsNaNAndNullX:
         assert self._pairs() == expected
         assert self._pairs(("gs",)) == expected
         assert self._pairs(("gi",)) == expected
+
+
+# ---- plan-internal aliases vs user columns ----------------------------------
+
+#: Names the plan once used for its own columns, plus a cube-reserved one.
+_ALIAS_NAMES = ["__b", "x_min", "y_max", "__lo_ts", "__hi_val", "count"]
+
+
+class TestPlanAliasNames:
+    """A user column may carry any name the bucket plan uses internally."""
+
+    @pytest.mark.parametrize("name", _ALIAS_NAMES)
+    @pytest.mark.parametrize("role", ["x", "y"])
+    def test_an_ungrouped_line_keeps_its_own_columns(self, tmp_path, role, name):
+        x, y = (name, "val") if role == "x" else ("ts", name)
+        df = pl.DataFrame(
+            {
+                x: [float(i) for i in range(200)],
+                y: [float((i * 7) % 31) for i in range(200)],
+            }
+        )
+        got = [
+            _points(_minmax_points(lf, LinePlot(x=x, y=y, n_points=20)))
+            for lf in _both_sources(df, tmp_path / "alias.parquet")
+        ]
+        assert got[0] == got[1]
+        # The scan plan used to return bucket indices as x here.
+        assert got[0][0] and set(got[0][0]) <= set(df[x].to_list())
+
+    @pytest.mark.parametrize("name", _ALIAS_NAMES)
+    def test_a_grouped_line_keeps_its_group_column(self, tmp_path, name):
+        n = 100
+        df = pl.DataFrame(
+            {
+                "ts": [float(i) for i in range(n)] * 2,
+                "val": [float(i) for i in range(2 * n)],
+                name: ["a"] * n + ["b"] * n,
+            }
+        )
+        got = [
+            {
+                k: _points(u)
+                for k, u in _grouped_points(
+                    lf, LinePlot(x="ts", y="val", n_points=20, group_by=name)
+                ).items()
+            }
+            for lf in _both_sources(df, tmp_path / "alias_grouped.parquet")
+        ]
+        assert set(got[0]) == {"a", "b"}
+        assert all(pts[0] for pts in got[0].values())
+        assert got[0] == got[1]
 
 
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------
