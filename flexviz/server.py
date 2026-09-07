@@ -104,7 +104,7 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         When ``True``, opt this source into server- and client-side caching
         of the initial (unfiltered) load.  Setting it **asserts the data is
         static for the process lifetime** — there is no data-change
-        invalidation yet (see issue #27).  Re-registering an existing name
+        invalidation yet (see issue #39).  Re-registering an existing name
         with raw data or a new builder replaces the builder and clears both
         caches (its data may have changed). Re-registering with the same
         ``LFQueryBuilder`` object already under that name invalidates

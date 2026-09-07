@@ -11,7 +11,7 @@ invariant documented in ``Architecture.md``.
 Phase 1 scope (see issue #26): only the *unfiltered, no-viewport* computation
 (``init`` / ``reset`` / ``deselect``) is cached.  The ``cache`` flag on a
 source asserts the data is static for the process lifetime, so there is no
-invalidation yet (data-driven invalidation is issue #27; a shared
+invalidation yet (data-driven invalidation is issue #39; a shared
 Redis/disk backend is issue #28).
 """
 

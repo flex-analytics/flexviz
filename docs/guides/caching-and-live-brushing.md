@@ -2,7 +2,7 @@
 
 Both features are opt-in through one flag, `cache=True`, because both rely on
 the same contract: **the source data does not change for the lifetime of the
-process**. There is no data-change invalidation yet, so only opt in for
+process**. There is no data-change invalidation yet (issue #39), so only opt in for
 static data (re-registering a source under the same name does clear its
 caches).
 

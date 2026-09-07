@@ -216,7 +216,7 @@ class Figure:
         cache:
             Opt this figure's source into init-load caching.  Asserts the
             data is static for the process lifetime (no invalidation yet;
-            see ``register_source`` and issue #27).  Can be overridden per
+            see ``register_source`` and issue #39).  Can be overridden per
             call in :meth:`show`.
         """
         self._cache_enabled: bool = cache

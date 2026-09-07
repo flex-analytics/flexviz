@@ -924,7 +924,7 @@ The "stateless server" invariant forbids *authoritative interaction state* (view
 - **never authoritative** — a miss recomputes a byte-identical result, so correctness never depends on a hit (any replica may serve any request);
 - **droppable** — eviction is global (LRU/size), never per-session.
 
-Phase 1 caches only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #27). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
+Phase 1 caches only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #39). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
 
 - `init` and `reset` are viewport-free by construction (`reset` forces an empty `update_range`);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
