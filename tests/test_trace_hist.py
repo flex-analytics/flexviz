@@ -1314,6 +1314,55 @@ class TestHistogramGroupedPlanEquivalence:
         assert got == [] and ref == []
 
 
+class TestGroupedHistogramColumnNameClashes:
+    """The streaming plan's own columns share the frame with the group columns.
+
+    A group column named like one of them must not collide with it.
+    """
+
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+    _GROUPS = list("aabbaabb")
+
+    @staticmethod
+    def _children(src, x, group_by) -> list:
+        lf = LFQueryBuilder(src)
+        trace = Histogram(x=x, bins=4, group_by=group_by)
+        spec = trace.get_aggregation_spec(
+            {},
+            schema=lf.schema,
+            domains=_domains(lf, trace, {}),
+            scan_source=lf.is_scan,
+        )
+        _, grouped = lf.aggregate([], [spec])
+        return [
+            (c.group_value_key, c.updates["y"].to_list())
+            for c in trace._to_grouped_update(grouped[trace.uid]).group_results
+        ]
+
+    @pytest.mark.parametrize(
+        "name,frame,x,group_by",
+        [
+            ("group_col_count", {"v": _VALUES, "count": _GROUPS}, "v", "count"),
+            ("group_col_bin_index", {"v": _VALUES, "__b": _GROUPS}, "v", "__b"),
+            ("value_col_count", {"count": _VALUES, "g": _GROUPS}, "count", "g"),
+            (
+                "group_col_breakpoint",
+                {"v": _VALUES, "breakpoint": _GROUPS},
+                "v",
+                "breakpoint",
+            ),
+        ],
+    )
+    def test_resident_and_scan_agree(self, tmp_path, name, frame, x, group_by):
+        df = pl.DataFrame(frame)
+        path = tmp_path / f"{name}.parquet"
+        df.write_parquet(path)
+
+        resident = self._children(df, x, group_by)
+        assert resident == self._children(pl.scan_parquet(path), x, group_by)
+        assert resident == [("a", [2, 0, 2, 0]), ("b", [0, 2, 0, 2])]
+
+
 class TestHistogramStreamingPlanArithmetic:
     """Bounds the trace itself cannot build, checked plan against kernel.
 

@@ -89,6 +89,11 @@ def _streaming_hist_plan(
     keeps its own child, because the dense join compares null keys as equal. The
     viewport arrives through ``pre_group_filters``, before the group split, so
     the plan takes no filter of its own.
+
+    The plan's own columns share the frame with the group columns, so they carry
+    a ``__fv_`` prefix: a group column named ``count`` would otherwise collide.
+    The emitted struct still calls its field ``count``, the name the kernel uses
+    and ``_to_update`` reads.
     """
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
@@ -100,24 +105,24 @@ def _streaming_hist_plan(
         if hi < lo:
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
-        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
-        all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
+        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__fv_b")
+        all_bins = pl.DataFrame({"__fv_b": range(bins)}, schema={"__fv_b": pl.Int32})
 
         cols = list(group_cols)
         counted = (
             filtered_ldf.group_by([*cols, bin_idx])
-            .agg(pl.len().alias("count"))
+            .agg(pl.len().alias("__fv_count"))
             .collect(engine="streaming")
         )
         # No rows leaves no groups, so the chain returns a zero-row frame of the
         # right shape and needs no branch of its own.
         dense = counted.select(cols).unique().join(all_bins, how="cross")
         return (
-            dense.join(counted, on=[*cols, "__b"], how="left", nulls_equal=True)
-            .sort([*cols, "__b"])
-            .with_columns(pl.col("count").fill_null(0).cast(pl.UInt32))
+            dense.join(counted, on=[*cols, "__fv_b"], how="left", nulls_equal=True)
+            .sort([*cols, "__fv_b"])
+            .with_columns(pl.col("__fv_count").fill_null(0).cast(pl.UInt32))
             .group_by(cols, maintain_order=True)
-            .agg(pl.struct("count").alias(uid))
+            .agg(pl.struct(pl.col("__fv_count").alias("count")).alias(uid))
             .sort(cols)
         )
 
