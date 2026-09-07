@@ -811,6 +811,28 @@ Because the engine keys its recompute/scoping on event type, `fvOnResetPanel` de
 
 **Grouped architecture:** the engine no longer discovers groups or fabricates child traces. Group membership is decided in the grouped Polars query, and traces own the conversion from grouped result frames to child payloads.
 
+### Execution decisions
+
+The rules that decide how a trace runs locally. They hold across every trace, so
+a new trace inherits them instead of choosing again.
+
+- **Two paths, picked by source kind.** A resident frame runs a Rust kernel. A scan runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` is the only input to that choice. The choice is internal, and there is no public engine option.
+- **Every collect names its engine.** `"auto"` is never used. Each `.collect()` and `collect_batches()` in `flexviz/` passes an explicit `engine=`, from `LFQueryBuilder.collect_engine` or a literal.
+- **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and clearly faster in median latency on representative data. Otherwise the plan stays.
+- **Data type does not pick an implementation.** One exception, tracked in issue #33: a single string-like group column packs into the bucket key of a grouped line (`_grouped_bucket_keys` in `trace/line_buckets.py`).
+- **No process-wide Polars setting.** The library writes no environment variable and no `pl.Config` value. A user owns those. `POLARS_ROW_GROUP_PREFETCH_SIZE` is the one worth setting, because it bounds a scan fold's peak memory.
+- **No collection locks, no output-cell cap.** A dense 2-D grid and a high-cardinality grouped trace can still exceed memory out of core. Issue #19 tracks both.
+- **The out-of-core contract is one local Parquet file.** A multi-file, hive or cloud scan runs the same plans, and its memory is not characterized: the Polars reader holds buffers per file, per row group and per column.
+- **Domain resolution** runs request-wide, once, before the cross-filter predicates. See the `physical_minmax` bullet under Core Properties and the Data Layer for the memo rule.
+- **One bucket semantic for lines.** `add_line` requires `x`, and x width is the only bucket rule (issue #26). See the LinePlot section.
+- **Grouped lines share one global grid**, and a plan-carrying grouped spec never fuses. See the LinePlot section (issue #16) and the Data Layer (issue #17).
+
+Open gaps:
+
+- The `fixed_hist`, `fixed_hist2d` and `fixed_hist2d_reduce` kernels drop to their scalar path for any chunk that holds a null. Real data holds nulls, so a null-aware parallel path is worth having.
+- `fixed_hist2d_reduce` is single-threaded (see the Plugin Layer).
+- The grouped histogram streaming `group_by` runs on the default Polars hot table. A large group by bin product spills (issue #19).
+
 ---
 
 ## Data Layer
