@@ -397,13 +397,10 @@ def _hist1d_fold_plan(
     as the bin count grows, where the fold is flat.
 
     The frame is filtered before the batches, so the scan itself rejects the
-    rows outside the viewport, and the imploded ``{breakpoint, count}`` struct
-    matches the kernel's own output shape.
+    rows outside the viewport. Only the counts are emitted: the trace derives
+    its bin centers from the bounds it binned with.
     """
     hist_expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
-    # The kernel's breakpoints, computed its way: a degenerate span has no step.
-    step = (hi - lo) / bins if hi > lo else 0.0
-    breakpoints = lo + np.arange(1, bins + 1, dtype=np.float64) * step
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
         src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
@@ -414,12 +411,7 @@ def _hist1d_fold_plan(
             counts = batch.select(hist_expr.alias("h"))["h"].struct.field("count")
             acc += counts.to_numpy()
         return pl.select(
-            pl.struct(
-                pl.Series("breakpoint", breakpoints),
-                pl.Series("count", acc, dtype=pl.UInt32),
-            )
-            .implode()
-            .alias(uid)
+            pl.struct(pl.Series("count", acc, dtype=pl.UInt32)).implode().alias(uid)
         )
 
     return run

@@ -779,14 +779,13 @@ class TestHistogramBinEdges:
             [lo + (i + 0.5) * step for i in range(n)]
         )
 
-    @pytest.mark.parametrize("scan_source", [False, True])
-    def test_bin_centers_match_the_kernel_breakpoints(self, scan_source):
+    def test_bin_centers_match_the_kernel_breakpoints(self):
         """The derived centers sit half a bin below the kernel's breakpoints."""
         df = pl.DataFrame({"val": [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]})
         lf = LFQueryBuilder(df)
         t = Histogram(x="val", bins=8)
         agg_spec = t.get_aggregation_spec(
-            {}, schema=lf.schema, domains=_domains(lf, t, {}), scan_source=scan_source
+            {}, schema=lf.schema, domains=_domains(lf, t, {})
         )
         df_agg, _ = lf.aggregate([], [agg_spec])
         breakpoints = (
@@ -1323,23 +1322,23 @@ class TestHistogramStreamingPlanArithmetic:
     """
 
     @staticmethod
-    def _plan_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+    def _plan_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
         run = _streaming_hist_plan(
             pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", ("g",)
         )
         out = run(df.with_columns(g=pl.lit("a")).lazy())
-        return out["u"].item().struct.unnest().rows()
+        return out["u"].item().struct.field("count").to_list()
 
     @staticmethod
-    def _kernel_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+    def _kernel_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
         expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
         agg = df.select(expr.implode().alias("u"))
-        return agg["u"].item().explode().struct.unnest().rows()
+        return agg["u"].item().explode().struct.field("count").to_list()
 
     @pytest.mark.parametrize(
         "name,values,lo,hi,bins",
         [
-            # lo == hi: every value lands in bin 0 and every breakpoint is lo.
+            # lo == hi: every value lands in bin 0.
             ("degenerate", [0.0, 1.0, 2.5, 3.0, 8.0], 3.0, 3.0, 8),
             ("degenerate_nan", [1.0, float("nan"), 3.0], 3.0, 3.0, 8),
             ("below_lo", [-5.0, -3.0], 0.0, 8.0, 8),
@@ -1348,13 +1347,15 @@ class TestHistogramStreamingPlanArithmetic:
     )
     def test_matches_kernel(self, name, values, lo, hi, bins):
         df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
-        assert self._plan_rows(df, lo, hi, bins) == self._kernel_rows(df, lo, hi, bins)
+        assert self._plan_counts(df, lo, hi, bins) == self._kernel_counts(
+            df, lo, hi, bins
+        )
 
     def test_inverted_bounds_raise(self):
         # The kernel raises on lo > hi; the plan must not silently bin instead.
         df = pl.DataFrame({"v": [1.0, 2.0]}, schema={"v": pl.Float64})
         with pytest.raises(ValueError, match="inverted"):
-            self._plan_rows(df, 5.0, 1.0, 8)
+            self._plan_counts(df, 5.0, 1.0, 8)
 
     def test_bin_edge_epsilon_is_load_bearing(self):
         """Values on a bin edge of a non-round domain need the round epsilon.
@@ -1367,8 +1368,8 @@ class TestHistogramStreamingPlanArithmetic:
         df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
 
         expected = [2, 1, 1, 1, 1, 3]
-        assert [c for _, c in self._kernel_rows(df, lo, hi, bins)] == expected
-        assert [c for _, c in self._plan_rows(df, lo, hi, bins)] == expected
+        assert self._kernel_counts(df, lo, hi, bins) == expected
+        assert self._plan_counts(df, lo, hi, bins) == expected
 
         # The same plan with the epsilon dropped.
         scale = bins / (hi - lo)

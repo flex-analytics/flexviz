@@ -85,8 +85,8 @@ def _streaming_hist_plan(
     batches instead. The bin index comes from the cube's
     ``_fixed_hist_bin_expr``, the one Python mirror of the kernel arithmetic;
     its non-strict cast turns NaN into null so NaN and null both drop out at
-    the dense join. Empty bins come back as zero, ordered, so ``_to_update``
-    sees the kernel's shape.
+    the dense join. Empty bins come back as zero, ordered: only the counts are
+    emitted, because the trace derives its bin centers from the bounds.
 
     It returns one row per group, sorted by group value, each holding that
     group's bins: the shape the fused grouped query returns. A null group value
@@ -104,15 +104,8 @@ def _streaming_hist_plan(
         if hi < lo:
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
-        # hi == lo is the kernel's degenerate span: every value lands in bin 0
-        # and every breakpoint is lo.
-        step = (hi - lo) / bins if hi > lo else 0.0
         bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
         all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
-        dense_cols = (
-            (pl.lit(lo) + (pl.col("__b") + 1) * step).alias("breakpoint"),
-            pl.col("count").fill_null(0).cast(pl.UInt32),
-        )
 
         cols = list(group_cols)
         counted = (
@@ -126,9 +119,9 @@ def _streaming_hist_plan(
         return (
             dense.join(counted, on=[*cols, "__b"], how="left", nulls_equal=True)
             .sort([*cols, "__b"])
-            .with_columns(*dense_cols)
+            .with_columns(pl.col("count").fill_null(0).cast(pl.UInt32))
             .group_by(cols, maintain_order=True)
-            .agg(pl.struct("breakpoint", "count").alias(uid))
+            .agg(pl.struct("count").alias(uid))
             .sort(cols)
         )
 
