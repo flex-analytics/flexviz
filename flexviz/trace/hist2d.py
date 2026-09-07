@@ -117,10 +117,12 @@ def unpack_hist2d_grid(
     """A kernel or fold ``Struct{z_flat, x_lo, x_hi, y_lo, y_hi}`` row as a flat
     z plus its bin geometry: ``(z, x_lo, x_hi, y_lo, y_hi, x_step, y_step)``.
 
-    Both 2-D traces read the same struct. An empty cell must reach the client as
-    ``None`` so it draws no rectangle: the count kernel marks one with a 0, the
-    reduce kernel with a null. ``counts`` says which kernel ran. Normalization
-    happens here because its bin area is this grid's cell area.
+    Both 2-D traces read the same struct. A cell with no value must reach the
+    client as ``None`` so it draws no rectangle: the count kernel marks an empty
+    cell with a 0, the reduce kernel with a null, and a reduction that is NaN (z
+    holding +inf and -inf) has no value either. ``counts`` says which kernel
+    ran. Normalization happens here because its bin area is this grid's cell
+    area.
     """
     nb_x, nb_y = grid
     x_lo, x_hi = float(raw["x_lo"]), float(raw["x_hi"])
@@ -131,7 +133,7 @@ def unpack_hist2d_grid(
     if counts:
         z_flat = [None if v == 0 else float(v) for v in raw["z_flat"]]
     else:
-        z_flat = [None if v is None else float(v) for v in raw["z_flat"]]
+        z_flat = [None if v is None or v != v else float(v) for v in raw["z_flat"]]
 
     if histnorm is not None:
         z_df = apply_histnorm(

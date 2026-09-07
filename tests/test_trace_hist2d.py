@@ -888,10 +888,12 @@ class TestHist2DScanFoldEquivalence:
 
     @pytest.mark.parametrize("histfunc", ["sum", "mean"])
     def test_a_nan_reduction_is_not_an_empty_cell(self, histfunc):
-        """+inf and -inf in one cell reduce to NaN, not to an empty cell.
+        """+inf and -inf in one cell reduce to NaN, which is a cell with no value.
 
-        Only the null mask separates the two, so reading NaN as empty dropped
-        that cell's z while keeping its count: the mean came back 0.0.
+        In the fold only the null mask separates a NaN reduction from an empty
+        cell, so reading NaN as empty dropped that cell's z while keeping its
+        count: the mean came back 0.0. Both source kinds now emit ``None`` for
+        it, the same value an empty cell gets.
         """
         inf = float("inf")
         df = pl.DataFrame(
@@ -903,12 +905,8 @@ class TestHist2DScanFoldEquivalence:
         )
         resident, scanned = _hist2d_updates(df, z="z", histfunc=histfunc)
 
-        assert math.isnan(resident["z"][0][0])
-        assert scanned["z"][0][0] is None
-        for j, (row_r, row_s) in enumerate(zip(resident["z"], scanned["z"])):
-            for i, (a, b) in enumerate(zip(row_r, row_s)):
-                if (i, j) != (0, 0):
-                    assert a == b
+        assert resident["z"][0][0] is None
+        assert scanned["z"] == resident["z"]
 
     def test_empty_input_folds_to_the_kernel_shape(self):
         """No batches must leave the grid the kernel returns for empty input:
