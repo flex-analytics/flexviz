@@ -64,14 +64,13 @@ def hist1d_fold_plan(
 ) -> Callable[[pl.LazyFrame], pl.DataFrame]:
     """The ``fixed_hist`` kernel folded over streamed batches, for a scan source.
 
-    The 2-D fold one dimension down: the kernel materializes the whole column,
-    so a scan runs it on one batch at a time and sums the counts in NumPy, over
-    the batches in flight rather than the whole column. Peak memory is the
-    reader's row-group prefetch window (``POLARS_ROW_GROUP_PREFETCH_SIZE``),
-    which does not grow with the file. Counts add exactly, so the grid equals
-    the kernel's. A streaming ``group_by`` on the bin index is
-    the obvious alternative and was measured at about twice the time, and worse
-    as the bin count grows, where the fold is flat.
+    The 2-D fold one dimension down. The kernel needs its whole input as one
+    Series, so a scan runs it on one batch at a time and sums the counts in
+    NumPy. Peak memory is then one batch plus the bin grid, bounded by the
+    reader's row-group prefetch window (``POLARS_ROW_GROUP_PREFETCH_SIZE``)
+    instead of by the file. A streaming ``group_by`` on the bin index is the
+    obvious alternative, but it is slower and its memory grows with the number
+    of bin keys. Counts add exactly, so the grid equals the kernel's.
 
     The frame is filtered before the batches, so the scan itself rejects the
     rows outside the viewport. Only the counts are emitted: the trace derives
@@ -112,8 +111,8 @@ def hist2d_fold_plan(
     both axis columns before binning. This runs the same kernels on one batch
     at a time and accumulates the grid in NumPy, so peak memory is one batch
     plus the grid. A streaming ``group_by`` on the flattened cell key is the
-    obvious alternative, but it is unbounded above the Polars hot table size
-    (measured), and ``collect_batches`` is the Polars escape hatch for custom
+    obvious alternative, but it is slower and its memory grows with the number
+    of cell keys. ``collect_batches`` is the Polars escape hatch for custom
     logic over streamed batches.
 
     Count, min and max are exact. Sum and mean fold in a different order than
