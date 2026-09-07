@@ -167,7 +167,7 @@ class LFQueryBuilder:
         ldf = polars_lf_from(ldf)
         assert isinstance(ldf, pl.LazyFrame)
         self._ldf: pl.LazyFrame = ldf
-        self._cache: bool = cache  # the caller's static-data assertion
+        self.cache: bool = cache  # the registrar's static-data assertion
         self._sorted_cols: Set[str] = set()  # columns that are sorted
         self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
 
@@ -179,7 +179,7 @@ class LFQueryBuilder:
         static by the cache contract. Everything the builder keeps across
         requests (resolved bounds, the sorted flag) rests on this.
         """
-        return self._cache or not self.is_scan
+        return self.cache or not self.is_scan
 
     @cached_property
     def is_scan(self) -> bool:

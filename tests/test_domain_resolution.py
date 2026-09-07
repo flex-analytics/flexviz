@@ -262,6 +262,27 @@ class TestBoundsFreshness:
         _init(engine, infos)
         assert len(collects.minmax) == 2
 
+    def test_a_registered_builder_learns_the_cache_flag(self, tmp_path, collects):
+        """``register_source`` declares the static-data contract, so a prebuilt
+        builder registered with ``cache=True`` memoizes like one built with it.
+        A CSV scan has no footer, so every resolve is a real collect."""
+        from flexviz.server import _sources, register_source
+
+        path = tmp_path / "prebuilt.csv"
+        pl.DataFrame({"a": [float(i) for i in range(50)]}).write_csv(path)
+        builder = LFQueryBuilder(pl.scan_csv(path))
+        register_source("prebuilt_domain_src", builder, cache=True)
+        try:
+            hist = Histogram(x="a", bins=4)
+            engine = FlexEngine(backend_lf=builder, scalable_traces={hist.uid: hist})
+            infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="hist")]
+            _init(engine, infos)
+            assert len(collects.minmax) == 1
+            _init(engine, infos)
+            assert len(collects.minmax) == 1
+        finally:
+            _sources.pop("prebuilt_domain_src", None)
+
     def test_cached_engine_memoizes(self, collects):
         """A second request on a cached source re-uses the resolved bounds."""
         df = pl.DataFrame({"a": [float(i) for i in range(50)]})

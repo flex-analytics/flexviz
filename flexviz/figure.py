@@ -977,6 +977,7 @@ def _register_source_if_needed(
         else:
             # same object — idempotent; mirror the caller's current cache choice
             # so a later show(cache=False) can opt out after an earlier opt-in.
+            backend_lf.cache = bool(cache)
             set_source_cacheable(source_name, bool(cache))
     else:
         register_source(source_name, backend_lf, cache=cache)
