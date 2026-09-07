@@ -2656,7 +2656,7 @@ class TestResidentLineXWidth:
         [
             ([1.0, None, 3.0], pl.Float64, "null values"),
             ([1.0, 2.0, float("nan")], pl.Float64, "NaN values"),
-            ([1.0, 2.0, float("inf")], pl.Float64, "infinite bound"),
+            ([1.0, 2.0, float("inf")], pl.Float64, "no finite span"),
             (["a", "b", "c"], pl.String, "numeric or a temporal"),
             # Wider than the kernel's i64 edge search: rejected before it panics.
             ([1, 2, 3], pl.Int128, "64-bit-or-smaller"),
@@ -2682,13 +2682,13 @@ class TestResidentLineXWidth:
             self._process(lf, LinePlot(x="ts", y="val", n_points=50))
 
     def test_scan_source_rejects_infinite_x(self, tmp_path):
-        # An infinite bound has no bucket grid, on either source kind.
+        # An infinite bound leaves no bucket grid, on either source kind.
         df = pl.DataFrame({"ts": [0.0, 1.0, float("inf")], "val": [1.0, 2.0, 3.0]})
         path = tmp_path / "inf_x.parquet"
         df.write_parquet(path)
         lf = LFQueryBuilder(pl.scan_parquet(path))
         assert lf.is_scan
-        with pytest.raises(ValueError, match="infinite bound"):
+        with pytest.raises(ValueError, match="no finite span"):
             self._process(lf, LinePlot(x="ts", y="val", n_points=50))
 
     @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
@@ -2709,6 +2709,37 @@ class TestResidentLineXWidth:
             InteractionEvent(type="viewport", axis_ranges={"x": (0.0, 2.0)}), infos
         )
         assert sorted(deltas[0].updates["y"]) == [1.0, 2.0, 3.0]
+
+    @staticmethod
+    def _source(df: pl.DataFrame, tmp_path, scan: bool) -> LFQueryBuilder:
+        if not scan:
+            return LFQueryBuilder(df)
+        df.write_parquet(tmp_path / "span.parquet")
+        return LFQueryBuilder(pl.scan_parquet(tmp_path / "span.parquet"))
+
+    @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    def test_an_infinite_domain_span_is_rejected(self, tmp_path, scan):
+        # Both bounds are finite; their difference is not.
+        df = pl.DataFrame({"ts": [-1e308, 0.0, 1e308], "val": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="no finite span"):
+            self._process(
+                self._source(df, tmp_path, scan),
+                LinePlot(x="ts", y="val", n_points=50),
+            )
+
+    @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    def test_an_infinite_viewport_span_is_rejected(self, tmp_path, scan):
+        # A posted viewport reaches the grid without passing the domain probe.
+        df = pl.DataFrame({"ts": [0.0, 1.0, 2.0], "val": [1.0, 2.0, 3.0]})
+        lf = self._source(df, tmp_path, scan)
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
+        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        with pytest.raises(ValueError, match="no finite span"):
+            engine.process(
+                InteractionEvent(type="viewport", axis_ranges={"x": (-1e308, 1e308)}),
+                infos,
+            )
 
     @staticmethod
     def _scan(tmp_path, xs) -> LFQueryBuilder:
@@ -2735,6 +2766,16 @@ class TestResidentLineXWidth:
             self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
         )
         assert len(list(deltas[0].updates["y"])) > 0
+
+    def test_an_all_nan_scan_x_returns_an_empty_line(self, tmp_path):
+        # ``(nan, nan)`` is no domain, so the grid keeps its unit span and
+        # every NaN row falls out of it. A NaN in the middle still returns
+        # points: ``test_scan_x_needs_only_the_dtype[nan]``.
+        deltas, _ = self._process(
+            self._scan(tmp_path, [float("nan")] * 20),
+            LinePlot(x="ts", y="val", n_points=50),
+        )
+        assert list(deltas[0].updates["y"]) == []
 
     def test_lttb_string_y_is_rejected_at_request_time(self):
         # The spec the client posts rebuilds the trace, so the y dtype rule

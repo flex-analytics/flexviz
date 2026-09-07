@@ -45,11 +45,11 @@ def bucket_grid(
 
     Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
     the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
-    move the bucket edges. With no bounds (an empty or all-null x column, or a
-    temporal viewport bound that failed to parse) the span is one unit typed for
-    the dtype, and both formulations fall out empty. An infinite bound raises:
-    the edges are found by binary search, and an infinite span has no finite
-    bucket width.
+    move the bucket edges. With no bounds (an empty or all-null x column, an
+    all-NaN one, or a temporal viewport bound that failed to parse) the span is
+    one unit typed for the dtype, and both formulations fall out empty. A span
+    that is not finite raises: the edges are found by binary search, and there
+    is no finite bucket width to search over.
     """
     if x_range is not None:
         lo, hi = x_range[0], x_range[1]
@@ -67,12 +67,16 @@ def bucket_grid(
     else:
         lo, hi = x_domain if x_domain is not None else (None, None)
 
-    if lo is None or hi is None:
+    # A NaN bound is no bound: an all-NaN x resolves to ``(nan, nan)``, and a
+    # NaN x row has no bucket on either formulation, so the line falls out
+    # empty rather than raising.
+    if lo is None or hi is None or lo != lo or hi != hi:
         integral = dtype is not None and (dtype.is_integer() or dtype.is_temporal())
         return (0, 1) if integral else (0.0, 1.0)
-    if not (math.isfinite(lo) and math.isfinite(hi)):
+    # The span, not each bound: two finite bounds can still differ by infinity.
+    if not math.isfinite(hi - lo):
         raise ValueError(
-            f"x column '{x_col}' has an infinite bound ({lo}, {hi}). A minmax "
+            f"x column '{x_col}' has no finite span ({lo}, {hi}). A minmax "
             f"line needs a finite x. Filter the frame with is_finite() first."
         )
 
