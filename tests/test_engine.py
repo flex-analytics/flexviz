@@ -2793,34 +2793,20 @@ class TestResidentLineXWidth:
                 LinePlot(x="ts", y="val", n_points=50, group_by="ts"),
             )
 
-    def test_two_lines_sharing_x_check_it_once(self, monkeypatch):
-        # Uncached, so nothing is memoized: without the per-request set the
-        # second line would pay a second pass over the same column.
-        calls: list[str] = []
-        real_check = LFQueryBuilder.check_line_x
-
-        def check(self, col, **kwargs):
-            calls.append(col)
-            return real_check(self, col, **kwargs)
-
-        monkeypatch.setattr(LFQueryBuilder, "check_line_x", check)
-
+    def test_two_lines_sharing_x_check_it_once(self):
+        # The first line leaves the column flagged sorted, so the second one
+        # over the same x adds no collect.
         df = self._frame(1_000).with_columns(other=pl.col("val") * 2.0)
-        lines = [
-            LinePlot(x="ts", y="val", n_points=50),
-            LinePlot(x="ts", y="other", n_points=50),
-        ]
-        engine = FlexEngine(
-            backend_lf=LFQueryBuilder(df),
-            scalable_traces={line.uid: line for line in lines},
+        one, _ = self._two_requests(LFQueryBuilder(df), None)
+        two, _ = self._two_requests(
+            LFQueryBuilder(df),
+            None,
+            [
+                LinePlot(x="ts", y="val", n_points=50),
+                LinePlot(x="ts", y="other", n_points=50),
+            ],
         )
-        infos = [
-            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")
-            for line in lines
-        ]
-        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
-        assert len(deltas) == 2
-        assert calls == ["ts"]
+        assert one == two
 
     def test_x_is_checked_before_the_domain_resolve(self, monkeypatch):
         # On a cached source the check flags the column sorted, which makes the
@@ -2846,15 +2832,20 @@ class TestResidentLineXWidth:
         assert order == ["check", "minmax"]
 
     @staticmethod
-    def _two_requests(lf: LFQueryBuilder, cache_backend) -> tuple[int, int]:
+    def _two_requests(
+        lf: LFQueryBuilder, cache_backend, lines: list[LinePlot] | None = None
+    ) -> tuple[int, int]:
         """Collect counts of two identical unzoomed requests."""
-        line = LinePlot(x="ts", y="val", n_points=50)
+        lines = lines or [LinePlot(x="ts", y="val", n_points=50)]
         engine = FlexEngine(
             backend_lf=lf,
-            scalable_traces={line.uid: line},
+            scalable_traces={line.uid: line for line in lines},
             cache_backend=cache_backend,
         )
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")
+            for line in lines
+        ]
         event = InteractionEvent(type="init", force_update=True)
         collects: list[int] = []
         real = pl.LazyFrame.collect

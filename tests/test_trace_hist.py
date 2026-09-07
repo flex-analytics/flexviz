@@ -20,7 +20,7 @@ from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_pla
 def _domains(lf: LFQueryBuilder, trace, update_range: dict) -> dict:
     """Resolve a trace's unfiltered bounds the way ``FlexEngine`` does."""
     cols = trace.domain_cols(update_range)
-    return lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    return lf.physical_minmax(list(cols), lf.schema) if cols else {}
 
 
 def _aggregate_hist(
@@ -219,7 +219,7 @@ class TestHistogramBinAlignment:
         bins = 4
         t_pos = Histogram(x="y_pos", bins=bins)
         t_neg = Histogram(x="y_neg", bins=bins)
-        shared = lf.physical_minmax(["y_pos", "y_neg"], lf.schema, memoize=False)
+        shared = lf.physical_minmax(["y_pos", "y_neg"], lf.schema)
 
         spec_pos = t_pos.get_aggregation_spec({}, schema=lf.schema, domains=shared)
         spec_neg = t_neg.get_aggregation_spec({}, schema=lf.schema, domains=shared)

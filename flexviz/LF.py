@@ -165,14 +165,24 @@ class LFQueryBuilder:
     def __init__(
         self,
         ldf: pl.DataFrame | pl.LazyFrame,
-        cache_schema: bool = True,
+        cache: bool = False,
     ):
         ldf = polars_lf_from(ldf)
         assert isinstance(ldf, pl.LazyFrame)
         self._ldf: pl.LazyFrame = ldf
-        self._cache_schema: bool = cache_schema  # whether to cache the ldf its schema
+        self._cache: bool = cache  # the caller's static-data assertion
         self._sorted_cols: Set[str] = set()  # columns that are sorted
         self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
+
+    @property
+    def static(self) -> bool:
+        """Whether the data cannot change under this builder.
+
+        A resident frame is a snapshot, and a ``cache=True`` scan is declared
+        static by the cache contract. Everything the builder keeps across
+        requests (resolved bounds, the sorted flag) rests on this.
+        """
+        return self._cache or not self.is_scan
 
     @property
     def is_scan(self) -> bool:
@@ -240,22 +250,14 @@ class LFQueryBuilder:
     # Is ~ 40x faster than LazyFrame.collect_schema() when the LazyFrame is in memory
     @property
     def schema(self):
-        if self._cache_schema and hasattr(self, "_cached_schema"):
-            return self._cached_schema
-
-        schema = self._ldf.collect_schema()
-
-        if self._cache_schema:
-            self._cached_schema = schema
-
-        return schema
+        if not hasattr(self, "_cached_schema"):
+            self._cached_schema = self._ldf.collect_schema()
+        return self._cached_schema
 
     def physical_minmax(
         self,
         columns: List[str],
         schema: pl.Schema | None = None,
-        *,
-        memoize: bool,
     ) -> dict[str, Tuple[Any, Any]]:
         """``(min, max)`` of each column in its physical representation.
 
@@ -268,15 +270,13 @@ class LFQueryBuilder:
         Whatever the footer cannot answer is collected as before. The footer is
         an optimization only: any problem with it falls back to the collect.
 
-        ``memoize`` keeps the result for the builder's lifetime. A resident
-        frame is a snapshot, so the engine memoizes on it whatever ``cache``
-        says. A scan may change on disk between requests, so only a
-        ``cache=True`` scan memoizes: an uncached reset must be able to see the
-        changed data. Re-registering a source with raw data or a new builder
-        replaces the builder and drops the memo. Re-registering the same
-        builder object keeps it, and the server warns.
+        A ``static`` source keeps the result for the builder's lifetime. An
+        uncached scan may change on disk between requests, so it resolves again
+        and an uncached reset sees the changed data. Re-registering a source
+        with raw data or a new builder replaces the builder and drops the memo.
+        Re-registering the same builder object keeps it, and the server warns.
         """
-        memo = self._minmax_memo if memoize else {}
+        memo = self._minmax_memo if self.static else {}
         sch = schema if schema is not None else self.schema
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
@@ -306,7 +306,7 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
+    def check_line_x(self, col: str | pl.Expr) -> None:
         """Verify the data of an x column against the resident-frame line contract.
 
         The x-width kernel needs x sorted ascending and free of nulls and NaN.
@@ -315,16 +315,14 @@ class LFQueryBuilder:
         last, so on a sorted null-free column every NaN is a suffix.
 
         The dtype half of the contract lives on the trace
-        (``LinePlot.check_schema``), and the engine calls this only where the
-        data matters: an ungrouped x-width line on a resident frame. A grouped
-        plan and a scan plan read x in no order.
+        (``LinePlot.check_schema``), and ``LinePlot.check_source`` calls this
+        only where the data matters: an ungrouped x-width line on a resident
+        frame. A grouped plan and a scan plan read x in no order.
 
-        ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
-        skips the collect on later requests, and sets the Polars sorted flag,
-        which turns the column's min/max into an O(1) read. The flags of a
-        LazyFrame cannot be queried, hence the set. The engine memoizes on a
-        resident frame, a snapshot, and on a ``cache=True`` scan, the same
-        static-data contract that governs ``physical_minmax``.
+        A ``static`` source flags a passing column sorted in ``._sorted_cols``,
+        which skips the collect on later requests, and sets the Polars sorted
+        flag, which turns the column's min/max into an O(1) read. The flags of a
+        LazyFrame cannot be queried, hence the set.
 
         Raises
         ------
@@ -358,7 +356,7 @@ class LFQueryBuilder:
                 f"x column '{col_name}' has NaN values. A minmax line needs "
                 f"a NaN-free x. Drop the NaN rows first."
             )
-        if memoize:
+        if self.static:
             self._ldf = self._ldf.set_sorted(col_name)
             self._sorted_cols.add(col_name)
 

@@ -224,23 +224,23 @@ class TestBoundsFreshness:
     def test_memoized_bounds_survive_a_source_rewrite(self, tmp_path):
         """``cache=True`` contracts the data as static, so the memo stands."""
         path = tmp_path / "d.parquet"
-        lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})))
-        assert lf.physical_minmax(["a"], memoize=True) == {"a": (0.0, 10.0)}
+        lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})), cache=True)
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
 
         pl.DataFrame({"a": [0.0, 100.0]}).write_parquet(path)
-        assert lf.physical_minmax(["a"], memoize=True) == {"a": (0.0, 10.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
         # Re-registering a source builds a new builder, dropping the memo.
-        fresh = LFQueryBuilder(pl.scan_parquet(path))
-        assert fresh.physical_minmax(["a"], memoize=True) == {"a": (0.0, 100.0)}
+        fresh = LFQueryBuilder(pl.scan_parquet(path), cache=True)
+        assert fresh.physical_minmax(["a"]) == {"a": (0.0, 100.0)}
 
-    def test_unmemoized_call_neither_reads_nor_writes_the_memo(self, tmp_path):
+    def test_an_uncached_scan_neither_reads_nor_writes_the_memo(self, tmp_path):
         path = tmp_path / "d.parquet"
         lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})))
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (0.0, 10.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
         assert lf._minmax_memo == {}
 
         pl.DataFrame({"a": [0.0, 100.0]}).write_parquet(path)
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (0.0, 100.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 100.0)}
 
     def test_uncached_resident_engine_memoizes(self, collects):
         """A resident frame is a snapshot: its bounds are resolved once, with
@@ -285,13 +285,13 @@ class TestExactBounds:
     def test_large_integers_are_not_rounded(self):
         lo, hi = 2**53 + 1, 2**53 + 12345
         lf = LFQueryBuilder(pl.DataFrame({"a": [lo, hi]}, schema={"a": pl.Int64}))
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (lo, hi)}
+        assert lf.physical_minmax(["a"]) == {"a": (lo, hi)}
 
     def test_temporal_bounds_stay_integral(self):
         lf = LFQueryBuilder(
             pl.DataFrame({"t": [dt.date(2020, 1, 1), dt.date(2020, 1, 11)]})
         )
-        lo, hi = lf.physical_minmax(["t"], memoize=False)["t"]
+        lo, hi = lf.physical_minmax(["t"])["t"]
         assert isinstance(lo, int) and hi - lo == 10
 
     def test_all_null_column_falls_back_to_unit_domain(self):

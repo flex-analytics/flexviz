@@ -236,9 +236,11 @@ class FlexEngine:
                 len(cached),
             )
 
-        # Before the domain scan: on a cached source the check leaves the x
-        # column flagged sorted, which makes the min/max collect O(1).
-        self._check_line_contract(aggregation_traces)
+        # Before the domain scan: on a static source the line check leaves the
+        # x column flagged sorted, which makes the min/max collect O(1).
+        if self._backend_lf is not None:
+            for item in aggregation_traces:
+                item.trace.check_source(self._backend_lf)
 
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
@@ -636,8 +638,9 @@ class FlexEngine:
 
         The min/max lookups go through ``LFQueryBuilder.physical_minmax``, which
         **memoizes** each column's physical ``(min, max)`` for the source's
-        lifetime — so a cube *cache hit* no longer re-scans the full data just
-        to re-derive the (cache-key-determining) domain.
+        lifetime (cubes are built only for static sources) — so a cube *cache
+        hit* no longer re-scans the full data just to re-derive the
+        (cache-key-determining) domain.
         """
         is_box2d = free_spec.kind == "box2d"
         resolve_free = (
@@ -677,13 +680,7 @@ class FlexEngine:
             needed.append(free_spec.column)
         needed += [col for _, col in box2d_axes]
         needed += unresolved_cols
-        # Cubes are built only for ``cache=True`` sources, so the static-data
-        # contract that ``memoize`` requires already holds.
-        minmax = (
-            self._backend_lf.physical_minmax(needed, schema, memoize=True)
-            if needed
-            else {}
-        )
+        minmax = self._backend_lf.physical_minmax(needed, schema) if needed else {}
 
         free = free_spec
         if resolve_free:
@@ -851,8 +848,7 @@ class FlexEngine:
         (``FlexTrace.domain_cols``); an unzoomed histogram instead takes the
         union its same-figure siblings share, so their bars line up.
 
-        Memoized on a resident frame, which is a snapshot, and on a cached
-        source, whose data the cache contract treats as static. An uncached scan
+        The builder memoizes the bounds when it is ``static``. An uncached scan
         resolves again, so a reset can see changed data on disk.
         """
         if self._backend_lf is None:
@@ -865,43 +861,7 @@ class FlexEngine:
         needed = sorted({col for cols in domain_cols.values() for col in cols})
         if not needed:
             return domain_cols, {}
-        return domain_cols, self._backend_lf.physical_minmax(
-            needed,
-            schema,
-            memoize=self._cache is not None or not self._backend_lf.is_scan,
-        )
-
-    def _check_line_contract(self, aggregation_traces: list[_AggregationTrace]) -> None:
-        """Validate every line trace against the current source.
-
-        The engine is the one authority for this: every request rebuilds the
-        trace, and the source can change between requests. The trace owns the
-        dtype rules (``check_schema``), the builder owns the data check and the
-        sorted memo (``check_line_x``). Only an ungrouped x-width line on a
-        resident frame reads x in order, so only that one pays the data pass,
-        once per x column per request however many traces share it.
-        """
-        lf = self._backend_lf
-        if lf is None:
-            return
-        checked: set[str] = set()
-        for item in aggregation_traces:
-            trace = item.trace
-            if trace.trace_type != "line":
-                continue
-            trace.check_schema(lf.schema)
-            if (
-                not trace.buckets_by_x_width
-                or trace.group_by_cols is not None
-                or lf.is_scan
-                or trace.x_col in checked
-            ):
-                continue
-            checked.add(trace.x_col)
-            lf.check_line_x(
-                trace.x_col,
-                memoize=self._cache is not None or not self._backend_lf.is_scan,
-            )
+        return domain_cols, self._backend_lf.physical_minmax(needed, schema)
 
     def _collect_aggregation_specs(
         self,

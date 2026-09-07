@@ -48,7 +48,7 @@ from ..cube import (
     TargetDimSpec,
     temporal_unit,
 )
-from ..LF import AggregationSpec, GroupedAggregationSpec
+from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
     FlexTrace,
@@ -608,6 +608,21 @@ class LinePlot(FlexTrace):
         stride and carries no grid.
         """
         return self.downsample in _X_WIDTH_DOWNSAMPLES
+
+    def check_source(self, source: LFQueryBuilder) -> None:
+        """The line contract: the dtypes always, the x data where order matters.
+
+        Only an ungrouped x-width line on a resident frame reads x in order. A
+        grouped plan and a scan plan read x in no order, so they stop at the
+        dtype gate.
+        """
+        self.check_schema(source.schema)
+        if (
+            self.buckets_by_x_width
+            and self.group_by_cols is None
+            and not source.is_scan
+        ):
+            source.check_line_x(self.x_col)
 
     def check_schema(self, schema: pl.Schema) -> None:
         """Raise when the schema cannot feed this line. Reads dtypes, never collects.

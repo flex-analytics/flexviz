@@ -25,7 +25,7 @@ from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
     cols = trace.domain_cols(update_range)
-    return lf.physical_minmax(list(cols), memoize=False) if cols else {}
+    return lf.physical_minmax(list(cols)) if cols else {}
 
 
 def _aggregate_line(
@@ -900,7 +900,7 @@ class TestLineXWidthBuckets:
         )
         lf = LFQueryBuilder(df)
         with pytest.raises(ValueError, match="null values"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
         out = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=20))
         assert len(out["x"]) == 0 or all(v is None for v in out["x"].to_list())
 

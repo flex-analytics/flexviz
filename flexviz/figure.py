@@ -219,9 +219,10 @@ class Figure:
             see ``register_source`` and issue #27).  Can be overridden per
             call in :meth:`show`.
         """
+        self._cache_enabled: bool = cache
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(polars_lf_from(data))
+            self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
         self._uid: str = str(uuid4())
         self._traces: List[FlexTrace] = []
@@ -837,8 +838,12 @@ class Figure:
 
         fig = cls.__new__(cls)
         fig._uid = spec.figure.uid
+        # A spec carries no cache opt-in; ``show(cache=...)`` still overrides.
+        fig._cache_enabled = False
         if backend_lf is not None and not isinstance(backend_lf, LFQueryBuilder):
-            fig._backend_lf = LFQueryBuilder(polars_lf_from(backend_lf))
+            fig._backend_lf = LFQueryBuilder(
+                polars_lf_from(backend_lf), cache=fig._cache_enabled
+            )
         else:
             fig._backend_lf = backend_lf
         fig._layout = dict(spec.figure.layout)

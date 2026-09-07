@@ -124,7 +124,7 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
     if isinstance(data, LFQueryBuilder):
         _sources[name] = data
     else:
-        _sources[name] = LFQueryBuilder(polars_lf_from(data))
+        _sources[name] = LFQueryBuilder(polars_lf_from(data), cache=cache)
     set_source_cacheable(name, cache)
     if is_reregistration:
         # Re-registration may carry new data, so the (now possibly stale)

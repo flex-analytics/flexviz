@@ -25,7 +25,7 @@ import re
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec
-from ..LF import AggregationSpec, GroupedAggregationSpec
+from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import BackendDataValue, TraceHoverSpec, TraceSelectionSpec, TraceSpec
 
 
@@ -217,6 +217,13 @@ class FlexTrace(ABC):
     ) -> "CubeTargetSpec | None":
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
+
+    def check_source(self, source: "LFQueryBuilder") -> None:
+        """Raise when this trace cannot run on the source.
+
+        The engine calls it for every trace before the domains are resolved.
+        Reads the schema, and may read data.
+        """
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose **unfiltered** ``(min, max)`` this trace's spec needs.

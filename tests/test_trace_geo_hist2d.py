@@ -50,9 +50,7 @@ def _aggregate_geo_hist2d(
     spec = trace.get_aggregation_spec(
         update_range,
         schema=lf.schema,
-        domains=(
-            lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
-        ),
+        domains=(lf.physical_minmax(list(cols), lf.schema) if cols else {}),
         scan_source=lf.is_scan,
     )
     regular_df, _ = lf.aggregate(filter_exprs or [], [spec])
@@ -711,7 +709,7 @@ def _geo_updates(df: pl.DataFrame, **kwargs) -> tuple[dict, dict]:
     update_range = kwargs.pop("update_range", None) or {}
     assert not kwargs, kwargs
     cols = trace.domain_cols(update_range)
-    domains = lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    domains = lf.physical_minmax(list(cols), lf.schema) if cols else {}
     out = []
     for scan_source in (False, True):
         spec = trace.get_aggregation_spec(

@@ -43,9 +43,7 @@ def _aggregate_hist2d(
     spec = trace.get_aggregation_spec(
         update_range,
         schema=lf.schema,
-        domains=(
-            lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
-        ),
+        domains=(lf.physical_minmax(list(cols), lf.schema) if cols else {}),
     )
     regular_df, _ = lf.aggregate([], [spec])
     return trace._to_update(regular_df)
@@ -731,7 +729,7 @@ def _hist2d_updates(
     )
     update_range = update_range or {}
     cols = trace.domain_cols(update_range)
-    domains = lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    domains = lf.physical_minmax(list(cols), lf.schema) if cols else {}
     out = []
     for scan_source in (False, True):
         spec = trace.get_aggregation_spec(
