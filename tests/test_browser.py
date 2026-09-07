@@ -155,7 +155,7 @@ def _dashboard_url_selection_duplicate_repro(port: int) -> str:
     dash.add_figure().add_histogram(x="y_pos", color=c1, bins=21).add_histogram(
         x="y_neg", color=c2, bins=21
     )
-    dash.add_figure().add_line(x="x", y="x")
+    dash.add_figure().add_line(x="x", y="y_pos")
     dash.add_figure().add_histogram(x="x", bins=21)
 
     encoded = encode_spec(dash.to_spec(source_name=source_name))
