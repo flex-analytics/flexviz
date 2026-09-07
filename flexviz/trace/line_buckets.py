@@ -33,15 +33,16 @@ def bucket_grid(
     x_range: tuple | None,
     x_domain: tuple | None,
     dtype: pl.DataType | None,
-) -> tuple[Any, Any] | None:
+) -> tuple[Any, Any]:
     """``(lo, hi)`` bounds of the equal-x-width grid, in physical units.
 
     Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
     the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
-    move the bucket edges. ``None`` means there is no grid: an empty or all-null
-    x column, or a temporal viewport bound that failed to parse. An infinite
-    bound raises: the edges are found by binary search, and an infinite span has
-    no finite bucket width.
+    move the bucket edges. With no bounds (an empty or all-null x column, or a
+    temporal viewport bound that failed to parse) the span is one unit typed for
+    the dtype, and both formulations fall out empty. An infinite bound raises:
+    the edges are found by binary search, and an infinite span has no finite
+    bucket width.
     """
     if x_range is not None:
         lo, hi = x_range[0], x_range[1]
@@ -60,7 +61,8 @@ def bucket_grid(
         lo, hi = x_domain if x_domain is not None else (None, None)
 
     if lo is None or hi is None:
-        return None
+        integral = dtype is not None and (dtype.is_integer() or dtype.is_temporal())
+        return (0, 1) if integral else (0.0, 1.0)
     if not (math.isfinite(lo) and math.isfinite(hi)):
         raise ValueError(
             f"x column '{x_col}' has an infinite bound ({lo}, {hi}). A minmax "
@@ -122,13 +124,12 @@ def _bucket_extrema(
     schema: pl.Schema | None,
     *,
     group_cols: tuple[str, ...] | None = None,
-) -> pl.DataFrame | None:
+) -> pl.DataFrame:
     """One row per non-empty equal-x-width bucket, in group-by order.
 
     Columns: ``__b``, ``__lo_<x>``, ``__lo_<y>``, ``__hi_<x>``, ``__hi_<y>``,
     plus the group columns when ``group_cols`` is given: every group then bins
-    on the one global grid. ``None`` means there is no grid (an empty or
-    all-null x column). ``pairs_plan`` orders the rows by bucket.
+    on the one global grid. ``pairs_plan`` orders the rows by bucket.
 
     One streaming collect, no intermediate collects. ``min_by``/``max_by``
     locate the x value at each y extremum in a single associative pass, so the
@@ -157,10 +158,7 @@ def _bucket_extrema(
         if dtype is not None and dtype.is_temporal()
         else pl.col(x_col)
     )
-    grid = bucket_grid(x_col, x_range, x_domain, dtype)
-    if grid is None:
-        return None
-    x_lo, x_hi = grid
+    x_lo, x_hi = bucket_grid(x_col, x_range, x_domain, dtype)
     # Float columns need true division: integer ceiling division rounds a sub-1
     # width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
     # Integer and temporal columns divide with a ceiling to keep the width
@@ -212,20 +210,6 @@ def _bucket_extrema(
     )
 
 
-def _no_groups(
-    group_cols: tuple[str, ...],
-    schema: pl.Schema | None,
-    uid: str,
-) -> pl.DataFrame:
-    """The zero-row shape of a grouped plan: no group, so no child."""
-    return pl.DataFrame(
-        schema={
-            **{c: (_dtype_for_col(schema, c) or pl.Null) for c in group_cols},
-            uid: pl.List(pl.Struct({f: pl.Null for f in _PAIR_FIELDS})),
-        }
-    )
-
-
 def pairs_plan(
     x_col: str,
     y_col: str,
@@ -269,8 +253,6 @@ def pairs_plan(
             group_cols=group_cols,
         )
         if group_cols is not None:
-            if result is None:
-                return _no_groups(group_cols, schema, uid)
             cols = list(group_cols)
             # The drop is scoped to the pair so a null group value keeps its
             # own child.
@@ -283,11 +265,6 @@ def pairs_plan(
                 .sort(cols)
             )
 
-        if result is None:
-            return pl.DataFrame(
-                {uid: [[]]},
-                schema={uid: pl.List(pl.Struct({f: pl.Null for f in _PAIR_FIELDS}))},
-            )
         # An empty frame implodes to one row holding a typed empty list, which
         # is the sentinel shape, so no separate empty branch is needed.
         return (

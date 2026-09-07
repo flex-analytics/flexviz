@@ -69,31 +69,10 @@ import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namesp
 
 LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 
-# Downsamplers that bucket by x width, grouped or not. They share the x
-# contract (see ``LinePlot.buckets_by_x_width``): a dtype the grid can bucket,
-# and ungrouped also sorted, finite, null-free x.
-_X_WIDTH_DOWNSAMPLES = ("minmax", "lttb", "fpcs")
-
 # LTTB stage 1 prefetch, as a multiple of ``n_points``: four candidates per
 # output point. Fewer starves the triangle rule, more only grows the Python
 # pass. Not a public knob until someone needs to tune it.
 _LTTB_MINMAX_RATIO = 4
-
-# Dtypes the x-width kernel dispatches: it searches bucket edges as i64 or f64,
-# so a wider numeric (Int128, Decimal) has no edge type there and the plugin
-# returns an error. Temporal columns reduce to their i64 physical.
-_LINE_X_NUMERIC = (
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.Int64,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-    pl.UInt64,
-    pl.Float32,
-    pl.Float64,
-)
 
 # Dtypes the pair kernel panics on: it argmin/argmaxes y through a Polars build
 # that carries neither the wide-integer nor the categorical dtype. The plan
@@ -601,13 +580,13 @@ class LinePlot(FlexTrace):
         return self._params["downsample"]
 
     @property
-    def buckets_by_x_width(self) -> bool:
+    def _x_width(self) -> bool:
         """Whether the buckets are equal in x width, which is the x contract.
 
-        Grouped or not, the x-width strategies share it. ``nth`` gathers a
+        Grouped or not, every strategy but ``nth`` shares it. ``nth`` gathers a
         stride and carries no grid.
         """
-        return self.downsample in _X_WIDTH_DOWNSAMPLES
+        return self.downsample != "nth"
 
     def check_source(self, source: LFQueryBuilder) -> None:
         """The line contract: the dtypes always, the x data where order matters.
@@ -617,11 +596,7 @@ class LinePlot(FlexTrace):
         dtype gate.
         """
         self.check_schema(source.schema)
-        if (
-            self.buckets_by_x_width
-            and self.group_by_cols is None
-            and not source.is_scan
-        ):
+        if self._x_width and self.group_by_cols is None and not source.is_scan:
             source.check_line_x(self.x_col)
 
     def check_schema(self, schema: pl.Schema) -> None:
@@ -634,10 +609,16 @@ class LinePlot(FlexTrace):
         for col in (self.x_col, self.y_col):
             if col not in schema:
                 raise ValueError(f"Column '{col}' not in schema")
-        if self.buckets_by_x_width:
-            # The grid is arithmetic on x, grouped or not.
+        if self._x_width:
+            # The grid is arithmetic on x, grouped or not. The kernel searches
+            # bucket edges as i64 or f64, so a wider numeric has no edge type
+            # there. A UInt64 x above i64::MAX is a known limit of that reading,
+            # not gated here. Temporal columns reduce to their i64 physical.
             x_dtype = schema[self.x_col]
-            if not (x_dtype in _LINE_X_NUMERIC or x_dtype.is_temporal()):
+            if not (
+                (x_dtype.is_numeric() and x_dtype not in (pl.Int128, pl.Decimal))
+                or x_dtype.is_temporal()
+            ):
                 raise ValueError(
                     f"x column '{self.x_col}' must be a 64-bit-or-smaller numeric "
                     f"or a temporal for an x-width line, got {x_dtype}. Cast the "
@@ -665,7 +646,7 @@ class LinePlot(FlexTrace):
         # Every x-width line bins in x, on both source kinds, grouped or not.
         # A zoomed one takes its grid from the viewport, and ``nth`` needs no
         # grid at all.
-        if not self.buckets_by_x_width or update_range.get("x") is not None:
+        if not self._x_width or update_range.get("x") is not None:
             return ()
         return (self.x_col,)
 
@@ -720,7 +701,7 @@ class LinePlot(FlexTrace):
                 sort_cols=group_by_cols,
                 pre_group_filters=(vp_expr,) if vp_expr is not None else (),
             )
-            if self.buckets_by_x_width:
+            if self._x_width:
                 # One plan per grouped line, on both source kinds: the kernel
                 # would hold every column of every group in memory at once.
                 # A plan spec runs alone and never joins the fused select, so
@@ -757,7 +738,7 @@ class LinePlot(FlexTrace):
                 ),
             )
 
-        if self.buckets_by_x_width:
+        if self._x_width:
             n_buckets = _bucket_budget(self.n_points, self.downsample)
             x_domain = None if x_range is not None else (domains or {})[self.x_col]
 
@@ -784,13 +765,10 @@ class LinePlot(FlexTrace):
                 )
 
             x_dtype = schema.get(self.x_col) if schema else None
-            grid = bucket_grid(self.x_col, x_range, x_domain, x_dtype)
             # The kernel rebuilds the same width from ``(lo, hi)`` and reads a
             # bucket with the same floor division, so grid and kernel never
             # disagree. It drops rows outside ``[lo, hi]``, so the viewport
-            # slice agrees with the grid. A ``None`` grid (empty or all-null x)
-            # becomes a zero-span sentinel: the kernel returns no points.
-            kernel_domain = grid if grid is not None else (0.0, 0.0)
+            # slice agrees with the grid.
             return AggregationSpec(
                 expr=_plugin_pairs_agg_expr(
                     self.x_col,
@@ -800,7 +778,7 @@ class LinePlot(FlexTrace):
                     _viewport_window(self.x_col, x_range, schema, True),
                     n_buckets,
                     self.uid,
-                    kernel_domain,
+                    bucket_grid(self.x_col, x_range, x_domain, x_dtype),
                 ),
                 uid=self.uid,
             )

@@ -1528,24 +1528,24 @@ class TestLineNPointsBounds:
 
 
 class TestBucketsByXWidth:
-    """The property that tells the engine which lines carry the x contract."""
+    """The property that tells which lines carry the x contract."""
 
     @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
     def test_ungrouped_x_width_lines(self, downsample):
-        assert LinePlot(x="ts", y="val", downsample=downsample).buckets_by_x_width
+        assert LinePlot(x="ts", y="val", downsample=downsample)._x_width
 
     def test_nth_buckets_by_row_count(self):
-        assert not LinePlot(x="ts", y="val", downsample="nth").buckets_by_x_width
+        assert not LinePlot(x="ts", y="val", downsample="nth")._x_width
 
     def test_a_grouped_line_buckets_by_x_width_too(self):
         # One grid across the groups, so a series covering a tenth of the x
         # domain gets a tenth of the points.
-        assert LinePlot(x="ts", y="val", group_by="sensor").buckets_by_x_width
+        assert LinePlot(x="ts", y="val", group_by="sensor")._x_width
 
     def test_a_grouped_nth_line_buckets_by_row_count(self):
         assert not LinePlot(
             x="ts", y="val", group_by="sensor", downsample="nth"
-        ).buckets_by_x_width
+        )._x_width
 
 
 def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
