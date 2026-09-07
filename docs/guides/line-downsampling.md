@@ -103,7 +103,10 @@ fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal row
 | Column | What happens |
 | --- | --- |
 | x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source and a grouped line drop the row. |
-| y | Skipped, on every downsampling path. |
+| y | `nth` is a stride. It keeps every nth row, null or NaN y included, so the renderer draws a gap at the true position. `minmax`, `lttb`, and `fpcs` drop a row with a null or NaN y. |
+
+An infinite y is a value: the x-width strategies keep it as an extremum, and
+only null and NaN are dropped.
 
 An infinite bound has no finite bucket width, so the grid cannot be built. Drop
 the rows first:

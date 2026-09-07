@@ -23,13 +23,14 @@ Dashboard(lf).show()
 
 - **In-memory frames** aggregate zero-copy: backend memory stays flat no
   matter the row count.
-- **Parquet-backed frames** (`scan_parquet`) let Polars push filters into the
-  scan and stream batches. Line and histogram traces then run a streaming plan
-  whose memory does not grow with the row count, grouped as well as ungrouped.
-  2D histograms, geographic ones included, fold the scan in batches through
-  the same kernel, so their memory does not grow with the row count either.
-  The peak memory of a fold is the Parquet reader's row-group prefetch window.
-  Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it.
+- **Parquet-backed frames** (`scan_parquet` on one local file) let Polars push
+  filters into the scan and stream batches. Line and histogram traces then run
+  a streaming plan whose memory tracks the batch size, not the row count. A
+  multi-file, hive, or cloud scan runs the same plans, but its memory use is
+  not characterized. A grouped trace still grows with the number of groups,
+  and a dense 2D histogram grid still grows with the number of cells (issue
+  #19). The peak memory of a fold is the Parquet reader's row-group prefetch
+  window. Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it.
 - Any transformation you apply before handing the frame over
   (`lf.filter(...).with_columns(...)`) stays lazy and is fused into every
   FlexViz query.
