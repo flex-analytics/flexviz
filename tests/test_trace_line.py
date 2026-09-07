@@ -999,6 +999,30 @@ class TestLineXWidthBuckets:
         assert len(resident["x"]) == expected
         assert resident["x"].to_list() == scanned["x"].to_list()
 
+    @pytest.mark.parametrize("big", [False, True], ids=["under", "over"])
+    def test_a_uint64_x_past_the_kernel_limit_says_so(self, tmp_path, big):
+        # The kernel takes its grid bound as an i64; the scan plan does not.
+        # Routing follows the source kind, so the frame gets a clear error.
+        top = 2**63 + 7 if big else 2**62
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([1, top], dtype=pl.UInt64),
+                "val": [1.0, 2.0],
+            }
+        )
+        path = tmp_path / "u64.parquet"
+        df.write_parquet(path)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        trace = LinePlot(x="ts", y="val", n_points=10)
+        assert len(_minmax_points(scan, trace)["x"]) == 2
+
+        resident = LFQueryBuilder(df)
+        if not big:
+            assert len(_minmax_points(resident, trace)["x"]) == 2
+            return
+        with pytest.raises(ValueError, match="signed 64-bit range"):
+            _minmax_points(resident, trace)
+
     @pytest.mark.parametrize(
         "value,dtype",
         [

@@ -622,8 +622,10 @@ class LinePlot(FlexTrace):
         if self._x_width:
             # The grid is arithmetic on x, grouped or not. The kernel searches
             # bucket edges as i64 or f64, so a wider numeric has no edge type
-            # there. A UInt64 x above i64::MAX is a known limit of that reading,
-            # not gated here. Temporal columns reduce to their i64 physical.
+            # there. A UInt64 x above i64::MAX shares that limit but only where
+            # the kernel runs, so it is gated on the resolved grid bound in
+            # ``get_aggregation_spec``. Temporal columns reduce to their i64
+            # physical.
             x_dtype = schema[self.x_col]
             if not (
                 (x_dtype.is_numeric() and x_dtype not in (pl.Int128, pl.Decimal))
@@ -778,6 +780,22 @@ class LinePlot(FlexTrace):
                 )
 
             x_dtype = schema.get(self.x_col) if schema else None
+            grid = bucket_grid(self.x_col, x_range, x_domain, x_dtype)
+            # The kernel takes an integer grid bound as an i64, so a UInt64 x
+            # above i64::MAX cannot be handed to it. The plan reads the same
+            # bound as a Polars literal and takes it, but routing follows the
+            # source kind, never the data, so this is an error rather than a
+            # switch to the plan.
+            if (
+                x_dtype is not None
+                and x_dtype.is_integer()
+                and not all(-(2**63) <= b < 2**63 for b in grid)
+            ):
+                raise ValueError(
+                    f"x column '{self.x_col}' has a bound outside the signed "
+                    f"64-bit range the bucket kernel searches {grid}. Cast "
+                    f"'{self.x_col}' to Int64 or Float64."
+                )
             # The kernel rebuilds the same width from ``(lo, hi)`` and reads a
             # bucket with the same floor division, so grid and kernel never
             # disagree. It drops rows outside ``[lo, hi]``, so the viewport
@@ -791,7 +809,7 @@ class LinePlot(FlexTrace):
                     _viewport_window(self.x_col, x_range, schema, True),
                     n_buckets,
                     self.uid,
-                    bucket_grid(self.x_col, x_range, x_domain, x_dtype),
+                    grid,
                 ),
                 uid=self.uid,
             )
