@@ -649,6 +649,40 @@ class TestParquetPathDetection:
         ):
             assert LFQueryBuilder(lf)._parquet_path is None
 
+    def test_sorted_hint(self, tmp_path):
+        """A sorted hint leaves the same rows behind the footer statistics."""
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a"))
+        assert b._parquet_path == str(path)
+
+    def test_assume_sorted_hint(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        b.assume_sorted("a")
+        assert b._parquet_path == str(path)
+
+    def test_stacked_sorted_hints(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a").set_sorted("b"))
+        assert b._parquet_path == str(path)
+
+    def test_sorted_hint_over_a_slice(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path), n_rows=2).set_sorted("a"))
+        assert b._parquet_path is None
+
+    def test_sorted_hint_answers_from_the_footer(self, tmp_path, monkeypatch):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a"))
+        b.schema  # resolve the schema before the collect is sabotaged
+        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
     def test_filtered_scan_answers_from_the_rows(self, tmp_path):
         """The footer describes the file, not the rows a filter keeps."""
         path = tmp_path / "one.parquet"

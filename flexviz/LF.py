@@ -209,10 +209,17 @@ class LFQueryBuilder:
         the statistics describe. Computed once, like ``is_scan``.
         """
         try:
-            lines = self._ldf.explain(optimized=False).split("\n")
+            lines = [
+                ln.strip() for ln in self._ldf.explain(optimized=False).split("\n")
+            ]
         except Exception:
             return None
-        scan = re.fullmatch(r"Parquet SCAN \[(.+)\]", lines[0])
+        # A sorted hint (``set_sorted``, so ``assume_sorted`` too) keeps every
+        # row the footer describes, so it is the only node the probe looks
+        # through. Each hint indents the plan below it one more level.
+        while lines and lines[0].startswith("hint.sorted("):
+            lines.pop(0)
+        scan = re.fullmatch(r"Parquet SCAN \[(.+)\]", lines[0]) if lines else None
         if scan is None:
             return None
         path = scan[1]
