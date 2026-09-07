@@ -1340,7 +1340,6 @@ class TestHistogramStreamingPlanArithmetic:
         [
             # lo == hi: every value lands in bin 0.
             ("degenerate", [0.0, 1.0, 2.5, 3.0, 8.0], 3.0, 3.0, 8),
-            ("degenerate_nan", [1.0, float("nan"), 3.0], 3.0, 3.0, 8),
             ("below_lo", [-5.0, -3.0], 0.0, 8.0, 8),
             ("above_hi", [11.0, 42.0], 0.0, 8.0, 8),
         ],

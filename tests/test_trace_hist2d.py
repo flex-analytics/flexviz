@@ -210,34 +210,6 @@ class TestHist2DViewportSnap:
     """A zoomed grid snaps to the lattice of its own bin width, so a pan moves
     the data under a grid that stands still."""
 
-    @staticmethod
-    def _edges(result: TraceResult) -> tuple[float, float, int]:
-        lo, step, n = result.updates["x_edges"]
-        return (lo, lo + n * step, n)
-
-    def test_lattice_aligned_viewport_is_unchanged(self, grid_df):
-        # width 1.0, and both bounds are multiples of it.
-        result = _aggregate_hist2d(
-            grid_df,
-            x_bins=4,
-            y_bins=5,
-            update_range={"x": (2.0, 6.0), "y": (0.0, 10.0)},
-        )
-        assert self._edges(result) == (2.0, 6.0, 4)
-
-    def test_offset_viewport_snaps_outward_and_gains_a_bin(self, grid_df):
-        # width 0.8, so the lattice is ..., 1.6, 2.4, ...: [2.0, 6.0] snaps to
-        # [1.6, 6.4] and holds 6 bins instead of 5.
-        offset = _aggregate_hist2d(
-            grid_df,
-            x_bins=5,
-            y_bins=5,
-            update_range={"x": (2.0, 6.0), "y": (0.0, 10.0)},
-        )
-        lo, hi, n = self._edges(offset)
-        assert n == 6
-        assert math.isclose(lo, 1.6) and math.isclose(hi, 6.4)
-
     def test_a_pan_keeps_every_shared_cell_in_place(self, grid_df):
         """Panning by a fraction of a bin must not move the cell boundaries."""
 

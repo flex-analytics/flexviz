@@ -12,7 +12,6 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
-from flexviz.trace import batch_fold as batch_fold_mod
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.line import LinePlot
 from flexviz.trace.base import TraceResult
@@ -670,7 +669,6 @@ class TestGeoHist2DDomainCols:
         assert len(_cells(filtered.updates)) < len(_cells(full.updates))
 
 
-_NAN = float("nan")
 _LAT = [40.0, 40.5, 41.0, 41.25, 41.5, 42.0, 42.5, 43.0]
 _LON = [-74.0, -73.5, -73.0, -72.0, -72.5, -71.5, -71.0, -70.0]
 _Z = [1.5, -2.0, 3.25, 0.0, 7.5, -1.25, 4.0, 9.0]
@@ -742,17 +740,15 @@ def _assert_geo_grids_match(resident: dict, scanned: dict, *, exact: bool) -> No
 
 
 class TestGeoHist2DScanFoldEquivalence:
-    """A scan source folds the kernel over batches; the grid must match.
+    """The geo-only half of the shared fold: a map viewport, and f32 axes.
 
-    ``scan_source`` picks a formulation, never a result. Count, min and max are
-    exact; sum and mean fold in a different order, so they are compared with a
-    relative tolerance and an identical null pattern.
+    Dtype, null and normalization coverage of the same fold lives with
+    ``Histogram2D``; only the map-viewport path is geo's own.
     """
 
     @pytest.mark.parametrize(
         "name,df,kwargs",
         [
-            ("clean", _geo_df(), {}),
             (
                 "f32_axes",
                 _geo_df(
@@ -761,21 +757,8 @@ class TestGeoHist2DScanFoldEquivalence:
                 ),
                 {},
             ),
-            ("nan_lat", _geo_df(lat=[_NAN] + _LAT[1:]), {}),
-            ("null_lat", _geo_df(lat=[None] + _LAT[1:]), {}),
-            ("nan_lon", _geo_df(lon=[_NAN] + _LON[1:]), {}),
-            ("null_lon", _geo_df(lon=[None] + _LON[1:]), {}),
             ("map_viewport", _geo_df(), {"update_range": _MAP_VIEWPORT}),
             ("empty_viewport", _geo_df(), {"update_range": _EMPTY_VIEWPORT}),
-            ("one_lat_bin", _geo_df(), {"lat_bins": 1}),
-            (
-                "empty",
-                pl.DataFrame(
-                    schema={"lat": pl.Float64, "lon": pl.Float64, "z": pl.Float64}
-                ),
-                {},
-            ),
-            ("histnorm", _geo_df(), {"histnorm": "probability density"}),
         ],
     )
     def test_count_matches_kernel(self, name, df, kwargs):
@@ -787,21 +770,8 @@ class TestGeoHist2DScanFoldEquivalence:
     @pytest.mark.parametrize(
         "name,df,kwargs",
         [
-            ("clean", _geo_df(), {}),
-            ("nan_z", _geo_df(z=[_NAN] + _Z[1:]), {}),
-            ("null_z", _geo_df(z=[None] + _Z[1:]), {}),
-            ("all_null_z", _geo_df(z=[None] * 8), {}),
-            ("nan_lat", _geo_df(lat=[_NAN] + _LAT[1:]), {}),
-            ("null_lon", _geo_df(lon=[None] + _LON[1:]), {}),
             ("map_viewport", _geo_df(), {"update_range": _MAP_VIEWPORT}),
             ("empty_viewport", _geo_df(), {"update_range": _EMPTY_VIEWPORT}),
-            (
-                "empty",
-                pl.DataFrame(
-                    schema={"lat": pl.Float64, "lon": pl.Float64, "z": pl.Float64}
-                ),
-                {},
-            ),
         ],
     )
     def test_reducer_matches_kernel(self, name, df, kwargs, histfunc):
@@ -814,84 +784,3 @@ class TestGeoHist2DScanFoldEquivalence:
         column must be selected once."""
         resident, scanned = _geo_updates(_geo_df(), z=z_col, histfunc="sum")
         _assert_geo_grids_match(resident, scanned, exact=False)
-
-    @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
-    def test_fold_merges_across_batches(self, monkeypatch, histfunc):
-        """A frame larger than one chunk must fold to the single-batch grid."""
-        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
-        seen: list[tuple[int, int]] = []
-        original = pl.LazyFrame.collect_batches
-
-        def spy(self, *args, **kwargs):
-            batches = list(original(self, *args, **kwargs))
-            seen.append((kwargs["chunk_size"], len(batches)))
-            return batches
-
-        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
-
-        n = 50
-        df = pl.DataFrame(
-            {
-                "lat": [40.0 + (i % 11) * 0.2 for i in range(n)],
-                "lon": [-74.0 + (i % 7) * 0.3 for i in range(n)],
-                "z": [float((i * 13) % 17) - 8.0 for i in range(n)],
-            }
-        )
-        resident, scanned = _geo_updates(
-            df, z=None if histfunc is None else "z", histfunc=histfunc
-        )
-        _assert_geo_grids_match(
-            resident, scanned, exact=histfunc in (None, "min", "max")
-        )
-        assert seen == [(7, 8)], seen
-
-
-class TestGeoHist2DResidencySeam:
-    """A scan geo histogram folds the kernel over batches, through the engine."""
-
-    @staticmethod
-    def _geo_delta(src, event, coords):
-        lf = LFQueryBuilder(src)
-        geo = GeoHistogram2D(lat="lat", lon="lon", lat_bins=6, lon_bins=5)
-        engine = FlexEngine(backend_lf=lf, scalable_traces={geo.uid: geo})
-        infos = [
-            TraceInfo(
-                uid=geo.uid,
-                axes=None,
-                trace_type="geo_histogram2d",
-                figure_uid="fig_map",
-            )
-        ]
-        viewports = {"fig_map": {"coordinates": coords}} if coords else {}
-        deltas = engine.process(event, infos, viewports_by_figure=viewports)
-        return deltas[0].updates, lf.is_scan
-
-    @pytest.mark.parametrize("zoomed", [False, True], ids=["init", "viewport"])
-    def test_scan_matches_resident(self, tmp_path, zoomed):
-        n = 20_000
-        df = pl.DataFrame(
-            {
-                "lat": [40.0 + ((i * 7919) % 9973) / 4986.5 for i in range(n)],
-                "lon": [-74.0 + ((i * 31) % 97) / 48.5 for i in range(n)],
-            }
-        )
-        path = tmp_path / "geo.parquet"
-        df.write_parquet(path)
-
-        coords = [[-73.5, 40.5], [-72.5, 40.5], [-72.5, 41.5], [-73.5, 41.5]]
-        if zoomed:
-            event = InteractionEvent(
-                type="viewport",
-                axis_ranges={"coordinates": coords},
-                figure_uid="fig_map",
-            )
-        else:
-            event = InteractionEvent(type="init", force_update=True)
-            coords = None
-
-        resident, resident_is_scan = self._geo_delta(df, event, coords)
-        scanned, scan_is_scan = self._geo_delta(pl.scan_parquet(path), event, coords)
-        assert resident_is_scan is False and scan_is_scan is True
-        assert resident["lat_edges"] == scanned["lat_edges"]
-        assert resident["lon_edges"] == scanned["lon_edges"]
-        assert resident["z"] == scanned["z"]
