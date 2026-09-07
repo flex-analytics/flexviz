@@ -717,8 +717,8 @@ class TestHistogram2DTemporal:
 
     def test_temporal_x_viewport_tz_offset_bound(self):
         """A tz-aware (offset) viewport bound against a UTC temporal x must bin
-        the zoomed window — not raise in the viewport mask path (_hist2d_bounds
-        → _hist2d_bound_lits → _typed_temporal_lit)."""
+        the zoomed window — not raise in the viewport mask path (_axis_edges →
+        _snapped_axis → _physical_bound_expr)."""
         res = _aggregate_hist2d(
             self._temporal_df(tz="UTC"),
             x="t",

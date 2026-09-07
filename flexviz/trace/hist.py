@@ -51,7 +51,6 @@ from ._hist_helpers import (
     _hist1d_fold_plan,
     _snap_range,
     _snapped_axis,
-    _snapped_axis_mask,
 )
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
@@ -437,15 +436,10 @@ class Histogram(FlexTrace):
         comes back too.
         """
         if axis_range is not None:
-            lo, hi, n, dtype = _snapped_axis(
+            lo, hi, n, mask = _snapped_axis(
                 self.data_col, axis_range, self.bins, schema
             )
-            return (
-                lo,
-                hi + _HIST_BIN_EPSILON,
-                n,
-                _snapped_axis_mask(self.data_col, lo, hi, dtype, schema),
-            )
+            return lo, hi + _HIST_BIN_EPSILON, n, mask
 
         # The trace's own column must be a resolved key; a missing key means
         # the caller violated the unzoomed-domains contract.
