@@ -1577,6 +1577,19 @@ class TestLineNPointsBounds:
         with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
             LinePlot.from_trace_spec(spec)
 
+    def test_a_float_is_rejected(self):
+        # It passes the range test, then the kernels reject it and the minmax
+        # scan plan quietly returns two points.
+        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0]}))
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            fig.add_line(x="ts", y="val", n_points=2.5)
+
+    def test_a_decoded_float_is_rejected_too(self):
+        spec = LinePlot(x="ts", y="val", n_points=1000).to_trace_spec()
+        spec.params["n_points"] = 2.5
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            LinePlot.from_trace_spec(spec)
+
 
 class TestBucketsByXWidth:
     """The property that tells which lines carry the x contract."""

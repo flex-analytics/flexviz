@@ -421,7 +421,11 @@ class LinePlot(FlexTrace):
     ) -> None:
         # The trust boundary: the client posts the spec on every update, and a
         # decoded spec builds the trace through here as well.
-        if not _N_POINTS_MIN <= n_points <= _N_POINTS_MAX:
+        # A float passes the range test and is then rejected deep inside the
+        # kernels, or silently truncates the minmax scan plan to two points.
+        if not isinstance(n_points, int) or not (
+            _N_POINTS_MIN <= n_points <= _N_POINTS_MAX
+        ):
             raise ValueError(
                 f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
                 f"got {n_points}."
