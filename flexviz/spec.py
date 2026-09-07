@@ -25,7 +25,7 @@ from pydantic import (
     model_validator,
 )
 
-_SPEC_VERSION = "0.4"
+_SPEC_VERSION = "0.5"
 
 # Per-trace hover *capabilities* (what a trace can emit/receive as a source or
 # target). These are declared by each trace and consumed by the client runtime,

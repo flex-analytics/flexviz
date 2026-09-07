@@ -2,7 +2,7 @@
 
 **flexviz** — renderer-agnostic, scalable, linked visualizations for large datasets.
 
-**Spec version:** `0.3` — predicate-based `SelectionState`.
+**Spec version:** `0.5` — `GeoHistogram2D` params no longer carry `bin_boundaries`.
 
 ## Core Properties
 
