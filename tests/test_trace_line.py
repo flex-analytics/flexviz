@@ -999,6 +999,21 @@ class TestLineXWidthBuckets:
         assert len(resident["x"]) == expected
         assert resident["x"].to_list() == scanned["x"].to_list()
 
+    def test_a_float16_x_scan_returns_points(self, tmp_path):
+        # The footer answers the domain probe for a Float16 x too.
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([float(i) for i in range(200)], dtype=pl.Float16),
+                "val": [float(i) for i in range(200)],
+            }
+        )
+        path = tmp_path / "f16_x.parquet"
+        df.write_parquet(path)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        assert (
+            len(_minmax_points(scan, LinePlot(x="ts", y="val", n_points=20))["x"]) > 0
+        )
+
     @pytest.mark.parametrize("big", [False, True], ids=["under", "over"])
     def test_a_uint64_x_past_the_kernel_limit_says_so(self, tmp_path, big):
         # The kernel takes its grid bound as an i64; the scan plan does not.

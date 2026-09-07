@@ -519,6 +519,19 @@ class TestParquetFooterMinMax:
         stats = pq.read_metadata(str(path)).row_group(0).column(0).statistics
         assert stats is not None and stats.has_min_max
 
+    def test_float16_statistics_are_decoded(self, tmp_path):
+        """A Float16 statistic arrives as its raw 2-byte half, so folding the
+        row groups on the raw bytes would order the negative values wrong."""
+        path = tmp_path / "f16.parquet"
+        df = pl.DataFrame({"a": pl.Series([-3.5, 2.5, -7.25, 9.0], dtype=pl.Float16)})
+        df.write_parquet(path, row_group_size=2)
+        expected = LFQueryBuilder(df.lazy()).physical_minmax(["a"])
+        assert expected == {"a": (-7.25, 9.0)}
+        assert (
+            LFQueryBuilder(pl.scan_parquet(str(path))).physical_minmax(["a"])
+            == expected
+        )
+
     def test_folds_over_row_groups(self, tmp_path):
         path = tmp_path / "many.parquet"
         pl.DataFrame({"a": [float(i) for i in range(2000)]}).write_parquet(

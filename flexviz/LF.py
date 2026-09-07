@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import struct
 
 from functools import cached_property
 
@@ -66,6 +67,7 @@ def _parquet_footer_minmax(
         # convertible back to the physical value the collect path returns.
         if not (temporal or dtype.is_integer() or dtype.is_float()):
             continue
+        half = dtype == pl.Float16
         idx = arrow_schema.get_field_index(c)
         if idx < 0:
             continue
@@ -82,6 +84,11 @@ def _parquet_footer_minmax(
             mn, mx = (
                 (stats.min_raw, stats.max_raw) if temporal else (stats.min, stats.max)
             )
+            if half:
+                # A Float16 statistic comes back as its raw 2-byte half, and
+                # comparing raw bytes orders negative values wrong, so it is
+                # decoded before the fold.
+                mn, mx = struct.unpack("<e", mn)[0], struct.unpack("<e", mx)[0]
             lo = mn if lo is None else min(lo, mn)
             hi = mx if hi is None else max(hi, mx)
         if lo is None:
