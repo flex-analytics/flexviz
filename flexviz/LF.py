@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
+
+from functools import cached_property
 
 import polars as pl
 
@@ -90,14 +93,8 @@ def _parquet_footer_minmax(
         if temporal:
             # Read the raw ints back through the file's own arrow type, so a unit
             # the Polars dtype does not share (a millisecond time, say) converts.
-            atype = arrow_schema.field(idx).type
-            lo, hi = (
-                pl.from_arrow(pa.array([v], type=atype))
-                .cast(dtype)
-                .to_physical()
-                .item()
-                for v in (lo, hi)
-            )
+            raw = pa.array([lo, hi], type=arrow_schema.field(idx).type)
+            lo, hi = pl.from_arrow(raw).cast(dtype).to_physical()
         out[c] = (lo, hi)
     return out
 
@@ -184,7 +181,7 @@ class LFQueryBuilder:
         """
         return self._cache or not self.is_scan
 
-    @property
+    @cached_property
     def is_scan(self) -> bool:
         """Whether this source reads from storage rather than a resident frame.
 
@@ -196,16 +193,14 @@ class LFQueryBuilder:
         Not a correctness switch: both paths must produce identical output, and
         there is a test that asserts it. It only selects which formulation runs.
         """
-        if not hasattr(self, "_cached_is_scan"):
-            try:
-                self._cached_is_scan = "SCAN [" in self._ldf.explain(optimized=False)
-            except Exception:
-                # An un-explainable plan is treated as resident: that is the
-                # path that works for every source, just not bounded.
-                self._cached_is_scan = False
-        return self._cached_is_scan
+        try:
+            return "SCAN [" in self._ldf.explain(optimized=False)
+        except Exception:
+            # An un-explainable plan is treated as resident: that is the path
+            # that works for every source, just not bounded.
+            return False
 
-    @property
+    @cached_property
     def _parquet_path(self) -> str | None:
         """The file behind a bare single-file local Parquet scan, else ``None``.
 
@@ -213,29 +208,26 @@ class LFQueryBuilder:
         or hive scan, a cloud URL, or any node above the scan changes which rows
         the statistics describe. Computed once, like ``is_scan``.
         """
-        if not hasattr(self, "_cached_parquet_path"):
-            self._cached_parquet_path = None
-            try:
-                lines = self._ldf.explain(optimized=False).split("\n")
-            except Exception:
-                lines = [""]
-            prefix, suffix = "Parquet SCAN [", "]"
-            head = lines[0]
-            # A slice (``scan_parquet(n_rows=...)``) sits inside the scan node
-            # and reads fewer rows than the footer describes.
-            sliced = any(ln.startswith("SLICE") for ln in lines[1:])
-            if head.startswith(prefix) and head.endswith(suffix) and not sliced:
-                path = head[len(prefix) : -len(suffix)]
-                # A comma means several files; ``isfile`` rules out cloud URLs.
-                if (
-                    "," not in path
-                    and path.endswith(".parquet")
-                    and os.path.isfile(path)
-                ):
-                    # Polars prints forward slashes on every OS; normalize so
-                    # the path compares equal to what the caller passed in.
-                    self._cached_parquet_path = os.path.normpath(path)
-        return self._cached_parquet_path
+        try:
+            lines = self._ldf.explain(optimized=False).split("\n")
+        except Exception:
+            return None
+        scan = re.fullmatch(r"Parquet SCAN \[(.+)\]", lines[0])
+        if scan is None:
+            return None
+        path = scan[1]
+        # A comma means several files; ``isfile`` rules out cloud URLs. A slice
+        # (``scan_parquet(n_rows=...)``) sits inside the scan node and reads
+        # fewer rows than the footer describes.
+        if (
+            "," in path
+            or any(ln.startswith("SLICE") for ln in lines[1:])
+            or not os.path.isfile(path)
+        ):
+            return None
+        # Polars prints forward slashes on every OS; normalize so the path
+        # compares equal to what the caller passed in.
+        return os.path.normpath(path)
 
     @property
     def collect_engine(self) -> str:
@@ -248,11 +240,9 @@ class LFQueryBuilder:
         return "streaming" if self.is_scan else "in-memory"
 
     # Is ~ 40x faster than LazyFrame.collect_schema() when the LazyFrame is in memory
-    @property
+    @cached_property
     def schema(self):
-        if not hasattr(self, "_cached_schema"):
-            self._cached_schema = self._ldf.collect_schema()
-        return self._cached_schema
+        return self._ldf.collect_schema()
 
     def physical_minmax(
         self,
