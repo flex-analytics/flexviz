@@ -86,6 +86,7 @@ from flexviz.cube import (
     encode_cube_bundle,
     encode_fvcube,
 )
+from flexviz.trace._hist_helpers import _snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 from tests.test_browser import _wait_for_init
@@ -3820,9 +3821,11 @@ def _zoomed_dashboard_url(
 def _hist_counts_ref_domain(
     df: pl.DataFrame, filter_expr: pl.Expr, col: str, bins: int, lo: float, hi: float
 ) -> list[int]:
-    """Zoomed-target hist reference: the legacy path FILTERS rows to the
-    viewport before fixed_hist (out-of-domain rows never clip into the edge
-    bins) — mirrored here, matching the cube's filter-don't-clip."""
+    """Zoomed-target hist reference: the viewport is snapped outward to the
+    display lattice (``bins`` or ``bins + 1`` bins), and the rows are FILTERED
+    to that span before fixed_hist (out-of-domain rows never clip into the
+    edge bins) — mirrored here, matching the cube's filter-don't-clip."""
+    lo, hi, bins = _snap_range(float(lo), float(hi), bins)
     raw = (
         df.lazy()
         .filter(filter_expr & pl.col(col).is_between(lo, hi))

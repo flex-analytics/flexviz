@@ -222,7 +222,9 @@ class LFQueryBuilder:
                     and path.endswith(".parquet")
                     and os.path.isfile(path)
                 ):
-                    self._cached_parquet_path = path
+                    # Polars prints forward slashes on every OS; normalize so
+                    # the path compares equal to what the caller passed in.
+                    self._cached_parquet_path = os.path.normpath(path)
         return self._cached_parquet_path
 
     @property
