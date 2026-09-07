@@ -266,12 +266,13 @@ class LFQueryBuilder:
         Whatever the footer cannot answer is collected as before. The footer is
         an optimization only: any problem with it falls back to the collect.
 
-        ``memoize`` keeps the result for the builder's lifetime. Only a
-        ``cache=True`` source may set it — the same static-data contract that
-        governs schema caching — because otherwise a reset must be able to see
-        changed source data. Re-registering a source with raw data or a new
-        builder replaces the builder and drops the memo. Re-registering the
-        same builder object keeps it, and the server warns.
+        ``memoize`` keeps the result for the builder's lifetime. A resident
+        frame is a snapshot, so the engine memoizes on it whatever ``cache``
+        says. A scan may change on disk between requests, so only a
+        ``cache=True`` scan memoizes: an uncached reset must be able to see the
+        changed data. Re-registering a source with raw data or a new builder
+        replaces the builder and drops the memo. Re-registering the same
+        builder object keeps it, and the server warns.
         """
         memo = self._minmax_memo if memoize else {}
         sch = schema if schema is not None else self.schema
@@ -317,11 +318,11 @@ class LFQueryBuilder:
         plan and a scan plan read x in no order.
 
         ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
-        skips the collect on later requests. The flags of a LazyFrame cannot be
-        queried, hence the set. Only a ``cache=True`` source may set it, the
-        same static-data contract that governs ``physical_minmax``. On any other
-        source the data may have changed since the check, so nothing is kept and
-        the next request checks again.
+        skips the collect on later requests, and sets the Polars sorted flag,
+        which turns the column's min/max into an O(1) read. The flags of a
+        LazyFrame cannot be queried, hence the set. The engine memoizes on a
+        resident frame, a snapshot, and on a ``cache=True`` scan, the same
+        static-data contract that governs ``physical_minmax``.
 
         Raises
         ------

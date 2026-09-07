@@ -851,8 +851,9 @@ class FlexEngine:
         (``FlexTrace.domain_cols``); an unzoomed histogram instead takes the
         union its same-figure siblings share, so their bars line up.
 
-        Memoized only for a cached source, whose data the cache contract already
-        treats as static — an uncached reset must be able to see changed data.
+        Memoized on a resident frame, which is a snapshot, and on a cached
+        source, whose data the cache contract treats as static. An uncached scan
+        resolves again, so a reset can see changed data on disk.
         """
         if self._backend_lf is None:
             return {}, {}
@@ -865,7 +866,9 @@ class FlexEngine:
         if not needed:
             return domain_cols, {}
         return domain_cols, self._backend_lf.physical_minmax(
-            needed, schema, memoize=self._cache is not None
+            needed,
+            schema,
+            memoize=self._cache is not None or not self._backend_lf.is_scan,
         )
 
     def _check_line_contract(self, aggregation_traces: list[_AggregationTrace]) -> None:
@@ -895,7 +898,10 @@ class FlexEngine:
             ):
                 continue
             checked.add(trace.x_col)
-            lf.check_line_x(trace.x_col, memoize=self._cache is not None)
+            lf.check_line_x(
+                trace.x_col,
+                memoize=self._cache is not None or not self._backend_lf.is_scan,
+            )
 
     def _collect_aggregation_specs(
         self,

@@ -2857,13 +2857,14 @@ class TestResidentLineXWidth:
             engine.process(event, infos)
         return first, len(collects) - first
 
-    def test_uncached_source_rechecks_every_request(self):
-        # Nothing is memoized, so the source data may have changed since the
-        # last request: check again.
+    def test_uncached_resident_source_checks_once(self):
+        # A resident frame is a snapshot, so the pass is memoized without a
+        # cache backend: the second request neither rechecks nor resolves the
+        # x domain again.
         lf = LFQueryBuilder(self._frame(1_000))
         first, second = self._two_requests(lf, cache_backend=None)
-        assert first == second
-        assert lf._sorted_cols == set()
+        assert first > second
+        assert lf._sorted_cols == {"ts"}
 
     def test_cached_source_checks_once(self):
         # A cached source is static, so the pass is memoized as the sorted flag

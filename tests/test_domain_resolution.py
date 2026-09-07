@@ -242,6 +242,26 @@ class TestBoundsFreshness:
         pl.DataFrame({"a": [0.0, 100.0]}).write_parquet(path)
         assert lf.physical_minmax(["a"], memoize=False) == {"a": (0.0, 100.0)}
 
+    def test_uncached_resident_engine_memoizes(self, collects):
+        """A resident frame is a snapshot: its bounds are resolved once, with
+        or without a cache backend."""
+        df = pl.DataFrame({"a": [float(i) for i in range(50)]})
+        engine, infos = _engine(df, [Histogram(x="a", bins=4)])
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+
+    def test_uncached_scan_engine_resolves_every_request(self, tmp_path, collects):
+        """A scan may change on disk, so without a cache backend every request
+        resolves again (a CSV scan: no footer to answer from)."""
+        path = tmp_path / "d.csv"
+        pl.DataFrame({"a": [float(i) for i in range(50)]}).write_csv(path)
+        engine, infos = _engine(pl.scan_csv(path), [Histogram(x="a", bins=4)])
+        _init(engine, infos)
+        _init(engine, infos)
+        assert len(collects.minmax) == 2
+
     def test_cached_engine_memoizes(self, collects):
         """A second request on a cached source re-uses the resolved bounds."""
         df = pl.DataFrame({"a": [float(i) for i in range(50)]})
