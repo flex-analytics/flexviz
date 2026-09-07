@@ -820,7 +820,7 @@ a new trace inherits them instead of choosing again.
 
 - **Two paths, picked by source kind.** A resident frame runs a Rust kernel. A scan runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` is the only input to that choice. The choice is internal, and there is no public engine option.
 - **Every collect names its engine.** `"auto"` is never used. Each `.collect()` and `collect_batches()` in `flexviz/` passes an explicit `engine=`, from `LFQueryBuilder.collect_engine` or a literal.
-- **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and clearly faster in median latency on representative data. Otherwise the plan stays.
+- **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and at least 2x faster in median latency on representative data. Otherwise the plan stays.
 - **Data type does not pick an implementation.** One exception, tracked in issue #33: a single string-like group column packs into the bucket key of a grouped line (`_grouped_bucket_keys` in `trace/line_buckets.py`).
 - **No process-wide Polars setting.** The library writes no environment variable and no `pl.Config` value. A user owns those. `POLARS_ROW_GROUP_PREFETCH_SIZE` is the one worth setting, because it bounds a scan fold's peak memory.
 - **No collection locks, no output-cell cap.** A dense 2-D grid and a high-cardinality grouped trace can still exceed memory out of core. Issue #19 tracks both.
@@ -924,7 +924,7 @@ The "stateless server" invariant forbids *authoritative interaction state* (view
 - **never authoritative** — a miss recomputes a byte-identical result, so correctness never depends on a hit (any replica may serve any request);
 - **droppable** — eviction is global (LRU/size), never per-session.
 
-Phase 1 (issue #26) caches only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #27). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
+Phase 1 caches only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #27). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
 
 - `init` and `reset` are viewport-free by construction (`reset` forces an empty `update_range`);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
