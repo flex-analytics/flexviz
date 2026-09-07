@@ -42,11 +42,10 @@ from .base import FlexTrace, TraceResult
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
-from .hist2d import hist2d_agg_spec
+from .hist2d import hist2d_agg_spec, unpack_hist2d_grid
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
@@ -259,39 +258,16 @@ class GeoHistogram2D(FlexTrace):
         return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
-        raw = df[self.uid][0]
         nb_lat, nb_lon = self._grid
-
-        # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}.
-        # We map lat -> kernel x (inner axis), lon -> kernel y (outer axis), so
-        # z_flat is laid out as z_flat[lon_idx * nb_lat + lat_idx] — exactly the
-        # row-major (lon-major) order the client's rectangle builder expects.
-        z_flat_raw: list = raw["z_flat"]
-        lat_lo: float = raw["x_lo"]
-        lat_hi: float = raw["x_hi"]
-        lon_lo: float = raw["y_lo"]
-        lon_hi: float = raw["y_hi"]
-
-        if self.z_col is None:
-            # Count kernel returns UInt32; 0 marks an empty bin → emit None so
-            # the client skips it (no rectangle drawn).
-            z_flat = [None if v == 0 else float(v) for v in z_flat_raw]
-        else:
-            # Reducer kernel returns nullable Float64 values directly.
-            z_flat = [None if v is None else float(v) for v in z_flat_raw]
-
-        lat_step = (lat_hi - lat_lo) / nb_lat
-        lon_step = (lon_hi - lon_lo) / nb_lon
-
-        if self.histnorm is not None:
-            z_series = pl.Series("value", z_flat, dtype=pl.Float64)
-            z_df = apply_histnorm(
-                pl.DataFrame({"value": z_series}),
-                "value",
-                self.histnorm,
-                lat_step * lon_step,
-            )
-            z_flat = z_df["value"].to_list()
+        # lat maps to the kernel x (inner) axis and lon to its y (outer) axis,
+        # so z_flat is laid out as z_flat[lon_idx * nb_lat + lat_idx] — exactly
+        # the row-major (lon-major) order the client's rectangle builder wants.
+        z_flat, lat_lo, _, lon_lo, _, lat_step, lon_step = unpack_hist2d_grid(
+            df[self.uid][0],
+            self._grid,
+            counts=self.z_col is None,
+            histnorm=self.histnorm,
+        )
 
         # The client builds one GeoJSON rectangle per non-empty cell from these
         # triples and the flat z; the rectangles are most of a geo response.

@@ -107,6 +107,43 @@ def hist2d_agg_spec(
     return AggregationSpec(expr=expr, uid=uid), grid
 
 
+def unpack_hist2d_grid(
+    raw: Any,
+    grid: tuple[int, int],
+    *,
+    counts: bool,
+    histnorm: str | None,
+) -> tuple[list, float, float, float, float, float, float]:
+    """A kernel or fold ``Struct{z_flat, x_lo, x_hi, y_lo, y_hi}`` row as a flat
+    z plus its bin geometry: ``(z, x_lo, x_hi, y_lo, y_hi, x_step, y_step)``.
+
+    Both 2-D traces read the same struct. An empty cell must reach the client as
+    ``None`` so it draws no rectangle: the count kernel marks one with a 0, the
+    reduce kernel with a null. ``counts`` says which kernel ran. Normalization
+    happens here because its bin area is this grid's cell area.
+    """
+    nb_x, nb_y = grid
+    x_lo, x_hi = float(raw["x_lo"]), float(raw["x_hi"])
+    y_lo, y_hi = float(raw["y_lo"]), float(raw["y_hi"])
+    x_step = (x_hi - x_lo) / nb_x
+    y_step = (y_hi - y_lo) / nb_y
+
+    if counts:
+        z_flat = [None if v == 0 else float(v) for v in raw["z_flat"]]
+    else:
+        z_flat = [None if v is None else float(v) for v in raw["z_flat"]]
+
+    if histnorm is not None:
+        z_df = apply_histnorm(
+            pl.DataFrame({"value": pl.Series("value", z_flat, dtype=pl.Float64)}),
+            "value",
+            histnorm,
+            x_step * y_step,
+        )
+        z_flat = z_df["value"].to_list()
+    return z_flat, x_lo, x_hi, y_lo, y_hi, x_step, y_step
+
+
 class Histogram2D(FlexTrace):
     """Scalable 2D histogram / heatmap trace.
 
@@ -399,40 +436,15 @@ class Histogram2D(FlexTrace):
         return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
-        raw = df[self.uid][0]
         nb_x, nb_y = self._grid
-
-        # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}
-        z_flat_raw: list = raw["z_flat"]
-        x_lo: float = raw["x_lo"]
-        x_hi: float = raw["x_hi"]
-        y_lo: float = raw["y_lo"]
-        y_hi: float = raw["y_hi"]
-
-        if self.z_col is None:
-            # Count kernel returns UInt32; 0 indicates an empty bin →
-            # emit None to match the documented gap-rendering contract.
-            z_flat: list = [None if v == 0 else float(v) for v in z_flat_raw]
-        else:
-            # Reducer kernel returns nullable Float64 values directly.
-            z_flat = [None if v is None else float(v) for v in z_flat_raw]
-
+        z_flat, x_lo, x_hi, y_lo, y_hi, x_step, y_step = unpack_hist2d_grid(
+            df[self.uid][0],
+            self._grid,
+            counts=self.z_col is None,
+            histnorm=self.histnorm,
+        )
         x_centers = _centers(x_lo, x_hi, nb_x)
         y_centers = _centers(y_lo, y_hi, nb_y)
-
-        x_step = (x_hi - x_lo) / nb_x
-        y_step = (y_hi - y_lo) / nb_y
-
-        if self.histnorm is not None:
-            z_series = pl.Series("value", z_flat, dtype=pl.Float64)
-            z_df = apply_histnorm(
-                pl.DataFrame({"value": z_series}),
-                "value",
-                self.histnorm,
-                x_step * y_step,
-            )
-            z_flat = z_df["value"].to_list()
-
         z = [z_flat[j * nb_x : (j + 1) * nb_x] for j in range(nb_y)]
 
         # Temporal axes are binned in physical space: restore datetime centers
