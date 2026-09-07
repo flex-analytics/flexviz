@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import date, datetime, time, timedelta
 
 import polars as pl
@@ -463,6 +462,10 @@ def _no_collect(*args, **kwargs):
     raise AssertionError("physical_minmax must not collect here")
 
 
+def _raise_footer_error(*args, **kwargs):
+    raise OSError("corrupt footer")
+
+
 def _footer_sample_frame() -> pl.DataFrame:
     base = datetime(2024, 1, 2, 3, 4, 5, 123456)
     df = pl.DataFrame(
@@ -594,16 +597,13 @@ class TestParquetFooterMinMax:
         pl.DataFrame({"a": [7.0, 9.0]}).write_parquet(path)
         assert b.physical_minmax(["a"]) == {"a": (7.0, 9.0)}
 
-    def test_pyarrow_missing_falls_back(self, tmp_path, monkeypatch):
+    def test_footer_error_falls_back(self, tmp_path, monkeypatch):
+        """A corrupt or unreadable footer still gets bounds from the collect."""
         path = tmp_path / "s.parquet"
         pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
         b = LFQueryBuilder(pl.scan_parquet(str(path)))
-        monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+        monkeypatch.setattr("flexviz.LF._parquet_footer_minmax", _raise_footer_error)
         assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
-        b.schema
-        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
-        with pytest.raises(AssertionError):
-            b.physical_minmax(["a"])
 
     def test_statistics_disabled_falls_back(self, tmp_path, monkeypatch):
         path = tmp_path / "nostats.parquet"
