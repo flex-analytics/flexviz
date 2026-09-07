@@ -462,7 +462,9 @@ class Histogram(FlexTrace):
         df_agg: pl.DataFrame,
     ) -> TraceResult:
         """Unpack the histogram struct and apply normalization."""
-        counts: pl.Series = df_agg[self.uid].item().explode().struct.field("count")
+        counts: pl.Series = (
+            df_agg[self.uid].item().explode(empty_as_null=True).struct.field("count")
+        )
 
         lo, hi, n_bins = self._bin_edges
         step = (hi - lo) / n_bins

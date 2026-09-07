@@ -805,7 +805,7 @@ class LinePlot(FlexTrace):
         (``adapters/js/plotly/traces.js``); the server emits gapless x/y.
         """
         raw: pl.Series = df_agg[self.uid].item()
-        df_line = raw.explode().struct.unnest()
+        df_line = raw.explode(empty_as_null=True).struct.unnest()
         if self.downsample == "nth":
             return TraceResult(
                 updates={"x": df_line[self.x_col], "y": df_line[self.y_col]}

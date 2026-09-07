@@ -268,7 +268,7 @@ class GeoLine(FlexTrace):
     def _to_update(self, df_agg: pl.DataFrame) -> TraceResult:
         """Unpack the aggregated imploded struct column → ``{"lat": series, "lon": series}``."""
         raw: pl.Series = df_agg[self.uid].item()
-        df_points = raw.explode().struct.unnest()
+        df_points = raw.explode(empty_as_null=True).struct.unnest()
         lat = df_points[self.lat_col]
         lon = df_points[self.lon_col]
 
