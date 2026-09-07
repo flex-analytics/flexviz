@@ -1616,6 +1616,16 @@ class TestLineNPointsBounds:
             LinePlot.from_trace_spec(spec)
 
 
+class TestLineColumnRoles:
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
+    def test_x_equal_to_y_is_rejected(self, downsample):
+        # It used to raise a DuplicateError on two strategies and quietly plot
+        # a column against itself on the other two.
+        fig = Figure(pl.DataFrame({"ts": [1.0, 2.0], "val": [1.0, 2.0]}))
+        with pytest.raises(ValueError, match="must be different columns"):
+            fig.add_line(x="ts", y="ts", n_points=10, downsample=downsample)
+
+
 class TestBucketsByXWidth:
     """The property that tells which lines carry the x contract."""
 

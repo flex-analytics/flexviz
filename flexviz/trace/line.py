@@ -422,6 +422,10 @@ class LinePlot(FlexTrace):
     ) -> None:
         # The trust boundary: the client posts the spec on every update, and a
         # decoded spec builds the trace through here as well.
+        if x == y:
+            # One column cannot hold both roles: the pair plan and the point
+            # flattening each name two outputs after it.
+            raise ValueError(f"x and y must be different columns, got '{x}' twice.")
         # A float passes the range test and is then rejected deep inside the
         # kernels, or silently truncates the minmax scan plan to two points.
         if not isinstance(n_points, int) or not (
