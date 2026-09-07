@@ -28,6 +28,8 @@ Dashboard(lf).show()
   whose memory does not grow with the row count, grouped as well as ungrouped.
   2D histograms, geographic ones included, fold the scan in batches through
   the same kernel, so their memory does not grow with the row count either.
+  The peak memory of a fold is the Parquet reader's row-group prefetch window.
+  Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it.
 - Any transformation you apply before handing the frame over
   (`lf.filter(...).with_columns(...)`) stays lazy and is fused into every
   FlexViz query.
