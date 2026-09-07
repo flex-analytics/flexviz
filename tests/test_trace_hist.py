@@ -10,8 +10,8 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace import _hist_helpers as helpers_mod
-from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace import batch_fold as batch_fold_mod
+from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
@@ -238,7 +238,7 @@ class TestHistogramBinAlignment:
         spec = trace.get_aggregation_spec({"x": [100.0, 400.0]}, schema=lf.schema)
         df_agg, _ = lf.aggregate([], [spec])
         centers = list(trace._to_update(df_agg).updates["x"])
-        lo, hi, n = _snap_range(100.0, 400.0, bins)
+        lo, hi, n = snap_range(100.0, 400.0, bins)
         assert n == bins + 1
         step = (hi - lo + _HIST_BIN_EPSILON) / n
         expected = [lo + (i + 0.5) * step for i in range(n)]
@@ -347,13 +347,13 @@ class TestHistogramViewportSnap:
 
     def test_lattice_aligned_viewport_is_unchanged(self):
         # 20..60 over 10 bins has width 4 and both bounds are multiples of it.
-        assert _snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)
+        assert snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)
         centers = self._centers((20.0, 60.0))
         assert len(centers) == 10
         assert centers[0] == pytest.approx(22.0)
 
     def test_offset_viewport_snaps_outward_and_gains_a_bin(self):
-        lo, hi, n = _snap_range(21.0, 61.0, 10)
+        lo, hi, n = snap_range(21.0, 61.0, 10)
         assert (lo, hi, n) == (20.0, 64.0, 11)
         centers = self._centers((21.0, 61.0))
         assert len(centers) == 11
@@ -370,7 +370,7 @@ class TestHistogramViewportSnap:
     def test_counts_equal_the_kernel_at_the_snapped_edges(self):
         x_range = (21.0, 61.0)
         counts = list(_aggregate_hist(self._DF, bins=10, x_range=x_range)["y"])
-        lo, hi, n = _snap_range(*x_range, 10)
+        lo, hi, n = snap_range(*x_range, 10)
         inside = self._DF.filter(pl.col("val").is_between(lo, hi))
         ref = (
             inside.select(
@@ -424,7 +424,7 @@ class TestHistogramViewportSnap:
         )
         _, grouped = lf.aggregate([], [spec])
         results = trace._to_grouped_update(grouped[trace.uid]).group_results
-        lo, hi, n = _snap_range(1.0, 21.0, 10)
+        lo, hi, n = snap_range(1.0, 21.0, 10)
         assert n == 11
         centers = [list(cr.updates["x"]) for cr in results]
         assert len(centers) == 2 and centers[0] == centers[1]
@@ -906,7 +906,7 @@ class TestCubeDescriptors:
         dim = spec.target_dims[0]
         assert dim.column == "val"
         assert dim.kind == "binned"
-        lo, hi, n = _snap_range(2.0, 8.0, 25)
+        lo, hi, n = snap_range(2.0, 8.0, 25)
         assert dim.bins == n
         assert tuple(dim.domain) == (lo, hi)
         assert spec.measure.agg == "count"
@@ -923,7 +923,7 @@ class TestCubeDescriptors:
         trace = Histogram(x="val", bins=10)
         spec = trace.get_cube_target_spec((100.0, 400.0))
         assert spec is not None
-        lo, hi, n = _snap_range(100.0, 400.0, 10)
+        lo, hi, n = snap_range(100.0, 400.0, 10)
         assert tuple(spec.target_dims[0].domain) == (lo, hi)
         assert spec.target_dims[0].bins == n
 
@@ -1123,7 +1123,7 @@ class TestHistogramScanPlanEquivalence:
 
     def test_fold_merges_across_batches(self, monkeypatch):
         """A frame larger than one chunk must fold to the single-batch counts."""
-        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
+        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
         seen: list[tuple[int, int]] = []
         original = pl.LazyFrame.collect_batches
 

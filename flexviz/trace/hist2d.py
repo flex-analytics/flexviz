@@ -42,15 +42,69 @@ from .base import (
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    _hist2d_agg_spec,
     apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
+from .batch_fold import hist2d_fold_plan
+from .bin_grid import axis_edges, hist2d_count_expr, hist2d_reduce_expr
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
 _HIST2D_HISTFUNC_OPTIONS = ("sum", "mean", "min", "max")
+
+
+def hist2d_agg_spec(
+    x_col: str,
+    y_col: str,
+    z_col: str | None,
+    histfunc: str | None,
+    x_range: tuple | None,
+    y_range: tuple | None,
+    nb_x: int,
+    nb_y: int,
+    uid: str,
+    domains: Mapping[str, tuple[Any, Any]] | None,
+    schema: pl.Schema | None,
+    scan_source: bool,
+) -> tuple[AggregationSpec, tuple[int, int]]:
+    """The 2-D histogram aggregation spec, plus the grid it bins on.
+
+    ``Histogram2D`` and ``GeoHistogram2D`` bin the same way over different
+    column pairs, so both come through here. The client sends only the axes a
+    zoom moved, so each axis resolves on its own: an axis without a range needs
+    its column in ``domains``, where a ``(None, None)`` entry means an empty or
+    all-null column, and an axis with one snaps its edges to a lattice, which
+    can add a bin. So the caller must keep the returned grid and unpack
+    ``z_flat`` with it.
+
+    ``scan_source`` says the rows come from storage rather than a resident
+    frame. The kernels need both axis columns in memory at once, so a scan takes
+    ``hist2d_fold_plan`` instead: the same kernels, run over streamed batches and
+    folded in NumPy, at bounded memory. A resident frame keeps the plain kernel
+    expression, which joins the shared select.
+    """
+    x_lo, x_hi, x_mask, nb_x = axis_edges(x_col, x_range, nb_x, domains, schema)
+    y_lo, y_hi, y_mask, nb_y = axis_edges(y_col, y_range, nb_y, domains, schema)
+    edges = (x_lo, x_hi, y_lo, y_hi)
+    masks = [m for m in (x_mask, y_mask) if m is not None]
+    mask = masks[0] & masks[1] if len(masks) == 2 else (masks[0] if masks else None)
+    grid = (nb_x, nb_y)
+
+    if scan_source:
+        plan = hist2d_fold_plan(
+            x_col, y_col, z_col, nb_x, nb_y, histfunc, edges, mask, uid, schema
+        )
+        return AggregationSpec(uid=uid, plan=plan), grid
+
+    if z_col is None:
+        expr = hist2d_count_expr(x_col, y_col, nb_x, nb_y, edges, mask, uid, schema)
+    else:
+        assert histfunc is not None
+        expr = hist2d_reduce_expr(
+            x_col, y_col, z_col, nb_x, nb_y, edges, mask, uid, histfunc, schema
+        )
+    return AggregationSpec(expr=expr, uid=uid), grid
 
 
 class Histogram2D(FlexTrace):
@@ -323,12 +377,12 @@ class Histogram2D(FlexTrace):
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
-        """Return the 2-D histogram aggregation spec (see ``_hist2d_agg_spec``)."""
+        """Return the 2-D histogram aggregation spec (see ``hist2d_agg_spec``)."""
         # Temporal axes bin on their physical representation; _to_update restores
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
-        spec, self._grid = _hist2d_agg_spec(
+        spec, self._grid = hist2d_agg_spec(
             self.x_col,
             self.y_col,
             self.z_col,

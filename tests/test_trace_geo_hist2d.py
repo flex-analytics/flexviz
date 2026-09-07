@@ -12,7 +12,7 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
-from flexviz.trace import _hist_helpers as helpers_mod
+from flexviz.trace import batch_fold as batch_fold_mod
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.line import LinePlot
 from flexviz.trace.base import TraceResult
@@ -462,7 +462,7 @@ class TestGeoHist2DTypedViewportBounds:
     }
 
     def test_viewport_mask_uses_typed_bounds(self, monkeypatch):
-        import flexviz.trace._hist_helpers as mod
+        import flexviz.trace.bin_grid as mod
 
         calls: list = []
         real = mod._typed_range_bounds
@@ -818,7 +818,7 @@ class TestGeoHist2DScanFoldEquivalence:
     @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
     def test_fold_merges_across_batches(self, monkeypatch, histfunc):
         """A frame larger than one chunk must fold to the single-batch grid."""
-        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
+        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
         seen: list[tuple[int, int]] = []
         original = pl.LazyFrame.collect_batches
 

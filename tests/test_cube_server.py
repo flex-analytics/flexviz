@@ -24,7 +24,7 @@ from flexviz.dashboard import Dashboard
 from flexviz.figure import Figure
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
-from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 pytestmark = pytest.mark.integration
@@ -473,7 +473,7 @@ class TestDashboardCubeRequest:
         header = decode_fvcube_header(blob)
         assert header["free"]["domain"] == [10.0, 80.0]
         (dim,) = header["target_dims"]
-        lo, hi, n = _snap_range(5.0, 60.0, tgt_bins)
+        lo, hi, n = snap_range(5.0, 60.0, tgt_bins)
         assert n == tgt_bins + 1
         assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
         assert dim["bins"] == n

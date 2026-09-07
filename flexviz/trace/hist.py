@@ -47,11 +47,8 @@ from .base import (
     _to_col_tuple,
 )
 from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
-from ._hist_helpers import (
-    _hist1d_fold_plan,
-    _snap_range,
-    _snapped_axis,
-)
+from .batch_fold import hist1d_fold_plan
+from .bin_grid import snap_range, snapped_axis
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -297,7 +294,7 @@ class Histogram(FlexTrace):
             return None
         bins, domain = self.bins, None
         if axis_range is not None:
-            lo, hi, bins = _snap_range(
+            lo, hi, bins = snap_range(
                 float(axis_range[0]), float(axis_range[1]), self.bins
             )
             domain = (lo, hi)
@@ -353,7 +350,7 @@ class Histogram(FlexTrace):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The ``fixed_hist`` kernel needs the whole column in memory, so an
-        ungrouped histogram on a scan takes ``_hist1d_fold_plan`` instead: the
+        ungrouped histogram on a scan takes ``hist1d_fold_plan`` instead: the
         same kernel, run per streamed batch and summed, at bounded memory. A
         grouped histogram takes the streaming ``group_by`` plan on both source
         kinds, because one kernel per group would hold every group's column at
@@ -409,7 +406,7 @@ class Histogram(FlexTrace):
         if scan_source:
             return AggregationSpec(
                 uid=self.uid,
-                plan=_hist1d_fold_plan(
+                plan=hist1d_fold_plan(
                     data_col_expr, lo, hi, n_bins, self.uid, filter_expr
                 ),
             )
@@ -436,9 +433,7 @@ class Histogram(FlexTrace):
         comes back too.
         """
         if axis_range is not None:
-            lo, hi, n, mask = _snapped_axis(
-                self.data_col, axis_range, self.bins, schema
-            )
+            lo, hi, n, mask = snapped_axis(self.data_col, axis_range, self.bins, schema)
             return lo, hi + _HIST_BIN_EPSILON, n, mask
 
         # The trace's own column must be a resolved key; a missing key means

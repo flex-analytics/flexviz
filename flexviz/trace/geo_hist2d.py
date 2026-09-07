@@ -42,11 +42,11 @@ from .base import FlexTrace, TraceResult
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    _hist2d_agg_spec,
     apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
+from .hist2d import hist2d_agg_spec
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
@@ -239,10 +239,10 @@ class GeoHistogram2D(FlexTrace):
 
         lat maps to the kernel x (inner) axis and lon to its y (outer) axis, so
         ``z_flat`` comes back in the lon-major order the GeoJSON builder wants.
-        Binning itself is the shared path (see ``_hist2d_agg_spec``).
+        Binning itself is the shared path (see ``hist2d_agg_spec``).
         """
         lat_range, lon_range = self._extract_lat_lon_range(update_range)
-        spec, self._grid = _hist2d_agg_spec(
+        spec, self._grid = hist2d_agg_spec(
             self.lat_col,
             self.lon_col,
             self.z_col,

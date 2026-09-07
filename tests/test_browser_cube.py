@@ -86,7 +86,7 @@ from flexviz.cube import (
     encode_cube_bundle,
     encode_fvcube,
 )
-from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 from tests.test_browser import _wait_for_init
@@ -3825,7 +3825,7 @@ def _hist_counts_ref_domain(
     display lattice (``bins`` or ``bins + 1`` bins), and the rows are FILTERED
     to that span before fixed_hist (out-of-domain rows never clip into the
     edge bins) — mirrored here, matching the cube's filter-don't-clip."""
-    lo, hi, bins = _snap_range(float(lo), float(hi), bins)
+    lo, hi, bins = snap_range(float(lo), float(hi), bins)
     raw = (
         df.lazy()
         .filter(filter_expr & pl.col(col).is_between(lo, hi))

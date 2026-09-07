@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from flexviz.trace import _hist_helpers as helpers_mod
+from flexviz.trace import batch_fold as batch_fold_mod
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
@@ -931,7 +931,7 @@ class TestHist2DScanFoldEquivalence:
     @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
     def test_fold_merges_across_batches(self, monkeypatch, histfunc):
         """A frame larger than one chunk must fold to the single-batch grid."""
-        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
+        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
         seen: list[tuple[int, int]] = []
         original = pl.LazyFrame.collect_batches
 
