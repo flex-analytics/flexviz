@@ -808,6 +808,13 @@ class TestGeoHist2DScanFoldEquivalence:
         resident, scanned = _geo_updates(df, z="z", histfunc=histfunc, **kwargs)
         _assert_geo_grids_match(resident, scanned, exact=histfunc in ("min", "max"))
 
+    @pytest.mark.parametrize("z_col", ["lat", "lon"])
+    def test_z_may_be_an_axis_column(self, z_col):
+        """The fold selects the columns it bins, so a z that is also an axis
+        column must be selected once."""
+        resident, scanned = _geo_updates(_geo_df(), z=z_col, histfunc="sum")
+        _assert_geo_grids_match(resident, scanned, exact=False)
+
     @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
     def test_fold_merges_across_batches(self, monkeypatch, histfunc):
         """A frame larger than one chunk must fold to the single-batch grid."""

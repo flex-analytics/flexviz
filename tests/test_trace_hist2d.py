@@ -899,6 +899,13 @@ class TestHist2DScanFoldEquivalence:
         resident, scanned = _hist2d_updates(df, z="z", histfunc=histfunc)
         _assert_grids_match(resident, scanned, exact=histfunc in ("min", "max"))
 
+    @pytest.mark.parametrize("z_col", ["x", "y"])
+    def test_z_may_be_an_axis_column(self, z_col):
+        """The fold selects the columns it bins, so a z that is also an axis
+        column must be selected once."""
+        resident, scanned = _hist2d_updates(_xyz_df(), z=z_col, histfunc="sum")
+        _assert_grids_match(resident, scanned, exact=False)
+
     @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
     def test_reducer_matches_kernel_in_a_viewport(self, histfunc):
         resident, scanned = _hist2d_updates(

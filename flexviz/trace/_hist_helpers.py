@@ -463,7 +463,8 @@ def _batch_fold_plan(
     )
     lits = tuple(pl.lit(v) for v in bounds)
     n_cells = nb_x * nb_y
-    cols = [c for c in (x_col, y_col, z_col) if c is not None]
+    # z may be one of the axis columns, and a select refuses a duplicate.
+    cols = list(dict.fromkeys(c for c in (x_col, y_col, z_col) if c is not None))
 
     if z_col is None:
         exprs = [_hist2d_count_expr(x_col, y_col, nb_x, nb_y, lits, None, "g", schema)]
