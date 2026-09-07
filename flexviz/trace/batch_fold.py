@@ -179,14 +179,17 @@ def hist2d_fold_plan(
             out = batch.select(exprs)
             # Through Arrow, not Python: ``out["g"][0]`` would build a dict and
             # a list of every cell once per batch.
-            grid = out["g"].struct.field("z_flat").item().to_numpy()
+            cell = out["g"].struct.field("z_flat").item()
+            grid = cell.to_numpy()
             if z_col is None:
                 acc += grid
                 continue
             if histfunc == "mean":
                 cnt += out["c"].struct.field("z_flat").item().to_numpy()
-            # An empty cell comes back null, which lands here as NaN.
-            filled = ~np.isnan(grid)
+            # The kernel marks an empty cell null, and ``to_numpy`` writes a null
+            # as NaN. Only the validity bitmap separates an empty cell from a
+            # cell whose reduction is genuinely NaN (z holding +inf and -inf).
+            filled = cell.is_not_null().to_numpy()
             if histfunc in ("sum", "mean"):
                 acc[filled] += grid[filled]
             elif histfunc == "min":
