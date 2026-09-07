@@ -1,4 +1,4 @@
-"""Tests for the Phase-1 init-load cache (issue #26)."""
+"""Tests for the Phase-1 init-load cache."""
 
 from __future__ import annotations
 

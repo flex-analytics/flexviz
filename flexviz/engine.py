@@ -34,7 +34,7 @@ from .trace.hist import _HIST_BIN_EPSILON
 from .predicates import canonical_passive_key, predicates_to_expr
 
 # Event types whose computation is unfiltered and viewport-free. These are the
-# only events cached in Phase 1 (#26): the engine forces them to drop all
+# only events cached in Phase 1: the engine forces them to drop all
 # selections (`_active_selections`), so the result is the unfiltered base — a
 # float-free, content-addressable computation shared across reloads/viewers.
 _CACHEABLE_EVENT_TYPES = frozenset({"init", "reset", "deselect"})
