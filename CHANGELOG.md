@@ -44,6 +44,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   registered with `cache=True`. A `cache=False` scan resolves them again, so an
   uncached reset sees changed data on disk.
 - Spec version 0.5.
+- `pyarrow` is now a required dependency. The Parquet footer probe reads
+  row-group statistics through it.
 
 ### Removed
 

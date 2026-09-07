@@ -15,10 +15,7 @@ try:
 except ImportError:
     pd = None
 
-try:
-    import pyarrow as pa
-except ImportError:
-    pa = None
+import pyarrow as pa
 
 
 def polars_lf_from(data) -> pl.LazyFrame:
@@ -26,7 +23,7 @@ def polars_lf_from(data) -> pl.LazyFrame:
         return data.lazy()
     elif pd is not None and isinstance(data, pd.DataFrame):
         return pl.from_pandas(data).lazy()
-    elif pa is not None and isinstance(data, pa.Table):
+    elif isinstance(data, pa.Table):
         return pl.from_arrow(data).lazy()
     # elif hasattr("__dataframe__", data): ??? # TODO?
     #     return pl.from_dataframe(data)

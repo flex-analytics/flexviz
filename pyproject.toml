@@ -31,6 +31,9 @@ dependencies = [
     "numpy>=1.24",
     "pydantic>=2",
     "flexviz-polars>=0.1.0b1,<0.2",
+    # Reads Parquet footer statistics for the domain-bounds probe and accepts
+    # PyArrow tables as input.
+    "pyarrow>=22.0.0",
 ]
 
 [project.scripts]
@@ -56,8 +59,6 @@ dev = [
     "maturin>=1.12.6",
     "pytest-benchmark>=5.2.3",
     "pytest-randomly>=4.0.1",
-    # polars_lf_from() accepts PyArrow tables; tests exercise that path.
-    "pyarrow>=22.0.0",
 ]
 # Standalone group: docs builds run without the project installed (mkdocstrings
 # reads the source statically), so docs CI needs no Rust toolchain.

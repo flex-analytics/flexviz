@@ -30,7 +30,9 @@ Dashboard(lf).show()
   not characterized. A grouped trace still grows with the number of groups,
   and a dense 2D histogram grid still grows with the number of cells (issue
   #19). The peak memory of a fold is the Parquet reader's row-group prefetch
-  window. Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it.
+  window. Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it. The first request
+  against a single local Parquet file reads column bounds from the footer
+  statistics, through pyarrow, instead of decoding the column.
 - Any transformation you apply before handing the frame over
   (`lf.filter(...).with_columns(...)`) stays lazy and is fused into every
   FlexViz query.
