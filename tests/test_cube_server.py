@@ -217,7 +217,7 @@ def _direct_hist(
         .collect()["h"]
         .item()
     )
-    return raw.explode().struct.unnest()["count"].to_list()
+    return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
 def _snap(domain: tuple[float, float], a: float, b: float):
@@ -316,7 +316,7 @@ class TestDashboardCubeRequest:
             .collect()["h"]
             .item()
         )
-        direct = raw.explode().struct.unnest()["count"].to_list()
+        direct = raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
         assert sum(sliced) > 0  # non-vacuous: the brush selects rows
         assert sum(sliced) < df.height  # ... but not all of them
         assert sliced == direct  # bit-exact counts

@@ -382,7 +382,7 @@ class TestHistogramViewportSnap:
                 .alias("u")
             )["u"]
             .item()
-            .explode()
+            .explode(empty_as_null=True)
             .struct.field("count")
             .to_list()
         )
@@ -789,7 +789,11 @@ class TestHistogramBinEdges:
         )
         df_agg, _ = lf.aggregate([], [agg_spec])
         breakpoints = (
-            df_agg[t.uid].item().explode().struct.field("breakpoint").to_list()
+            df_agg[t.uid]
+            .item()
+            .explode(empty_as_null=True)
+            .struct.field("breakpoint")
+            .to_list()
         )
         lo, step, n = t._to_update(df_agg).updates["x_edges"]
         assert [lo + (i + 0.5) * step for i in range(n)] == pytest.approx(
@@ -1382,7 +1386,9 @@ class TestHistogramStreamingPlanArithmetic:
     def _kernel_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
         expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
         agg = df.select(expr.implode().alias("u"))
-        return agg["u"].item().explode().struct.field("count").to_list()
+        return (
+            agg["u"].item().explode(empty_as_null=True).struct.field("count").to_list()
+        )
 
     @pytest.mark.parametrize(
         "name,values,lo,hi,bins",

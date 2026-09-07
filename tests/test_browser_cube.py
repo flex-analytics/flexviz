@@ -1833,7 +1833,7 @@ def _reference_categorical_hist_counts(
         .collect()["h"]
         .item()
     )
-    return raw.explode().struct.unnest()["count"].to_list()
+    return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
 def _bar_drag_coords(page: Page) -> tuple[float, float, float, float]:
@@ -3043,7 +3043,7 @@ def _hist_counts_ref(
         .collect()["h"]
         .item()
     )
-    return raw.explode().struct.unnest()["count"].to_list()
+    return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
 def _selection_expr(df: pl.DataFrame, sel: dict) -> pl.Expr:
@@ -3840,7 +3840,7 @@ def _hist_counts_ref_domain(
         .collect()["h"]
         .item()
     )
-    return raw.explode().struct.unnest()["count"].to_list()
+    return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
 class TestZoomKeyInterplayBrowser:
