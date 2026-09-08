@@ -120,11 +120,12 @@ class TestResolveCount:
         assert len(collects.minmax) == 1
         plan = collects.minmax[0][1]
         assert all(f"__min_{c}__" in plan for c in ("a", "b", "ts"))
-        # min/max + the hist2d select + one streaming plan per ungrouped
-        # histogram + the line envelope group_by. A plan spec cannot join the
-        # batched select, so each brings its own collect. A sixth would mean the
+        # min/max + one streaming plan per ungrouped histogram + the line
+        # envelope group_by. A plan spec cannot join the batched select, so each
+        # brings its own collect. The hist2d adds none: on a scan it folds
+        # through collect_batches, which is not a collect. A fifth would mean the
         # line plan re-probed its own x domain instead of taking the resolved one.
-        assert len(collects.calls) == 5
+        assert len(collects.calls) == 4
 
     def test_resident_line_resolves_its_x_domain(self, collects):
         """A resident minmax line bins in x too, so it needs the domain."""

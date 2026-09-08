@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
+
 import numpy as np
 import polars as pl
 import pytest
+
+from flexviz.trace import hist2d as hist2d_mod
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
@@ -628,3 +633,236 @@ class TestHistogram2DTemporal:
         )
         total = sum(c for row in res.updates["z"] for c in row if c is not None)
         assert total == 24
+
+
+def _hist2d_updates(
+    df: pl.DataFrame,
+    *,
+    x: str = "x",
+    y: str = "y",
+    z: str | None = None,
+    histfunc: str | None = None,
+    histnorm: str | None = None,
+    x_bins: int = 5,
+    y_bins: int = 4,
+    update_range: dict | None = None,
+) -> tuple[dict, dict]:
+    """The ``_to_update`` output of the resident kernel and of the scan fold."""
+    lf = LFQueryBuilder(df)
+    trace = Histogram2D(
+        x=x,
+        y=y,
+        x_bins=x_bins,
+        y_bins=y_bins,
+        z=z,
+        histfunc=histfunc,
+        histnorm=histnorm,
+    )
+    update_range = update_range or {}
+    cols = trace.domain_cols(update_range)
+    domains = lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    out = []
+    for scan_source in (False, True):
+        spec = trace.get_aggregation_spec(
+            update_range,
+            schema=lf.schema,
+            domains=domains,
+            scan_source=scan_source,
+        )
+        assert (spec.plan is not None) is scan_source
+        agg, _ = lf.aggregate([], [spec])
+        out.append(trace._to_update(agg).updates)
+    return out[0], out[1]
+
+
+def _assert_grids_match(resident: dict, scanned: dict, *, exact: bool) -> float:
+    """Compare the two grids and return the largest relative deviation seen."""
+    assert resident["x"] == scanned["x"]
+    assert resident["y"] == scanned["y"]
+    assert resident["hover_bounds"] == scanned["hover_bounds"]
+    if exact:
+        assert resident["z"] == scanned["z"]
+        return 0.0
+    worst = 0.0
+    for row_a, row_b in zip(resident["z"], scanned["z"]):
+        assert len(row_a) == len(row_b)
+        for a, b in zip(row_a, row_b):
+            assert (a is None) == (b is None)
+            if a is None:
+                continue
+            assert math.isclose(a, b, rel_tol=1e-9)
+            if a != b:
+                worst = max(worst, abs(a - b) / max(abs(a), 1e-300))
+    return worst
+
+
+_NAN = float("nan")
+_X = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+_Y = [0.0, 2.0, 4.0, 6.0, 1.0, 3.0, 5.0, 7.0]
+_Z = [1.5, -2.0, 3.25, 0.0, 7.5, -1.25, 4.0, 9.0]
+
+
+def _xyz_df(
+    x: list | pl.Series | None = None,
+    y: list | pl.Series | None = None,
+    z: list | pl.Series | None = None,
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "x": pl.Series("x", _X) if x is None else x,
+            "y": pl.Series("y", _Y) if y is None else y,
+            "z": pl.Series("z", _Z) if z is None else z,
+        }
+    )
+
+
+class TestHist2DScanFoldEquivalence:
+    """A scan source folds the kernel over batches; the grid must match.
+
+    ``scan_source`` picks a formulation, never a result. Count, min and max are
+    exact; sum and mean fold in a different order, so they are compared with a
+    relative tolerance and an identical null pattern.
+    """
+
+    @pytest.mark.parametrize(
+        "name,df,kwargs",
+        [
+            ("f64", _xyz_df(), {}),
+            (
+                "f32_axes",
+                _xyz_df(
+                    x=pl.Series("x", _X, dtype=pl.Float32),
+                    y=pl.Series("y", _Y, dtype=pl.Float32),
+                ),
+                {},
+            ),
+            (
+                "int_x",
+                _xyz_df(x=pl.Series("x", [0, 1, 2, 3, 4, 5, 7, 8], dtype=pl.Int64)),
+                {},
+            ),
+            ("nan_x", _xyz_df(x=[_NAN] + _X[1:]), {}),
+            ("null_x", _xyz_df(x=[None] + _X[1:]), {}),
+            ("nan_y", _xyz_df(y=[_NAN] + _Y[1:]), {}),
+            ("null_y", _xyz_df(y=[None] + _Y[1:]), {}),
+            (
+                "viewport",
+                _xyz_df(),
+                {"update_range": {"x": (2.0, 6.0), "y": (1.0, 6.0)}},
+            ),
+            ("one_x_bin", _xyz_df(), {"x_bins": 1}),
+            (
+                "empty",
+                pl.DataFrame(
+                    schema={"x": pl.Float64, "y": pl.Float64, "z": pl.Float64}
+                ),
+                {},
+            ),
+            ("zero_span_x", _xyz_df(x=[3.0] * 8), {}),
+            ("histnorm", _xyz_df(), {"histnorm": "probability density"}),
+        ],
+    )
+    def test_count_matches_kernel(self, name, df, kwargs):
+        resident, scanned = _hist2d_updates(df, **kwargs)
+        # A count grid, and any normalization of it, is exact on both paths.
+        _assert_grids_match(resident, scanned, exact=True)
+
+    def test_count_matches_kernel_on_a_temporal_x(self):
+        ts = pl.datetime_range(
+            dt.datetime(2020, 1, 1),
+            dt.datetime(2020, 1, 8),
+            interval="1d",
+            eager=True,
+        ).rename("x")
+        resident, scanned = _hist2d_updates(_xyz_df(x=ts))
+        _assert_grids_match(resident, scanned, exact=True)
+
+    @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
+    @pytest.mark.parametrize(
+        "name,df",
+        [
+            ("clean", _xyz_df()),
+            ("nan_z", _xyz_df(z=[_NAN] + _Z[1:])),
+            ("null_z", _xyz_df(z=[None] + _Z[1:])),
+            ("all_null_z", _xyz_df(z=[None] * 8)),
+            ("nan_x", _xyz_df(x=[_NAN] + _X[1:])),
+            ("null_y", _xyz_df(y=[None] + _Y[1:])),
+            (
+                "empty",
+                pl.DataFrame(
+                    schema={"x": pl.Float64, "y": pl.Float64, "z": pl.Float64}
+                ),
+            ),
+        ],
+    )
+    def test_reducer_matches_kernel(self, name, df, histfunc):
+        resident, scanned = _hist2d_updates(df, z="z", histfunc=histfunc)
+        _assert_grids_match(resident, scanned, exact=histfunc in ("min", "max"))
+
+    @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
+    def test_reducer_matches_kernel_in_a_viewport(self, histfunc):
+        resident, scanned = _hist2d_updates(
+            _xyz_df(),
+            z="z",
+            histfunc=histfunc,
+            update_range={"x": (2.0, 6.0), "y": (1.0, 6.0)},
+        )
+        _assert_grids_match(resident, scanned, exact=histfunc in ("min", "max"))
+
+    def test_empty_input_folds_to_the_kernel_shape(self):
+        """No batches must leave the grid the kernel returns for empty input:
+        zero counts, null reducer cells, bounds echoed."""
+        empty = pl.DataFrame(schema={"x": pl.Float64, "y": pl.Float64, "z": pl.Float64})
+        resident, scanned = _hist2d_updates(empty)
+        # _to_update maps a zero count to None (the gap-rendering contract).
+        assert scanned["z"] == resident["z"]
+        assert all(v is None for row in scanned["z"] for v in row)
+        resident, scanned = _hist2d_updates(empty, z="z", histfunc="sum")
+        assert scanned["z"] == resident["z"]
+        assert all(v is None for row in scanned["z"] for v in row)
+
+    @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
+    def test_fold_merges_across_batches(self, monkeypatch, histfunc):
+        """A frame larger than one chunk must fold to the single-batch grid."""
+        monkeypatch.setattr(hist2d_mod, "_FOLD_CHUNK_ROWS", 7)
+        seen: list[tuple[int, int]] = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(self, *args, **kwargs):
+            batches = list(original(self, *args, **kwargs))
+            seen.append((kwargs["chunk_size"], len(batches)))
+            return batches
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+
+        n = 50
+        df = pl.DataFrame(
+            {
+                "x": [float(i % 11) for i in range(n)],
+                "y": [float(i % 7) for i in range(n)],
+                "z": [float((i * 13) % 17) - 8.0 for i in range(n)],
+            }
+        )
+        resident, scanned = _hist2d_updates(
+            df, z=None if histfunc is None else "z", histfunc=histfunc
+        )
+        _assert_grids_match(resident, scanned, exact=histfunc in (None, "min", "max"))
+        assert seen == [(7, 8)], seen
+
+
+def test_collect_batches_chunking_semantics():
+    """Pin what the fold relies on: fixed-size batches covering every row.
+
+    ``collect_batches`` is marked unstable in Polars. If the API or the
+    chunking changes, this fails before the fold's own tests do.
+    """
+    n, chunk = 50, 7
+    values = list(range(n))
+    batches = list(
+        pl.DataFrame({"a": values})
+        .lazy()
+        .collect_batches(chunk_size=chunk, maintain_order=False, engine="streaming")
+    )
+    assert len(batches) == math.ceil(n / chunk)
+    assert sum(b.height for b in batches) == n
+    assert sorted(v for b in batches for v in b["a"].to_list()) == values
