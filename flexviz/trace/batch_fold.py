@@ -17,10 +17,13 @@ from .bin_grid import Edges, hist2d_count_expr, hist2d_reduce_expr
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-#: Rows per streamed batch. About 64 MB for a two-column Float64 batch. Larger
-#: chunks only cost memory; smaller ones cost per-batch Python and kernel
-#: overhead.
-_FOLD_CHUNK_ROWS = 4_000_000
+#: Rows per streamed batch. The streaming engine keeps about one batch per
+#: thread in flight, so peak memory is near threads x chunk x row bytes.
+#: Measured on a 60M-row scan, 10 threads: a 4M chunk peaks at 359 MB
+#: (hist2d) and 467 MB (hist2d mean); 1M peaks at 129 and 196 MB.
+#: 500k gains nothing more.
+#: The impact on the runtime is very small < 3%.
+_FOLD_CHUNK_ROWS = 1_000_000
 
 
 def _fold_result_frame(uid: str, z_flat: pl.Series, bounds: Edges) -> pl.DataFrame:
