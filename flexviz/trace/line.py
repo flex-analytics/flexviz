@@ -4,9 +4,14 @@ Downsamples a sorted series in the current viewport.
 
 Downsampling strategies:
 
-* ``"minmax"`` (default) — min-max envelope downsampling: splits the viewport into
-  ``n_points // 2`` equal buckets and keeps the argmin + argmax of ``y`` within each
-  bucket, yielding at most ``n_points`` output points that preserve extrema and spikes.
+* ``"minmax"`` (default) — min-max envelope downsampling: splits the x domain into
+  ``n_points // 2`` equal-**width** buckets and keeps the argmin + argmax of ``y``
+  within each bucket, yielding at most ``n_points`` output points that preserve
+  extrema and spikes.  Ungrouped lines share that grid (``_bucket_grid``) across
+  both source kinds: a resident frame runs the ``minmax_line`` kernel, a scan runs
+  ``_streaming_envelope_plan``.  The two return the same ``y`` multiset and differ
+  only in which member of an exact ``y`` plateau they pick.  A grouped line keeps
+  equal-row-count buckets inside each group.
 
 * ``"fpcs"`` — Feature-Preserving Compensated Sampling: first applies the same
   index-bucket MinMax reduction to interior points, then runs the FPCS compensation
@@ -23,6 +28,7 @@ Downsampling strategies:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Literal
 
@@ -46,6 +52,7 @@ from .base import (
     _dtype_for_col,
     _group_value_key,
     _group_values_from_frame,
+    _physical_bound_expr,
     _to_col_tuple,
     _range_filter_expr,
     _typed_range_bounds,
@@ -54,6 +61,11 @@ from .base import (
 import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 LineDownsample = Literal["minmax", "fpcs", "nth"]
+
+# Two points make a line, and 25k already exceeds the pixel width of any screen
+# the browser draws them on.
+_N_POINTS_MIN = 2
+_N_POINTS_MAX = 25_000
 
 # A viewport restriction: either an ``is_between`` mask, or a zero-copy
 # ``(offset, length)`` slice when x is known sorted.
@@ -106,6 +118,66 @@ def _viewport_window(
 
 
 # ---------------------------------------------------------------------------
+# Equal-x-width bucket grid (shared by both minmax formulations)
+# ---------------------------------------------------------------------------
+
+
+def _bucket_grid(
+    x_col: str,
+    x_range: tuple | None,
+    x_domain: tuple | None,
+    dtype: pl.DataType | None,
+    n_buckets: int,
+) -> tuple[Any, Any, Any] | None:
+    """``(lo, bucket_width, hi)`` of the equal-x-width grid, in physical units.
+
+    Zoomed, the grid spans the client viewport. Unzoomed it spans ``x_domain``,
+    the unfiltered ``(min, max)`` the engine resolved, so a cross-filter cannot
+    move the bucket edges. ``None`` means there is no grid: an empty or all-null
+    x column, or a temporal viewport bound that failed to parse. An infinite
+    bound raises: the edges are found by binary search, and an infinite span has
+    no finite bucket width.
+
+    Float columns need true division: integer ceiling division rounds a sub-1
+    width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
+    Integer and temporal columns divide with a ceiling to keep the width whole.
+    The branch is on the column dtype, because the Python type of the span is no
+    dtype signal: a JSON viewport bound of ``100`` arrives as an int on a float
+    column.
+    """
+    if x_range is not None:
+        lo, hi = x_range[0], x_range[1]
+        if dtype is not None and dtype.is_integer():
+            lo = math.ceil(lo) if isinstance(lo, float) else lo
+            hi = math.floor(hi) if isinstance(hi, float) else hi
+        elif dtype is not None and dtype.is_temporal():
+            # A viewport bound arrives as a date string or epoch-ms number, so
+            # it needs the same parse the typed filters use before it can be
+            # read as a physical unit.
+            lo, hi = pl.select(
+                _physical_bound_expr(lo, dtype).alias("lo"),
+                _physical_bound_expr(hi, dtype).alias("hi"),
+            ).row(0)
+    else:
+        lo, hi = x_domain if x_domain is not None else (None, None)
+
+    if lo is None or hi is None:
+        return None
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        raise ValueError(
+            f"x column '{x_col}' has an infinite bound ({lo}, {hi}). A minmax "
+            f"line needs a finite x. Filter the frame with is_finite() first."
+        )
+
+    span = hi - lo
+    if span <= 0:  # a constant x column still gets one bucket, of width 1
+        return (lo, 1, lo + 1)
+    if dtype is not None and dtype.is_float():
+        return (lo, span / n_buckets, hi)
+    return (lo, -(-span // n_buckets), hi)
+
+
+# ---------------------------------------------------------------------------
 # Out-of-core envelope (streaming, single collect)
 # ---------------------------------------------------------------------------
 
@@ -122,8 +194,7 @@ def _streaming_envelope_plan(
 ):
     """Streaming min-max envelope using equal-width buckets in x.
 
-    Replaces the two-pass ``_native_envelope_plan``. One streaming collect, no
-    intermediate collects.
+    One streaming collect, no intermediate collects.
 
     Buckets partition the x range into ``n_points // 2`` equal-width bins.
     ``min_by``/``max_by`` locate the x value at each y extremum in a single
@@ -135,11 +206,9 @@ def _streaming_envelope_plan(
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
-    point. This is a deliberate trade: the previous two-pass plan paid 2.9x
-    runtime and 39x memory for deterministic tie-breaking.
+    point. This is a deliberate trade: deterministic tie-breaking here would
+    cost a second pass and far more memory for no visible difference.
     """
-    import math
-
     n_out = max(n_points // 2, 1)
     empty = pl.DataFrame(
         {uid: [[]]},
@@ -151,37 +220,18 @@ def _streaming_envelope_plan(
         src = src.select(x_col, y_col)
 
         dtype = schema.get(x_col) if schema else None
-        is_temporal = dtype is not None and dtype.is_temporal()
 
         # Bucket arithmetic runs on the physical representation so that
         # temporal columns reduce to plain integer division.
-        phys_expr = pl.col(x_col).to_physical() if is_temporal else pl.col(x_col)
-        if x_range is not None:
-            x_lo, x_hi = x_range[0], x_range[1]
-            if dtype is not None and dtype.is_integer():
-                x_lo = math.ceil(x_lo) if isinstance(x_lo, float) else x_lo
-                x_hi = math.floor(x_hi) if isinstance(x_hi, float) else x_hi
-            elif is_temporal:
-                x_lo, x_hi = int(x_lo), int(x_hi)
-        else:
-            x_lo, x_hi = x_domain if x_domain is not None else (None, None)
-
-        if x_lo is None or x_hi is None:
+        phys_expr = (
+            pl.col(x_col).to_physical()
+            if dtype is not None and dtype.is_temporal()
+            else pl.col(x_col)
+        )
+        grid = _bucket_grid(x_col, x_range, x_domain, dtype, n_out)
+        if grid is None:
             return empty
-
-        span = x_hi - x_lo
-        # Float columns need true division: integer ceiling division rounds a
-        # sub-1 width up to 1 (0.002 / 500 -> 1), collapsing every row into
-        # one bucket. Integer and temporal columns use ceiling division to keep
-        # the width whole. The check is on the column dtype, not the Python
-        # type of span, because JSON deserializes 100.0 as int.
-        use_float_div = dtype is not None and dtype.is_float()
-        if span <= 0:
-            bsz = 1
-        elif use_float_div:
-            bsz = span / n_out
-        else:
-            bsz = -(-span // n_out)
+        x_lo, bsz, _ = grid
 
         lo_lit = pl.lit(x_lo)
         bsz_lit = pl.lit(bsz)
@@ -271,12 +321,19 @@ def _plugin_minmax_agg_expr(
     vp: Viewport | None,
     n_points: int,
     uid: str,
+    x_domain: tuple[Any, Any] | None = None,
 ) -> pl.Expr:
     """Min-max envelope downsampling using the flexviz_polars Rust kernel.
 
-    Splits the (filtered) y-column into ``n_points // 2`` equal buckets and
-    gathers x and y at the argmin and argmax positions within each bucket.
-    Preserves extrema and spikes that uniform-stride subsampling would miss.
+    Splits the (filtered) rows into ``n_points // 2`` buckets and gathers x and
+    y at the argmin and argmax positions within each bucket. Preserves extrema
+    and spikes that uniform-stride subsampling would miss.
+
+    ``x_domain`` is the ``(lo, hi)`` the buckets span. The kernel makes them
+    equal in x width over it, rebuilding the same width ``_bucket_grid`` holds.
+    That needs x sorted ascending, and the kernel drops rows outside
+    ``[lo, hi]``. Ungrouped lines pass it. Without it the buckets are equal in
+    row count, which is what a grouped line uses.
 
     Index selection and both gathers happen in one kernel call: Polars does not
     CSE opaque plugin expressions, so the two-gather form
@@ -285,7 +342,14 @@ def _plugin_minmax_agg_expr(
     y_expr = _apply_viewport(pl.col(y_col), vp)
     x_expr = _apply_viewport(pl.col(x_col), vp)
     return (
-        _fvp._minmax_line(x_expr, y_expr, n_points, x_name=x_col, y_name=y_col)
+        _fvp._minmax_line(
+            x_expr,
+            y_expr,
+            n_points,
+            x_name=x_col,
+            y_name=y_col,
+            x_domain=x_domain,
+        )
         .implode()
         .alias(uid)
     )
@@ -366,8 +430,10 @@ class LinePlot(FlexTrace):
     Parameters
     ----------
     x:
-        Column name for the x-axis values.  Should be sorted (ascending)
-        for efficient range queries.
+        Column name for the x-axis values.  Must be sorted ascending for an
+        ungrouped ``"minmax"`` line: its buckets are equal in x width, so the
+        engine binary-searches the bucket edges.  Sorted x also turns every
+        viewport into a zero-copy slice.
     y:
         Column name for the y-axis values.
     name:
@@ -375,7 +441,8 @@ class LinePlot(FlexTrace):
     color:
         Line colour hint (CSS string), passed to the renderer.
     n_points:
-        Target number of points returned per viewport after downsampling.
+        Target number of points returned per viewport after downsampling,
+        between 2 and 25000.
         ``"minmax"`` and ``"nth"`` return at most this many points.  ``"fpcs"``
         follows FPCS target semantics and can return up to roughly
         ``2 * n_points`` points.
@@ -412,6 +479,13 @@ class LinePlot(FlexTrace):
         update_on_zoom: bool = True,
         group_by: str | Sequence[str] | None = None,
     ) -> None:
+        # The trust boundary: the client posts the spec on every update, and a
+        # decoded spec builds the trace through here as well.
+        if not _N_POINTS_MIN <= n_points <= _N_POINTS_MAX:
+            raise ValueError(
+                f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
+                f"got {n_points}."
+            )
         group_cols = (
             _to_col_tuple(group_by, "group_by") if group_by is not None else None
         )
@@ -568,11 +642,11 @@ class LinePlot(FlexTrace):
     def domain_cols(
         self, update_range: Dict[str, Any], *, scan_source: bool = False
     ) -> tuple[str, ...]:
-        # Only the ungrouped out-of-core minmax envelope bins in x; every other
-        # line formulation reads its bucket grid off the rows themselves.
+        # Every ungrouped minmax line bins in x, on both source kinds. A zoomed
+        # one takes its grid from the viewport, and every other formulation
+        # reads its bucket grid off the rows themselves.
         if (
-            not scan_source
-            or self.downsample != "minmax"
+            self.downsample != "minmax"
             or self.group_by_cols is not None
             or update_range.get("x") is not None
         ):
@@ -591,17 +665,20 @@ class LinePlot(FlexTrace):
         """Return either a regular or grouped line aggregation spec.
 
         ``x_sorted`` is the caller's guarantee that the x column is ascending
-        (set by ``assume_sorted_x`` / ``check_sorted``). It only enables a
-        faster viewport restriction; correctness of the output is unchanged.
+        (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
+        faster viewport restriction. The output is unchanged.
+        The ungrouped minmax envelope needs it for a second reason: its buckets
+        are equal in x width, which the engine validates once per source.
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan the
-        minmax envelope switches to a streaming plan (``_streaming_envelope_plan``)
-        that uses equal-width buckets in x with ``min_by``/``max_by``. The output
-        is a valid envelope but not bit-identical to the kernel on exact plateaus.
+        minmax envelope switches to a streaming plan (``_streaming_envelope_plan``).
+        Both build the same equal-x-width grid (``_bucket_grid``), so they return
+        the same ``y`` multiset. They differ only in which member of an exact
+        ``y`` plateau they pick.
 
-        An unzoomed streaming-envelope trace requires ``x_col`` in ``domains``;
-        a ``(None, None)`` entry means an empty or all-null column.
+        An unzoomed ungrouped minmax trace requires ``x_col`` in ``domains``.
+        A ``(None, None)`` entry means an empty or all-null column.
         """
         x_range = update_range.get("x")
 
@@ -638,27 +715,48 @@ class LinePlot(FlexTrace):
                 batch_key=batch_key,
             )
 
-        if scan_source and self.downsample == "minmax":
-            # `nth` already streams (a stride needs no state) and `fpcs` has no
-            # streaming formulation at all, so only minmax needs the swap.
-            return AggregationSpec(
-                expr=pl.lit(None).alias(self.uid),
-                uid=self.uid,
-                plan=_streaming_envelope_plan(
-                    self.x_col,
-                    self.y_col,
-                    self.n_points,
-                    self.uid,
-                    (
-                        _range_filter_expr(self.x_col, x_range, schema=schema)
-                        if x_range is not None
-                        else None
+        if self.downsample == "minmax":
+            x_domain = None if x_range is not None else (domains or {})[self.x_col]
+            if scan_source:
+                # `nth` already streams (a stride needs no state) and `fpcs` has
+                # no streaming formulation at all, so only minmax needs the swap.
+                return AggregationSpec(
+                    expr=pl.lit(None).alias(self.uid),
+                    uid=self.uid,
+                    plan=_streaming_envelope_plan(
+                        self.x_col,
+                        self.y_col,
+                        self.n_points,
+                        self.uid,
+                        (
+                            _range_filter_expr(self.x_col, x_range, schema=schema)
+                            if x_range is not None
+                            else None
+                        ),
+                        x_range,
+                        x_domain,
+                        schema,
                     ),
-                    x_range,
-                    (domains or {})[self.x_col] if x_range is None else None,
-                    schema,
-                ),
+                )
+
+            n_buckets = max(self.n_points // 2, 1)
+            x_dtype = schema.get(self.x_col) if schema else None
+            grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype, n_buckets)
+            # The kernel rebuilds the same width from ``(lo, hi)``, so grid and
+            # kernel never disagree. It drops rows outside ``[lo, hi]``, so the
+            # viewport slice agrees with the grid. A ``None`` grid (empty or
+            # all-null x) becomes a zero-span sentinel: the kernel returns no
+            # points.
+            kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
+            expr = _plugin_minmax_agg_expr(
+                self.x_col,
+                self.y_col,
+                _viewport_window(self.x_col, x_range, schema, x_sorted),
+                self.n_points,
+                self.uid,
+                x_domain=kernel_domain,
             )
+            return AggregationSpec(expr=expr, uid=self.uid)
 
         expr = _plugin_line_agg_expr(
             self.x_col,

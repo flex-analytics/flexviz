@@ -69,7 +69,6 @@ class Dashboard:
     def __init__(
         self,
         data: pl.DataFrame | pl.LazyFrame | None = None,
-        row_index_col: str | None = None,
         cache: bool = False,
     ) -> None:
         """
@@ -79,10 +78,6 @@ class Dashboard:
             A Polars DataFrame or LazyFrame (or anything accepted by
             ``polars_lf_from``).  All figures will share this data source.
             Pass ``None`` for in-memory-only dashboards.
-        row_index_col:
-            Name of a pre-existing sorted integer row-index column.
-            When ``None`` (default), no row-index column is added unless a
-            future feature explicitly requests one.
         cache:
             Opt the shared source into init-load caching.  Asserts the data
             is static for the process lifetime (no invalidation yet; see
@@ -92,12 +87,9 @@ class Dashboard:
         self._uid: str = str(uuid4())
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(
-                polars_lf_from(data), row_index_col=row_index_col
-            )
+            self._backend_lf = LFQueryBuilder(polars_lf_from(data))
 
         self._figures: List[Figure] = []
-        self._row_index_col = row_index_col
         self._cache_enabled: bool = cache
 
     # ------------------------------------------------------------------

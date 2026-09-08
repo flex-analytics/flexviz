@@ -380,7 +380,9 @@ class TestTraceResult:
         )
         lf = LFQueryBuilder(df)
         trace = LinePlot(x="ts", y="val", n_points=50)
-        agg = trace.get_aggregation_spec({}, schema=lf.schema)
+        agg = trace.get_aggregation_spec(
+            {}, schema=lf.schema, domains=lf.physical_minmax(["ts"], memoize=False)
+        )
         df_agg, _ = lf.aggregate([], [agg])
         result = trace._to_update(df_agg)
         assert isinstance(result, TraceResult)
@@ -532,7 +534,7 @@ class TestAggregationSpecUid:
         from flexviz.trace.line import LinePlot
 
         trace = LinePlot(x="ts", y="val")
-        spec = trace.get_aggregation_spec({}, schema=None)
+        spec = trace.get_aggregation_spec({}, schema=None, domains={"ts": (0.0, 1.0)})
         assert spec.uid == trace.uid
 
     def test_hist_agg_spec_has_uid(self):

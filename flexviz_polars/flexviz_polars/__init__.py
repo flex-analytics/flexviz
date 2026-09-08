@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numbers
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,18 +35,38 @@ def _arg_min_max(expr: IntoExprColumn, n_points: int) -> pl.Expr:
     )
 
 
+def _kernel_bound(value) -> int | float:
+    """Normalize one ``x_domain`` bound to the Python type the kernel reads.
+
+    An integral bound stays a Python ``int``: the kernel searches integer x on
+    exact integers, and ``float()`` would round a nanosecond epoch. Everything
+    else goes as ``float``.
+    """
+    return int(value) if isinstance(value, numbers.Integral) else float(value)
+
+
 def _minmax_line(
     x_expr: "IntoExprColumn",
     y_expr: "IntoExprColumn",
     n_points: int,
     x_name: str | None = None,
     y_name: str | None = None,
+    x_domain: tuple[int | float, int | float] | None = None,
 ) -> pl.Expr:
     return register_plugin_function(
         args=[x_expr, y_expr],
         plugin_path=LIB,
         function_name="minmax_line",
-        kwargs={"n_points": n_points, "x_name": x_name, "y_name": y_name},
+        kwargs={
+            "n_points": n_points,
+            "x_name": x_name,
+            "y_name": y_name,
+            # Buckets of equal x width over this ``(lo, hi)`` domain instead of
+            # equal row count. Needs x sorted ascending.
+            "x_domain": (
+                None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
+            ),
+        },
         is_elementwise=False,
     )
 

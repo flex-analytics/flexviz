@@ -32,10 +32,20 @@ def _fpcs_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
     ).to_series()
 
 
-def _minmax_line(x: pl.Series, y: pl.Series, n_points: int) -> pl.Series:
+def _minmax_line(
+    x: pl.Series,
+    y: pl.Series,
+    n_points: int,
+    x_domain: tuple[float, float] | None = None,
+) -> pl.Series:
     return pl.select(
         flexviz_polars._minmax_line(
-            pl.lit(x), pl.lit(y), n_points, x_name=x.name, y_name=y.name
+            pl.lit(x),
+            pl.lit(y),
+            n_points,
+            x_name=x.name,
+            y_name=y.name,
+            x_domain=x_domain,
         )
     ).to_series()
 
@@ -2001,3 +2011,162 @@ class TestMinmaxLineDifferential:
     def test_n_points_zero_raises(self):
         with pytest.raises(Exception, match="greater than 0"):
             _minmax_line(pl.Series("x", [1.0]), pl.Series("y", [1.0]), 0)
+
+
+# ---------------------------------------------------------------------------
+# minmax_line — equal-x-width buckets (x_domain)
+# ---------------------------------------------------------------------------
+
+
+def _bursty_xy() -> tuple[pl.Series, pl.Series]:
+    """100k rows crammed into [0, 1) plus a 1k-row tail spread over [1, 100]."""
+    dense = [i / 100_000 for i in range(100_000)]
+    tail = [1.0 + i * 99 / 999 for i in range(1_000)]
+    xs = dense + tail
+    return (
+        pl.Series("x", xs, dtype=pl.Float64),
+        pl.Series("y", _distinct_values(len(xs))),
+    )
+
+
+class TestMinmaxLineXDomain:
+    def test_uniform_x_matches_row_count_buckets(self):
+        """On evenly spaced x both bucket definitions cover the same rows."""
+        n = 100_000
+        x = pl.Series("x", range(n), dtype=pl.Float64)
+        y = pl.Series("y", _distinct_values(n))
+
+        without = _minmax_line(x, y, 200)
+        with_domain = _minmax_line(x, y, 200, x_domain=(0, n - 1))
+
+        assert sorted(with_domain.struct.field("y").to_list()) == sorted(
+            without.struct.field("y").to_list()
+        )
+
+    def test_bursty_x_spends_its_buckets_on_the_tail(self):
+        """Row-count buckets follow the density. x-width buckets follow x."""
+        x, y = _bursty_xy()
+
+        with_domain = _minmax_line(x, y, 200, x_domain=(0, 100))
+        without = _minmax_line(x, y, 200)
+
+        # 99 of the 100 buckets cover [1, 100], which holds only 1k of the rows.
+        assert sum(v >= 1 for v in with_domain.struct.field("x").to_list()) >= 180
+        assert sum(v >= 1 for v in without.struct.field("x").to_list()) < 50
+
+    def test_output_points_come_from_the_domain(self):
+        """A hole in x empties the middle buckets, so the windows leave gaps.
+        The multi-chunk y routes them through the chunked kernel."""
+        n = 100_000
+        x = pl.Series(
+            "x",
+            [i / n for i in range(n)] + [10.0 + i / n for i in range(n)],
+            dtype=pl.Float64,
+        )
+        y = pl.Series("y", _distinct_values(2 * n))
+        bounds = [0, 1, 7919, 60_000, 150_001, len(x)]
+        y = pl.concat(
+            [
+                pl.Series("y", y.to_list()[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert y.n_chunks() == len(bounds) - 1
+
+        out = _minmax_line(x, y, 200, x_domain=(0.25, 10.5))
+
+        assert len(out) <= 200
+        source = set(zip(x.to_list(), y.to_list()))
+        points = list(
+            zip(out.struct.field("x").to_list(), out.struct.field("y").to_list())
+        )
+        assert all(point in source for point in points)
+        assert all(0.25 <= px <= 10.5 for px, _ in points)
+
+    def test_large_integer_bounds_keep_the_edge_rows(self):
+        """A nanosecond-epoch domain has no exact f64, and still keeps its edges."""
+        base = 1_700_000_000_000_000_000  # ns epoch, well past 2**53
+        xs = [base + i * 100 for i in range(1000)]
+        x = pl.Series("x", xs, dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(len(xs)))
+
+        out = _minmax_line(x, y, 200, x_domain=(xs[0], xs[-1]))
+
+        got = out.struct.field("y").to_list()
+        assert y[0] in got and y[-1] in got
+
+    def test_multi_chunk_x_matches_rechunked(self):
+        """The chunked edge search must find the same bucket edges as a
+        contiguous one."""
+        n = 60_000
+        bounds = [0, 1, 7919, 30_000, 30_001, 59_999, n]
+        xs = [i / 7.0 for i in range(n)]
+        ys = _distinct_values(n)
+        x = pl.concat(
+            [
+                pl.Series("x", xs[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        y = pl.concat(
+            [
+                pl.Series("y", ys[a:b], dtype=pl.Float64)
+                for a, b in zip(bounds, bounds[1:])
+            ],
+            rechunk=False,
+        )
+        assert x.n_chunks() > 1 and y.n_chunks() > 1
+
+        chunked = _minmax_line(x, y, 200, x_domain=(10.0, 8000.0))
+        contiguous = _minmax_line(
+            x.rechunk(), y.rechunk(), 200, x_domain=(10.0, 8000.0)
+        )
+
+        assert (
+            chunked.struct.field("x").to_list()
+            == contiguous.struct.field("x").to_list()
+        )
+        assert (
+            chunked.struct.field("y").to_list()
+            == contiguous.struct.field("y").to_list()
+        )
+
+    def test_int64_x_past_2_53_keeps_every_bucket(self):
+        """Beyond 2**53 an f64 edge collapses neighbours. Integer edges do not."""
+        base = 2**53
+        x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        out = _minmax_line(x, y, 20, x_domain=(base, base + 20))
+
+        assert out.struct.field("x").to_list() == x.to_list()
+
+    def test_integer_bounds_are_not_rounded(self):
+        """A nanosecond-epoch bound one apart from `lo` still bounds one row."""
+        base = 1_700_000_000_000_000_000  # ns epoch, f64 steps by 256 here
+        x = pl.Series("x", [base + i for i in range(20)], dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        assert _minmax_line(x, y, 4, x_domain=(base, base + 1)).struct.field(
+            "x"
+        ).to_list() == [base, base + 1]
+        assert _minmax_line(x, y, 4, x_domain=(base, base + 2)).struct.field(
+            "x"
+        ).to_list() == [base, base + 1, base + 2]
+
+    def test_float_bound_on_integer_x_is_rejected(self):
+        x = pl.Series("x", list(range(20)), dtype=pl.Int64)
+        y = pl.Series("y", _distinct_values(20))
+
+        with pytest.raises(Exception, match="must be integer bounds"):
+            _minmax_line(x, y, 20, x_domain=(0.0, 20.0))
+
+    def test_integer_bounds_on_float_x_are_accepted(self):
+        x = pl.Series("x", [i / 2 for i in range(20)], dtype=pl.Float64)
+        y = pl.Series("y", _distinct_values(20))
+
+        out = _minmax_line(x, y, 20, x_domain=(0, 10))
+
+        assert out.struct.field("x").to_list() == x.to_list()
