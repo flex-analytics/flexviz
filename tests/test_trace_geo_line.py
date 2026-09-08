@@ -449,3 +449,87 @@ class TestGeoLineEngine:
         viewports = {"fig_map": {"coordinates": coords}}
         vp_deltas = engine.process(viewport_event, infos, viewports_by_figure=viewports)
         assert len(vp_deltas[0].updates["lat"]) < n_init
+
+
+class TestGeoLineNthScanPlan:
+    """``nth`` on a scan runs ``nth_plan`` and returns what the kernel returns.
+
+    The gather keeps its stride phase across streaming morsels, so the frames
+    are written with small row groups to give the streaming engine many of them.
+    """
+
+    @staticmethod
+    def _frame(n: int = 200_000) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "lat": [40.0 + (i % 2003) / 1000.0 for i in range(n)],
+                "lon": [-74.0 + (i % 1009) / 1000.0 for i in range(n)],
+            }
+        )
+
+    @staticmethod
+    def _sources(df: pl.DataFrame, path) -> tuple[LFQueryBuilder, LFQueryBuilder]:
+        df.write_parquet(path, row_group_size=10_000)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan.is_scan
+        return LFQueryBuilder(df), scan
+
+    @staticmethod
+    def _points(lf: LFQueryBuilder, trace: GeoLine, coords=None) -> dict:
+        """Drive one geo line through the engine, init or with a map viewport."""
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(uid=trace.uid, axes=None, trace_type="geo_line", figure_uid="fig")
+        ]
+        if coords is None:
+            event = InteractionEvent(type="init", force_update=True, figure_uid="fig")
+            return engine.process(event, infos)[0].updates
+        event = InteractionEvent(
+            type="viewport", axis_ranges={"coordinates": coords}, figure_uid="fig"
+        )
+        deltas = engine.process(
+            event, infos, viewports_by_figure={"fig": {"coordinates": coords}}
+        )
+        return deltas[0].updates
+
+    def test_unfiltered_matches_the_kernel(self, tmp_path):
+        resident_lf, scan_lf = self._sources(self._frame(), tmp_path / "geo.parquet")
+        trace = GeoLine(lat="lat", lon="lon", n_points=1000, add_gaps=False)
+
+        resident = self._points(resident_lf, trace)
+        scanned = self._points(scan_lf, trace)
+
+        assert len(resident["lat"]) == 1000
+        assert resident["lat"] == scanned["lat"]
+        assert resident["lon"] == scanned["lon"]
+
+    def test_viewport_matches_the_kernel(self, tmp_path):
+        resident_lf, scan_lf = self._sources(self._frame(), tmp_path / "geo.parquet")
+        trace = GeoLine(lat="lat", lon="lon", n_points=1000, add_gaps=False)
+        coords = [[-73.7, 40.5], [-73.3, 40.5], [-73.3, 41.5], [-73.7, 41.5]]
+
+        resident = self._points(resident_lf, trace, coords)
+        scanned = self._points(scan_lf, trace, coords)
+
+        assert len(resident["lat"]) > 0
+        assert all(-73.7 <= v <= -73.3 for v in scanned["lon"])
+        assert resident["lat"] == scanned["lat"]
+        assert resident["lon"] == scanned["lon"]
+
+    def test_an_empty_viewport_returns_no_points(self, tmp_path):
+        _, scan_lf = self._sources(self._frame(1000), tmp_path / "geo.parquet")
+        trace = GeoLine(lat="lat", lon="lon", n_points=100, add_gaps=False)
+
+        out = self._points(scan_lf, trace, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+        assert out["lat"] == []
+        assert out["lon"] == []
+
+    def test_a_scan_takes_the_plan_and_a_resident_frame_the_kernel(self):
+        trace = GeoLine(lat="lat", lon="lon", n_points=100)
+        schema = pl.Schema({"lat": pl.Float64, "lon": pl.Float64})
+
+        scanned = trace.get_aggregation_spec({}, schema=schema, scan_source=True)
+        assert scanned.plan is not None and scanned.expr is None
+
+        resident = trace.get_aggregation_spec({}, schema=schema, scan_source=False)
+        assert resident.expr is not None and resident.plan is None

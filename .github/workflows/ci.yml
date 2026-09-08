@@ -166,3 +166,30 @@ jobs:
       # browser suite depends on module-scoped server fixtures.
       - name: Browser tests
         run: uv run --no-sync pytest -m browser -p no:randomly --override-ini="addopts=" -n 6
+
+  # A separate job: it spawns one subprocess per trace and size (1-2 minutes),
+  # and its memory counter only exists on Linux and macOS.
+  ooc:
+    needs: plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: plugin-ubuntu-latest
+          path: dist
+
+      - name: Install project without the plugin
+        run: uv sync --locked --no-install-package flexviz-polars
+
+      - name: Install the built plugin wheel
+        run: VIRTUAL_ENV=.venv uv pip install dist/*.whl
+
+      - name: Out-of-core memory matrix
+        run: uv run --no-sync pytest -m ooc --override-ini="addopts=" -v tests/test_ooc.py

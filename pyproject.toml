@@ -78,12 +78,13 @@ flexviz-polars = { path = "flexviz_polars", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not browser and not benchmark'"
+addopts = "-m 'not browser and not benchmark and not ooc'"
 markers = [
     "integration: tests that spin up a FastAPI TestClient",
     "slow: benchmarks and large-dataset tests",
     "browser: browser-based tests that require Playwright (run with make test-browser)",
     "benchmark: performance benchmarks (reserved for the future benchmark suite)",
+    "ooc: out-of-core memory matrix, one subprocess per trace and size (run with make test-ooc)",
 ]
 
 [build-system]

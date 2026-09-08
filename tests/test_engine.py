@@ -2268,13 +2268,17 @@ class TestResidencySeam:
                 lambda: LinePlot(x="ts", y="val", n_points=1000, downsample="fpcs"),
                 {"ts": (0.0, 1.0)},
             ),
+            (
+                lambda: LinePlot(x="ts", y="val", n_points=1000, downsample="nth"),
+                {},
+            ),
             (lambda: Histogram(x="val", bins=12), {"val": (0.0, 1.0)}),
             (
                 lambda: Histogram2D(x="val", y="alt", x_bins=8, y_bins=6),
                 {"val": (0.0, 1.0), "alt": (0.0, 1.0)},
             ),
         ],
-        ids=["line_minmax", "line_lttb", "line_fpcs", "hist", "hist2d"],
+        ids=["line_minmax", "line_lttb", "line_fpcs", "line_nth", "hist", "hist2d"],
     )
     def test_scan_selects_its_own_plan(self, make_trace, domains):
         """The seam must actually swap formulations, not just report a flag."""
@@ -2284,15 +2288,13 @@ class TestResidencySeam:
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
-    def test_nth_never_swaps(self):
-        """`nth` already streams: a stride needs no state."""
-        line = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
-        assert (
-            line.get_aggregation_spec(
-                {}, scan_source=True, domains={"ts": (0.0, 1.0)}
-            ).plan
-            is None
+    def test_grouped_nth_keeps_the_kernel_only_on_a_resident_frame(self):
+        """A scan folds over batches; a resident frame keeps the kernel."""
+        line = LinePlot(
+            x="ts", y="val", n_points=1000, downsample="nth", group_by="sensor"
         )
+        assert line.get_aggregation_spec({}, scan_source=False).plan is None
+        assert line.get_aggregation_spec({}, scan_source=True).plan is not None
 
     def test_grouped_histogram_uses_the_plan_on_both_source_kinds(self):
         """The kernel serves only the ungrouped resident histogram."""

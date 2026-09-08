@@ -15,7 +15,7 @@ from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
-from flexviz.spec import TraceSpec
+from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
 from flexviz.trace.line import LinePlot
 from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 
@@ -1067,7 +1067,9 @@ class TestLineXWidthBuckets:
 # ---- equal-x-width buckets (grouped) ----------------------------------------
 
 
-def _grouped_points(lf: LFQueryBuilder, trace: LinePlot, x_range=None) -> dict:
+def _grouped_points(
+    lf: LFQueryBuilder, trace: LinePlot, x_range=None, filters=()
+) -> dict:
     """Aggregate one grouped line the way the engine would, keyed by group."""
     update_range = {"x": x_range} if x_range is not None else {}
     spec = trace.get_aggregation_spec(
@@ -1076,7 +1078,7 @@ def _grouped_points(lf: LFQueryBuilder, trace: LinePlot, x_range=None) -> dict:
         scan_source=lf.is_scan,
         domains=_domains(lf, trace, update_range),
     )
-    _, grouped = lf.aggregate([], [spec])
+    _, grouped = lf.aggregate(list(filters), [spec])
     results = trace._to_grouped_update(grouped[trace.uid]).group_results or []
     return {cr.group_value_key: cr.updates for cr in results}
 
@@ -1888,3 +1890,251 @@ class TestStageTwoDropsNaN:
         assert ys and not any(math.isnan(v) for v in ys)
         assert len(set(xs)) == len(xs)
         assert xs == sorted(xs)
+
+
+class TestNthScanPlan:
+    """``nth`` on a scan runs ``nth_plan`` and returns what the kernel returns.
+
+    The gather keeps its stride phase across streaming morsels. Polars does not
+    document that, so the parity tests here pin it: the frames are written with
+    small row groups so the streaming engine sees many morsels.
+    """
+
+    @staticmethod
+    def _frame(n: int = 200_000) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "ts": list(range(n)),
+                "val": [float((i * 37) % 1009) for i in range(n)],
+            }
+        )
+
+    @staticmethod
+    def _sources(df: pl.DataFrame, path) -> tuple[LFQueryBuilder, LFQueryBuilder]:
+        df.write_parquet(path, row_group_size=10_000)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan.is_scan
+        return LFQueryBuilder(df), scan
+
+    @staticmethod
+    def _points(lf: LFQueryBuilder, trace: LinePlot, x_range=None, sel=None) -> dict:
+        """Drive one nth line through the engine: init, zoomed, or cross-filtered."""
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        if sel is not None:
+            event = InteractionEvent(
+                type="selection", force_update=True, selections=[sel]
+            )
+            deltas = engine.process(event, infos)
+        elif x_range is None:
+            event = InteractionEvent(type="init", force_update=True, figure_uid="fig")
+            deltas = engine.process(event, infos)
+        else:
+            event = InteractionEvent(
+                type="viewport", axis_ranges={"x": x_range}, figure_uid="fig"
+            )
+            deltas = engine.process(
+                event, infos, viewports_by_figure={"fig": {"x": x_range}}
+            )
+        return deltas[0].updates
+
+    def test_unfiltered_matches_the_kernel(self, tmp_path):
+        resident_lf, scan_lf = self._sources(self._frame(), tmp_path / "nth.parquet")
+        trace = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
+
+        resident = self._points(resident_lf, trace)
+        scanned = self._points(scan_lf, trace)
+
+        assert len(resident["x"]) == 1000
+        assert resident["x"] == scanned["x"]
+        assert resident["y"] == scanned["y"]
+
+    def test_viewport_matches_the_kernel(self, tmp_path):
+        resident_lf, scan_lf = self._sources(self._frame(), tmp_path / "nth.parquet")
+        trace = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
+        x_range = (70_000, 130_000)
+
+        resident = self._points(resident_lf, trace, x_range)
+        scanned = self._points(scan_lf, trace, x_range)
+
+        assert len(resident["x"]) > 0
+        assert all(70_000 <= v <= 130_000 for v in scanned["x"])
+        assert resident["x"] == scanned["x"]
+        assert resident["y"] == scanned["y"]
+
+    def test_fewer_rows_than_n_points_returns_every_row(self, tmp_path):
+        df = self._frame(50)
+        _, scan_lf = self._sources(df, tmp_path / "small.parquet")
+        trace = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
+
+        out = self._points(scan_lf, trace)
+        assert out["x"] == df["ts"].to_list()
+        assert out["y"] == df["val"].to_list()
+
+    def test_an_empty_viewport_returns_no_points(self, tmp_path):
+        _, scan_lf = self._sources(self._frame(1000), tmp_path / "nth.parquet")
+        trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
+
+        out = self._points(scan_lf, trace, (10_000, 20_000))
+        assert out["x"] == []
+        assert out["y"] == []
+
+    def test_a_scan_takes_the_plan_and_a_resident_frame_the_kernel(self):
+        trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
+        schema = pl.Schema({"ts": pl.Int64, "val": pl.Float64})
+
+        scanned = trace.get_aggregation_spec({}, schema=schema, scan_source=True)
+        assert scanned.plan is not None and scanned.expr is None
+
+        resident = trace.get_aggregation_spec({}, schema=schema, scan_source=False)
+        assert resident.expr is not None and resident.plan is None
+
+    def test_a_cross_filter_matches_the_kernel(self, tmp_path):
+        # Both passes of the plan run on the already-filtered frame.
+        resident_lf, scan_lf = self._sources(self._frame(), tmp_path / "nth.parquet")
+        trace = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
+        sel = SelectionState(
+            source_figure_uid="source_fig",
+            predicates=[
+                SelectionPredicate(
+                    clauses=[ClauseFilter(column="ts", range=(40_000, 90_000))]
+                )
+            ],
+        )
+
+        resident = self._points(resident_lf, trace, sel=sel)
+        scanned = self._points(scan_lf, trace, sel=sel)
+
+        assert len(resident["x"]) == 1000
+        assert all(40_000 <= v <= 90_000 for v in scanned["x"])
+        assert resident["x"] == scanned["x"]
+        assert resident["y"] == scanned["y"]
+
+
+class TestGroupedNthScanPlan:
+    """Grouped ``nth`` on a scan folds over batches and returns the kernel rows.
+
+    The fold carries a per-group offset across batches, so every case here is
+    checked against the kernel on a resident frame over the same data.
+    """
+
+    @staticmethod
+    def _frame(n: int = 5_000) -> pl.DataFrame:
+        """Ten uneven, interleaved groups over a sorted x."""
+        rng = random.Random(0)
+        g = [f"g{rng.randrange(10)}" for _ in range(n)]
+        return pl.DataFrame(
+            {
+                "ts": list(range(n)),
+                "val": [float((i * 37) % 1009) for i in range(n)],
+                "g": g,
+                "gc": pl.Series(g, dtype=pl.Categorical),
+                "site": ["north" if i % 3 else "south" for i in range(n)],
+            }
+        )
+
+    @staticmethod
+    def _both(df, path, trace, x_range=None, filters=()) -> tuple[dict, dict]:
+        """The same trace over a resident frame and over a scan of it."""
+        df.write_parquet(path, row_group_size=500)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+        return tuple(
+            {
+                k: _points(u)
+                for k, u in _grouped_points(lf, trace, x_range, filters).items()
+            }
+            for lf in (LFQueryBuilder(df), scan_lf)
+        )
+
+    @staticmethod
+    def _trace(group_by="g", n_points=50) -> LinePlot:
+        return LinePlot(
+            x="ts", y="val", n_points=n_points, downsample="nth", group_by=group_by
+        )
+
+    def test_a_scan_takes_the_plan_and_a_resident_frame_the_kernel(self):
+        trace = self._trace()
+        schema = pl.Schema({"ts": pl.Int64, "val": pl.Float64, "g": pl.String})
+
+        scanned = trace.get_aggregation_spec({}, schema=schema, scan_source=True)
+        assert scanned.plan is not None and scanned.agg_exprs == ()
+
+        resident = trace.get_aggregation_spec({}, schema=schema, scan_source=False)
+        assert resident.plan is None and len(resident.agg_exprs) == 1
+
+    def test_unfiltered_matches_the_kernel(self, tmp_path):
+        resident, scanned = self._both(
+            self._frame(), tmp_path / "nth.parquet", self._trace()
+        )
+        assert len(resident) == 10
+        # A real stride: every group holds far more rows than n_points.
+        assert all(len(x) == 50 for x, _ in resident.values())
+        assert resident == scanned
+
+    def test_viewport_matches_the_kernel(self, tmp_path):
+        resident, scanned = self._both(
+            self._frame(), tmp_path / "nth.parquet", self._trace(), x_range=(1000, 3000)
+        )
+        assert all(all(1000 <= v <= 3000 for v in x) for x, _ in scanned.values())
+        assert resident == scanned
+
+    def test_a_cross_filter_matches_the_kernel(self, tmp_path):
+        resident, scanned = self._both(
+            self._frame(),
+            tmp_path / "nth.parquet",
+            self._trace(),
+            filters=[pl.col("val") < 500.0],
+        )
+        assert resident and resident == scanned
+
+    def test_a_null_group_keeps_its_own_child(self, tmp_path):
+        df = self._frame().with_columns(
+            g=pl.when(pl.col("ts") % 7 == 0).then(None).otherwise(pl.col("g"))
+        )
+        resident, scanned = self._both(df, tmp_path / "nth.parquet", self._trace())
+        assert "null" in resident  # the null group's own child
+        assert resident == scanned
+
+    def test_a_small_group_keeps_every_row(self, tmp_path):
+        df = self._frame().with_columns(
+            g=pl.when(pl.col("ts") < 20).then(pl.lit("rare")).otherwise(pl.col("g"))
+        )
+        resident, scanned = self._both(df, tmp_path / "nth.parquet", self._trace())
+        # Stride 1: fewer rows than n_points, so every row survives.
+        assert resident["rare"][0] == list(range(20))
+        assert resident == scanned
+
+    def test_an_empty_filter_result_returns_no_children(self, tmp_path):
+        resident, scanned = self._both(
+            self._frame(),
+            tmp_path / "nth.parquet",
+            self._trace(),
+            filters=[pl.col("val") < -1.0],
+        )
+        assert resident == {} and scanned == {}
+
+    @pytest.mark.parametrize(
+        "group_by", ["gc", ["g", "site"]], ids=["categorical", "two_cols"]
+    )
+    def test_other_group_key_forms_match_the_kernel(self, tmp_path, group_by):
+        resident, scanned = self._both(
+            self._frame(), tmp_path / "nth.parquet", self._trace(group_by=group_by)
+        )
+        assert len(resident) == (10 if group_by == "gc" else 20)
+        assert resident == scanned
+
+    def test_groups_spread_over_many_batches_match_the_kernel(
+        self, tmp_path, monkeypatch
+    ):
+        # The offset the fold carries between batches: without it a group whose
+        # rows per batch are not a multiple of its stride drifts off the grid.
+        monkeypatch.setattr("flexviz.trace.line._NTH_FOLD_CHUNK_ROWS", 333)
+        resident, scanned = self._both(
+            self._frame(), tmp_path / "nth.parquet", self._trace(n_points=37)
+        )
+        assert resident == scanned
