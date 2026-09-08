@@ -7,9 +7,11 @@ map viewport using the **every-nth** strategy, then optionally inserts
 Aggregation strategy
 --------------------
 Only ``"nth"`` (uniform-stride gather) is supported: every
-``max(1, n // n_points)``-th row is kept.  Stride is computed inside the
-``flexviz_polars`` Rust kernel — no ``len()`` expression dependency, enabling
-full parallelism within a single ``select()`` call.
+``max(1, n // n_points)``-th row is kept.  On a resident frame the stride is
+computed inside the ``flexviz_polars`` Rust kernel, with no ``len()``
+expression dependency, so the aggregation parallelizes within a single
+``select()`` call.  On a scan the trace runs ``nth_plan`` (shared with
+``LinePlot``), which streams and returns the same rows.
 
 Map viewport
 ------------
@@ -45,6 +47,7 @@ import polars as pl
 from ..LF import AggregationSpec
 from ..spec import TraceSpec
 from .base import FlexTrace, TraceResult, _range_filter_expr
+from .line import nth_plan
 
 import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
@@ -62,9 +65,10 @@ def _geo_line_nth_agg_expr(
 ) -> pl.Expr:
     """Single-pass every-nth downsampling using the flexviz_polars Rust kernel.
 
-    Stride is computed inside the kernel — no ``len()`` expression dependency,
-    so the aggregation can parallelize with other traces in the same
-    ``select()`` call.
+    Serves a resident frame. Stride is computed inside the kernel, with no
+    ``len()`` expression dependency, so the aggregation can parallelize with
+    other traces in the same ``select()`` call. A scan takes ``nth_plan``
+    instead: the kernel reads the whole column into memory.
 
     Parameters
     ----------
@@ -223,6 +227,8 @@ class GeoLine(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        scan_source: bool = False,
         **_: Any,
     ) -> AggregationSpec:
         """Return an every-nth aggregation spec, optionally viewport-filtered."""
@@ -234,6 +240,16 @@ class GeoLine(FlexTrace):
             lon_f = _range_filter_expr(self.lon_col, lon_range, schema)
             if lat_f is not None and lon_f is not None:
                 vp_expr = lat_f & lon_f
+
+        if scan_source:
+            # The kernel reads the whole column into memory, so a scan runs the
+            # streaming plan instead.
+            return AggregationSpec(
+                uid=self.uid,
+                plan=nth_plan(
+                    self.lat_col, self.lon_col, vp_expr, self.n_points, self.uid
+                ),
+            )
 
         expr = _geo_line_nth_agg_expr(
             self.lat_col, self.lon_col, vp_expr, self.n_points, self.uid
