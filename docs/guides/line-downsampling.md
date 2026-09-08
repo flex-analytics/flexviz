@@ -91,9 +91,9 @@ or Boolean y, because the triangle rule does arithmetic on it.
   frame instead of a row-by-row range filter, which matters at 100M+ rows.
 - A grouped line is checked on its dtype only. Its buckets are arithmetic on x,
   which needs no order. An `"nth"` line is not checked at all: a stride needs no
-  grid. A grouped line always masks the viewport, and an `"nth"` line masks it
-  when x is not declared sorted, which is always correct but slower on very
-  large frames.
+  grid. A grouped line always masks the viewport, and so does a line read from
+  a file. On a resident frame an `"nth"` line masks the viewport when x is not
+  declared sorted, which is always correct but slower on very large frames.
 - `n_points` must be between 2 and 25000. The client posts the trace spec on
   every update, so the bound is enforced wherever a line is built.
 
