@@ -658,18 +658,18 @@ class LinePlot(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
-        x_sorted: bool = False,
-        scan_source: bool = False,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped line aggregation spec.
 
-        ``x_sorted`` is the caller's guarantee that the x column is ascending
-        (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
-        faster viewport restriction, and only for ``nth``: an ungrouped x-width
-        line on a resident frame is sorted by contract, so it always slices.
-        The output is unchanged either way.
+        ``self.x_col in sorted_cols`` is the caller's guarantee that the x
+        column is ascending (set by ``assume_sorted_x`` / ``check_line_x``). It
+        only enables a faster viewport restriction, and only for ``nth``: an
+        ungrouped x-width line on a resident frame is sorted by contract, so it
+        always slices. The output is unchanged either way.
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The kernel needs the whole column in memory, so on a scan every
@@ -751,7 +751,6 @@ class LinePlot(FlexTrace):
                 # the streaming plan instead. `nth` already streams: a stride
                 # needs no state.
                 return AggregationSpec(
-                    expr=pl.lit(None).alias(self.uid),
                     uid=self.uid,
                     plan=pairs_plan(
                         self.x_col,
@@ -794,7 +793,7 @@ class LinePlot(FlexTrace):
         expr = _plugin_nth_agg_expr(
             self.x_col,
             self.y_col,
-            _viewport_window(self.x_col, x_range, schema, x_sorted),
+            _viewport_window(self.x_col, x_range, schema, self.x_col in sorted_cols),
             self.n_points,
             self.uid,
         )

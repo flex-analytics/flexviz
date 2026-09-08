@@ -316,6 +316,8 @@ class Histogram2D(FlexTrace):
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
         """Return the 2-D histogram aggregation spec.
 

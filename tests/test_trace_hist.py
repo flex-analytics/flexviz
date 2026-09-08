@@ -10,7 +10,8 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.hist import Histogram
+from flexviz.trace.base import _range_filter_expr
+from flexviz.trace.hist import Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -843,3 +844,308 @@ class TestCubeDescriptors:
         spec = trace.get_cube_target_spec(None)
         assert spec is not None
         assert spec.measure.agg == "count"
+
+
+class TestHistogramScanPlanEquivalence:
+    """The streaming plan a scan source takes must equal the kernel exactly.
+
+    ``scan_source`` only picks a formulation, never a result. The plan collects
+    with the streaming engine on a resident frame too, which is fine here: the
+    point is the arithmetic, not the source kind.
+    """
+
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+
+    @staticmethod
+    def _both_updates(
+        df: pl.DataFrame,
+        bins: int = 8,
+        x_range: tuple[float, float] | None = None,
+        histnorm: str = "count",
+    ) -> tuple[dict, dict]:
+        lf = LFQueryBuilder(df)
+        trace = Histogram(x="v", bins=bins, histnorm=histnorm)
+        update_range = {"x": x_range} if x_range is not None else {}
+        kwargs = dict(schema=lf.schema, domains=_domains(lf, trace, update_range))
+        out = []
+        for scan_source in (False, True):
+            spec = trace.get_aggregation_spec(
+                update_range, scan_source=scan_source, **kwargs
+            )
+            assert (spec.plan is not None) is scan_source
+            df_agg, _ = lf.aggregate([], [spec])
+            updates = trace._to_update(df_agg).updates
+            out.append(
+                {
+                    "x": updates["x"].to_list(),
+                    "y": updates["y"].to_list(),
+                    "hover_bounds": updates["hover_bounds"],
+                }
+            )
+        return out[0], out[1]
+
+    @pytest.mark.parametrize(
+        "name,series,bins,x_range,histnorm",
+        [
+            ("f64", pl.Series("v", _VALUES), 8, None, "count"),
+            ("f64_nulls", pl.Series("v", _VALUES + [None]), 8, None, "count"),
+            ("f64_nan", pl.Series("v", _VALUES + [float("nan")]), 8, None, "count"),
+            ("f32", pl.Series("v", _VALUES, dtype=pl.Float32), 8, None, "count"),
+            (
+                "i64",
+                pl.Series("v", [0, 1, 2, 3, 4, 5, 7, 8], dtype=pl.Int64),
+                8,
+                None,
+                "count",
+            ),
+            (
+                "i32_nulls",
+                pl.Series("v", [0, 1, 2, None, 4, 5, 7, 8], dtype=pl.Int32),
+                8,
+                None,
+                "count",
+            ),
+            (
+                "u32",
+                pl.Series("v", [0, 1, 2, 3, 4, 5, 7, 8], dtype=pl.UInt32),
+                8,
+                None,
+                "count",
+            ),
+            # A constant column is the narrowest span the trace can build: the
+            # engine pads hi by _HIST_BIN_EPSILON, so the span never inverts.
+            ("constant", pl.Series("v", [3.0] * 8), 8, None, "count"),
+            ("viewport", pl.Series("v", _VALUES), 8, (2.0, 6.0), "count"),
+            ("all_below_lo", pl.Series("v", [-5.0, -3.0]), 8, (0.0, 8.0), "count"),
+            ("one_bin", pl.Series("v", _VALUES), 1, None, "count"),
+            ("empty", pl.Series("v", [], dtype=pl.Float64), 8, None, "count"),
+            ("density", pl.Series("v", _VALUES), 8, None, "probability density"),
+        ],
+    )
+    def test_plan_matches_kernel(self, name, series, bins, x_range, histnorm):
+        resident, scanned = self._both_updates(
+            pl.DataFrame([series]), bins=bins, x_range=x_range, histnorm=histnorm
+        )
+        assert resident == scanned
+
+    def test_datetime_column(self):
+        import datetime
+
+        series = pl.datetime_range(
+            datetime.datetime(2020, 1, 1),
+            datetime.datetime(2020, 1, 9),
+            interval="1d",
+            eager=True,
+        ).rename("v")
+        resident, scanned = self._both_updates(pl.DataFrame([series]))
+        assert resident == scanned
+
+
+class TestHistogramGroupedPlanEquivalence:
+    """A grouped histogram runs the plan on both source kinds.
+
+    The reference is the fused grouped query the kernel used to run: the
+    ``fixed_hist`` expression inside ``group_by().agg()``. Children are
+    compared after ``_to_grouped_update``, which is what the engine sends.
+    """
+
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+
+    @staticmethod
+    def _children(result) -> list[dict]:
+        return [
+            {
+                "child_uid": c.child_uid,
+                "group_value_key": c.group_value_key,
+                "x": c.updates["x"].to_list(),
+                "y": c.updates["y"].to_list(),
+                "hover_bounds": c.updates["hover_bounds"],
+            }
+            for c in result.group_results
+        ]
+
+    def _both(
+        self,
+        df: pl.DataFrame,
+        group_by,
+        bins: int = 8,
+        x_range: tuple[float, float] | None = None,
+        histnorm: str = "count",
+    ) -> tuple[list[dict], list[dict]]:
+        lf = LFQueryBuilder(df)
+        trace = Histogram(x="v", bins=bins, histnorm=histnorm, group_by=group_by)
+        update_range = {"x": x_range} if x_range is not None else {}
+        domains = _domains(lf, trace, update_range)
+
+        specs = [
+            trace.get_aggregation_spec(
+                update_range, schema=lf.schema, domains=domains, scan_source=scan
+            )
+            for scan in (False, True)
+        ]
+        for spec in specs:
+            assert spec.plan is not None
+            assert spec.agg_exprs == ()
+        _, grouped = lf.aggregate([], [specs[0]])
+        got = self._children(trace._to_grouped_update(grouped[trace.uid]))
+
+        cols = list(trace.group_by_cols)
+        lo_expr, hi_expr = trace._histogram_bounds_exprs(x_range, domains, None)
+        ldf = df.lazy()
+        if x_range is not None:
+            ldf = ldf.filter(_range_filter_expr("v", list(x_range), schema=lf.schema))
+        ref_df = (
+            ldf.group_by(cols)
+            .agg(
+                pl.col("v")
+                .flexviz.fixed_hist(lo_expr, hi_expr, n_bins=bins)
+                .implode()
+                .alias(trace.uid)
+            )
+            .sort(cols)
+            .collect()
+        )
+        return got, self._children(trace._to_grouped_update(ref_df))
+
+    @pytest.mark.parametrize(
+        "name,frame,group_by,x_range,histnorm",
+        [
+            (
+                "int_groups",
+                {"v": _VALUES, "g": [0, 1, 0, 1, 2, 2, 0, 1]},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "string_groups",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "two_group_cols",
+                {"v": _VALUES, "g": list("aabbaabb"), "h": [0, 1] * 4},
+                ["g", "h"],
+                None,
+                "count",
+            ),
+            (
+                "null_group",
+                {"v": _VALUES, "g": ["a", None, "b", None, "a", "b", None, "a"]},
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "nan_and_null_values",
+                {
+                    "v": [0.0, float("nan"), 2.5, None, 4.0, float("nan"), 7.9, None],
+                    "g": list("aabbaabb"),
+                },
+                "g",
+                None,
+                "count",
+            ),
+            (
+                "viewport",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                (2.0, 6.0),
+                "count",
+            ),
+            (
+                "density",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                None,
+                "probability density",
+            ),
+            (
+                "empty_viewport",
+                {"v": _VALUES, "g": list("abcabcab")},
+                "g",
+                (100.0, 200.0),
+                "count",
+            ),
+        ],
+    )
+    def test_plan_matches_kernel(self, name, frame, group_by, x_range, histnorm):
+        got, ref = self._both(
+            pl.DataFrame(frame), group_by, x_range=x_range, histnorm=histnorm
+        )
+        assert got == ref
+
+    def test_empty_viewport_yields_no_children(self):
+        got, ref = self._both(
+            pl.DataFrame({"v": self._VALUES, "g": list("abcabcab")}),
+            "g",
+            x_range=(100.0, 200.0),
+        )
+        assert got == [] and ref == []
+
+
+class TestHistogramStreamingPlanArithmetic:
+    """Bounds the trace itself cannot build, checked plan against kernel."""
+
+    @staticmethod
+    def _plan_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+        run = _streaming_hist_plan(pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", None)
+        return run(df.lazy())["u"].item().explode().struct.unnest().rows()
+
+    @staticmethod
+    def _kernel_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+        expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
+        agg = df.select(expr.implode().alias("u"))
+        return agg["u"].item().explode().struct.unnest().rows()
+
+    @pytest.mark.parametrize(
+        "name,values,lo,hi,bins",
+        [
+            # lo == hi: every value lands in bin 0 and every breakpoint is lo.
+            ("degenerate", [0.0, 1.0, 2.5, 3.0, 8.0], 3.0, 3.0, 8),
+            ("degenerate_nan", [1.0, float("nan"), 3.0], 3.0, 3.0, 8),
+            ("below_lo", [-5.0, -3.0], 0.0, 8.0, 8),
+            ("above_hi", [11.0, 42.0], 0.0, 8.0, 8),
+        ],
+    )
+    def test_matches_kernel(self, name, values, lo, hi, bins):
+        df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
+        assert self._plan_rows(df, lo, hi, bins) == self._kernel_rows(df, lo, hi, bins)
+
+    def test_inverted_bounds_raise(self):
+        # The kernel raises on lo > hi; the plan must not silently bin instead.
+        df = pl.DataFrame({"v": [1.0, 2.0]}, schema={"v": pl.Float64})
+        with pytest.raises(ValueError, match="inverted"):
+            self._plan_rows(df, 5.0, 1.0, 8)
+
+    def test_bin_edge_epsilon_is_load_bearing(self):
+        """Values on a bin edge of a non-round domain need the round epsilon.
+
+        lo=0.1, hi=0.7, bins=6: without the epsilon 0.3 falls back into bin 1,
+        so bin 1 counts 2 and bin 2 counts 0.
+        """
+        lo, hi, bins = 0.1, 0.7, 6
+        values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.15, 0.65]
+        df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
+
+        expected = [2, 1, 1, 1, 1, 3]
+        assert [c for _, c in self._kernel_rows(df, lo, hi, bins)] == expected
+        assert [c for _, c in self._plan_rows(df, lo, hi, bins)] == expected
+
+        # The same plan with the epsilon dropped.
+        scale = bins / (hi - lo)
+        no_eps = (
+            ((pl.col("v").cast(pl.Float64) - lo) * scale + 0.0)
+            .clip(0, bins - 1)
+            .cast(pl.Int32, strict=False)
+        )
+        counted = dict(
+            df.lazy()
+            .group_by(no_eps.alias("__b"))
+            .agg(pl.len().alias("count"))
+            .collect()
+            .iter_rows()
+        )
+        assert [counted.get(i, 0) for i in range(bins)] == [2, 2, 0, 1, 1, 3]

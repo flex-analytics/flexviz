@@ -28,6 +28,7 @@ enforced by the Plotly adapter when building ``SelectionState``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Dict, Literal
 
 import polars as pl
@@ -236,6 +237,10 @@ class GeoHistogram2D(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
         lat_range, lon_range = self._extract_lat_lon_range(update_range)
         expr = _geo_hist2d_expr(

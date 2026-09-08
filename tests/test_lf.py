@@ -18,6 +18,10 @@ class TestAggregationSpec:
         spec = AggregationSpec(e)
         assert spec.expr is e
 
+    def test_neither_expr_nor_plan_raises(self):
+        with pytest.raises(ValueError, match="either an expr or a plan"):
+            AggregationSpec()
+
 
 # ---- LFQueryBuilder.aggregate ---------------------------------------------
 
@@ -400,7 +404,7 @@ class TestCheckLineX:
     def test_sorted_numeric_x_passes_and_is_flagged(self):
         lf = self._lf([1.0, 2.0, 3.0])
         lf.check_line_x("ts", memoize=True)
-        assert lf.is_sorted("ts")
+        assert "ts" in lf.sorted_cols
 
     def test_null_x_is_rejected(self):
         lf = self._lf([1.0, None, 3.0])
@@ -425,7 +429,7 @@ class TestCheckLineX:
         for _ in range(2):
             with pytest.raises(ValueError, match="NaN values"):
                 lf.check_line_x("ts", memoize=True)
-        assert not lf.is_sorted("ts")
+        assert "ts" not in lf.sorted_cols
 
     def test_unsorted_x_is_rejected(self):
         lf = self._lf([3.0, 1.0, 2.0])
@@ -445,6 +449,6 @@ class TestCheckLineX:
         # pass is not remembered and the next call collects again.
         lf = self._lf([1.0, 2.0, 3.0])
         lf.check_line_x("ts", memoize=False)
-        assert not lf.is_sorted("ts")
+        assert "ts" not in lf.sorted_cols
         assert lf._sorted_cols == set()
         lf.check_line_x("ts", memoize=False)  # collects again, still passes

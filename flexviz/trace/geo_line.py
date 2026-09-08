@@ -38,6 +38,7 @@ We assume the dataframe is already in the desired sort order (same as
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Dict
 
 import polars as pl
@@ -223,6 +224,10 @@ class GeoLine(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec:
         """Return an every-nth aggregation spec, optionally viewport-filtered."""
         lat_range, lon_range = _extract_lat_lon_range(update_range)

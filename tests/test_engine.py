@@ -2045,6 +2045,154 @@ class TestResidencySeam:
             is None
         )
 
+    def test_bar_on_a_scan_ignores_the_source_keywords(self, tmp_path):
+        """Every trace takes the same call shape, whether it reads it or not."""
+        df = pl.DataFrame({"cat": ["a", "b", "a", "b"], "val": [1.0, 2.0, 3.0, 4.0]})
+        path = tmp_path / "bar.parquet"
+        df.write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert lf.is_scan
+        bar = BarPlot(labels="cat", values="val", agg="sum")
+        engine = FlexEngine(backend_lf=lf, scalable_traces={bar.uid: bar})
+        infos = [TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar")]
+        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        assert deltas[0].updates["x"] == ["a", "b"]
+        assert deltas[0].updates["y"] == [4.0, 6.0]
+
+
+class TestHistogramResidencySeam:
+    """A scan histogram runs the streaming plan and must equal the kernel.
+
+    Unlike the line seam, this one is bit-identical: the plan repeats the
+    kernel's bin arithmetic, so every delta field must match exactly.
+    """
+
+    @staticmethod
+    def _hist_deltas(src, col: str, histnorm: str, event: InteractionEvent):
+        lf = LFQueryBuilder(src)
+        hist = Histogram(x=col, bins=12, histnorm=histnorm)
+        engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
+        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        return engine.process(event, infos)[0].updates, lf.is_scan
+
+    @pytest.mark.parametrize(
+        "name,histnorm", [("count", "count"), ("density", "probability density")]
+    )
+    @pytest.mark.parametrize(
+        "event",
+        [
+            InteractionEvent(type="init", force_update=True),
+            InteractionEvent(type="viewport", axis_ranges={"x": [2000.0, 7000.0]}),
+        ],
+        ids=["init", "viewport"],
+    )
+    def test_scan_matches_resident(self, tmp_path, name, histnorm, event):
+        n = 20_000
+        df = pl.DataFrame(
+            {"val": [float((i * 7919) % 9973) for i in range(n)]},
+            schema={"val": pl.Float64},
+        )
+        path = tmp_path / f"hist_{name}.parquet"
+        df.write_parquet(path)
+
+        resident, resident_is_scan = self._hist_deltas(df, "val", histnorm, event)
+        scanned, scan_is_scan = self._hist_deltas(
+            pl.scan_parquet(path), "val", histnorm, event
+        )
+        assert resident_is_scan is False and scan_is_scan is True
+
+        for key in ("x", "y", "hover_bounds"):
+            assert resident[key] == scanned[key], key
+
+    def test_scan_matches_resident_on_a_datetime_column(self, tmp_path):
+        ts = pl.datetime_range(
+            dt.datetime(2020, 1, 1),
+            dt.datetime(2020, 3, 1),
+            interval="1h",
+            eager=True,
+        ).rename("ts")
+        df = pl.DataFrame([ts])
+        path = tmp_path / "hist_ts.parquet"
+        df.write_parquet(path)
+
+        event = InteractionEvent(
+            type="viewport",
+            axis_ranges={"x": ["2020-01-15T00:00:00", "2020-02-15T00:00:00"]},
+        )
+        resident, _ = self._hist_deltas(df, "ts", "count", event)
+        scanned, is_scan = self._hist_deltas(
+            pl.scan_parquet(path), "ts", "count", event
+        )
+        assert is_scan is True
+        for key in ("x", "y", "hover_bounds"):
+            assert resident[key] == scanned[key], key
+
+    def test_scan_selects_the_streaming_plan(self):
+        """The seam must actually swap formulations, not just report a flag."""
+        hist = Histogram(x="val", bins=12)
+        domains = {"val": (0.0, 1.0)}
+        resident = hist.get_aggregation_spec({}, scan_source=False, domains=domains)
+        scanned = hist.get_aggregation_spec({}, scan_source=True, domains=domains)
+        assert resident.plan is None, "a resident source must keep the kernel"
+        assert scanned.plan is not None, "a scan source must bring its own plan"
+
+    @staticmethod
+    def _grouped_children(src, event: InteractionEvent):
+        lf = LFQueryBuilder(src)
+        hist = Histogram(x="val", bins=12, group_by="sensor")
+        engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
+        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        delta = engine.process(event, infos)[0]
+        # The parent uid is random per instance, so it is masked out of the
+        # child uid before comparison.
+        children = [
+            (
+                c.uid.replace(hist.uid, "<parent>"),
+                c.group_value_key,
+                c.updates["x"],
+                c.updates["y"],
+            )
+            for c in delta.group_results
+        ]
+        return children, lf.is_scan
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            InteractionEvent(type="init", force_update=True),
+            InteractionEvent(type="viewport", axis_ranges={"x": [2000.0, 7000.0]}),
+        ],
+        ids=["init", "viewport"],
+    )
+    def test_grouped_scan_matches_resident(self, tmp_path, event):
+        n = 20_000
+        df = pl.DataFrame(
+            {
+                "val": [float((i * 7919) % 9973) for i in range(n)],
+                "sensor": [f"s{i % 4}" for i in range(n)],
+            },
+            schema={"val": pl.Float64, "sensor": pl.String},
+        )
+        path = tmp_path / "hist_grouped.parquet"
+        df.write_parquet(path)
+
+        resident, resident_is_scan = self._grouped_children(df, event)
+        scanned, scan_is_scan = self._grouped_children(pl.scan_parquet(path), event)
+        assert resident_is_scan is False and scan_is_scan is True
+        assert len(resident) == 4
+        assert resident == scanned
+
+    def test_grouped_uses_the_plan_on_both_source_kinds(self):
+        """The kernel now serves only the ungrouped resident histogram."""
+        hist = Histogram(x="val", bins=12, group_by="sensor")
+        schema = pl.Schema({"val": pl.Float64, "sensor": pl.String})
+        for scan_source in (False, True):
+            spec = hist.get_aggregation_spec(
+                {}, schema=schema, domains={"val": (0.0, 1.0)}, scan_source=scan_source
+            )
+            assert spec.plan is not None
+            assert spec.agg_exprs == ()
+
 
 # ---- descending viewport ranges ---------------------------------------------
 

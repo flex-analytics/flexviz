@@ -906,6 +906,7 @@ class FlexEngine:
         domains: Dict[str, tuple[Any, Any]],
     ) -> List[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
+        lf = self._backend_lf
 
         for item in aggregation_traces:
             ti = item.info
@@ -913,38 +914,15 @@ class FlexEngine:
             t_s = time.perf_counter()
             trace_domains = {c: domains[c] for c in domain_cols.get(ti.uid, ())}
 
-            if trace.trace_type in ("histogram", "histogram2d"):
-                agg_specs.append(
-                    trace.get_aggregation_spec(
-                        update_range=item.update_range,
-                        schema=backend_schema,
-                        domains=trace_domains,
-                    )
+            agg_specs.append(
+                trace.get_aggregation_spec(
+                    update_range=item.update_range,
+                    schema=backend_schema,
+                    domains=trace_domains,
+                    scan_source=lf is not None and lf.is_scan,
+                    sorted_cols=lf.sorted_cols if lf is not None else frozenset(),
                 )
-            elif trace.trace_type == "line":
-                # TODO: make sorted the default behavior for line traces
-                #       -> I do not like the specific branch here for line traces
-                lf = self._backend_lf
-                is_scan = lf is not None and lf.is_scan
-                # A declared-sorted x turns the viewport into a contiguous row
-                # range an ``nth`` line can slice instead of mask. Every other
-                # strategy is sorted by contract and slices anyway.
-                agg_specs.append(
-                    trace.get_aggregation_spec(
-                        update_range=item.update_range,
-                        schema=backend_schema,
-                        x_sorted=lf is not None and lf.is_sorted(trace.x_col),
-                        scan_source=is_scan,
-                        domains=trace_domains,
-                    )
-                )
-            else:
-                agg_specs.append(
-                    trace.get_aggregation_spec(
-                        update_range=item.update_range,
-                        schema=backend_schema,
-                    )
-                )
+            )
 
             t_e = time.perf_counter()
             logger.info(

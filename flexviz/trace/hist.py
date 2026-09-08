@@ -23,7 +23,13 @@ import polars as pl
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
+from ..cube import (
+    CubeTargetSpec,
+    FreeAxisSpec,
+    MeasureSpec,
+    TargetDimSpec,
+    _fixed_hist_bin_expr,
+)
 from ..LF import AggregationSpec, GroupedAggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
@@ -52,9 +58,93 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 # Bin-edge helpers
 # ---------------------------------------------------------------------------
 
-#: Small offset added to the upper bound so the maximum data point always
-#: falls inside the last bin and bin edges are never degenerate.
+#: Small offset added to the upper bound (``hi``) so the maximum data point
+#: always falls inside the last bin and bin edges are never degenerate.
+#: Distinct from the cube's ``_FIXED_HIST_ROUND_EPS``, which pads the bin
+#: index instead of ``hi``.
 _HIST_BIN_EPSILON: float = 1e-10
+
+
+def _streaming_hist_plan(
+    value_expr: pl.Expr,
+    lo_expr: pl.Expr,
+    hi_expr: pl.Expr,
+    bins: int,
+    uid: str,
+    filter_expr: pl.Expr | None,
+    *,
+    group_cols: tuple[str, ...] | None = None,
+):
+    """The kernel's histogram as a streaming ``group_by``.
+
+    The ``fixed_hist`` kernel materializes the whole column; this reads it in
+    batches instead. The bin index comes from the cube's
+    ``_fixed_hist_bin_expr``, the one Python mirror of the kernel arithmetic;
+    its non-strict cast turns NaN into null so NaN and null both drop out at
+    the dense join. Empty bins come back as zero, ordered, so ``_to_update``
+    sees the kernel's shape.
+
+    Ungrouped it returns one row holding every bin. Grouped it returns one row
+    per group, sorted by group value, each holding that group's bins: the shape
+    the fused grouped query returns. A null group value keeps its own child,
+    because the dense join compares null keys as equal. ``filter_expr`` must be
+    None then: a grouped plan already gets the viewport through
+    ``pre_group_filters``.
+    """
+    assert group_cols is None or filter_expr is None
+
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        # Both bounds are literal expressions, so this selects no data.
+        lo, hi = pl.select(lo_expr.alias("lo"), hi_expr.alias("hi")).row(0)
+        # The kernel reads its bounds as f64 and refuses an inverted span.
+        lo = 0.0 if lo is None else float(lo)
+        hi = 1.0 if hi is None else float(hi)
+        if hi < lo:
+            raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
+
+        # hi == lo is the kernel's degenerate span: every value lands in bin 0
+        # and every breakpoint is lo.
+        step = (hi - lo) / bins if hi > lo else 0.0
+        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
+        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
+        all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
+        dense_cols = (
+            (pl.lit(lo) + (pl.col("__b") + 1) * step).alias("breakpoint"),
+            pl.col("count").fill_null(0).cast(pl.UInt32),
+        )
+
+        if group_cols is None:
+            counted = (
+                src.group_by(bin_idx)
+                .agg(pl.len().alias("count"))
+                .collect(engine="streaming")
+            )
+            return (
+                all_bins.join(counted, on="__b", how="left")
+                .sort("__b")
+                .with_columns(*dense_cols)
+                .select(pl.struct("breakpoint", "count").implode().alias(uid))
+            )
+
+        cols = list(group_cols)
+        counted = (
+            src.group_by([*cols, bin_idx])
+            .agg(pl.len().alias("count"))
+            .collect(engine="streaming")
+        )
+        # No rows leaves no groups, so the chain returns a zero-row frame of the
+        # right shape and needs no branch of its own.
+        dense = counted.select(cols).unique().join(all_bins, how="cross")
+        return (
+            dense.join(counted, on=[*cols, "__b"], how="left", nulls_equal=True)
+            .sort([*cols, "__b"])
+            .with_columns(*dense_cols)
+            .group_by(cols, maintain_order=True)
+            .agg(pl.struct("breakpoint", "count").alias(uid))
+            .sort(cols)
+        )
+
+    return run
 
 
 class Histogram(FlexTrace):
@@ -245,6 +335,8 @@ class Histogram(FlexTrace):
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
+        scan_source: bool = False,
+        sorted_cols: frozenset[str] = frozenset(),
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 
@@ -263,6 +355,13 @@ class Histogram(FlexTrace):
 
         An unzoomed trace requires ``data_col`` in ``domains``; a
         ``(None, None)`` entry means an empty or all-null column.
+
+        ``scan_source`` says the rows come from storage rather than a resident
+        frame. The ``fixed_hist`` kernel needs the whole column in memory, so an
+        ungrouped histogram on a scan takes ``_streaming_hist_plan`` instead: the
+        same bin arithmetic as a streaming ``group_by``, bit-identical output at
+        bounded memory. A grouped histogram takes that plan on both source
+        kinds, so the kernel serves only the ungrouped resident case.
         """
         filter_expr = _range_filter_expr(
             self.data_col, update_range.get(self.prop_key), schema=schema
@@ -283,48 +382,46 @@ class Histogram(FlexTrace):
         if group_by_cols is not None:
             # ------------------------------------------------------------------
             # Grouped path: viewport filter applied via pre_group_filters so it
-            # runs before the group_by split.  The hist expression uses shared
-            # bin edges so all groups align.
+            # runs before the group_by split.  The plan uses shared bin edges so
+            # all groups align.
             # ------------------------------------------------------------------
             lo_expr, hi_expr = self._histogram_bounds_exprs(
                 axis_range, domains, temporal
             )
-
-            hist_expr = (
-                data_col_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)
-                .implode()
-                .alias(self.uid)
-            )
-            batch_key = (
-                self.prop_key,
-                self.data_col,
-                (
-                    tuple(update_range.get(self.prop_key))
-                    if update_range.get(self.prop_key) is not None
-                    else None
-                ),
-            )
+            # One plan per grouped histogram, on both source kinds: the kernel
+            # would hold every group's column in memory at once. A plan spec
+            # runs alone and never joins the fused query, so it carries no
+            # batch_key / pre_group_filter_key (LF.aggregate only reads those
+            # for expression specs).
             return GroupedAggregationSpec(
                 uid=self.uid,
                 group_cols=group_by_cols,
                 sort_cols=group_by_cols,
-                agg_exprs=(hist_expr,),
+                agg_exprs=(),
                 pre_group_filters=(filter_expr,) if filter_expr is not None else (),
-                pre_group_filter_key=(
-                    (
-                        self.prop_key,
-                        tuple(update_range.get(self.prop_key)),
-                    )
-                    if update_range.get(self.prop_key) is not None
-                    else None
+                plan=_streaming_hist_plan(
+                    data_col_expr,
+                    lo_expr,
+                    hi_expr,
+                    self.bins,
+                    self.uid,
+                    None,
+                    group_cols=group_by_cols,
                 ),
-                batch_key=batch_key,
             )
 
         # ----------------------------------------------------------------------
         # Ungrouped path: apply viewport filter directly inside the expression.
         # ----------------------------------------------------------------------
         lo_expr, hi_expr = self._histogram_bounds_exprs(axis_range, domains, temporal)
+
+        if scan_source:
+            return AggregationSpec(
+                uid=self.uid,
+                plan=_streaming_hist_plan(
+                    data_col_expr, lo_expr, hi_expr, self.bins, self.uid, filter_expr
+                ),
+            )
 
         data_expr = data_col_expr
         if filter_expr is not None:

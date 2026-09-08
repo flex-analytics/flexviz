@@ -360,11 +360,12 @@ FlexTrace (ABC)
 ├── domain_cols(update_range) → tuple[str, ...]
 │     ← columns whose unfiltered (min, max) the spec needs; () when the
 │       viewport supplies bounds
-├── get_aggregation_spec(update_range, schema)
+├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
-│     ← histogram, histogram2d and line also take a `domains` keyword with
-│       the resolved bounds of their unzoomed domain_cols; the engine passes
-│       it per trace type, like `x_sorted` and `scan_source` for line
+│     ← the engine calls every trace the same way; a trace ignores what it
+│       does not need. `domains` holds the resolved bounds of the unzoomed
+│       domain_cols (histogram, histogram2d, line); `scan_source` and
+│       `sorted_cols` only let a trace pick a faster equivalent formulation
 ├── _to_update(df_agg) → TraceResult                              [abstract]
 ├── _to_grouped_update(df_grouped) → TraceResult                  [grouped parents]
 ├── _range_filter_exprs(col, range_, schema) → List[pl.Expr]      [convenience]
@@ -467,7 +468,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
   - **`"lttb"`** — MinMaxLTTB. Stage 1 is the shared pair pass at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets, on either source kind. Stage 2 is `_lttb()` in `_to_update`: the Largest-Triangle-Three-Buckets rule in pure Python over the prefetched points. Output is exactly `n_points` points when the prefetch holds more, else the prefetch verbatim. The first and last prefetched points always survive. `_to_update` drops null and NaN rows before it flattens the pairs, on every strategy. x and y both go through `to_physical()` and are cast back, so a temporal y works. x and y are each shifted by their first value before the area math, so a nanosecond epoch stays exact in float64. Grouped too: stage 1 is the grouped plan, and the thinning runs once per child. `LinePlot.check_schema` rejects a y that is not numeric, temporal or Boolean, on every request. Not a cube target.
   - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 1 is the shared pair pass. Stage 2 is `_fpcs_walk()` in `_to_update`, which carries a deferred extremum across bucket boundaries. It deduplicates on x alone: on sorted x the same x is the same row. Bucket count is `max(n_points - 2, 1)`. It uses the same x-width grid as `minmax`, grouped and ungrouped. `n_points` is a target, not a hard cap. The walk emits at most `2 * n_buckets + 1` points, and fewer when gaps in x leave buckets empty. It keeps no forced first or last point, because an x-width grid has no interior.
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan is the exception: it streams on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
-- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.is_sorted` and threaded by the engine as `x_sorted`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
+- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
 - Grouped line traces use a true grouped query: viewport filtering is applied before
   `group_by`, and downsampling happens inside it: one streaming plan for the x-width
@@ -483,7 +484,9 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
-- Uses the `fixed_hist` Rust plugin with explicit bin bounds.
+- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel, which needs the whole column in memory. On a scan source (`scan_source`) it runs a streaming `group_by(bin)` plan instead, carried on `AggregationSpec.plan` (`_streaming_hist_plan` in `trace/hist.py`). The plan uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical; only the memory profile differs (bounded, and a viewport filter runs inside the scan).
+- `_FIXED_HIST_ROUND_EPS` (`cube.py`) mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
+- A **grouped** histogram runs the streaming plan on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. The kernel would hold every group's column in memory at once. So the kernel serves only the ungrouped resident case.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the engine-resolved
@@ -500,8 +503,9 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
   `fixed_hist`. Numeric and differing temporal physical units remain separate.
-- Grouped histogram traces use a fused grouped query with the visible-range filter
-  applied before `group_by`.
+- Grouped histogram traces run their own plan with the visible-range filter
+  applied before `group_by`. A plan spec never fuses with other grouped specs,
+  so it carries no `batch_key` / `pre_group_filter_key`.
 - `_to_update` normalizes counts per `histnorm`; returns `{"x": centers, "y": counts}` (vertical) or `{"x": counts, "y": centers, "orientation": "h"}` (horizontal).
 
 ### BoxPlot
@@ -686,8 +690,10 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
 │     instead of binary search. Returns Struct{breakpoint: Float64, count: UInt32}
 │     of length n_bins — identical output shape to polars.hist(include_breakpoint=True).
-│     Used by Histogram trace (both ungrouped and grouped paths) to guarantee
-│     O(n) bin assignment with stable, pre-specified edges.
+│     Used by the Histogram trace for an ungrouped aggregation on a resident
+│     frame, to guarantee O(n) bin assignment with stable, pre-specified edges.
+│     An ungrouped histogram on a scan source, and a grouped one on either source
+│     kind, take the equivalent streaming plan instead.
 │
 ├── fixed_hist2d(y_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y) → pl.Expr
 │     O(n) fixed-bin 2D count histogram. Uses typed dispatch (avoids f64 cast for
@@ -726,7 +732,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Integration with LinePlot**: `line.py` imports `flexviz_polars` at module level, and the grid and the bucket plan live next to it in `line_buckets.py`. `LinePlot.get_aggregation_spec()` dispatches on `self.downsample` and on the source kind. Every x-width strategy takes the same stage 1: `_plugin_pairs_agg_expr` (the kernel) for an ungrouped resident frame, `pairs_plan` for a scan and for a grouped line, both with `_bucket_budget(n_points, downsample)` buckets. `nth` takes `_plugin_nth_agg_expr`, ungrouped and inside `group_by().agg()`. `lttb` and `fpcs` then finish in `_to_update` (`_lttb`, `_fpcs_walk`).
 
-**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. Both the ungrouped and grouped paths in `Histogram.get_aggregation_spec()` call `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning.
+**Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped resident path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning. Every other path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
 
 **Integration with Histogram2D / GeoHistogram2D**: `hist2d.py` and `geo_hist2d.py` both import `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. `GeoHistogram2D` maps lat→x and lon→y and passes filtered-data min/max (or viewport bounds) as the kernel `lo`/`hi`.
 
@@ -811,6 +817,7 @@ LFQueryBuilder
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan always streams)
 ├── physical_minmax(cols, schema, *, memoize)  ← per-column unfiltered (min, max); kept on the builder only when memoize=True
 ├── check_line_x(col, *, memoize)   ← line x data check on a resident frame: one collect (null check, is_sorted pass, O(1) trailing-NaN probe). Kept as the sorted flag only when memoize=True. The dtype gate lives on the trace (LinePlot.check_schema)
+├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       filtered_ldf = _ldf if not filter_exprs else _ldf.filter(*filter_exprs)
@@ -822,8 +829,10 @@ LFQueryBuilder
 
 ```
 AggregationSpec
-├── expr: pl.Expr    ← evaluated in the shared filtered LazyFrame context;
-│                       output column aliased to trace uid; yields a Struct series
+├── expr: pl.Expr | None = None
+│                     ← evaluated in the shared filtered LazyFrame context;
+│                       output column aliased to trace uid; yields a Struct series.
+│                       None only when plan is set; both None raises ValueError
 ├── uid: str = ""    ← trace uid; used by engine for overlay_style dispatch
 └── plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
                      ← escape hatch for a spec that cannot be a select expression;
