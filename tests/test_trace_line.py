@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 import datetime as dt
+import math
 import random
 
 from flexviz.figure import Figure
@@ -205,11 +206,12 @@ class TestLinePlotFromTraceSpec:
         assert restored._display.get("name") == "Sig"
         assert restored._display.get("color") == "#abc"
 
-    def test_roundtrip_preserves_fpcs(self):
-        original = LinePlot(x="ts", y="val", n_points=250, downsample="fpcs")
+    @pytest.mark.parametrize("downsample", ["fpcs", "lttb"])
+    def test_roundtrip_preserves_downsample(self, downsample):
+        original = LinePlot(x="ts", y="val", n_points=250, downsample=downsample)
         spec = original.to_trace_spec()
         restored = LinePlot.from_trace_spec(spec)
-        assert restored.downsample == "fpcs"
+        assert restored.downsample == downsample
 
     def test_roundtrip_preserves_add_gaps(self):
         original = LinePlot(x="ts", y="val", add_gaps=False)
@@ -303,15 +305,73 @@ class TestLinePlotPlugin:
         assert update["x"][-1] == 999
 
     def test_fpcs_target_is_not_a_hard_cap(self):
-        vals = [0.0]
-        for i in range(80):
-            vals.extend([10.0 + i, -10.0 - i])
-        vals.append(0.0)
+        # A sawtooth: every bucket defers an extremum that the next one flushes,
+        # so the walk emits close to two points per bucket.
+        n = 2_000
+        df = pl.DataFrame(
+            {"ts": list(range(n)), "val": [float((i * 7) % 53) for i in range(n)]}
+        )
         n_points = 20
-        df = pl.DataFrame({"ts": list(range(len(vals))), "val": vals})
         update = _aggregate_line(df, n_points=n_points, downsample="fpcs")
         assert len(update["x"]) > n_points
         assert len(update["x"]) <= 2 * n_points
+
+    def test_fpcs_gappy_x_returns_fewer_points(self):
+        # x-width buckets over a gap are empty, and an empty bucket emits
+        # nothing. Row-count buckets would spend the whole budget.
+        xs = list(range(500)) + list(range(500_000, 500_500))
+        df = pl.DataFrame(
+            {"ts": xs, "val": [float((i * 31) % 97) for i in range(len(xs))]},
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        )
+        update = _aggregate_line(df, n_points=200, downsample="fpcs")
+        assert 0 < len(update["x"]) < 200
+
+    def test_fpcs_walk_matches_a_hand_checked_trace(self):
+        # Four row-count buckets of five rows over x = 0..19, y distinct.
+        # Traced by hand against the compensation rules: bucket 2 flushes the
+        # deferred max of bucket 1, and the trailing potential point closes it.
+        from flexviz.trace.line import _fpcs_walk
+
+        xs, ys = _fpcs_walk(
+            [0, 9, 11, 19],
+            [10.0, 21.0, 5.0, 15.0],
+            [4, 5, 14, 15],
+            [14.0, 25.0, 32.0, 19.0],
+        )
+        assert xs == [0, 4, 5, 11, 14, 19]
+        assert ys == [10.0, 14.0, 25.0, 5.0, 32.0, 15.0]
+
+    def test_fpcs_resident_matches_the_scan_plan(self, tmp_path):
+        df = _gappy_frame()
+        path = tmp_path / "fpcs.parquet"
+        df.write_parquet(path)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+
+        trace = LinePlot(x="ts", y="val", n_points=200, downsample="fpcs")
+        resident = _minmax_points(LFQueryBuilder(df), trace)
+        scanned = _minmax_points(scan_lf, trace)
+
+        assert len(resident["x"]) > 0
+        assert resident["x"].to_list() == scanned["x"].to_list()
+        assert resident["y"].to_list() == scanned["y"].to_list()
+
+    def test_fpcs_scan_with_an_all_null_y_returns_a_typed_empty_x(self, tmp_path):
+        df = pl.DataFrame(
+            {"ts": list(range(100)), "val": [None] * 100},
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        )
+        path = tmp_path / "null_y.parquet"
+        df.write_parquet(path)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+
+        out = _minmax_points(
+            scan_lf, LinePlot(x="ts", y="val", n_points=20, downsample="fpcs")
+        )
+        assert len(out["x"]) == 0
+        assert out["x"].dtype == pl.Int64
 
     def test_fpcs_viewport_data_within_range(self):
         df = pl.DataFrame(
@@ -400,8 +460,11 @@ class TestLinePlotGrouped:
         results = _aggregate_grouped_line(df, group_by="sensor", downsample="fpcs")
         assert len(results) == 2
         assert {cr.group_value_key for cr in results} == {"A", "B"}
-        assert all(cr.updates["x"][0] == 0 for cr in results)
-        assert all(cr.updates["x"][-1] == 199 for cr in results)
+        # Row-count buckets inside each group, and the walk keeps x ordered.
+        for cr in results:
+            xs = cr.updates["x"].to_list()
+            assert 0 < len(xs) <= 2 * 100
+            assert xs == sorted(xs)
 
     def test_grouped_by_two_columns_returns_composite_children(self):
         df = pl.DataFrame(
@@ -514,7 +577,7 @@ class TestLineCubeSource:
         assert spec is not None
         assert spec.kind == "continuous"
 
-    @pytest.mark.parametrize("downsample", ["minmax", "fpcs", "nth"])
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
     def test_source_independent_of_downsample(self, downsample):
         # Source-ability is selection geometry, not aggregation: the minmax
         # gate belongs to the line *target* descriptor (contract J), not here.
@@ -574,7 +637,7 @@ class TestSortedViewportSlice:
             {"ts": list(range(n)), "val": [float((i * 37) % 101) for i in range(n)]}
         ).with_columns(ts=pl.col("ts").cast(dtype))
 
-    @pytest.mark.parametrize("downsample", ["minmax", "fpcs", "nth"])
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
     @pytest.mark.parametrize(
         "x_range",
         [
@@ -699,9 +762,11 @@ class TestLineXWidthBuckets:
             ({}, {"x": (0, 10)}, ()),
             ({"group_by": "sensor"}, {}, ()),
             ({"downsample": "nth"}, {}, ()),
-            ({"downsample": "fpcs"}, {}, ()),
+            ({"downsample": "fpcs"}, {}, ("ts",)),
+            ({"downsample": "lttb"}, {}, ("ts",)),
+            ({"downsample": "fpcs"}, {"x": (0, 10)}, ()),
         ],
-        ids=["unzoomed", "zoomed", "grouped", "nth", "fpcs"],
+        ids=["unzoomed", "zoomed", "grouped", "nth", "fpcs", "lttb", "fpcs_zoomed"],
     )
     @pytest.mark.parametrize("scan_source", [False, True], ids=["resident", "scan"])
     def test_domain_cols(self, kwargs, update_range, expected, scan_source):
@@ -871,6 +936,161 @@ class TestLineXWidthBuckets:
         assert resident["x"].to_list() == scanned["x"].to_list()
 
 
+# ---- lttb (MinMaxLTTB) ------------------------------------------------------
+
+
+def _lttb_frame(n: int = 10_000) -> pl.DataFrame:
+    rng = random.Random(20260904)
+    return pl.DataFrame(
+        {"ts": list(range(n)), "val": [rng.random() * 100 for _ in range(n)]},
+        schema={"ts": pl.Int64, "val": pl.Float64},
+    )
+
+
+class TestLineLTTB:
+    def test_returns_exactly_n_points(self):
+        out = _minmax_points(
+            LFQueryBuilder(_lttb_frame()),
+            LinePlot(x="ts", y="val", n_points=500, downsample="lttb"),
+        )
+        assert len(out["x"]) == 500
+        assert len(out["y"]) == 500
+
+    def test_passes_the_prefetch_through_when_it_is_small(self):
+        df = _lttb_frame(300)
+        out = _minmax_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=1_000, downsample="lttb"),
+        )
+        assert len(out["x"]) == 300
+
+    def test_keeps_the_first_and_last_prefetched_point(self):
+        df = _lttb_frame()
+        lf = LFQueryBuilder(df)
+        n_points = 200
+        thinned = _minmax_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=n_points, downsample="lttb"),
+        )
+        # The stage-1 prefetch: the same minmax envelope at the 4x budget.
+        prefetch = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=4 * n_points))
+        assert thinned["x"][0] == prefetch["x"][0]
+        assert thinned["x"][-1] == prefetch["x"][-1]
+        assert thinned["x"].to_list() == sorted(thinned["x"].to_list())
+
+    def test_resident_matches_the_scan_plan(self, tmp_path):
+        df = _gappy_frame()
+        path = tmp_path / "lttb.parquet"
+        df.write_parquet(path)
+        scan_lf = LFQueryBuilder(pl.scan_parquet(path))
+        assert scan_lf.is_scan
+
+        trace = LinePlot(x="ts", y="val", n_points=100, downsample="lttb")
+        resident = _minmax_points(LFQueryBuilder(df), trace)
+        scanned = _minmax_points(scan_lf, trace)
+
+        assert resident["x"].to_list() == scanned["x"].to_list()
+        assert resident["y"].to_list() == scanned["y"].to_list()
+
+    def test_viewport_zoom_respects_the_range(self):
+        out = _minmax_points(
+            LFQueryBuilder(_lttb_frame()),
+            LinePlot(x="ts", y="val", n_points=100, downsample="lttb"),
+            x_range=(2_000, 3_000),
+        )
+        assert len(out["x"]) == 100
+        assert all(2_000 <= v <= 3_000 for v in out["x"])
+
+    def test_temporal_x_round_trips_its_dtype(self):
+        n = 5_000
+        t0 = dt.datetime(2023, 1, 1)
+        rng = random.Random(11)
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series(
+                    "ts",
+                    [t0 + dt.timedelta(microseconds=i) for i in range(n)],
+                    dtype=pl.Datetime("ns"),
+                ),
+                "val": [rng.random() for _ in range(n)],
+            }
+        )
+        out = _minmax_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=100, downsample="lttb"),
+        )
+        assert out["x"].dtype == pl.Datetime("ns")
+        assert len(out["x"]) == 100
+        assert out["x"][0] >= t0
+
+    def test_temporal_y_round_trips_its_dtype(self):
+        n = 5_000
+        t0 = dt.datetime(2023, 1, 1)
+        df = pl.DataFrame(
+            {
+                "ts": list(range(n)),
+                "val": pl.Series(
+                    "val",
+                    [t0 + dt.timedelta(milliseconds=(i * 7) % 1_000) for i in range(n)],
+                    dtype=pl.Datetime("ms"),
+                ),
+            }
+        )
+        out = _minmax_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=100, downsample="lttb"),
+        )
+        assert out["y"].dtype == pl.Datetime("ms")
+        assert len(out["y"]) == 100
+
+    def test_grouped_is_rejected(self):
+        with pytest.raises(ValueError, match="does not support group_by"):
+            LinePlot(x="ts", y="val", downsample="lttb", group_by="sensor")
+        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0], "g": ["a", "b"]}))
+        with pytest.raises(ValueError, match="does not support group_by"):
+            fig.add_line(x="ts", y="val", downsample="lttb", group_by="g")
+
+
+class TestLTTBFunction:
+    """The stage-2 rule on its own, away from any bucket pass."""
+
+    @staticmethod
+    def _points(n: int):
+        return list(range(n)), [float((i * 37) % 101) for i in range(n)]
+
+    @pytest.mark.parametrize("n_out", [3, 10, 999])
+    def test_output_length_is_exact(self, n_out):
+        from flexviz.trace.line import _lttb
+
+        x, y = self._points(5_000)
+        out_x, out_y = _lttb(x, y, n_out)
+        assert len(out_x) == n_out
+        assert len(out_y) == n_out
+        assert out_x[0] == x[0] and out_x[-1] == x[-1]
+        assert out_x == sorted(out_x)
+
+    def test_short_input_passes_through(self):
+        from flexviz.trace.line import _lttb
+
+        x, y = self._points(10)
+        assert _lttb(x, y, 10) == (x, y)
+        assert _lttb(x, y, 50) == (x, y)
+
+    def test_two_points_keeps_the_ends(self):
+        from flexviz.trace.line import _lttb
+
+        x, y = self._points(100)
+        assert _lttb(x, y, 2) == ([0, 99], [y[0], y[99]])
+
+    def test_a_spike_survives(self):
+        from flexviz.trace.line import _lttb
+
+        x = list(range(1_000))
+        y = [0.0] * 500 + [1_000.0] + [0.0] * 499
+        _, out_y = _lttb(x, y, 100)
+        assert 1_000.0 in out_y
+
+
 # ---- n_points bounds and the add_line x gate --------------------------------
 
 
@@ -893,24 +1113,56 @@ class TestLineNPointsBounds:
             LinePlot.from_trace_spec(spec)
 
 
-class TestAddLineXGate:
-    """A string x fails at ``add_line`` when the figure knows the frame."""
+class TestBucketsByXWidth:
+    """The property that tells the engine which lines carry the x contract."""
 
-    @staticmethod
-    def _df() -> pl.DataFrame:
-        return pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_ungrouped_x_width_lines(self, downsample):
+        assert LinePlot(x="ts", y="val", downsample=downsample).buckets_by_x_width
 
-    def test_string_x_is_rejected_at_build_time(self):
-        fig = Figure(self._df())
-        with pytest.raises(ValueError, match="numeric or a temporal"):
-            fig.add_line(x="ts", y="val")
+    def test_nth_buckets_by_row_count(self):
+        assert not LinePlot(x="ts", y="val", downsample="nth").buckets_by_x_width
 
-    def test_misspelled_x_is_rejected_at_build_time(self):
-        fig = Figure(self._df())
-        with pytest.raises(ValueError, match="not in schema"):
-            fig.add_line(x="tsp", y="val")
+    def test_a_grouped_line_buckets_by_row_count(self):
+        # Sorted by group then x, so x is not globally sorted.
+        assert not LinePlot(x="ts", y="val", group_by="sensor").buckets_by_x_width
 
-    def test_only_the_ungrouped_minmax_line_is_gated(self):
-        fig = Figure(self._df())
-        fig.add_line(x="ts", y="val", downsample="nth")
-        fig.add_line(x="ts", y="val", group_by="ts")
+
+class TestLineDownsampleValidation:
+    """An unknown strategy used to fall through to ``nth`` without a word."""
+
+    def test_an_unknown_strategy_is_rejected(self):
+        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0]}))
+        with pytest.raises(ValueError, match="downsample must be one of"):
+            fig.add_line(x="ts", y="val", downsample="bogus")
+
+    def test_a_decoded_spec_is_validated_too(self):
+        # The client posts the spec on every update, so decoding is a trust
+        # boundary.
+        spec = LinePlot(x="ts", y="val").to_trace_spec()
+        spec.params["downsample"] = "bogus"
+        with pytest.raises(ValueError, match="downsample must be one of"):
+            LinePlot.from_trace_spec(spec)
+
+
+class TestStageTwoDropsNaN:
+    """A whole NaN bucket still emits its NaN extremum from stage 1."""
+
+    @pytest.mark.parametrize("downsample", ["lttb", "fpcs"])
+    def test_nan_y_never_reaches_the_output(self, downsample):
+        n = 2_000
+        vals = [float((i * 37) % 101) for i in range(n)]
+        for i in range(600, 800):  # wide enough to fill whole buckets
+            vals[i] = float("nan")
+        df = pl.DataFrame(
+            {"ts": list(range(n)), "val": vals},
+            schema={"ts": pl.Int64, "val": pl.Float64},
+        )
+        out = _minmax_points(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=100, downsample=downsample),
+        )
+        xs, ys = out["x"].to_list(), out["y"].to_list()
+        assert ys and not any(math.isnan(v) for v in ys)
+        assert len(set(xs)) == len(xs)
+        assert xs == sorted(xs)

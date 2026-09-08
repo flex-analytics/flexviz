@@ -2025,19 +2025,19 @@ class TestResidencySeam:
         df = pl.DataFrame({"ts": [1, 2, 3], "val": [1.0, 2.0, 3.0]})
         assert LFQueryBuilder(df.lazy()).is_scan is False
 
-    def test_scan_selects_the_streaming_plan(self):
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_scan_selects_the_streaming_plan(self, downsample):
         """The seam must actually swap formulations, not just report a flag."""
-        line = LinePlot(x="ts", y="val", n_points=1000)
+        line = LinePlot(x="ts", y="val", n_points=1000, downsample=downsample)
         domains = {"ts": (0.0, 1.0)}
         resident = line.get_aggregation_spec({}, scan_source=False, domains=domains)
         scanned = line.get_aggregation_spec({}, scan_source=True, domains=domains)
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
-    @pytest.mark.parametrize("downsample", ["nth", "fpcs"])
-    def test_only_minmax_swaps(self, downsample):
-        """`nth` already streams; `fpcs` has no streaming formulation."""
-        line = LinePlot(x="ts", y="val", n_points=1000, downsample=downsample)
+    def test_nth_never_swaps(self):
+        """`nth` already streams: a stride needs no state."""
+        line = LinePlot(x="ts", y="val", n_points=1000, downsample="nth")
         assert (
             line.get_aggregation_spec(
                 {}, scan_source=True, domains={"ts": (0.0, 1.0)}
@@ -2099,7 +2099,7 @@ class TestDescendingViewportRanges:
         assert len(deltas) == 1
         return {k: list(v) for k, v in deltas[0].updates.items()}
 
-    @pytest.mark.parametrize("downsample", ["minmax", "fpcs", "nth"])
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
     @pytest.mark.parametrize("sorted_x", [False, True])
     def test_descending_equals_ascending(self, downsample, sorted_x):
         asc = self._line_updates((100, 900), downsample, sorted_x)
@@ -2158,7 +2158,7 @@ class TestDescendingViewportRanges:
 
 
 class TestResidentLineXWidth:
-    """The resident minmax envelope buckets by x width over the resolved domain."""
+    """The resident x-width strategies bucket over the resolved domain."""
 
     @staticmethod
     def _frame(n: int = 10_000) -> pl.DataFrame:
@@ -2235,10 +2235,15 @@ class TestResidentLineXWidth:
             row_count.struct.field("val").to_list()
         )
 
-    def test_unsorted_resident_x_raises(self):
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_unsorted_resident_x_raises(self, downsample):
+        # Every x-width strategy shares the contract.
         df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
         with pytest.raises(ValueError, match="ts"):
-            self._process(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+            self._process(
+                LFQueryBuilder(df),
+                LinePlot(x="ts", y="val", n_points=50, downsample=downsample),
+            )
 
     def test_assume_sorted_x_skips_the_check(self):
         df = self._frame(1_000).sample(fraction=1.0, shuffle=True, seed=0)
@@ -2355,6 +2360,82 @@ class TestResidentLineXWidth:
             self._scan(tmp_path, xs), LinePlot(x="ts", y="val", n_points=50)
         )
         assert len(list(deltas[0].updates["y"])) > 0
+
+    def test_lttb_string_y_is_rejected_at_request_time(self):
+        # The spec the client posts rebuilds the trace, so the y dtype rule
+        # applies again here, not only at ``add_line``.
+        df = pl.DataFrame({"ts": [1, 2, 3], "val": ["a", "b", "c"]})
+        with pytest.raises(ValueError, match="numeric, temporal or Boolean"):
+            self._process(
+                LFQueryBuilder(df),
+                LinePlot(x="ts", y="val", n_points=50, downsample="lttb"),
+            )
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_string_x_is_rejected_at_request_time(self, downsample):
+        # Every x-width strategy needs an x the kernel can bucket.
+        df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            self._process(
+                LFQueryBuilder(df),
+                LinePlot(x="ts", y="val", n_points=50, downsample=downsample),
+            )
+
+    def test_misspelled_x_is_rejected_at_request_time(self):
+        with pytest.raises(ValueError, match="not in schema"):
+            self._process(
+                LFQueryBuilder(self._frame(100)),
+                LinePlot(x="tsp", y="val", n_points=50),
+            )
+
+    def test_misspelled_y_is_rejected_at_request_time(self):
+        with pytest.raises(ValueError, match="not in schema"):
+            self._process(
+                LFQueryBuilder(self._frame(100)),
+                LinePlot(x="ts", y="vall", n_points=50),
+            )
+
+    def test_only_the_ungrouped_x_width_lines_are_gated(self):
+        # Row-count buckets carry no x contract, so a String x passes.
+        df = pl.DataFrame({"ts": ["a", "b", "c"], "val": [1.0, 2.0, 3.0]})
+        deltas, _ = self._process(
+            LFQueryBuilder(df),
+            LinePlot(x="ts", y="val", n_points=50, downsample="nth"),
+        )
+        assert len(deltas) == 1
+        deltas, _ = self._process(
+            LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50, group_by="ts")
+        )
+        assert len(deltas[0].group_results) == 3
+
+    def test_two_lines_sharing_x_check_it_once(self, monkeypatch):
+        # Uncached, so nothing is memoized: without the per-request set the
+        # second line would pay a second pass over the same column.
+        calls: list[str] = []
+        real_check = LFQueryBuilder.check_line_x
+
+        def check(self, col, **kwargs):
+            calls.append(col)
+            return real_check(self, col, **kwargs)
+
+        monkeypatch.setattr(LFQueryBuilder, "check_line_x", check)
+
+        df = self._frame(1_000).with_columns(other=pl.col("val") * 2.0)
+        lines = [
+            LinePlot(x="ts", y="val", n_points=50),
+            LinePlot(x="ts", y="other", n_points=50),
+        ]
+        engine = FlexEngine(
+            backend_lf=LFQueryBuilder(df),
+            scalable_traces={line.uid: line for line in lines},
+        )
+        infos = [
+            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")
+            for line in lines
+        ]
+        deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        assert len(deltas) == 2
+        assert calls == ["ts"]
 
     def test_x_is_checked_before_the_domain_resolve(self, monkeypatch):
         # On a cached source the check flags the column sorted, which makes the

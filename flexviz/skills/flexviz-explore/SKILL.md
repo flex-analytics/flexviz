@@ -133,7 +133,7 @@ dash.add_figure(title=...)       # -> Figure; chainable builders below
 dash.share_url(server_url, source_name, rows=None, cols=None, cache=None)
 
 fig.add_line(x, y, name=None, color=None, n_points=1000,
-             downsample="minmax",          # or "fpcs" | "nth"
+             downsample="minmax",          # or "lttb" | "fpcs" | "nth"
              assume_sorted_x=False, group_by=None)
 fig.add_histogram(x=None, y=None, bins=20, histnorm="count",
                   name=None, group_by=None)

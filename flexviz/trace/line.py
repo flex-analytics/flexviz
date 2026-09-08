@@ -13,11 +13,17 @@ Downsampling strategies:
   only in which member of an exact ``y`` plateau they pick.  A grouped line keeps
   equal-row-count buckets inside each group.
 
-* ``"fpcs"`` — Feature-Preserving Compensated Sampling: first applies the same
-  index-bucket MinMax reduction to interior points, then runs the FPCS compensation
-  pass and appends the first and last point.  ``n_points`` is a target, not a hard
-  cap; output may be up to roughly ``2 * n_points``.  X-aware buckets are planned
-  for a later version.
+* ``"lttb"`` — MinMaxLTTB: the ungrouped min-max pass with a 4x budget, then the
+  Largest-Triangle-Three-Buckets rule over the prefetched points.  Returns exactly
+  ``n_points`` points when the prefetch holds more.  Smoother than ``"minmax"`` on
+  noisy data, at the price of one Python pass over the prefetch.  Ungrouped only.
+
+* ``"fpcs"`` — Feature-Preserving Compensated Sampling: one ``(min, max)`` pair per
+  bucket, then a compensation walk that carries a deferred extremum across bucket
+  boundaries.  Ungrouped it buckets by x width like ``"minmax"``, with
+  ``n_points - 2`` buckets; grouped it keeps equal-row-count buckets.
+  ``n_points`` is a target, not a hard cap: the walk emits up to roughly
+  ``2 * n_points`` points, fewer on gappy x.
 
 * ``"nth"`` — uniform stride gather: every ``max(1, n // n_points)``-th row.
   Stride is computed inside the Rust kernel (no Polars ``len()`` expression
@@ -30,7 +36,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, get_args
 
 import polars as pl
 
@@ -60,7 +66,19 @@ from .base import (
 
 import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-LineDownsample = Literal["minmax", "fpcs", "nth"]
+LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
+
+# Downsamplers whose ungrouped form buckets by x width. They share the x
+# contract: sorted, finite, null-free x (see ``LinePlot.buckets_by_x_width``).
+_X_WIDTH_DOWNSAMPLES = ("minmax", "lttb", "fpcs")
+
+# LTTB stage 1 prefetch, as a multiple of ``n_points``: four candidates per
+# output point. Fewer starves the triangle rule, more only grows the Python
+# pass. Not a public knob until someone needs to tune it.
+_LTTB_MINMAX_RATIO = 4
+
+# The four fixed struct fields the pair kernel and the pair plan both emit.
+_PAIR_FIELDS = ("x_min", "y_min", "x_max", "y_max")
 
 # Two points make a line, and 25k already exceeds the pixel width of any screen
 # the browser draws them on.
@@ -182,23 +200,25 @@ def _bucket_grid(
 # ---------------------------------------------------------------------------
 
 
-def _streaming_envelope_plan(
+def _bucket_extrema(
+    filtered_ldf: pl.LazyFrame,
     x_col: str,
     y_col: str,
-    n_points: int,
-    uid: str,
+    n_buckets: int,
     vp_filter: pl.Expr | None,
     x_range: tuple | None,
     x_domain: tuple | None,
     schema: pl.Schema | None,
-):
-    """Streaming min-max envelope using equal-width buckets in x.
+) -> pl.DataFrame | None:
+    """One row per non-empty equal-x-width bucket, in group-by order.
 
-    One streaming collect, no intermediate collects.
+    Columns: ``__b``, ``__lo_<x>``, ``__lo_<y>``, ``__hi_<x>``, ``__hi_<y>``.
+    ``None`` means there is no grid (an empty or all-null x column). The caller
+    orders the rows: only the compensation walk needs bucket order.
 
-    Buckets partition the x range into ``n_points // 2`` equal-width bins.
-    ``min_by``/``max_by`` locate the x value at each y extremum in a single
-    associative pass, so the group never buffers.
+    One streaming collect, no intermediate collects. ``min_by``/``max_by``
+    locate the x value at each y extremum in a single associative pass, so the
+    group never buffers.
 
     When zoomed, the viewport provides the x bounds. When unzoomed, ``x_domain``
     carries the unfiltered ``(min, max)`` the engine resolved, in physical
@@ -206,54 +226,73 @@ def _streaming_envelope_plan(
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. Any member is a valid envelope
-    point. This is a deliberate trade: deterministic tie-breaking here would
-    cost a second pass and far more memory for no visible difference.
+    point, and a pair is consumed as a pair. This is a deliberate trade:
+    deterministic tie-breaking here would cost a second pass and far more
+    memory for no visible difference.
     """
-    n_out = max(n_points // 2, 1)
+    src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
+    src = src.select(x_col, y_col)
+
+    dtype = schema.get(x_col) if schema else None
+
+    # Bucket arithmetic runs on the physical representation so that temporal
+    # columns reduce to plain integer division.
+    phys_expr = (
+        pl.col(x_col).to_physical()
+        if dtype is not None and dtype.is_temporal()
+        else pl.col(x_col)
+    )
+    grid = _bucket_grid(x_col, x_range, x_domain, dtype, n_buckets)
+    if grid is None:
+        return None
+    x_lo, bsz, _ = grid
+
+    y = pl.col(y_col)
+    return (
+        src.group_by(
+            # True division lands x_hi exactly on n_buckets; fold that lone top
+            # row back into the last bucket instead of letting it open an
+            # n_buckets + 1-th one and overrun the budget.
+            ((phys_expr - pl.lit(x_lo)) // pl.lit(bsz))
+            .clip(upper_bound=n_buckets - 1)
+            .alias("__b")
+        )
+        .agg(
+            pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
+            pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
+        )
+        .collect(engine="streaming")
+    )
+
+
+def _streaming_envelope_plan(
+    x_col: str,
+    y_col: str,
+    n_buckets: int,
+    uid: str,
+    vp_filter: pl.Expr | None,
+    x_range: tuple | None,
+    x_domain: tuple | None,
+    schema: pl.Schema | None,
+):
+    """Streaming min-max envelope: the bucket extrema flattened to points."""
     empty = pl.DataFrame(
         {uid: [[]]},
         schema={uid: pl.List(pl.Struct({x_col: pl.Null, y_col: pl.Null}))},
     )
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        src = filtered_ldf if vp_filter is None else filtered_ldf.filter(vp_filter)
-        src = src.select(x_col, y_col)
-
-        dtype = schema.get(x_col) if schema else None
-
-        # Bucket arithmetic runs on the physical representation so that
-        # temporal columns reduce to plain integer division.
-        phys_expr = (
-            pl.col(x_col).to_physical()
-            if dtype is not None and dtype.is_temporal()
-            else pl.col(x_col)
+        result = _bucket_extrema(
+            filtered_ldf,
+            x_col,
+            y_col,
+            n_buckets,
+            vp_filter,
+            x_range,
+            x_domain,
+            schema,
         )
-        grid = _bucket_grid(x_col, x_range, x_domain, dtype, n_out)
-        if grid is None:
-            return empty
-        x_lo, bsz, _ = grid
-
-        lo_lit = pl.lit(x_lo)
-        bsz_lit = pl.lit(bsz)
-
-        y = pl.col(y_col)
-        result = (
-            src.group_by(
-                # True division lands x_hi exactly on n_out; fold that lone
-                # top row back into the last bucket instead of letting it open
-                # an n_out + 1-th one and overrun the n_points budget.
-                ((phys_expr - lo_lit) // bsz_lit)
-                .clip(upper_bound=n_out - 1)
-                .alias("__b")
-            )
-            .agg(
-                pl.col([x_col, y_col]).min_by(y).name.prefix("__lo_"),
-                pl.col([x_col, y_col]).max_by(y).name.prefix("__hi_"),
-            )
-            .collect(engine="streaming")
-        )
-
-        if result.is_empty():
+        if result is None or result.is_empty():
             return empty
 
         pts = pl.concat(
@@ -282,6 +321,166 @@ def _streaming_envelope_plan(
         )
 
     return run
+
+
+def _streaming_pairs_plan(
+    x_col: str,
+    y_col: str,
+    n_buckets: int,
+    uid: str,
+    vp_filter: pl.Expr | None,
+    x_range: tuple | None,
+    x_domain: tuple | None,
+    schema: pl.Schema | None,
+):
+    """Streaming FPCS stage 1: the bucket extrema kept as pairs.
+
+    The pair is the unit the compensation walk consumes, so the four columns
+    stay on one row and are never deduplicated.
+    """
+    empty = pl.DataFrame(
+        {uid: [[]]},
+        schema={uid: pl.List(pl.Struct({f: pl.Null for f in _PAIR_FIELDS}))},
+    )
+
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        result = _bucket_extrema(
+            filtered_ldf,
+            x_col,
+            y_col,
+            n_buckets,
+            vp_filter,
+            x_range,
+            x_domain,
+            schema,
+        )
+        if result is None:
+            return empty
+
+        # The walk consumes the buckets in order. The envelope plan re-sorts by
+        # x itself, so the sort lives here rather than in ``_bucket_extrema``.
+        pairs = result.sort("__b").select(
+            pl.col(f"__lo_{x_col}").alias("x_min"),
+            pl.col(f"__lo_{y_col}").alias("y_min"),
+            pl.col(f"__hi_{x_col}").alias("x_max"),
+            pl.col(f"__hi_{y_col}").alias("y_max"),
+        )
+        # An empty frame implodes to one row holding a typed empty list, which
+        # is the sentinel shape, so no separate empty branch is needed.
+        return pairs.drop_nulls().select(pl.struct(*_PAIR_FIELDS).implode().alias(uid))
+
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: pure-Python thinning of the bucket output
+# ---------------------------------------------------------------------------
+
+
+def _lttb(x: list, y: list, n_out: int) -> tuple[list, list]:
+    """Largest-Triangle-Three-Buckets over ``n_out`` points.
+
+    Stage 2 of MinMaxLTTB. ``_to_update`` drops null and NaN rows first.
+
+    ``x`` is shifted by ``x[0]`` before the area math: a nanosecond epoch loses
+    precision in float64, a difference of one viewport does not. No other
+    normalization is needed, because scaling x scales every area by the same
+    factor and leaves the argmax unchanged.
+    """
+    n = len(x)
+    if n <= n_out:
+        return x, y
+    if n_out < 3:  # no interior buckets to pick from
+        return [x[0], x[-1]], [y[0], y[-1]]
+
+    x0 = x[0]
+    xs = [float(v - x0) for v in x]
+    out_x, out_y = [x[0]], [y[0]]
+
+    every = (n - 2) / (n_out - 2)
+    a = 0
+    for i in range(n_out - 2):
+        # The mean of the next bucket. The last bucket of all reduces to the
+        # final point, which is the anchor the paper uses there.
+        lo = int((i + 1) * every) + 1
+        hi = min(int((i + 2) * every) + 1, n)
+        span = hi - lo
+        avg_x = sum(xs[lo:hi]) / span
+        avg_y = sum(y[lo:hi]) / span
+
+        ax, ay = xs[a], y[a]
+        best_area = -1.0
+        for j in range(int(i * every) + 1, lo):
+            area = abs((ax - avg_x) * (y[j] - ay) - (ax - xs[j]) * (avg_y - ay))
+            if area > best_area:
+                best_area, a = area, j
+        out_x.append(x[a])
+        out_y.append(y[a])
+
+    out_x.append(x[-1])
+    out_y.append(y[-1])
+    return out_x, out_y
+
+
+def _fpcs_walk(x_min: list, y_min: list, x_max: list, y_max: list) -> tuple[list, list]:
+    """Feature-Preserving Compensated Sampling over per-bucket ``(min, max)`` pairs.
+
+    Stage 2 of FPCS. Each bucket emits the earlier of its two extrema and
+    defers the later one. When the next bucket emits the same kind of
+    extremum again, the deferred point goes out first, so the turn between
+    them is not lost. Earlier means smaller x.
+
+    The comparisons are inverted (``not (a > b)``) on purpose: a NaN compares
+    false against everything, so it always takes the extremum, which is the
+    NaN-propagating policy the bucket kernel already applies.
+
+    Unlike a row-index formulation this keeps no first and last point: x-width
+    buckets have no interior. Output is ordered by x and holds at most
+    ``2 * len(x_min) + 1`` points.
+    """
+    out_x: list = []
+    out_y: list = []
+
+    def push(point):
+        # A deferred point is often the extremum the next bucket re-emits. On
+        # sorted x the same x is the same row, and comparing y as well would
+        # let a NaN through twice.
+        if not out_x or out_x[-1] != point[0]:
+            out_x.append(point[0])
+            out_y.append(point[1])
+
+    if not x_min:
+        return out_x, out_y
+
+    first = (x_min[0], y_min[0]) if x_min[0] <= x_max[0] else (x_max[0], y_max[0])
+    min_point = max_point = potential_point = first
+    previous_flag: str | None = None
+
+    for i in range(len(x_min)):
+        lo_point = (x_min[i], y_min[i])
+        hi_point = (x_max[i], y_max[i])
+        if not (max_point[1] > hi_point[1]):
+            max_point = hi_point
+        if not (min_point[1] <= lo_point[1]):
+            min_point = lo_point
+
+        if min_point[0] < max_point[0]:
+            if previous_flag == "min" and min_point[0] != potential_point[0]:
+                push(potential_point)
+            push(min_point)
+            potential_point = min_point = max_point
+            previous_flag = "min"
+        else:
+            if previous_flag == "max" and max_point[0] != potential_point[0]:
+                push(potential_point)
+            push(max_point)
+            potential_point = max_point = min_point
+            previous_flag = "max"
+
+    # The last bucket defers a point too; without this it would be dropped.
+    if previous_flag is not None:
+        push(potential_point)
+    return out_x, out_y
 
 
 # ---------------------------------------------------------------------------
@@ -355,37 +554,55 @@ def _plugin_minmax_agg_expr(
     )
 
 
-def _plugin_fpcs_agg_expr(
+def _plugin_pairs_agg_expr(
     x_col: str,
     y_col: str,
     vp: Viewport | None,
-    n_points: int,
+    n_buckets: int,
     uid: str,
+    x_domain: tuple[Any, Any] | None = None,
 ) -> pl.Expr:
-    """FPCS downsampling using one Rust kernel for index selection and gather."""
+    """FPCS stage 1: one ``(x_min, y_min, x_max, y_max)`` row per bucket.
+
+    Same grid as ``_plugin_minmax_agg_expr``, and the same reason for one
+    kernel call. The pairing is what the compensation walk reads.
+    """
     y_expr = _apply_viewport(pl.col(y_col), vp)
     x_expr = _apply_viewport(pl.col(x_col), vp)
     return (
-        _fvp._fpcs_line(x_expr, y_expr, n_points, x_name=x_col, y_name=y_col)
+        _fvp._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain=x_domain)
         .implode()
         .alias(uid)
     )
 
 
-def _plugin_line_agg_expr(
+def _fpcs_buckets(n_points: int) -> int:
+    """Bucket count for FPCS.
+
+    Kept from the row-index formulation, so the output stays between about
+    ``n_points`` and ``2 * n_points``.
+    """
+    return max(n_points - 2, 1)
+
+
+def _grouped_agg_expr(
     x_col: str,
     y_col: str,
-    vp: Viewport | None,
     n_points: int,
     downsample: LineDownsample,
     uid: str,
 ) -> pl.Expr:
+    """The aggregation expression a grouped line runs inside its ``group_by``.
+
+    Buckets are equal in row count on every strategy here. Grouped lines have
+    no x-width grid yet.
+    """
     if downsample == "minmax":
-        return _plugin_minmax_agg_expr(x_col, y_col, vp, n_points, uid)
+        return _plugin_minmax_agg_expr(x_col, y_col, None, n_points, uid)
     if downsample == "fpcs":
-        return _plugin_fpcs_agg_expr(x_col, y_col, vp, n_points, uid)
+        return _plugin_pairs_agg_expr(x_col, y_col, None, _fpcs_buckets(n_points), uid)
     if downsample == "nth":
-        return _plugin_nth_agg_expr(x_col, y_col, vp, n_points, uid)
+        return _plugin_nth_agg_expr(x_col, y_col, None, n_points, uid)
     raise ValueError(f"unknown downsample strategy {downsample!r}")
 
 
@@ -431,9 +648,9 @@ class LinePlot(FlexTrace):
     ----------
     x:
         Column name for the x-axis values.  Must be sorted ascending for an
-        ungrouped ``"minmax"`` line: its buckets are equal in x width, so the
-        engine binary-searches the bucket edges.  Sorted x also turns every
-        viewport into a zero-copy slice.
+        ungrouped ``"minmax"``, ``"lttb"`` or ``"fpcs"`` line: their buckets are
+        equal in x width, so the engine binary-searches the bucket edges.
+        Sorted x also turns every viewport into a zero-copy slice.
     y:
         Column name for the y-axis values.
     name:
@@ -443,14 +660,16 @@ class LinePlot(FlexTrace):
     n_points:
         Target number of points returned per viewport after downsampling,
         between 2 and 25000.
-        ``"minmax"`` and ``"nth"`` return at most this many points.  ``"fpcs"``
-        follows FPCS target semantics and can return up to roughly
-        ``2 * n_points`` points.
+        ``"minmax"`` and ``"nth"`` return at most this many points.  ``"lttb"``
+        returns exactly this many when the prefetch holds more, and fewer when
+        x gaps leave buckets empty.  ``"fpcs"`` follows FPCS target semantics
+        and can return up to roughly ``2 * n_points`` points.
     downsample:
         Downsampling strategy.  ``"minmax"`` (default) uses the min-max
-        envelope algorithm which requires the ``flexviz_polars`` plugin;
-        ``"fpcs"`` uses Feature-Preserving Compensated Sampling; ``"nth"``
-        selects every nth row.
+        envelope algorithm; ``"lttb"`` thins a 4x min-max prefetch with the
+        MinMaxLTTB triangle rule (ungrouped only); ``"fpcs"`` uses
+        Feature-Preserving Compensated Sampling; ``"nth"`` selects every nth
+        row.  All of them need the ``flexviz_polars`` plugin.
     axes:
         Tuple of axis anchors, e.g. ``("x", "y")``.  Used by the engine to
         match viewport events to this trace.
@@ -486,6 +705,14 @@ class LinePlot(FlexTrace):
                 f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
                 f"got {n_points}."
             )
+        if downsample not in get_args(LineDownsample):
+            raise ValueError(
+                f"downsample must be one of {get_args(LineDownsample)}, "
+                f"got {downsample!r}."
+            )
+        if downsample == "lttb" and group_by is not None:
+            # Grouped lines have no x-width prefetch yet.
+            raise ValueError("downsample='lttb' does not support group_by yet")
         group_cols = (
             _to_col_tuple(group_by, "group_by") if group_by is not None else None
         )
@@ -564,7 +791,7 @@ class LinePlot(FlexTrace):
 
         Gates:
 
-        * ``downsample == "minmax"`` only — ``"nth"``/``"fpcs"`` decide which
+        * ``downsample == "minmax"`` only — every other strategy decides which
           rows survive the filter, which is not decomposable (spec §4), so
           they get no cube and fall back to a server recompute.
         * The y (value) column must be numeric — a ``schema`` is therefore
@@ -635,21 +862,37 @@ class LinePlot(FlexTrace):
     def downsample(self) -> LineDownsample:
         return self._params["downsample"]
 
-    # ------------------------------------------------------------------
-    # FlexTrace interface
-    # ------------------------------------------------------------------
+    @property
+    def buckets_by_x_width(self) -> bool:
+        """Whether the buckets are equal in x width, which is the x contract.
+
+        The ungrouped x-width strategies share it. Every other formulation
+        buckets by row count.
+        """
+        return self.group_by_cols is None and self.downsample in _X_WIDTH_DOWNSAMPLES
+
+    def check_schema(self, schema: pl.Schema) -> None:
+        """Raise when the schema cannot feed this line. Reads dtypes, never collects."""
+        if self.y_col not in schema:
+            raise ValueError(f"Column '{self.y_col}' not in schema")
+        if self.downsample != "lttb":
+            return
+        # The triangle rule does arithmetic on y.
+        y_dtype = schema[self.y_col]
+        if not (y_dtype.is_numeric() or y_dtype.is_temporal() or y_dtype == pl.Boolean):
+            raise ValueError(
+                f"y column '{self.y_col}' must be numeric, temporal or Boolean "
+                f"for an lttb line, got {y_dtype}. Cast the column "
+                f"first, or use downsample='minmax'."
+            )
 
     def domain_cols(
         self, update_range: Dict[str, Any], *, scan_source: bool = False
     ) -> tuple[str, ...]:
-        # Every ungrouped minmax line bins in x, on both source kinds. A zoomed
-        # one takes its grid from the viewport, and every other formulation
-        # reads its bucket grid off the rows themselves.
-        if (
-            self.downsample != "minmax"
-            or self.group_by_cols is not None
-            or update_range.get("x") is not None
-        ):
+        # Every ungrouped x-width line bins in x, on both source kinds. A
+        # zoomed one takes its grid from the viewport, and every other
+        # formulation reads its bucket grid off the rows themselves.
+        if not self.buckets_by_x_width or update_range.get("x") is not None:
             return ()
         return (self.x_col,)
 
@@ -667,17 +910,21 @@ class LinePlot(FlexTrace):
         ``x_sorted`` is the caller's guarantee that the x column is ascending
         (set by ``assume_sorted_x`` / ``check_line_x``). It only enables a
         faster viewport restriction. The output is unchanged.
-        The ungrouped minmax envelope needs it for a second reason: its buckets
-        are equal in x width, which the engine validates once per source.
+        The ungrouped x-width strategies need it for a second reason: their
+        buckets are equal in x width, which the engine validates once per
+        source.
 
         ``scan_source`` says the rows come from storage rather than a resident
-        frame. The kernel needs the whole column in memory, so on a scan the
-        minmax envelope switches to a streaming plan (``_streaming_envelope_plan``).
-        Both build the same equal-x-width grid (``_bucket_grid``), so they return
-        the same ``y`` multiset. They differ only in which member of an exact
-        ``y`` plateau they pick.
+        frame. The kernel needs the whole column in memory, so on a scan every
+        x-width strategy switches to a streaming plan
+        (``_streaming_envelope_plan``, ``_streaming_pairs_plan``). Both build
+        the same equal-x-width grid (``_bucket_grid``) as the kernel. So
+        ``minmax`` and ``lttb`` return the same ``y`` multiset on both source
+        kinds, and differ only in which member of an exact ``y`` plateau they
+        pick. ``fpcs`` can emit a different point set on such a plateau,
+        because the walk orders each pair by x.
 
-        An unzoomed ungrouped minmax trace requires ``x_col`` in ``domains``.
+        An unzoomed ungrouped x-width trace requires ``x_col`` in ``domains``.
         A ``(None, None)`` entry means an empty or all-null column.
         """
         x_range = update_range.get("x")
@@ -695,10 +942,9 @@ class LinePlot(FlexTrace):
                 self.x_col,
                 tuple(x_range) if x_range is not None else None,
             )
-            grouped_expr = _plugin_line_agg_expr(
+            grouped_expr = _grouped_agg_expr(
                 self.x_col,
                 self.y_col,
-                None,
                 self.n_points,
                 self.downsample,
                 self.uid,
@@ -715,18 +961,28 @@ class LinePlot(FlexTrace):
                 batch_key=batch_key,
             )
 
-        if self.downsample == "minmax":
+        if self.buckets_by_x_width:
+            # lttb prefetches a 4x envelope and thins it in ``_to_update``;
+            # fpcs takes one pair per bucket and compensates there.
+            budget = self.n_points * (
+                _LTTB_MINMAX_RATIO if self.downsample == "lttb" else 1
+            )
+            is_fpcs = self.downsample == "fpcs"
+            n_buckets = _fpcs_buckets(self.n_points) if is_fpcs else max(budget // 2, 1)
             x_domain = None if x_range is not None else (domains or {})[self.x_col]
+
             if scan_source:
-                # `nth` already streams (a stride needs no state) and `fpcs` has
-                # no streaming formulation at all, so only minmax needs the swap.
+                # The kernel needs the whole column in memory, so a scan runs
+                # the streaming plan instead. `nth` already streams: a stride
+                # needs no state.
+                plan = _streaming_pairs_plan if is_fpcs else _streaming_envelope_plan
                 return AggregationSpec(
                     expr=pl.lit(None).alias(self.uid),
                     uid=self.uid,
-                    plan=_streaming_envelope_plan(
+                    plan=plan(
                         self.x_col,
                         self.y_col,
-                        self.n_points,
+                        n_buckets,
                         self.uid,
                         (
                             _range_filter_expr(self.x_col, x_range, schema=schema)
@@ -739,7 +995,6 @@ class LinePlot(FlexTrace):
                     ),
                 )
 
-            n_buckets = max(self.n_points // 2, 1)
             x_dtype = schema.get(self.x_col) if schema else None
             grid = _bucket_grid(self.x_col, x_range, x_domain, x_dtype, n_buckets)
             # The kernel rebuilds the same width from ``(lo, hi)``, so grid and
@@ -748,22 +1003,33 @@ class LinePlot(FlexTrace):
             # all-null x) becomes a zero-span sentinel: the kernel returns no
             # points.
             kernel_domain = (grid[0], grid[2]) if grid is not None else (0.0, 0.0)
-            expr = _plugin_minmax_agg_expr(
-                self.x_col,
-                self.y_col,
-                _viewport_window(self.x_col, x_range, schema, x_sorted),
-                self.n_points,
-                self.uid,
-                x_domain=kernel_domain,
+            vp = _viewport_window(self.x_col, x_range, schema, x_sorted)
+            expr = (
+                _plugin_pairs_agg_expr(
+                    self.x_col,
+                    self.y_col,
+                    vp,
+                    n_buckets,
+                    self.uid,
+                    x_domain=kernel_domain,
+                )
+                if is_fpcs
+                else _plugin_minmax_agg_expr(
+                    self.x_col,
+                    self.y_col,
+                    vp,
+                    budget,
+                    self.uid,
+                    x_domain=kernel_domain,
+                )
             )
             return AggregationSpec(expr=expr, uid=self.uid)
 
-        expr = _plugin_line_agg_expr(
+        expr = _plugin_nth_agg_expr(
             self.x_col,
             self.y_col,
             _viewport_window(self.x_col, x_range, schema, x_sorted),
             self.n_points,
-            self.downsample,
             self.uid,
         )
 
@@ -775,13 +1041,51 @@ class LinePlot(FlexTrace):
     ) -> TraceResult:
         """Unpack the aggregated + imploded struct column -> ``{"x": series, "y": series}``.
 
+        ``lttb`` and ``fpcs`` run their stage 2 here: the aggregation returned
+        bucket output, not the final points. Both walk the points in Python, so
+        the values go through their physical representation and are cast back
+        after.
+
         Gaps (null breaks across large x jumps) are a client-side display
         concern, inserted at render time by ``fvApplyLineGaps``
         (``adapters/js/plotly/traces.js``); the server emits gapless x/y.
         """
         raw: pl.Series = df_agg[self.uid].item()
         df_line = raw.explode().struct.unnest()
-        return TraceResult(updates={"x": df_line[self.x_col], "y": df_line[self.y_col]})
+        if self.downsample not in ("lttb", "fpcs"):
+            return TraceResult(
+                updates={"x": df_line[self.x_col], "y": df_line[self.y_col]}
+            )
+
+        # A bucket that holds only nulls or only NaN still emits that value as
+        # its extremum, and a line skips a null or NaN y on every path.
+        df_line = df_line.drop_nulls()
+        if any(dtype.is_float() for dtype in df_line.dtypes):
+            df_line = df_line.filter(
+                pl.all_horizontal(pl.col(pl.Float32, pl.Float64).is_not_nan())
+            )
+
+        if self.downsample == "fpcs":
+            x_src, y_src = df_line["x_min"], df_line["y_min"]
+            x_phys, y_phys = x_src.to_physical(), y_src
+            xs, ys = _fpcs_walk(
+                x_phys.to_list(),
+                y_phys.to_list(),
+                df_line["x_max"].to_physical().to_list(),
+                df_line["y_max"].to_list(),
+            )
+        else:
+            x_src, y_src = df_line[self.x_col], df_line[self.y_col]
+            # LTTB does arithmetic on y as well as on x, so a temporal y also
+            # goes through its physical representation and is cast back.
+            x_phys, y_phys = x_src.to_physical(), y_src.to_physical()
+            xs, ys = _lttb(x_phys.to_list(), y_phys.to_list(), self.n_points)
+        return TraceResult(
+            updates={
+                "x": pl.Series(self.x_col, xs, dtype=x_phys.dtype).cast(x_src.dtype),
+                "y": pl.Series(self.y_col, ys, dtype=y_phys.dtype).cast(y_src.dtype),
+            }
+        )
 
     def _to_grouped_update(self, df_grouped: pl.DataFrame) -> TraceResult:
         """Unpack one grouped line result row into one child result per group."""

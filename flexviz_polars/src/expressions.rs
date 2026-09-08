@@ -127,19 +127,16 @@ struct MinmaxLineKwargs {
 }
 
 // ---------------------------------------------------------------------------
-// fpcs
+// minmax_pairs_line
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct FpcsKwargs {
-    n_points: usize,
-}
-
-#[derive(Deserialize)]
-struct FpcsLineKwargs {
-    n_points: usize,
-    x_name: Option<String>,
-    y_name: Option<String>,
+struct MinmaxPairsKwargs {
+    n_buckets: usize,
+    /// Same meaning as in `MinmaxLineKwargs`: `Some((lo, hi))` switches to
+    /// equal-x-width buckets, `None` keeps the row-count buckets.
+    #[serde(default)]
+    x_domain: Option<(XBound, XBound)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,8 +267,7 @@ fn minmax_line_output(inputs: &[Field]) -> PolarsResult<Field> {
 
 /// `arg_min_max` plus both gathers in one call. Exists because Polars does not
 /// CSE opaque plugin expressions: `x.gather(idx)` / `y.gather(idx)` on the same
-/// `arg_min_max` expression runs the whole scan twice (`fpcs_line` predates this
-/// for the same reason).
+/// `arg_min_max` expression runs the whole scan twice.
 #[polars_expr(output_type_func = minmax_line_output)]
 fn minmax_line(inputs: &[Series], kwargs: MinmaxLineKwargs) -> PolarsResult<Series> {
     polars_ensure!(
@@ -304,60 +300,78 @@ fn minmax_line(inputs: &[Series], kwargs: MinmaxLineKwargs) -> PolarsResult<Seri
     Ok(out.into_series())
 }
 
-fn fpcs_indices_output(inputs: &[Field]) -> PolarsResult<Field> {
-    Ok(Field::new(inputs[0].name().clone(), DataType::UInt32))
-}
-
-#[polars_expr(output_type_func = fpcs_indices_output)]
-fn fpcs_indices(inputs: &[Series], kwargs: FpcsKwargs) -> PolarsResult<Series> {
-    polars_ensure!(
-        kwargs.n_points >= 3,
-        InvalidOperation: "n_points must be at least 3 for FPCS"
-    );
-
-    let s = &inputs[0];
-    let indices = fpcs_index_vec(s, kwargs.n_points)?;
-    Ok(UInt32Chunked::from_iter_values(s.name().clone(), indices.into_iter()).into_series())
-}
-
-fn fpcs_line_output(inputs: &[Field]) -> PolarsResult<Field> {
+fn minmax_pairs_line_output(inputs: &[Field]) -> PolarsResult<Field> {
+    let x = inputs[0].dtype().clone();
+    let y = inputs[1].dtype().clone();
     Ok(Field::new(
         PlSmallStr::EMPTY,
-        DataType::Struct(vec![inputs[0].clone(), inputs[1].clone()]),
+        DataType::Struct(vec![
+            Field::new("x_min".into(), x.clone()),
+            Field::new("y_min".into(), y.clone()),
+            Field::new("x_max".into(), x),
+            Field::new("y_max".into(), y),
+        ]),
     ))
 }
 
-#[polars_expr(output_type_func = fpcs_line_output)]
-fn fpcs_line(inputs: &[Series], kwargs: FpcsLineKwargs) -> PolarsResult<Series> {
+/// One `(x, y)` pair per non-empty bucket: the argmin row and the argmax row of
+/// y, both with their x. `minmax_line` flattens and dedups the same buckets;
+/// this keeps the pairing, which the caller's compensation walk needs.
+#[polars_expr(output_type_func = minmax_pairs_line_output)]
+fn minmax_pairs_line(inputs: &[Series], kwargs: MinmaxPairsKwargs) -> PolarsResult<Series> {
     polars_ensure!(
-        kwargs.n_points >= 3,
-        InvalidOperation: "n_points must be at least 3 for FPCS"
+        kwargs.n_buckets > 0,
+        InvalidOperation: "n_buckets must be greater than 0"
     );
 
     let x = &inputs[0];
     let y = &inputs[1];
     polars_ensure!(
         x.len() == y.len(),
-        ShapeMismatch: "fpcs_line: x and y must have the same length"
+        ShapeMismatch: "minmax_pairs_line: x and y must have the same length"
+    );
+    polars_ensure!(
+        y.len() <= u32::MAX as usize,
+        InvalidOperation: "series length exceeds UInt32 index capacity"
     );
 
-    let indices = fpcs_index_vec(y, kwargs.n_points)?;
-    let idx_ca = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, indices.into_iter());
-    let mut x_taken = x.take(&idx_ca)?;
-    let mut y_taken = y.take(&idx_ca)?;
-    let x_name = output_name(kwargs.x_name, x.name(), "x");
-    let y_name = output_name(kwargs.y_name, y.name(), "y");
-    x_taken.rename(x_name);
-    y_taken.rename(y_name);
-    let len = x_taken.len();
+    let pairs = if y.is_empty() {
+        Vec::new()
+    } else {
+        match kwargs.x_domain {
+            Some((lo, hi)) if !positive_span(lo, hi) => Vec::new(),
+            // The bucket count is not clamped to the row count here: it divides
+            // `[lo, hi]`, so a smaller count would widen the buckets and build a
+            // different grid than the caller's (see `arg_min_max_indices_x_width`).
+            Some((lo, hi)) => {
+                let offsets = x_width_offsets(x, lo, hi, kwargs.n_buckets)?;
+                pairs_for_offsets(y, &offsets)
+            },
+            None => {
+                let offsets = uniform_offsets(y.len(), kwargs.n_buckets.min(y.len()).max(1));
+                pairs_for_offsets(y, &offsets)
+            },
+        }
+    };
 
-    let out =
-        StructChunked::from_series("fpcs_line".into(), len, [&x_taken, &y_taken].into_iter())?;
+    let min_idx = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, pairs.iter().map(|p| p.0));
+    let max_idx = UInt32Chunked::from_iter_values(PlSmallStr::EMPTY, pairs.iter().map(|p| p.1));
+    let mut fields = [
+        x.take(&min_idx)?,
+        y.take(&min_idx)?,
+        x.take(&max_idx)?,
+        y.take(&max_idx)?,
+    ];
+    for (field, name) in fields.iter_mut().zip(["x_min", "y_min", "x_max", "y_max"]) {
+        field.rename(name.into());
+    }
+
+    let out = StructChunked::from_series("minmax_pairs_line".into(), pairs.len(), fields.iter())?;
     Ok(out.into_series())
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers (shared by arg_min_max and fpcs)
+// Internal helpers (shared by the min-max kernels)
 // ---------------------------------------------------------------------------
 
 fn uniform_offsets(len: usize, n_out: usize) -> Vec<(usize, usize)> {
@@ -625,14 +639,6 @@ where
     offsets
 }
 
-fn full_index_vec(len: usize) -> PolarsResult<Vec<u32>> {
-    polars_ensure!(
-        len <= u32::MAX as usize,
-        InvalidOperation: "series length exceeds UInt32 index capacity"
-    );
-    Ok((0..len as u32).collect())
-}
-
 fn output_name(preferred: Option<String>, current: &PlSmallStr, fallback: &str) -> PlSmallStr {
     if let Some(name) = preferred {
         if !name.is_empty() {
@@ -643,170 +649,6 @@ fn output_name(preferred: Option<String>, current: &PlSmallStr, fallback: &str) 
         return current.clone();
     }
     fallback.into()
-}
-
-fn fpcs_index_vec(s: &Series, n_points: usize) -> PolarsResult<Vec<u32>> {
-    let len = s.len();
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    if len <= n_points {
-        return full_index_vec(len);
-    }
-
-    let interior_len = len.saturating_sub(2);
-    if interior_len == 0 {
-        return full_index_vec(len);
-    }
-
-    let minmax_target = (n_points - 2) * 2;
-    if interior_len <= minmax_target {
-        return full_index_vec(len);
-    }
-
-    let interior = s.slice(1, interior_len);
-    let pairs = arg_min_max_pairs(&interior, n_points - 2)?;
-    let pairs: Vec<(u32, u32)> = pairs
-        .into_iter()
-        .map(|(arg_min, arg_max)| (arg_min + 1, arg_max + 1))
-        .collect();
-
-    fpcs_compensate(s, &pairs, n_points)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FpcsFlag {
-    Min,
-    Max,
-    None,
-}
-
-#[derive(Clone, Copy)]
-struct FpcsPoint {
-    x: u32,
-    y: f64,
-}
-
-fn fpcs_compensate(
-    s: &Series,
-    minmax_pairs: &[(u32, u32)],
-    n_points: usize,
-) -> PolarsResult<Vec<u32>> {
-    macro_rules! try_dispatch {
-        ($downcast:ident) => {
-            if let Ok(ca) = s.$downcast() {
-                return Ok(fpcs_compensate_with_values(
-                    s.len(),
-                    minmax_pairs,
-                    n_points,
-                    |idx| ca.get(idx).map_or(f64::NAN, |v| v.to_hist_f64()),
-                ));
-            }
-        };
-    }
-
-    try_dispatch!(i64);
-    try_dispatch!(i32);
-    try_dispatch!(i16);
-    try_dispatch!(i8);
-    try_dispatch!(u64);
-    try_dispatch!(u32);
-    try_dispatch!(u16);
-    try_dispatch!(u8);
-    try_dispatch!(f64);
-    try_dispatch!(f32);
-    try_dispatch!(f16);
-
-    polars_bail!(
-        InvalidOperation:
-        "FPCS is only supported for primitive numeric data, got {}",
-        s.dtype()
-    )
-}
-
-fn fpcs_compensate_with_values<F>(
-    len: usize,
-    minmax_pairs: &[(u32, u32)],
-    n_points: usize,
-    mut value_at: F,
-) -> Vec<u32>
-where
-    F: FnMut(usize) -> f64,
-{
-    // Only push `v` if it differs from the last emitted index, preventing
-    // duplicates when the first bucket's extremum lands on index 0 or when
-    // the last committed point coincides with the endpoint.
-    macro_rules! push_dedup {
-        ($indices:ident, $v:expr) => {{
-            let v: u32 = $v;
-            if $indices.last().copied() != Some(v) {
-                $indices.push(v);
-            }
-        }};
-    }
-
-    let first_y = value_at(0);
-
-    let mut previous_min_flag = FpcsFlag::None;
-    let mut potential_point = FpcsPoint { x: 0, y: first_y };
-    let mut max_point = FpcsPoint { x: 0, y: first_y };
-    let mut min_point = FpcsPoint { x: 0, y: first_y };
-    let mut sampled_indices = Vec::with_capacity(n_points * 2);
-    sampled_indices.push(0u32);
-
-    for &(a, b) in minmax_pairs {
-        let a_y = value_at(a as usize);
-        let b_y = value_at(b as usize);
-        let (min_idx, min_y, max_idx, max_y) = if a_y > b_y {
-            (b, b_y, a, a_y)
-        } else {
-            (a, a_y, b, b_y)
-        };
-
-        // The inverted comparisons match the FPCS paper/tsdownsample behavior:
-        // regular extrema update as expected, and NaNs are selected by the
-        // NaN-propagating policy because comparisons with NaN are false.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN-propagating, see above
-        if !(max_point.y > max_y) {
-            max_point = FpcsPoint {
-                x: max_idx,
-                y: max_y,
-            };
-        }
-        #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN-propagating, see above
-        if !(min_point.y <= min_y) {
-            min_point = FpcsPoint {
-                x: min_idx,
-                y: min_y,
-            };
-        }
-
-        if min_point.x < max_point.x {
-            if previous_min_flag == FpcsFlag::Min && min_point.x != potential_point.x {
-                push_dedup!(sampled_indices, potential_point.x);
-            }
-            push_dedup!(sampled_indices, min_point.x);
-            potential_point = max_point;
-            min_point = max_point;
-            previous_min_flag = FpcsFlag::Min;
-        } else {
-            if previous_min_flag == FpcsFlag::Max && max_point.x != potential_point.x {
-                push_dedup!(sampled_indices, potential_point.x);
-            }
-            push_dedup!(sampled_indices, max_point.x);
-            potential_point = min_point;
-            max_point = min_point;
-            previous_min_flag = FpcsFlag::Max;
-        }
-    }
-
-    // Emit the trailing potential point from the last window before the
-    // endpoint; without this it would be silently dropped.
-    if previous_min_flag != FpcsFlag::None {
-        push_dedup!(sampled_indices, potential_point.x);
-    }
-    push_dedup!(sampled_indices, (len - 1) as u32);
-    sampled_indices
 }
 
 /// Per-window `(arg_min, arg_max)` row indices; `None` where a window is

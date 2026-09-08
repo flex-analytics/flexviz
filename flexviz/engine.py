@@ -238,7 +238,7 @@ class FlexEngine:
 
         # Before the domain scan: on a cached source the check leaves the x
         # column flagged sorted, which makes the min/max collect O(1).
-        verified_x = self._check_line_x(aggregation_traces)
+        verified_x = self._check_line_contract(aggregation_traces)
 
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
@@ -872,12 +872,15 @@ class FlexEngine:
             needed, schema, memoize=self._cache is not None
         )
 
-    def _check_line_x(self, aggregation_traces: list[_AggregationTrace]) -> set[str]:
-        """Validate the x column of every ungrouped minmax line.
+    def _check_line_contract(
+        self, aggregation_traces: list[_AggregationTrace]
+    ) -> set[str]:
+        """Validate every line trace against the current source.
 
-        Those buckets are equal in x width, so a well-formed x is a contract,
-        not a hint. A frame sorted by group then x is not globally sorted, so a
-        grouped line is not checked. ``assume_sorted_x=True`` skips the check.
+        The engine is the one authority for this: every request rebuilds the
+        trace, and the source can change between requests. The trace owns its
+        rules, the builder owns the data check and the sorted memo. Each x
+        column is checked once per request, however many traces share it.
 
         Returns the resident x columns this request verified. Only a cached
         source keeps the sorted flag between requests, so on an uncached one the
@@ -887,14 +890,15 @@ class FlexEngine:
         verified: set[str] = set()
         if lf is None:
             return verified
+        checked: set[str] = set()
         for item in aggregation_traces:
             trace = item.trace
-            if not (
-                trace.trace_type == "line"
-                and trace.group_by_cols is None
-                and trace.downsample == "minmax"
-            ):
+            if trace.trace_type != "line":
                 continue
+            trace.check_schema(lf.schema)
+            if not trace.buckets_by_x_width or trace.x_col in checked:
+                continue
+            checked.add(trace.x_col)
             lf.check_line_x(trace.x_col, memoize=self._cache is not None)
             if not lf.is_scan:
                 verified.add(trace.x_col)

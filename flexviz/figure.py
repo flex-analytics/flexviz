@@ -246,7 +246,7 @@ class Figure:
         color: str | None = None,
         color_map: dict | None = None,
         n_points: int = 1000,
-        downsample: Literal["minmax", "fpcs", "nth"] = "minmax",
+        downsample: Literal["minmax", "lttb", "fpcs", "nth"] = "minmax",
         add_gaps: bool = True,
         axes: tuple[str, ...] = ("x", "y"),
         assume_sorted_x: bool = False,
@@ -257,8 +257,9 @@ class Figure:
         Parameters
         ----------
         x:
-            Column name for x-axis data.  For an ungrouped ``"minmax"`` line it
-            must be sorted ascending: those buckets are equal in x width.
+            Column name for x-axis data.  For an ungrouped ``"minmax"``,
+            ``"lttb"`` or ``"fpcs"`` line it must be sorted ascending: those
+            buckets are equal in x width.
         y:
             Column name for y-axis data.
         name:
@@ -267,48 +268,45 @@ class Figure:
             CSS colour string (e.g. ``"#e74c3c"``).
         n_points:
             Target number of visible points per viewport, between 2 and 25000.
-            For FPCS this is not a hard cap; output may be up to roughly twice
-            this value.
+            ``"lttb"`` returns exactly this many when the prefetch holds more,
+            and fewer when x gaps leave buckets empty.  For FPCS it is not a
+            hard cap; output may be up to roughly twice this value.
         add_gaps:
             When True (default), insert None values at detected gaps in x so
             renderers show a broken line across empty periods.
         downsample:
-            Downsampling algorithm: ``"minmax"`` (default), ``"fpcs"``, or
-            ``"nth"``.
+            Downsampling algorithm: ``"minmax"`` (default), ``"lttb"``
+            (MinMaxLTTB, ungrouped only), ``"fpcs"``, or ``"nth"``.
         axes:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            For an ungrouped `"minmax"` line on a resident frame the engine
-            verifies `x` with one pass over the column: no nulls or NaN, sorted
-            ascending. It raises `ValueError` otherwise. A cached figure pays
-            that once per source and column. An uncached one pays it on every
-            unzoomed request. Set True to skip the check by marking the column
-            sorted via `set_sorted`. Only use it if you guarantee `x` meets the
-            contract. A column that does not then gives wrong results.
+            For an ungrouped `"minmax"`, `"lttb"` or `"fpcs"` line the engine
+            verifies `x` on the first request. On a resident frame it makes one
+            pass over the column: no nulls or NaN, sorted ascending. On a scan
+            source it checks the dtype only. It raises `ValueError` when the
+            column fails. A cached figure pays that once per source and column.
+            An uncached one pays it on every unzoomed request. Set True to skip
+            the check by marking the column sorted via `set_sorted`. Only use it
+            if you guarantee `x` meets the contract. A column that does not then
+            gives wrong results.
         """
-        if self._backend_lf is not None:
-            if downsample == "minmax" and group_by is None:
-                # Fail here rather than on the first request: the ungrouped
-                # minmax envelope buckets by x width.
-                self._backend_lf.check_line_x_schema(x)
-            if assume_sorted_x:
-                # Opt-in: caller guarantees sortedness. This avoids an expensive collect.
-                self._backend_lf.assume_sorted(x)
-        return self._add_trace(
-            LinePlot(
-                x=x,
-                y=y,
-                name=name,
-                color=color,
-                color_map=color_map,
-                n_points=n_points,
-                downsample=downsample,
-                axes=axes,
-                add_gaps=add_gaps,
-                group_by=group_by,
-            )
+        trace = LinePlot(
+            x=x,
+            y=y,
+            name=name,
+            color=color,
+            color_map=color_map,
+            n_points=n_points,
+            downsample=downsample,
+            axes=axes,
+            add_gaps=add_gaps,
+            group_by=group_by,
         )
+        if assume_sorted_x and self._backend_lf is not None:
+            # Opt-in: caller guarantees sortedness. This avoids an expensive collect.
+            self._backend_lf.assume_sorted(x)
+        return self._add_trace(trace)
 
     def add_histogram(
         self,

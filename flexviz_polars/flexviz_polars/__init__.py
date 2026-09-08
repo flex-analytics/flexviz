@@ -71,28 +71,28 @@ def _minmax_line(
     )
 
 
-def _fpcs_indices(expr: IntoExprColumn, n_points: int) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="fpcs_indices",
-        kwargs={"n_points": n_points},
-        is_elementwise=False,
-    )
-
-
-def _fpcs_line(
+def _minmax_pairs_line(
     x_expr: "IntoExprColumn",
     y_expr: "IntoExprColumn",
-    n_points: int,
-    x_name: str | None = None,
-    y_name: str | None = None,
+    n_buckets: int,
+    x_domain: tuple[int | float, int | float] | None = None,
 ) -> pl.Expr:
+    """One ``(x_min, y_min, x_max, y_max)`` row per non-empty bucket.
+
+    Same buckets as ``_minmax_line``: equal x width over ``x_domain`` when it is
+    given, equal row count otherwise. The pairing is kept, so the caller can run
+    a compensation walk over it.
+    """
     return register_plugin_function(
         args=[x_expr, y_expr],
         plugin_path=LIB,
-        function_name="fpcs_line",
-        kwargs={"n_points": n_points, "x_name": x_name, "y_name": y_name},
+        function_name="minmax_pairs_line",
+        kwargs={
+            "n_buckets": n_buckets,
+            "x_domain": (
+                None if x_domain is None else tuple(_kernel_bound(v) for v in x_domain)
+            ),
+        },
         is_elementwise=False,
     )
 
@@ -185,8 +185,8 @@ class FlexvizExprNamespace:
     """Polars expression namespace for flexviz downsampling kernels.
 
     Activated by ``import flexviz_polars``. After that, any Polars expression
-    supports ``.flexviz.every_nth(n)``, ``.flexviz.arg_min_max(n)``,
-    ``.flexviz.fpcs(n)``, and ``.flexviz.fixed_hist(lo, hi, n_bins)``.
+    supports ``.flexviz.every_nth(n)``, ``.flexviz.arg_min_max(n)``, and
+    ``.flexviz.fixed_hist(lo, hi, n_bins)``.
     """
 
     def __init__(self, expr: pl.Expr) -> None:
@@ -224,16 +224,6 @@ class FlexvizExprNamespace:
             buckets contain only one element).
         """
         return _arg_min_max(self._expr, n_points)
-
-    def fpcs(self, n_points: int) -> pl.Expr:
-        """Return FPCS-selected indices for the series.
-
-        FPCS first applies the existing index-bucket MinMax reduction to the
-        interior points, then applies the feature-preserving compensation pass
-        and appends the first and last point.  ``n_points`` is the FPCS target,
-        not a hard cap; the output can be up to roughly ``2 * n_points``.
-        """
-        return _fpcs_indices(self._expr, n_points)
 
     def fixed_hist(self, lo_expr: pl.Expr, hi_expr: pl.Expr, n_bins: int) -> pl.Expr:
         """Compute a fixed-bin 1D histogram using O(n) direct floor-division indexing.

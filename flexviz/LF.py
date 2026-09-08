@@ -196,35 +196,16 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_line_x_schema(self, col: str | pl.Expr) -> None:
-        """Raise unless the schema lets ``col`` carry x for an ungrouped minmax line.
-
-        The bucket grid is arithmetic on x that the Rust kernel runs in i64 or
-        f64, so the dtype must be one the kernel dispatches (see
-        ``_LINE_X_NUMERIC``) or temporal. This reads the schema, never collects.
-
-        Raises
-        ------
-        ValueError
-            If the column is not in the schema, or its dtype cannot carry x.
-        """
-        col_name: str = get_col_name(col)
-        if col_name not in self.schema:
-            raise ValueError(f"Column '{col_name}' not in schema")
-        dtype = self.schema[col_name]
-        if not (dtype in _LINE_X_NUMERIC or dtype.is_temporal()):
-            raise ValueError(
-                f"x column '{col_name}' must be a 64-bit-or-smaller numeric or a "
-                f"temporal for a minmax line, got {dtype}. Cast the column first."
-            )
-
     def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
         """
         Verify that a column can carry x for an ungrouped minmax line.
 
-        The dtype gate always applies. On a scan source that is the whole
-        contract: its streaming envelope is order independent, drops null x and
-        tolerates NaN. A resident frame feeds the kernel, which needs x sorted
+        The dtype gate always applies. The bucket grid is arithmetic on x that
+        the Rust kernel runs in i64 or f64, so the dtype must be one the kernel
+        dispatches (see ``_LINE_X_NUMERIC``) or temporal. That gate reads the
+        schema and never collects. On a scan source it is the whole contract:
+        the streaming envelope is order independent, drops null x and tolerates
+        NaN. A resident frame feeds the kernel, which needs x sorted
         ascending and free of nulls and NaN. That costs one collect: an O(1)
         null check, one pass over the order, and on a float dtype an O(1) read
         of the last element. NaN sorts last, so on a sorted null-free column
@@ -250,12 +231,19 @@ class LFQueryBuilder:
             If the column is not in the schema or breaks the contract.
         """
         col_name: str = get_col_name(col)
-        self.check_line_x_schema(col_name)  # free, so it runs before any collect
+        # Free, so the dtype gate runs before any collect.
+        if col_name not in self.schema:
+            raise ValueError(f"Column '{col_name}' not in schema")
+        dtype = self.schema[col_name]
+        if not (dtype in _LINE_X_NUMERIC or dtype.is_temporal()):
+            raise ValueError(
+                f"x column '{col_name}' must be a 64-bit-or-smaller numeric or a "
+                f"temporal for a minmax line, got {dtype}. Cast the column first."
+            )
         if self.is_scan:
             return
         if col_name in self._sorted_cols:
             return
-        dtype = self.schema[col_name]
         is_float = dtype.is_float()
         x = pl.col(col_name)
         stats = self._ldf.select(
