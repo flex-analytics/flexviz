@@ -203,6 +203,147 @@ class TestGroupedAggregationSpec:
         with pytest.raises(ValueError, match="Extend batch_key"):
             grouped_backend_lf.aggregate([], [spec_a, spec_b])
 
+    def test_plan_spec_result_stored(self, grouped_backend_lf: LFQueryBuilder):
+        """A grouped spec with a plan lands in grouped_dfs with the plan's frame."""
+
+        def plan(ldf: pl.LazyFrame) -> pl.DataFrame:
+            return (
+                ldf.group_by("cat")
+                .agg(pl.col("val").max().alias("plan_uid"))
+                .sort("cat")
+                .collect()
+            )
+
+        spec = GroupedAggregationSpec(
+            uid="plan_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(),
+            plan=plan,
+        )
+        _, grouped = grouped_backend_lf.aggregate([], [spec])
+        df = grouped["plan_uid"]
+        assert set(df.columns) == {"cat", "plan_uid"}
+        assert df.to_dicts() == [
+            {"cat": "A", "plan_uid": 498.0},
+            {"cat": "B", "plan_uid": 499.0},
+        ]
+
+    def test_plan_spec_sees_pre_group_filters(self, grouped_backend_lf: LFQueryBuilder):
+        """The plan gets the cross-filter and the spec's pre-group filters."""
+        seen: list[pl.DataFrame] = []
+
+        def plan(ldf: pl.LazyFrame) -> pl.DataFrame:
+            frame = ldf.collect()
+            seen.append(frame)
+            return frame.group_by("cat").agg(pl.len().alias("plan_uid")).sort("cat")
+
+        spec = GroupedAggregationSpec(
+            uid="plan_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(),
+            pre_group_filters=(pl.col("cat") == "A",),
+            plan=plan,
+        )
+        _, grouped = grouped_backend_lf.aggregate([pl.col("ts") < 100], [spec])
+        # 100 rows pass the cross-filter, half of them are category "A".
+        assert seen[0]["cat"].unique().to_list() == ["A"]
+        assert seen[0].height == 50
+        assert grouped["plan_uid"].to_dicts() == [{"cat": "A", "plan_uid": 50}]
+
+    def test_plan_spec_with_wrong_frame_shape_raises(
+        self, grouped_backend_lf: LFQueryBuilder
+    ):
+        """The plan frame must hold the group columns and a uid column."""
+
+        def no_uid(ldf: pl.LazyFrame) -> pl.DataFrame:
+            return ldf.group_by("cat").agg(pl.len().alias("other")).collect()
+
+        def no_group_col(ldf: pl.LazyFrame) -> pl.DataFrame:
+            return ldf.select(pl.len().alias("plan_uid")).collect()
+
+        for bad_plan in (no_uid, no_group_col):
+            spec = GroupedAggregationSpec(
+                uid="plan_uid",
+                group_cols=("cat",),
+                sort_cols=("cat",),
+                agg_exprs=(),
+                plan=bad_plan,
+            )
+            with pytest.raises(ValueError, match="must return the group columns"):
+                grouped_backend_lf.aggregate([], [spec])
+
+    def test_plan_and_expr_specs_coexist(self, grouped_backend_lf: LFQueryBuilder):
+        """Expression specs still fuse while a plan spec runs on its own."""
+
+        def plan(ldf: pl.LazyFrame) -> pl.DataFrame:
+            return (
+                ldf.group_by("cat")
+                .agg(pl.col("val").max().alias("plan_uid"))
+                .sort("cat")
+                .collect()
+            )
+
+        plan_spec = GroupedAggregationSpec(
+            uid="plan_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(),
+            plan=plan,
+        )
+        sum_spec = GroupedAggregationSpec(
+            uid="sum_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(pl.col("val").sum().alias("sum_uid"),),
+        )
+        mean_spec = GroupedAggregationSpec(
+            uid="mean_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(pl.col("val").mean().alias("mean_uid"),),
+        )
+        _, grouped = grouped_backend_lf.aggregate([], [plan_spec, sum_spec, mean_spec])
+        assert grouped["sum_uid"] is grouped["mean_uid"]
+        assert set(grouped["sum_uid"].columns) == {"cat", "sum_uid", "mean_uid"}
+        assert set(grouped["plan_uid"].columns) == {"cat", "plan_uid"}
+
+    def test_plan_spec_never_fuses(self, grouped_backend_lf: LFQueryBuilder):
+        """A plan spec shares the batch key but stays out of the fused query.
+
+        Its pre-group filters carry no ``pre_group_filter_key``, so fusion with
+        the expression spec would be rejected.
+        """
+
+        def plan(ldf: pl.LazyFrame) -> pl.DataFrame:
+            return (
+                ldf.group_by("cat")
+                .agg(pl.len().alias("plan_uid"))
+                .sort("cat")
+                .collect()
+            )
+
+        plan_spec = GroupedAggregationSpec(
+            uid="plan_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(),
+            pre_group_filters=(pl.col("cat") == "A",),
+            plan=plan,
+        )
+        expr_spec = GroupedAggregationSpec(
+            uid="sum_uid",
+            group_cols=("cat",),
+            sort_cols=("cat",),
+            agg_exprs=(pl.col("val").sum().alias("sum_uid"),),
+            pre_group_filters=(pl.col("ts") < 100,),
+            pre_group_filter_key=("ts", 100),
+        )
+        _, grouped = grouped_backend_lf.aggregate([], [plan_spec, expr_spec])
+        assert grouped["plan_uid"].to_dicts() == [{"cat": "A", "plan_uid": 250}]
+        assert set(grouped["sum_uid"].columns) == {"cat", "sum_uid"}
+
 
 class TestLFQueryBuilderAssumeSorted:
     def test_assume_sorted_does_not_collect_or_raise(self):

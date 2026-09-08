@@ -861,7 +861,9 @@ class FlexEngine:
         domain_cols = {
             item.info.uid: histogram_domains.get(item.info.uid)
             or item.trace.domain_cols(
-                item.update_range, scan_source=self._backend_lf.is_scan
+                item.update_range,
+                schema=schema,
+                scan_source=self._backend_lf.is_scan,
             )
             for item in aggregation_traces
         }
@@ -880,27 +882,34 @@ class FlexEngine:
         The engine is the one authority for this: every request rebuilds the
         trace, and the source can change between requests. The trace owns its
         rules, the builder owns the data check and the sorted memo. Each x
-        column is checked once per request, however many traces share it.
+        column is checked once per request per contract, however many traces
+        share it. A grouped line joins the dtype gate only: its plan reads x in
+        no order, so the same column can carry a grouped and an ungrouped line.
 
-        Returns the resident x columns this request verified. Only a cached
-        source keeps the sorted flag between requests, so on an uncached one the
-        aggregation specs cannot read the answer back off the builder.
+        Returns the resident x columns this request verified sorted. Only a
+        cached source keeps the sorted flag between requests, so on an uncached
+        one the aggregation specs cannot read the answer back off the builder.
         """
         lf = self._backend_lf
         verified: set[str] = set()
         if lf is None:
             return verified
-        checked: set[str] = set()
+        checked: set[tuple[str, bool]] = set()
         for item in aggregation_traces:
             trace = item.trace
             if trace.trace_type != "line":
                 continue
             trace.check_schema(lf.schema)
-            if not trace.buckets_by_x_width or trace.x_col in checked:
+            require_sorted = trace.group_by_cols is None
+            if not trace.buckets_by_x_width or (trace.x_col, require_sorted) in checked:
                 continue
-            checked.add(trace.x_col)
-            lf.check_line_x(trace.x_col, memoize=self._cache is not None)
-            if not lf.is_scan:
+            checked.add((trace.x_col, require_sorted))
+            lf.check_line_x(
+                trace.x_col,
+                memoize=self._cache is not None,
+                require_sorted=require_sorted,
+            )
+            if require_sorted and not lf.is_scan:
                 verified.add(trace.x_col)
         return verified
 

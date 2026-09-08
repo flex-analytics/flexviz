@@ -137,6 +137,30 @@ class TestResolveCount:
         # the aggregation select.
         assert len(collects.calls) == 3
 
+    def test_resident_grouped_line_resolves_x_and_group_bounds(self, collects):
+        """The packed group key needs its bounds, in the same collect as x."""
+        df = pl.DataFrame(
+            {
+                "ts": list(range(200)),
+                "a": [float(i) for i in range(200)],
+                "g": [i % 4 for i in range(200)],
+            }
+        )
+        engine, infos = _engine(
+            df, [LinePlot(x="ts", y="a", n_points=20, group_by="g")]
+        )
+        _init(engine, infos)
+
+        assert len(collects.minmax) == 1
+        plan = collects.minmax[0][1]
+        assert "__min_ts__" in plan and "__min_g__" in plan
+        # The min/max and the grouped plan. A third would be an order pass,
+        # which a grouped line never needs.
+        assert len(collects.calls) == 2
+        # The plan streams on a resident frame too: that is what keeps a
+        # grouped line at megabytes instead of gigabytes.
+        assert "streaming" in collects.engines
+
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
         """One min/max scan plus one batched select, however many histograms."""

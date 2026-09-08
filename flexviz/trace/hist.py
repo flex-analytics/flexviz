@@ -235,7 +235,11 @@ class Histogram(FlexTrace):
     # ------------------------------------------------------------------
 
     def domain_cols(
-        self, update_range: Dict[str, Any], *, scan_source: bool = False
+        self,
+        update_range: Dict[str, Any],
+        *,
+        schema: pl.Schema | None = None,
+        scan_source: bool = False,
     ) -> tuple[str, ...]:
         if update_range.get(self.prop_key) is not None:
             return ()
