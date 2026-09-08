@@ -219,6 +219,14 @@ See the compatibility policy in the
 [Architecture.md](https://github.com/flex-analytics/flexviz/blob/main/Architecture.md) 
 is the design source of truth.
 
+## Acknowledgements
+
+FlexViz builds on ideas from projects that pioneered server-side aggregation for interactive visualization:
+
+- [Mosaic](https://github.com/uwdata/mosaic): scalable linked views over DuckDB, from the UW Interactive Data Lab.
+- [VegaFusion](https://github.com/hex-inc/vegafusion): server-side acceleration for Vega and Altair.
+- [Falcon](https://github.com/vega/falcon): cross-filter prefetching with data cubes.
+
 ## License
 
 [Apache-2.0](https://github.com/flex-analytics/flexviz/blob/main/LICENSE) © 2026 [Flex Analytics BV](https://flexviz.tech)
