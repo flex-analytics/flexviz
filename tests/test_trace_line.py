@@ -11,17 +11,20 @@ import datetime as dt
 import math
 import random
 
+from flexviz.engine import FlexEngine, TraceInfo
+from flexviz.events import InteractionEvent
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.line import LinePlot, _grouped_bucket_keys
+from flexviz.trace.line import LinePlot
+from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 
 # ---- helpers ---------------------------------------------------------------
 
 
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
-    cols = trace.domain_cols(update_range, schema=lf.schema, scan_source=lf.is_scan)
+    cols = trace.domain_cols(update_range)
     return lf.physical_minmax(list(cols), memoize=False) if cols else {}
 
 
@@ -281,23 +284,21 @@ class TestLinePlotPlugin:
         assert len(update["x"]) <= 20
         assert 10.0 in update["y"].to_list()
 
-    def test_minmax_agg_expr_runs_kernel_once(self):
-        """Pin the fusion: one minmax_line call, no bare arg_min_max.
+    def test_pairs_agg_expr_runs_kernel_once(self):
+        """Pin the fusion: one kernel call per trace.
 
-        Polars does not CSE opaque plugin expressions, so the two-gather form
-        (x.gather(idx), y.gather(idx)) evaluated the whole argmin/argmax scan
-        twice per trace. Output-based tests are blind to that: reverting to the
-        two-gather form changes no result, only the work. The optimized plan is
-        where the property is visible.
+        Polars does not CSE opaque plugin expressions, so a per-field form would
+        evaluate the whole argmin/argmax scan once per gather. Output-based tests
+        are blind to that: it changes no result, only the work. The optimized
+        plan is where the property is visible.
         """
-        from flexviz.trace.line import _plugin_minmax_agg_expr
+        from flexviz.trace.line import _plugin_pairs_agg_expr
 
         lf = pl.DataFrame({"ts": [1.0, 2.0], "val": [3.0, 4.0]}).lazy()
-        plan = lf.select(_plugin_minmax_agg_expr("ts", "val", None, 100, "u")).explain(
-            optimized=True
-        )
-        assert plan.count("minmax_line") == 1
-        assert "arg_min_max" not in plan
+        plan = lf.select(
+            _plugin_pairs_agg_expr("ts", "val", None, 50, "u", (1.0, 2.0))
+        ).explain(optimized=True)
+        assert plan.count("minmax_pairs_line") == 1
 
     def test_fpcs_preserves_spike(self):
         vals = [0.0] * 499 + [1000.0] + [0.0] * 500
@@ -344,6 +345,29 @@ class TestLinePlotPlugin:
         )
         assert xs == [0, 4, 5, 11, 14, 19]
         assert ys == [10.0, 14.0, 25.0, 5.0, 32.0, 15.0]
+
+    def test_fpcs_keeps_both_extrema_at_one_x(self):
+        # Two rows share a timestamp and hold the min and the max of their
+        # bucket. Deduplicating on x alone dropped one of the two.
+        df = pl.DataFrame(
+            {
+                "ts": [0, 0, 1, 2, 3, 4, 5, 6],
+                "val": [-10.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            }
+        )
+        update = _aggregate_line(df, n_points=4, downsample="fpcs")
+        ys = update["y"].to_list()
+        assert 10.0 in ys and -10.0 in ys
+
+    def test_fpcs_emits_a_repeated_point_once(self):
+        # Two single-row buckets: the first defers the point it just emitted,
+        # and the second re-emits it.
+        from flexviz.trace.line import _fpcs_walk
+
+        assert _fpcs_walk([0, 1], [5.0, 1.0], [0, 1], [5.0, 1.0]) == (
+            [0, 1],
+            [5.0, 1.0],
+        )
 
     def test_fpcs_resident_matches_the_scan_plan(self, tmp_path):
         df = _gappy_frame()
@@ -606,11 +630,12 @@ class TestSortedViewportSlice:
     """``x_sorted`` picks a zero-copy slice over an ``is_between`` mask.
 
     It is a performance path only: every case here asserts the slice returns
-    exactly what the mask returns.
+    exactly what the mask returns. The flag decides for ``nth`` alone; an
+    x-width line is sorted by contract and always slices.
     """
 
     @staticmethod
-    def _agg(df: pl.DataFrame, x_range, x_sorted: bool, downsample="minmax") -> dict:
+    def _agg(df: pl.DataFrame, x_range, x_sorted: bool, downsample="nth") -> dict:
         lf = LFQueryBuilder(df)
         trace = LinePlot(x="ts", y="val", n_points=100, downsample=downsample)
         update_range = {"x": x_range} if x_range else {}
@@ -640,7 +665,6 @@ class TestSortedViewportSlice:
             {"ts": list(range(n)), "val": [float((i * 37) % 101) for i in range(n)]}
         ).with_columns(ts=pl.col("ts").cast(dtype))
 
-    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
     @pytest.mark.parametrize(
         "x_range",
         [
@@ -651,11 +675,11 @@ class TestSortedViewportSlice:
             (2500, 2500),  # single point
         ],
     )
-    def test_slice_matches_mask(self, x_range, downsample):
+    def test_slice_matches_mask(self, x_range):
         df = self._df()
         assert self._same(
-            self._agg(df, x_range, True, downsample),
-            self._agg(df, x_range, False, downsample),
+            self._agg(df, x_range, True),
+            self._agg(df, x_range, False),
         )
 
     def test_slice_matches_mask_float_x(self):
@@ -711,7 +735,7 @@ class TestSortedViewportSlice:
         keep = pl.col("val") > 20.0
         got = []
         for flag in (False, True):
-            trace = LinePlot(x="ts", y="val", n_points=100)
+            trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
             spec = trace.get_aggregation_spec(
                 {"x": (500, 3000)}, schema=lf.schema, x_sorted=flag
             )
@@ -765,9 +789,7 @@ class TestLineXWidthBuckets:
             ({}, {"x": (0, 10)}, ()),
             ({"group_by": "sensor"}, {}, ("ts",)),
             ({"group_by": "sensor"}, {"x": (0, 10)}, ()),
-            ({"group_by": "gi"}, {}, ("ts", "gi")),
-            ({"group_by": "gi"}, {"x": (0, 10)}, ("gi",)),
-            ({"group_by": ["sensor", "gi"], "downsample": "fpcs"}, {}, ("ts", "gi")),
+            ({"group_by": ["sensor", "gi"], "downsample": "fpcs"}, {}, ("ts",)),
             ({"group_by": "sensor", "downsample": "nth"}, {}, ()),
             ({"downsample": "nth"}, {}, ()),
             ({"downsample": "fpcs"}, {}, ("ts",)),
@@ -779,8 +801,6 @@ class TestLineXWidthBuckets:
             "zoomed",
             "grouped",
             "grouped_zoomed",
-            "grouped_int",
-            "grouped_int_zoomed",
             "grouped_two_cols",
             "grouped_nth",
             "nth",
@@ -789,19 +809,12 @@ class TestLineXWidthBuckets:
             "fpcs_zoomed",
         ],
     )
-    @pytest.mark.parametrize("scan_source", [False, True], ids=["resident", "scan"])
-    def test_domain_cols(self, kwargs, update_range, expected, scan_source):
+    def test_domain_cols(self, kwargs, update_range, expected):
         # The x domain is requested on both source kinds: every x-width
-        # formulation buckets by x width. A grouped line adds the bounds its
-        # packed key needs, on every request.
-        schema = pl.Schema(
-            {"ts": pl.Int64, "val": pl.Float64, "sensor": pl.String, "gi": pl.Int32}
-        )
+        # formulation buckets by x width. Grouping adds no column: the group
+        # key needs no bounds.
         trace = LinePlot(x="ts", y="val", **kwargs)
-        assert (
-            trace.domain_cols(update_range, schema=schema, scan_source=scan_source)
-            == expected
-        )
+        assert trace.domain_cols(update_range) == expected
 
     @staticmethod
     def _resident_and_scan(df, tmp_path, n_points, x_range=None):
@@ -936,6 +949,25 @@ class TestLineXWidthBuckets:
         resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
         assert len(resident["x"]) == 20
         assert resident["x"].to_list() == scanned["x"].to_list()
+
+    def test_float_x_on_a_bucket_edge_matches_the_scan_plan(self, tmp_path):
+        # 10 buckets of width 0.1 over (0.0, 1.0), so many rows sit exactly on
+        # an edge. The kernel and the plan must place each of them in the same
+        # bucket: `7 * 0.1` rounds above 0.7, so an edge comparison put that row
+        # one bucket below the plan.
+        # y rises with x, so each bucket's extrema are its first and last row:
+        # one row moving bucket changes the output.
+        n = 1000
+        df = pl.DataFrame(
+            {
+                "ts": [i / n for i in range(n + 1)],
+                "val": [float(i) for i in range(n + 1)],
+            },
+            schema={"ts": pl.Float64, "val": pl.Float64},
+        )
+        resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
+        assert resident["x"].to_list() == scanned["x"].to_list()
+        assert resident["y"].to_list() == scanned["y"].to_list()
 
     @pytest.mark.parametrize("unit", ["ns", "us"])
     @pytest.mark.parametrize("zoomed", [False, True], ids=["unzoomed", "zoomed"])
@@ -1161,6 +1193,25 @@ class TestGroupedXWidthBuckets:
         assert set(out) == {"a", "b"}
         assert not any(math.isnan(v) for u in out.values() for v in u["x"].to_list())
 
+    def test_a_nan_only_group_gets_no_child(self):
+        # Every key form must drop a NaN x. "site" is a second string column,
+        # so that group_by takes the multi-column key and "g" the packed one.
+        df = _grouped_frame().with_columns(
+            ts=pl.when(pl.col("g") == "b")
+            .then(float("nan"))
+            .otherwise(pl.col("ts").cast(pl.Float64)),
+            site=pl.lit("north"),
+        )
+        lf = LFQueryBuilder(df)
+        packed = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by="g")
+        )
+        multi = _grouped_points(
+            lf, LinePlot(x="ts", y="val", n_points=100, group_by=["g", "site"])
+        )
+        assert set(packed) == {"a"}
+        assert set(multi) == {'["a","north"]'}
+
     def test_a_tenth_of_the_domain_gets_a_tenth_of_the_points(self):
         # The whole point of one shared grid (issue #16). Row-count buckets
         # would spend the full budget on the short series.
@@ -1179,36 +1230,66 @@ class TestGroupedXWidthBuckets:
         assert 0.05 < len(out["a"]["x"]) / len(out["b"]["x"]) < 0.2
 
     @pytest.mark.parametrize(
-        "group_cols,domains,expected",
+        "group_cols,expected",
         [
-            (("g",), {}, ["__b"]),
-            (("gi",), {"gi": (3, 8)}, ["__b"]),
-            (("g", "site"), {}, ["g", "site", "__b"]),
-            (("val",), {"val": (0.0, 1.0)}, ["val", "__b"]),
-            (("gi",), {"gi": (-(2**62), 2**62)}, ["gi", "__b"]),
-            (("gi",), {}, ["gi", "__b"]),
+            (("g",), ["__b"]),
+            (("gc",), ["__b"]),
+            (("gi",), ["gi", "__b"]),
+            (("val",), ["val", "__b"]),
+            (("g", "site"), ["g", "site", "__b"]),
+            (("g", "gi"), ["g", "gi", "__b"]),
         ],
-        ids=["str", "int", "two_str", "float", "overflow", "no_bounds"],
+        ids=["str", "cat", "int", "float", "two_str", "str_int"],
     )
-    def test_the_key_form(self, group_cols, domains, expected):
+    def test_the_key_form(self, group_cols, expected):
         keys = _grouped_bucket_keys(
-            group_cols, _grouped_frame().schema, domains, 50, pl.col("ts")
+            group_cols, _grouped_frame().schema, 50, pl.col("ts")
         )
         assert keys[1] == expected
 
-    def test_the_fallback_key_matches_the_packed_one(self):
-        # The same two series, once with ids the key packs and once with ids
-        # 2**62 apart, whose width product overflows it.
-        df = _grouped_frame()
-        wide = df.with_columns(
-            gi=pl.when(pl.col("g") == "a").then(-(2**62)).otherwise(2**62)
+
+class TestPlanDropsNaNAndNullX:
+    """No bucket holds a null or a NaN x, so every plan form drops those rows."""
+
+    @staticmethod
+    def _pairs(group_cols=None):
+        df = pl.DataFrame(
+            {
+                "ts": [0.0, 1.0, 2.0, 3.0, float("nan"), None],
+                "val": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "gi": [1] * 6,
+                "gs": ["a"] * 6,
+            },
+            schema={
+                "ts": pl.Float64,
+                "val": pl.Float64,
+                "gi": pl.Int64,
+                "gs": pl.String,
+            },
         )
-        trace = LinePlot(x="ts", y="val", n_points=100, group_by="gi")
-        packed = _grouped_points(LFQueryBuilder(df), trace)
-        multi = _grouped_points(LFQueryBuilder(wide), trace)
-        assert [_points(u) for u in multi.values()] == [
-            _points(u) for u in packed.values()
+        run = pairs_plan(
+            "ts",
+            "val",
+            2,
+            "u",
+            None,
+            None,
+            (0.0, 3.0),
+            df.schema,
+            group_cols=group_cols,
+        )
+        return run(df.lazy())["u"].to_list()[0]
+
+    def test_every_key_form_gives_the_same_pairs(self):
+        # The packed key drops both rows through its null key. The ungrouped
+        # plan and the multi-column fallback must agree with it.
+        expected = [
+            {"x_min": 0.0, "y_min": 1.0, "x_max": 1.0, "y_max": 2.0},
+            {"x_min": 2.0, "y_min": 3.0, "x_max": 3.0, "y_max": 4.0},
         ]
+        assert self._pairs() == expected
+        assert self._pairs(("gs",)) == expected
+        assert self._pairs(("gi",)) == expected
 
 
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------
@@ -1220,6 +1301,17 @@ def _lttb_frame(n: int = 10_000) -> pl.DataFrame:
         {"ts": list(range(n)), "val": [rng.random() * 100 for _ in range(n)]},
         schema={"ts": pl.Int64, "val": pl.Float64},
     )
+
+
+def _walk(n: int) -> list[int]:
+    """A random walk whose y range is close to the float64 ulp at a ns epoch."""
+    rng = random.Random(20260905)
+    value = 0
+    out = []
+    for _ in range(n):
+        value += rng.randint(-5, 5)
+        out.append(value)
+    return out
 
 
 class TestLineLTTB:
@@ -1297,6 +1389,31 @@ class TestLineLTTB:
         assert out["x"].dtype == pl.Datetime("ns")
         assert len(out["x"]) == 100
         assert out["x"][0] >= t0
+
+    def test_a_large_y_offset_picks_the_same_points(self):
+        # The triangle areas average y, so a y past 2**53 loses precision in
+        # float64 and the argmax flips. A nanosecond epoch sits near 1.7e18.
+        from flexviz.trace.line import _lttb
+
+        n = 4_000
+        y = _walk(n)
+        x = list(range(n))
+        assert _lttb(x, y, 100)[0] == _lttb(x, [v + 2**60 for v in y], 100)[0]
+
+    def test_temporal_y_picks_the_same_points_as_its_physical(self):
+        # A Datetime("ns") y goes through its physical, which is that same
+        # large offset.
+        n = 4_000
+        ints = pl.DataFrame(
+            {"ts": list(range(n)), "val": pl.Series(_walk(n), dtype=pl.Int64)}
+        )
+        stamps = ints.with_columns(
+            val=(pl.col("val") + 1_700_000_000_000_000_000).cast(pl.Datetime("ns"))
+        )
+        trace = LinePlot(x="ts", y="val", n_points=100, downsample="lttb")
+        from_ints = _minmax_points(LFQueryBuilder(ints), trace)
+        from_stamps = _minmax_points(LFQueryBuilder(stamps), trace)
+        assert from_stamps["x"].to_list() == from_ints["x"].to_list()
 
     def test_temporal_y_round_trips_its_dtype(self):
         n = 5_000
@@ -1425,6 +1542,125 @@ class TestBucketsByXWidth:
         assert not LinePlot(
             x="ts", y="val", group_by="sensor", downsample="nth"
         ).buckets_by_x_width
+
+
+def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
+    """Drive one line trace through the engine, the way a request does."""
+    engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+    infos = [TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line")]
+    return engine.process(InteractionEvent(type="init", force_update=True), infos)
+
+
+def _both_sources(df: pl.DataFrame, path) -> list[LFQueryBuilder]:
+    """The same frame as a resident source and as a file source."""
+    df.write_parquet(path)
+    return [LFQueryBuilder(df), LFQueryBuilder(pl.scan_parquet(path))]
+
+
+class TestCheckSchema:
+    """The dtype half of the line contract. Reads the schema, never collects."""
+
+    @staticmethod
+    def _schema(x_dtype, y_dtype=pl.Float64) -> pl.Schema:
+        return pl.Schema({"ts": x_dtype, "val": y_dtype})
+
+    @pytest.mark.parametrize("dtype", [pl.Int64, pl.Float32, pl.Datetime("us")])
+    def test_a_bucketable_x_passes(self, dtype):
+        LinePlot(x="ts", y="val").check_schema(self._schema(dtype))
+
+    @pytest.mark.parametrize("x,y", [("nope", "val"), ("ts", "nope")])
+    def test_a_missing_column_is_rejected(self, x, y):
+        with pytest.raises(ValueError, match="not in schema"):
+            LinePlot(x=x, y=y).check_schema(self._schema(pl.Int64))
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_string_x_is_rejected(self, downsample):
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            LinePlot(x="ts", y="val", downsample=downsample).check_schema(
+                self._schema(pl.String)
+            )
+
+    @pytest.mark.parametrize("dtype", [pl.Int128, pl.Decimal(10, 2)])
+    def test_a_wider_numeric_x_is_rejected(self, dtype):
+        # Wider than the kernel's i64 edge search.
+        with pytest.raises(ValueError, match="64-bit-or-smaller"):
+            LinePlot(x="ts", y="val").check_schema(self._schema(dtype))
+
+    def test_a_grouped_line_gates_its_x_too(self):
+        # The grid is arithmetic on x, grouped as well.
+        with pytest.raises(ValueError, match="numeric or a temporal"):
+            LinePlot(x="ts", y="val", group_by="ts").check_schema(
+                self._schema(pl.String)
+            )
+
+    def test_an_nth_line_takes_any_x(self):
+        # A stride carries no grid, so it needs no bucketable x.
+        LinePlot(x="ts", y="val", downsample="nth").check_schema(
+            self._schema(pl.String)
+        )
+
+    def test_lttb_rejects_a_non_numeric_y(self):
+        with pytest.raises(ValueError, match="numeric, temporal or Boolean"):
+            LinePlot(x="ts", y="val", downsample="lttb").check_schema(
+                self._schema(pl.Int64, y_dtype=pl.String)
+            )
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    @pytest.mark.parametrize(
+        "dtype", [pl.Decimal(10, 2), pl.Int128, pl.Categorical(), pl.Enum(["a"])]
+    )
+    def test_a_y_the_pair_kernel_cannot_take_is_rejected(self, dtype, downsample):
+        with pytest.raises(ValueError, match="must not be a Decimal"):
+            LinePlot(x="ts", y="val", downsample=downsample).check_schema(
+                self._schema(pl.Int64, y_dtype=dtype)
+            )
+
+    def test_an_nth_line_takes_any_y(self):
+        # A stride gathers rows and compares nothing.
+        LinePlot(x="ts", y="val", downsample="nth").check_schema(
+            self._schema(pl.Int64, y_dtype=pl.Decimal(10, 2))
+        )
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb"])
+    def test_a_decimal_y_is_rejected_on_both_source_kinds(self, tmp_path, downsample):
+        # The kernel panics on a Decimal y and the scan plan accepts it, so
+        # without the gate residency would decide the outcome.
+        df = pl.DataFrame({"ts": list(range(100))}).with_columns(
+            val=pl.col("ts").cast(pl.Decimal(10, 2))
+        )
+        for lf in _both_sources(df, tmp_path / "decimal.parquet"):
+            with pytest.raises(ValueError, match="must not be a Decimal"):
+                _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+
+    @pytest.mark.parametrize(
+        "dtype",
+        [
+            pl.Int8,
+            pl.Int16,
+            pl.Int32,
+            pl.Int64,
+            pl.UInt8,
+            pl.UInt16,
+            pl.UInt32,
+            pl.UInt64,
+            pl.Float32,
+            pl.Float64,
+            pl.Boolean,
+            pl.Date,
+            pl.Datetime("us"),
+            pl.Datetime("ns"),
+            pl.Duration("ms"),
+            pl.Time,
+            pl.String,
+        ],
+    )
+    def test_an_accepted_y_runs_on_both_source_kinds(self, tmp_path, dtype):
+        df = pl.DataFrame({"ts": list(range(100))}).with_columns(
+            val=pl.col("ts").cast(dtype)
+        )
+        for lf in _both_sources(df, tmp_path / "y.parquet"):
+            deltas = _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+            assert len(deltas[0].updates["x"]) > 0
 
 
 class TestLineDownsampleValidation:

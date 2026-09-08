@@ -17,13 +17,13 @@
 
 => SPEC is key to all of this
 
-- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `arg_min_max`, `minmax_line`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, and `fixed_hist2d_reduce` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and argmin/argmax kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
+- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, and `fixed_hist2d_reduce` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and argmin/argmax kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
 - **Grouped traces** — grouped parents stay logical-only, `LFQueryBuilder` batches shared grouped queries, and group→color mapping persists in client-owned spec state
 - **Multi-column labels and group_by** — `BarPlot.labels`, `PiePlot.labels`, and any trace's `group_by` accept either a string or a list of strings.  Multi-column values are stored as JSON-encoded composite strings (e.g. `'["Europe","Germany"]'`) for legend keys, color-domain mapping, and child-uid stability.  Aggregation uses multi-column `group_by(...)` in Polars; cross-filter emission decomposes the composite back into per-column clauses so the wire format remains a list of `ClauseFilter` objects, never a JSON-encoded string.
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
 - **Linked hover** — fully client-side; a single on/off toggle (`hover_mode`), with the runtime auto-selecting the projection from the hovered source trace: lines and 1D histograms project a point onto shared axes (guides + bin-bands), while 2D cell sources (histogram2d, geo) project a cell. Column-to-figure-axis mapping computed at page load; persists in spec state through share/restore
 - **Draggable dashboard grid** — optional GridStack layout (`layout.draggable=True`) with client-side drag/resize, persisted `grid_items`, and a toolbar lock button that toggles editability (`layout.grid_editable`) without backend round-trips
-- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. A grouped line also asks for the bounds of its integer-like group columns, which its packed key needs on every request. A `cache=True` source memoizes the bounds; a `cache=False` source recomputes them on every request that needs them.
+- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. A `cache=True` source memoizes the bounds; a `cache=False` source recomputes them on every request that needs them.
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
@@ -357,7 +357,7 @@ FlexTrace (ABC)
 ├── group_by: str | list[str] | None     ← raw value from _params["group_by"]
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
-├── domain_cols(update_range, *, scan_source=False) → tuple[str, ...]
+├── domain_cols(update_range) → tuple[str, ...]
 │     ← columns whose unfiltered (min, max) the spec needs; () when the
 │       viewport supplies bounds
 ├── get_aggregation_spec(update_range, schema)
@@ -452,21 +452,22 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - `trace_type = "line"`
 - Four downsampling strategies, selected via `downsample` param:
   - **`"nth"`** — uniform stride: uses the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`) — stride computed inside the kernel, no `len()` expression dependency, enabling N grouped sub-traces to parallelize in one `select()`.
-  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, selects argmin + argmax of y per bucket, and gathers x and y at those indices. Preserves extrema and spikes on every path.
-    - **Bucket grid.** Every x-width line buckets by equal **x width**, grouped or not. Both source kinds build the same grid (`_bucket_grid`). So `minmax` and `lttb` return the same y multiset on both source kinds, and differ only in which member of an exact y plateau they pick. `fpcs` can emit a different point set on such a plateau, because the walk orders each pair by x. The grid spans the viewport when zoomed, or the engine-resolved unfiltered `(min, max)` when not, so a cross-filter never moves the bucket edges. `domain_cols` requests `x_col` for every unzoomed x-width line, on either source kind.
-    - **Resident frame.** One `minmax_line` Rust kernel call with an `x_domain`. One call on purpose: Polars does not CSE opaque plugin expressions, so a two-gather form runs the whole scan twice per trace.
-    - **Scan source.** The kernel would materialise the whole column, so the engine swaps in `_streaming_envelope_plan`: one streaming `group_by` collect over the same grid, with `min_by`/`max_by` for the x at each extremum. That plan is order-independent, drops null x and tolerates NaN, so a scan needs only the dtype gate.
-    - **Grouped.** A grouped x-width line runs one streaming `group_by(key, bucket)` plan on both source kinds (`_grouped_envelope_plan`, `_grouped_pairs_plan`), collected with `engine="streaming"` even on a resident frame. Every group bins on the same `_bucket_grid` as an ungrouped line over the same x and `n_points`, so a group that covers a tenth of the domain gets a tenth of the budget. That split is provisional (issue #16) and pinned by a test. A null x row falls out, and the y-plateau tie-break is the arbitrary one of the ungrouped scan plan. At 100M rows and 10 groups the plan takes 0.8-0.95 s and 16 MiB, against 1.2-1.6 s and 3.8-5.7 GiB for the kernel inside `group_by().agg()`. Grouped `nth` keeps that kernel, with row-count buckets per group.
-    - **The grouped key.** `_grouped_bucket_keys` packs the group columns and the bucket into one Int64 key when it can: a string-like column takes its categorical physical, which carries no resolved bound and so must lead, and every other id is `value - min + 1` over the resolved bounds, with null in slot 0. The group values come back through `first()`. A dtype with no id, a second string-like column, missing bounds, or a width product that would overflow fall back to `group_by(*group_cols, bucket)`. The packed key measured 1.4-1.7x faster than the multi-column one, and the bounds probe costs 0.02 s. `domain_cols` therefore asks for the integer-like group columns on every request, zoomed too.
-    - **The x contract.** Every x-width strategy shares it (`LinePlot.buckets_by_x_width`), grouped or not. The engine is the one authority. In `_check_line_contract`, before it resolves the domains, it checks every line trace against the current schema and data. `LinePlot.check_schema(schema)` reads the y dtype and never collects. `LFQueryBuilder.check_line_x(col, memoize=...)` runs once per x column and contract per request, and only for an x-width line. A grouped line passes the dtype gate and nothing else (`require_sorted=False`), because arithmetic buckets read x in no order. It raises `ValueError` when the column fails the contract, and `assume_sorted_x=True` skips the data pass. The dtype gate at the top of `check_line_x` reads the schema, never collects, and always applies.
+  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, keeps the argmin + argmax of y per bucket, and flattens the two into points. Preserves extrema and spikes on every path.
+    - **Stage 1.** One shape for all three x-width strategies: one `(x_min, y_min, x_max, y_max)` pair per non-empty bucket, in bucket order. `_to_update` is then the one place points are produced. `minmax` and `lttb` flatten the pairs (concat, unique, sort by x) and `fpcs` walks them.
+    - **Bucket grid.** Every x-width line buckets by equal **x width**, grouped or not. Both source kinds build the same grid (`bucket_grid`, in `trace/line_buckets.py`), with the one bucket count `_bucket_budget` gives, and read the bucket of a row with the same arithmetic: exact integer division on a whole width, and `floor((x - lo) * (1 / width))` on a fractional one. The reciprocal multiply is spelled out on both sides, because comparing x against `lo + i * width` rounds the other way at an edge. So `minmax` and `lttb` return the same y multiset on both source kinds, and differ only in which member of an exact y plateau they pick. `fpcs` can emit a different point set on such a plateau, because the walk orders each pair by x. The grid spans the viewport when zoomed, or the engine-resolved unfiltered `(min, max)` when not, so a cross-filter never moves the bucket edges. `domain_cols` requests `x_col` for every unzoomed x-width line, on either source kind.
+    - **Resident frame.** One `minmax_pairs_line` Rust kernel call with an `x_domain`. One call on purpose: Polars does not CSE opaque plugin expressions, so a per-field gather form runs the whole scan once per field.
+    - **Scan source.** The kernel would materialise the whole column, so the engine swaps in `pairs_plan`: one streaming `group_by` collect over the same grid, with `min_by`/`max_by` for the x at each extremum. That plan is order-independent and drops null and NaN x, so a scan needs only the dtype gate.
+    - **Grouped.** A grouped x-width line runs `pairs_plan` with its group columns on both source kinds: one streaming `group_by(key, bucket)`, collected with `engine="streaming"` even on a resident frame. Every group bins on the same `bucket_grid` as an ungrouped line over the same x and `n_points`, so a group that covers a tenth of the domain gets a tenth of the budget. That split is provisional (issue #16) and pinned by a test. A null or NaN x row falls out, and the y-plateau tie-break is the arbitrary one of the ungrouped scan plan. At 100M rows and 10 groups the plan takes 0.8-0.95 s and 16 MiB, against 1.2-1.6 s and 3.8-5.7 GiB for the kernel inside `group_by().agg()`. Grouped `nth` keeps that kernel, with row-count buckets per group.
+    - **The grouped key.** `_grouped_bucket_keys` packs a single string-like group column and the bucket into one Int64 key, so the `group_by` hashes one column instead of two. Only that shape packs: a categorical physical is a small id the frame already carries, needing no resolved bounds. The group value comes back through `first()`. Every other shape (any other dtype, or two or more group columns) uses `group_by(*group_cols, bucket)`. Grouping therefore adds no column to `domain_cols`.
+    - **The x contract.** Every x-width strategy shares it (`LinePlot.buckets_by_x_width`), grouped or not. The engine is the one authority: `_check_line_contract` runs before the domains are resolved, and splits in two. `LinePlot.check_schema(schema)` runs for every line trace and reads dtypes only, never collects: both columns must be in the schema, an x-width line needs an x the grid can bucket (a 64-bit-or-smaller numeric, or a temporal) and a y the bucket pass can compare (not `Decimal`, `Int128`, `Categorical` or `Enum`, which the kernel panics on and the plan accepts), and an `lttb` line needs a y it can do arithmetic on. `LFQueryBuilder.check_line_x(col, memoize=...)` then reads the data, and only where the order matters: an ungrouped x-width line on a resident frame, once per x column per request however many traces share it. A grouped plan and a scan plan read x in no order, so they stop at the dtype gate. Both raise `ValueError`, and `assume_sorted_x=True` skips the data pass.
     - **The resident-frame check.** On a resident frame `check_line_x` adds one collect: an O(1) null check, one pass asserting ascending order, and, on a float dtype, an O(1) trailing-NaN probe. NaN sorts last, so on a sorted null-free column every NaN is a suffix. A NaN in the middle fails the order pass instead.
-    - **`memoize`** is the same static-data contract as `physical_minmax`. A `cache=True` source keeps the sorted flag, so the check runs once per source and column, and the min/max collect that follows is O(1). A `cache=False` source keeps nothing and re-checks on every unzoomed request, so `_check_line_contract` returns the columns it verified and the engine threads them into `x_sorted`.
+    - **`memoize`** is the same static-data contract as `physical_minmax`. A `cache=True` source keeps the sorted flag, so the check runs once per source and column, and the min/max collect that follows is O(1). A `cache=False` source keeps nothing and re-checks on every request that reaches aggregation, zoomed or not.
     - **Build time.** `Figure.add_line` runs no schema or data check. It only records the `assume_sorted_x` promise on the builder. Every check happens in the engine, on the first request. `n_points` is bounded to `[2, 25000]` in `LinePlot.__init__`, which is also the spec-decoding path the client posts on every update.
-    - **Not on the x-width grid.** An **infinite** bound has no finite bucket width, so `_bucket_grid` rejects it on both source kinds. `nth` carries no grid at all: it gathers a stride, and it is not checked.
-  - **`"lttb"`** — MinMaxLTTB. Stage 1 is the `minmax` pass at a `_LTTB_MINMAX_RATIO` (4x) budget, on either source kind. Stage 2 is `_lttb()` in `_to_update`: the Largest-Triangle-Three-Buckets rule in pure Python over the prefetched points. Output is exactly `n_points` points when the prefetch holds more, else the prefetch verbatim. The first and last prefetched points always survive. `_to_update` drops null and NaN rows before both stage-2 walks. x and y both go through `to_physical()` and are cast back, so a temporal y works. x is shifted by `x[0]` before the area math, so a nanosecond epoch stays exact in float64. Grouped too: stage 1 is the grouped plan, and the thinning runs once per child. `LinePlot.check_schema` rejects a y that is not numeric, temporal or Boolean, on every request. Not a cube target.
-  - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 1 is a pair-emitting bucket pass that keeps one `(x_min, y_min, x_max, y_max)` row per non-empty bucket. It runs the `minmax_pairs_line` kernel, `_streaming_pairs_plan` on a scan, or `_grouped_pairs_plan` when grouped. Stage 2 is `_fpcs_walk()` in `_to_update`, which carries a deferred extremum across bucket boundaries. It deduplicates on x alone: on sorted x the same x is the same row. Bucket count is `max(n_points - 2, 1)`. It uses the same x-width grid as `minmax`, grouped and ungrouped. `n_points` is a target, not a hard cap. The walk emits at most `2 * n_buckets + 1` points, and fewer when gaps in x leave buckets empty. It keeps no forced first or last point, because an x-width grid has no interior.
-- **Collect engine**: every collect on a source uses `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The same `is_scan` signal picks the kernel-vs-native formulation above.
-- Viewport restriction, ungrouped lines: when the x column has been asserted sorted (`check_line_x` / `assume_sorted`, surfaced via `LFQueryBuilder.is_sorted`, threaded by the engine as `x_sorted`), the viewport becomes a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`; otherwise a dtype-aware `is_between` mask. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
+    - **Not on the x-width grid.** An **infinite** bound has no finite bucket width, so `bucket_grid` rejects it on both source kinds. `nth` carries no grid at all: it gathers a stride, and it is not checked.
+  - **`"lttb"`** — MinMaxLTTB. Stage 1 is the shared pair pass at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets, on either source kind. Stage 2 is `_lttb()` in `_to_update`: the Largest-Triangle-Three-Buckets rule in pure Python over the prefetched points. Output is exactly `n_points` points when the prefetch holds more, else the prefetch verbatim. The first and last prefetched points always survive. `_to_update` drops null and NaN rows before it flattens the pairs, on every strategy. x and y both go through `to_physical()` and are cast back, so a temporal y works. x and y are each shifted by their first value before the area math, so a nanosecond epoch stays exact in float64. Grouped too: stage 1 is the grouped plan, and the thinning runs once per child. `LinePlot.check_schema` rejects a y that is not numeric, temporal or Boolean, on every request. Not a cube target.
+  - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 1 is the shared pair pass. Stage 2 is `_fpcs_walk()` in `_to_update`, which carries a deferred extremum across bucket boundaries. It deduplicates on x alone: on sorted x the same x is the same row. Bucket count is `max(n_points - 2, 1)`. It uses the same x-width grid as `minmax`, grouped and ungrouped. `n_points` is a target, not a hard cap. The walk emits at most `2 * n_buckets + 1` points, and fewer when gaps in x leave buckets empty. It keeps no forced first or last point, because an x-width grid has no interior.
+- **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan is the exception: it streams on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
+- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.is_sorted` and threaded by the engine as `x_sorted`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
 - Grouped line traces use a true grouped query: viewport filtering is applied before
   `group_by`, and downsampling happens inside it: one streaming plan for the x-width
@@ -680,11 +681,6 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     No Polars len() expression dependency → N grouped sub-traces parallelize in one select().
 │     Returns at most n_points elements of the same dtype.
 │
-├── arg_min_max(n_points: int) → pl.Expr
-│     Min-max envelope. Splits into n_points//2 buckets; returns sorted, deduplicated
-│     UInt32 indices of argmin + argmax within each bucket. Pass to .gather() to
-│     build a downsampled series that preserves extrema and spikes.
-│
 ├── fixed_hist(lo_expr, hi_expr, n_bins: int) → pl.Expr
 │     O(n) fixed-bin 1D histogram. lo_expr / hi_expr evaluate to scalar (length-1)
 │     Series; n_bins is the number of bins. Uses direct floor-division indexing
@@ -709,33 +705,26 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
       bins are null. Used by Histogram2D and GeoHistogram2D when z is given.
       `median` / `n_unique` are not implemented (see Roadmap).
 
-flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain=None) → pl.Expr
+flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
       Bucket pass that keeps the pairing: one row per non-empty bucket, in bucket
       order, as Struct{x_min, y_min, x_max, y_max} (x fields carry x's dtype, y
-      fields y's). Buckets are equal in x width over x_domain when it is given,
-      equal in row count otherwise. Used by LinePlot with downsample="fpcs" as
-      stage 1 of the compensation walk.
-
-flexviz_polars._minmax_line(x_expr, y_expr, n_points, x_name=None, y_name=None) → pl.Expr
-      Combined min-max index-selection + gather kernel.
-      Runs the arg_min_max bucket pass on y, gathers both x and y at the selected
-      indices in one call. Returns Struct{x_name: x_dtype, y_name: y_dtype}. Used
-      by LinePlot with downsample="minmax" (the default). Exists because Polars
-      does not CSE opaque plugin expressions: the two-gather form ran the scan
-      twice per trace. tests/test_trace_line.py pins the one-call plan shape, and
-      TestMinmaxLineDifferential pins bit-identity against the two-gather form.
+      fields y's). Buckets are equal in x width over the required x_domain, which
+      needs x sorted ascending; rows outside it are dropped and a zero span
+      returns no rows. Bucket selection and all four gathers happen in one call,
+      because Polars does not CSE opaque plugin expressions. It is stage 1 of
+      every x-width LinePlot on a resident ungrouped frame, and
+      tests/test_trace_line.py pins the one-call plan shape.
 ```
 
 **Rust internals** (`src/expressions.rs`):
 - `every_nth` — computes `stride = max(1, len / n_points)`, builds capped gather indices, calls `Series::take()`.
-- `arg_min_max` / `minmax_line` — reuse internal helpers: `uniform_offsets` (equal row counts, used by `arg_min_max` and by any bucket call with no `x_domain`) or `x_width_offsets` (binary-searched windows for equal x-width buckets over the `x_domain` kwarg, used by ungrouped lines: it reads x through its physical representation and drops rows outside the domain), `simd_argminmax` (SIMD fast path for contiguous numeric types), and `fallback_window_argminmax` (general Series API for non-SIMD/other dtypes). Flatten min+max indices, sort, deduplicate; `minmax_line` then `take`s x and y at those indices inside the same call. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is by row count rather than by window count, because x-width windows are wildly uneven. On equal-row-count windows the two agree. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, worth ~1.3-1.6x at one trace on a bandwidth-saturated host and bounded at ~-9% for 3-5 concurrent traces, fading by 20.
-- `minmax_pairs_line` — the same `uniform_offsets` / `x_width_offsets` bucket pass, but it keeps the `(argmin, argmax)` pairing instead of flattening it: one struct row per non-empty bucket, in bucket order. The compensation walk that reads it lives in Python (`_fpcs_walk` in `line.py`).
+- `minmax_pairs_line` — `x_width_offsets` gives the binary-searched windows of the equal-x-width buckets over the `x_domain` kwarg: it reads x through its physical representation and drops rows outside the domain. `pairs_for_offsets` then scans each window through `simd_argminmax` (SIMD fast path for contiguous numeric types) or `fallback_window_argminmax` (general Series API for nulls and other dtypes), and the kernel `take`s x and y at both indices inside the same call, one struct row per non-empty bucket, in bucket order. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is by row count rather than by window count, because x-width windows are wildly uneven. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, worth ~1.3-1.6x at one trace on a bandwidth-saturated host and bounded at ~-9% for 3-5 concurrent traces, fading by 20.
 - `fixed_hist` — dispatches on native dtype via `FixedHistValue` trait (avoids full-column cast); maps each value to a bin with `((v - lo) * scale).floor()` (+ round eps), clamps boundaries. **Rayon-parallel**: null-free contiguous runs are split into work units folded into private per-group count tables and merged by add. Falls back to the scalar single-table loop for chunks with nulls, undispatched dtypes, input below `MIN_PAR` (2^17 rows), or when two private tables exceed the byte budget — counts are identical either way (asserted against an independent Python reference in `test_plugin_functions.py`).
 - `fixed_hist2d` — O(n) 2D binning, same parallel/fallback structure as `fixed_hist` (x/y chunks aligned via `align_chunks_binary`); counts (UInt32) stored row-major. `fixed_hist2d_reduce` (Float64 reductions) remains single-threaded.
 - **Private-table budget**: both parallel kernels bound live scratch by `MAX_PRIVATE_BYTES` (32 MiB). Work units are folded in at most `n_chunks` groups — one table per group — so fragmented (many-chunk) input cannot multiply tables past the budget; when even two tables do not fit (≳4M bins), the kernel stays scalar.
 - **Kernel thread pool**: a cdylib statically links its own polars-core, so it cannot join Polars' rayon pool (pola-rs/polars#19650). The kernels run on a dedicated `OnceLock` pool sized `POLARS_MAX_THREADS` → `RAYON_NUM_THREADS` → `available_parallelism()`, so a container that limits Polars' threads limits the kernels too.
 
-**Integration with LinePlot**: `line.py` imports `flexviz_polars` at module level. `LinePlot.get_aggregation_spec()` dispatches on `self.downsample` and on the source kind. Ungrouped: `minmax` and `lttb` take `_plugin_minmax_agg_expr` (kernel) or `_streaming_envelope_plan` (scan), `lttb` with a 4x budget; `fpcs` takes `_plugin_pairs_agg_expr` (kernel) or `_streaming_pairs_plan` (scan); `nth` takes `_plugin_nth_agg_expr` on both. Grouped: the x-width strategies take `_grouped_envelope_plan` or `_grouped_pairs_plan` on both source kinds, and `nth` takes `_plugin_nth_agg_expr` inside `group_by().agg()`. `lttb` and `fpcs` then finish in `_to_update` (`_lttb`, `_fpcs_walk`).
+**Integration with LinePlot**: `line.py` imports `flexviz_polars` at module level, and the grid and the bucket plan live next to it in `line_buckets.py`. `LinePlot.get_aggregation_spec()` dispatches on `self.downsample` and on the source kind. Every x-width strategy takes the same stage 1: `_plugin_pairs_agg_expr` (the kernel) for an ungrouped resident frame, `pairs_plan` for a scan and for a grouped line, both with `_bucket_budget(n_points, downsample)` buckets. `nth` takes `_plugin_nth_agg_expr`, ungrouped and inside `group_by().agg()`. `lttb` and `fpcs` then finish in `_to_update` (`_lttb`, `_fpcs_walk`).
 
 **Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. Both the ungrouped and grouped paths in `Histogram.get_aggregation_spec()` call `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning.
 
@@ -819,9 +808,9 @@ LFQueryBuilder
 ├── _sorted_cols: Set[str]
 │
 ├── schema                      ← cached property
-├── collect_engine               ← "streaming" if is_scan else "in-memory"; every collect below uses it
-├── physical_minmax(cols, schema, memoize)  ← per-column unfiltered (min, max); kept on the builder only when memoize=True
-├── check_line_x(col, memoize)   ← minmax-line x dtype gate (schema only, never collects), then on a resident frame one collect: null check, is_sorted pass, O(1) trailing-NaN probe. Kept as the sorted flag only when memoize=True
+├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan always streams)
+├── physical_minmax(cols, schema, *, memoize)  ← per-column unfiltered (min, max); kept on the builder only when memoize=True
+├── check_line_x(col, *, memoize)   ← line x data check on a resident frame: one collect (null check, is_sorted pass, O(1) trailing-NaN probe). Kept as the sorted flag only when memoize=True. The dtype gate lives on the trace (LinePlot.check_schema)
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       filtered_ldf = _ldf if not filter_exprs else _ldf.filter(*filter_exprs)
@@ -1259,7 +1248,7 @@ them.
   live every frame, but a line target's commit **always POSTs** (`postRequired`) so the committed
   delta replaces the approximate envelope — keeping commit ≡ share/restore bit-exact. Both are
   x-width envelopes, but their bucket edges can differ: the cube pads its upper bound by
-  `_HIST_BIN_EPSILON` and floors on true division, while the trace grid comes from `_bucket_grid`
+  `_HIST_BIN_EPSILON` and floors on true division, while the trace grid comes from `bucket_grid`
   with ceiling division on integer x.
 - **Dtype/name gates** (descriptor methods return `None`; a schema is required for categorical
   capability): every categorical dim column must be `String`/`Categorical`/`Enum`, with one
@@ -1489,6 +1478,7 @@ flexviz/
 │   │   ├── __init__.py      ← build_trace_from_spec(), _REGISTRY
 │   │   ├── base.py          ← FlexTrace ABC + dtype filter helpers
 │   │   ├── line.py          ← LinePlot
+│   │   ├── line_buckets.py  ← x-width bucket grid + stage-1 bucket plan
 │   │   ├── hist.py          ← Histogram
 │   │   ├── box.py           ← BoxPlot
 │   │   ├── bar.py           ← BarPlot
@@ -1507,13 +1497,13 @@ flexviz/
 ├── flexviz_polars/          ← Rust/Polars plugin (build with make build-plugin)
 │   ├── src/
 │   │   ├── lib.rs           ← PyO3 module entry, global Polars allocator
-│   │   └── expressions.rs   ← every_nth, arg_min_max kernels + shared helpers
+│   │   └── expressions.rs   ← every_nth, minmax_pairs_line kernels + shared helpers
 │   ├── flexviz_polars/
 │   │   ├── __init__.py      ← FlexvizExprNamespace (@pl.api.register_expr_namespace)
 │   │   ├── _internal.pyi    ← type stub for compiled extension (__version__)
 │   │   └── typing.py        ← IntoExprColumn type alias
 │   ├── tests/
-│   │   └── test_plugin_functions.py ← unit tests for every_nth and arg_min_max
+│   │   └── test_plugin_functions.py ← unit tests for every_nth and minmax_pairs_line
 │   ├── Cargo.toml
 │   └── pyproject.toml
 └── tests/

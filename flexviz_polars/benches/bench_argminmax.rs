@@ -1,4 +1,4 @@
-/// Microbenchmarks for the `arg_min_max` kernel internals.
+/// Microbenchmarks for the min-max bucket kernel internals.
 ///
 /// Run with:
 ///   cargo bench --bench bench_argminmax
@@ -26,6 +26,8 @@ use rayon::prelude::*;
 // Helpers (mirrors expressions.rs internals)
 // ---------------------------------------------------------------------------
 
+/// Equal-row-count windows. The kernel buckets by x width, whose windows are
+/// uneven; these are the even case, which is what a scan benchmark wants.
 fn uniform_offsets(len: usize, n_out: usize) -> Vec<(usize, usize)> {
     let mut offsets = Vec::with_capacity(n_out);
     let base = len / n_out;

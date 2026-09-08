@@ -257,9 +257,10 @@ class Figure:
         Parameters
         ----------
         x:
-            Column name for x-axis data.  For an ungrouped ``"minmax"``,
-            ``"lttb"`` or ``"fpcs"`` line it must be sorted ascending: those
-            buckets are equal in x width.
+            Column name for x-axis data.  A ``"minmax"``, ``"lttb"`` or
+            ``"fpcs"`` line buckets by x width, so ``x`` must be a
+            64-bit-or-smaller numeric or a temporal.  Ungrouped on a resident
+            frame it must also be sorted ascending and free of nulls and NaN.
         y:
             Column name for y-axis data.
         name:
@@ -276,20 +277,21 @@ class Figure:
             renderers show a broken line across empty periods.
         downsample:
             Downsampling algorithm: ``"minmax"`` (default), ``"lttb"``
-            (MinMaxLTTB, ungrouped only), ``"fpcs"``, or ``"nth"``.
+            (MinMaxLTTB), ``"fpcs"``, or ``"nth"``.  All four work grouped.
         axes:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
             cartesian axis.  Use ``("x2", "y2")`` for a second axis.
         assume_sorted_x:
-            For an ungrouped `"minmax"`, `"lttb"` or `"fpcs"` line the engine
-            verifies `x` on the first request. On a resident frame it makes one
-            pass over the column: no nulls or NaN, sorted ascending. On a scan
-            source it checks the dtype only. It raises `ValueError` when the
-            column fails. A cached figure pays that once per source and column.
-            An uncached one pays it on every unzoomed request. Set True to skip
-            the check by marking the column sorted via `set_sorted`. Only use it
-            if you guarantee `x` meets the contract. A column that does not then
-            gives wrong results.
+            The engine checks every x-width line on its dtype, on every
+            request. It reads the data as well for an ungrouped x-width line on
+            a resident frame: one pass over the column for nulls, NaN and
+            ascending order. It raises `ValueError` when the column fails. A
+            cached source keeps the sorted flag, so it pays that pass once per
+            source and column. An uncached source pays it on every request that
+            reaches aggregation, zoomed or not. Set True to skip the data pass
+            by marking the column sorted via `set_sorted`. Only use it if you
+            guarantee `x` meets the contract. A column that does not then gives
+            wrong results.
         """
         trace = LinePlot(
             x=x,
