@@ -581,7 +581,6 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
-        bin_boundaries: Literal["data", "viewport"] = "data",
     ) -> "Figure":
         """Add a geospatial 2D histogram (choropleth) trace.
 
@@ -612,9 +611,6 @@ class Figure:
             Color scale name understood by the active renderer.
         color_range:
             Fixed color range, or ``"auto"`` for dynamic scaling.
-        bin_boundaries:
-            ``"data"`` uses visible data extent for bin edges; ``"viewport"``
-            anchors bins to the map bounds (stable grid when panning/zooming).
         """
         return self._add_trace(
             GeoHistogram2D(
@@ -628,7 +624,6 @@ class Figure:
                 name=name,
                 color_scale=color_scale,
                 color_range=color_range,
-                bin_boundaries=bin_boundaries,
             )
         )
 

@@ -23,7 +23,7 @@
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
 - **Linked hover** — fully client-side; a single on/off toggle (`hover_mode`), with the runtime auto-selecting the projection from the hovered source trace: lines and 1D histograms project a point onto shared axes (guides + bin-bands), while 2D cell sources (histogram2d, geo) project a cell. Column-to-figure-axis mapping computed at page load; persists in spec state through share/restore
 - **Draggable dashboard grid** — optional GridStack layout (`layout.draggable=True`) with client-side drag/resize, persisted `grid_items`, and a toolbar lock button that toggles editability (`layout.grid_editable`) without backend round-trips
-- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. A `cache=True` source memoizes the bounds; a `cache=False` source recomputes them on every request that needs them.
+- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, `GeoHistogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. A `cache=True` source memoizes the bounds; a `cache=False` source recomputes them on every request that needs them.
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
@@ -241,7 +241,7 @@ Figure
 ├── add_pie(labels, values, agg, hole, color_map)
 ├── add_treemap(path, values=None, agg="sum", name, color_map)
 ├── add_histogram2d(x, y, x_bins, y_bins, name, color_scale, color_range, axes)
-├── add_geo_histogram2d(lat, lon, lat_bins, lon_bins, …, bin_boundaries)
+├── add_geo_histogram2d(lat, lon, lat_bins, lon_bins, z, histfunc, histnorm, …)
 ├── add_geo_line(lat, lon, n_points, name, color, marker_size)
 ├── add_corr_heatmap(columns, method, absolute, name, color_scale, color_range)
 ├── title(text) / xlabel(text) / ylabel(text) / legend(show)
@@ -358,8 +358,9 @@ FlexTrace (ABC)
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
 ├── domain_cols(update_range) → tuple[str, ...]
-│     ← columns whose unfiltered (min, max) the spec needs; () when the
-│       viewport supplies bounds
+│     ← columns whose unfiltered (min, max) the spec needs; a column drops
+│       out once the viewport supplies its axis. update_range holds any
+│       subset of the trace's recompute axes
 ├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
 │     ← the engine calls every trace the same way; a trace ignores what it
@@ -497,9 +498,8 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
   date axis, like the line trace) and emits hover-band bounds in epoch-ms.
   Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
   `temporal_unit` (contract G).
-- Optional viewport range filter applied before binning; without a viewport,
-  the engine's resolved unfiltered domain provides stable edges across
-  cross-filter updates.
+- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to a fixed lattice**: for a viewport `[lo, hi]` and `n` bins, `w = (hi - lo) / n`, `k0 = floor(lo / w + 1e-9)`, `k1 = max(ceil(hi / w - 1e-9), k0 + 1)`, and the edges become `k0 * w, k1 * w` over `k1 - k0` bins (`n` or `n + 1`). A pan keeps the span, so `w` and the lattice stay fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span (`w <= 0`) is left alone, and unzoomed domain edges are never snapped. `_snap_range` / `_snapped_axis` in `trace/_hist_helpers.py` are the one place a viewport is snapped, shared with the 2-D traces. Because the lattice is fixed, a client can request a margin around its viewport and skip requests while the user pans inside it. Not implemented yet.
+- A zoomed grid can hold one bin more than configured, so `_to_update` derives the count from the returned breakpoints and the cube target dim carries the snapped `(domain, bins)`, not the configured `bins`. The client derives bar centers from those two, so cube-served bars land on the server's bars.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
   `fixed_hist`. Numeric and differing temporal physical units remain separate.
@@ -585,14 +585,15 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `trace_type = "histogram2d"` · `axes = ("x", "y")` · `recompute_axes = ("x", "y")` · `overlay_style = "filtered_only"`
 - `z` is optional — when `None`, rows are counted per bin (implicit count). When given, `histfunc` is required.
 - A **resident** frame runs one kernel expression: `fixed_hist2d` for the count, `fixed_hist2d_reduce` for a `z` column (`histfunc in {"sum", "mean", "min", "max"}`).
-- A **scan** source folds the same kernels over batches instead (`AggregationSpec.plan` → `_batch_fold_plan` in `hist2d.py`). As one expression the kernels need whole Series, so a scan materializes both axis columns before binning. The plan reads the frame through `LazyFrame.collect_batches(chunk_size=4M rows, maintain_order=False, engine="streaming")`, runs the kernel on each batch, and accumulates the grid in NumPy, so peak memory is one batch plus the grid. A streaming `group_by` on the flattened cell key is the obvious alternative, but it is unbounded above the Polars hot table size (measured), and `collect_batches` is the Polars escape hatch for custom logic over streamed batches. Measured on 100M rows at a 100 x 100 count grid: kernel 381 ms at 1.7 GB peak, fold 411 ms at 657 MB. At 500M rows: kernel 3.8 s at 8 GB, fold 3.7 s at 374 MB. Zoomed, the fold is about 4x faster, because the viewport filter runs inside the scan.
+- A **scan** source folds the same kernels over batches instead (`AggregationSpec.plan` → `_batch_fold_plan` in `_hist_helpers.py`). As one expression the kernels need whole Series, so a scan materializes both axis columns before binning. The plan reads the frame through `LazyFrame.collect_batches(chunk_size=4M rows, maintain_order=False, engine="streaming")`, runs the kernel on each batch, and accumulates the grid in NumPy, so peak memory is one batch plus the grid. A streaming `group_by` on the flattened cell key is the obvious alternative, but it is unbounded above the Polars hot table size (measured), and `collect_batches` is the Polars escape hatch for custom logic over streamed batches. Measured on 100M rows at a 100 x 100 count grid: kernel 381 ms at 1.7 GB peak, fold 411 ms at 657 MB. At 500M rows: kernel 3.8 s at 8 GB, fold 3.7 s at 374 MB. Zoomed, the fold is about 4x faster, because the viewport filter runs inside the scan.
 - Fold exactness: count, `min` and `max` are exact. `sum` and `mean` fold in a different order than the kernel, so they agree to about 1e-13 relative. `mean` folds a `fixed_hist2d_reduce(histfunc="sum")` grid over a `fixed_hist2d` count of the rows with a usable `z` (the reduce kernel skips null and NaN `z`), and finalizes as sum / count with `None` where the count is 0.
 - `collect_batches` is marked unstable in Polars. A semantics test pins the chunking the fold relies on, so an API or chunking change fails there first.
 - A temporal x and/or y axis is binned on its `to_physical()` representation (the kernel is numeric-only) with physical bin edges; `_to_update` restores datetime centers on that axis (date axis) and emits epoch-ms hover bounds — same scheme as the 1-D `Histogram`.
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges span the viewport range (or data range on init).
+- Bin edges: each axis resolves on its own through the `Histogram` rule above, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the fixed lattice, and the mask filters on the snapped rectangle so an edge cell is complete.
+- The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale` and `color_range`; trace-owned defaults are `"viridis"` and `"auto"`.
 - `_to_update` returns `{"x": [...centers], "y": [...centers], "z": [[values]]}`.
@@ -603,14 +604,13 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 ```python
 fig.add_geo_histogram2d(lat="latitude", lon="longitude", lat_bins=64, lon_bins=64)
 fig.add_geo_histogram2d(lat="lat", lon="lon", histfunc="mean", z="temperature")
-fig.add_geo_histogram2d(lat="lat", lon="lon", bin_boundaries="viewport")
 ```
 
 - `trace_type = "geo_histogram2d"` · `axes = None` · `recompute_axes = ("coordinates",)` · `overlay_style = "filtered_only"`
-- `GeoHistogram2D` uses the `flexviz_polars` Rust kernel (same as `Histogram2D`): count via `fixed_hist2d`, z-reduction via `fixed_hist2d_reduce`. It is kernel-only on both source kinds: it does not take the `Histogram2D` batch fold, so a scan still loads its lat/lon (and z) columns. lat maps to the kernel x (inner) axis and lon to the y (outer) axis so `z_flat` is already in the lon-major order the GeoJSON builder needs.
+- `GeoHistogram2D` bins through the same `_hist_helpers.py` path as `Histogram2D` over a different column pair: `_hist2d_bounds` for the edges and the viewport mask, one kernel expression on a resident frame (`fixed_hist2d` for the count, `fixed_hist2d_reduce` for a `z` column), and `_batch_fold_plan` on a scan source. lat maps to the kernel x (inner) axis and lon to the y (outer) axis so `z_flat` is already in the lon-major order the GeoJSON builder needs.
 - z-column support is `histfunc in {"sum", "mean", "min", "max"}`. `median` and `n_unique` are **not** supported on this fast path (mirrors `Histogram2D`); see the Roadmap below. `from_trace_spec` raises on legacy `median`/`n_unique` specs.
-- Rows are clipped to the visible map bounds before binning (a `.filter(mask)` inside the kernel expression). Viewport is passed as `update_range["coordinates"]` — a list of `[lon, lat]` corner points (from `PlotlyAdapter` / map `relayout`).
-- **`bin_boundaries`** (`params`, default `"data"`): `"data"` passes the min/max of the (viewport- and cross-filter-filtered) points as the kernel `lo`/`hi` bounds (bins shift when panning/zooming). `"viewport"` passes the viewport rectangle bounds (stable grid on pan/zoom, analogous to plotly-flex `bin_boundaries="viewport"`).
+- Rows are clipped to the snapped map bounds before binning: a resident frame filters inside the kernel expression, a scan filters the frame so the scan itself rejects the rows. Viewport is passed as `update_range["coordinates"]` — a list of `[lon, lat]` corner points (from `PlotlyAdapter` / map `relayout`). Fold exactness is the `Histogram2D` rule: count, `min` and `max` are exact, `sum` and `mean` agree to about 1e-13 relative.
+- Bin edges follow the `Histogram2D` rule exactly. Unzoomed, they span the engine-resolved unfiltered lat/lon domains (`domain_cols` returns both columns when `update_range` carries no `"coordinates"`), so a cross-filter recolors the grid instead of re-binning it. Zoomed, they span the map bounds snapped outward to a fixed lattice, so the grid stands still while the user pans. The snapped grid can hold one more bin per axis than configured, so `_to_update` unpacks `z_flat` with the grid the request actually binned on.
 - `histnorm` is applied in `_to_update` (post-kernel) over the flat z grid, with `bin_area = lat_step * lon_step`; bin centers/edges are derived from the kernel-echoed `lo`/`hi` and `nb`.
 - `_to_update` returns `{"geojson": {...}, "locations": [...], "z": [...]}` — a GeoJSON FeatureCollection of rectangular polygons for choropleth rendering.
 - Cross-filtering: Plotly geo selections are derived from the selected choropleth bin ids (`locations`) and collapsed to one lon/lat bounding box, then emitted as a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses on the trace's `lon` and `lat` columns.
@@ -741,7 +741,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Integration with Histogram**: `hist.py` imports `flexviz_polars` at module level. The ungrouped resident path in `Histogram.get_aggregation_spec()` calls `.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=self.bins)` instead of `polars.hist(bins=...)`, providing O(n) stable-edge binning. Every other path takes `_streaming_hist_plan`, which repeats the same bin arithmetic.
 
-**Integration with Histogram2D / GeoHistogram2D**: `hist2d.py` and `geo_hist2d.py` both import `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. Where those calls run differs by source kind: a resident `Histogram2D` builds one kernel expression that joins the shared select, a scan `Histogram2D` runs the same kernel per streamed batch inside `_batch_fold_plan`, and `GeoHistogram2D` keeps the single expression on both source kinds. `GeoHistogram2D` maps lat→x and lon→y and passes filtered-data min/max (or viewport bounds) as the kernel `lo`/`hi`.
+**Integration with Histogram2D / GeoHistogram2D**: `_hist_helpers.py`, which both traces bin through, imports `flexviz_polars` at module level (hard import — raises `ImportError` without the plugin). The count path calls `.flexviz.fixed_hist2d(...)`; the reduce path calls `.flexviz.fixed_hist2d_reduce(...)`. Both traces share one binding in `_hist_helpers.py`, so where those calls run depends only on the source kind: a resident frame builds one kernel expression that joins the shared select, and a scan source runs the same kernel per streamed batch inside `_batch_fold_plan`. `GeoHistogram2D` maps lat→x and lon→y and passes the resolved domain (or the snapped map bounds) as the kernel `lo`/`hi`.
 
 ---
 
@@ -1239,7 +1239,7 @@ them.
 
   | trace | target dims | measure |
   |---|---|---|
-  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly | count |
+  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly. Zoomed, the domain is the **snapped** viewport and `bins` is the snapped count, matching the display grid | count |
   | hist (grouped) | (binned data col, *group cols as categorical) | count |
   | bar | (*label cols, *group cols — all categorical) | `count`/`sum`/`mean`/`min`/`max` over `values` |
   | pie | (*label cols as categorical) | same |

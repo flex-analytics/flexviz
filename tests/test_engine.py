@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import math
 
 import polars as pl
@@ -15,6 +16,8 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
 from flexviz.trace.bar import BarPlot
 from flexviz.trace.box import BoxPlot
+from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.hist import Histogram
 from flexviz.trace.hist2d import Histogram2D
 from flexviz.trace.line import LinePlot
@@ -110,6 +113,145 @@ class TestEngineViewport:
         assert len(deltas) == 1
         assert deltas[0].uid == line.uid
         assert all(200 <= v <= 400 for v in deltas[0].updates["x"])
+
+
+# ---- partial viewports -----------------------------------------------------
+
+
+def _extent(values) -> tuple[float, float]:
+    """The (min, max) of a delta's numeric output, ignoring empty bins."""
+    vals = [v for v in values if v is not None]
+    assert vals, "a delta with no values says nothing about its extent"
+    return min(vals), max(vals)
+
+
+def _key_extent(key: str):
+    return lambda updates: _extent(updates[key])
+
+
+def _geojson_extent(index: int):
+    """The lon (0) or lat (1) span of the rectangles a geo delta draws."""
+    return lambda updates: _extent(
+        point[index]
+        for feature in updates["geojson"]["features"]
+        for ring in feature["geometry"]["coordinates"]
+        for point in ring
+    )
+
+
+def _partial_viewport_df() -> pl.DataFrame:
+    n = 1_000
+    return pl.DataFrame(
+        {
+            "ts": list(range(n)),
+            "val": [float(i) for i in range(n)],
+            "alt": [float(i % 100) for i in range(n)],
+            "lat": [float(i % 90) - 45.0 for i in range(n)],
+            "lon": [float(i % 180) - 90.0 for i in range(n)],
+        }
+    )
+
+
+#: One zoomable trace per case: the trace, the axis ranges a client would send
+#: for its figure, and per axis the delta extents that range must bound. Every
+#: range is lattice-aligned to its bin width, so no axis snaps outward and the
+#: bound is exact. Add a new zoomable trace here and the matrix below covers it.
+_PARTIAL_VIEWPORT_CASES = [
+    pytest.param(
+        lambda: LinePlot(x="ts", y="val", n_points=50),
+        {"x": [200.0, 400.0], "y": [100.0, 300.0]},
+        {"x": [(_key_extent("x"), 200.0, 400.0)]},
+        id="line",
+    ),
+    pytest.param(
+        lambda: Histogram(x="val", bins=20),
+        {"x": [200.0, 400.0], "y": [0.0, 50.0]},
+        {"x": [(_key_extent("x"), 200.0, 400.0)]},
+        id="histogram",
+    ),
+    pytest.param(
+        lambda: Histogram2D(x="val", y="alt", x_bins=20, y_bins=10),
+        {"x": [200.0, 400.0], "y": [20.0, 60.0]},
+        {
+            "x": [(_key_extent("x"), 200.0, 400.0)],
+            "y": [(_key_extent("y"), 20.0, 60.0)],
+        },
+        id="histogram2d",
+    ),
+    pytest.param(
+        lambda: GeoHistogram2D(lat="lat", lon="lon", lat_bins=10, lon_bins=10),
+        {"coordinates": [[-60.0, -40.0], [-20.0, 0.0]]},
+        {
+            "coordinates": [
+                (_geojson_extent(0), -60.0, -20.0),
+                (_geojson_extent(1), -40.0, 0.0),
+            ]
+        },
+        id="geo_hist2d",
+    ),
+]
+
+
+class TestEnginePartialViewport:
+    """A client sends only the axes a zoom moved, so every zoomable trace must
+    resolve each of its recompute axes on its own.
+
+    One axis of a two-axis trace may carry a range while the other does not:
+    the zoomed axis follows the viewport, the other keeps its init extent, and
+    a viewport touching no recompute axis produces no delta at all.
+    """
+
+    @staticmethod
+    def _updates(trace, axis_ranges: dict | None) -> dict | None:
+        """Run one event through a fresh engine and return the trace's updates.
+
+        ``axis_ranges`` of ``None`` is the init request. The engine is stateless,
+        so each call builds its own.
+        """
+        lf = LFQueryBuilder(_partial_viewport_df())
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid,
+                axes=trace._axes,
+                trace_type=trace.trace_type,
+                figure_uid="fig",
+            )
+        ]
+        if axis_ranges is None:
+            event = InteractionEvent(type="init", force_update=True)
+            viewports = {}
+        else:
+            event = InteractionEvent(
+                type="viewport", axis_ranges=axis_ranges, figure_uid="fig"
+            )
+            viewports = {"fig": axis_ranges}
+        deltas = engine.process(event, infos, viewports)
+        return deltas[0].updates if deltas else None
+
+    @pytest.mark.parametrize("make_trace,ranges,probes", _PARTIAL_VIEWPORT_CASES)
+    @pytest.mark.parametrize("n_axes", [0, 1, 2])
+    def test_every_axis_subset(self, make_trace, ranges, probes, n_axes):
+        axes = list(ranges)
+        if n_axes > len(axes):
+            pytest.skip("figure has fewer axes than this subset size")
+        for zoomed in itertools.combinations(axes, n_axes):
+            trace = make_trace()
+            init = self._updates(trace, None)
+            sent = {ax: ranges[ax] for ax in zoomed}
+            updates = self._updates(make_trace(), sent)
+
+            recomputed = set(trace.recompute_axes) & set(zoomed)
+            if not recomputed:
+                assert updates is None, f"{zoomed}: nothing to recompute"
+                continue
+            for axis, axis_probes in probes.items():
+                for extract, lo, hi in axis_probes:
+                    got = extract(updates)
+                    if axis in zoomed:
+                        assert lo <= got[0] and got[1] <= hi, f"{zoomed}: {axis}"
+                    else:
+                        assert got == extract(init), f"{zoomed}: {axis} moved"
 
 
 # ---- reset event -----------------------------------------------------------
@@ -1563,7 +1705,8 @@ class TestEngineHistogramBinAlignment:
         d1 = next(d for d in deltas if d.uid == h1.uid)
         d2 = next(d for d in deltas if d.uid == h2.uid)
         assert d1.updates["x"] == d2.updates["x"]
-        assert len(d1.updates["x"]) == 8
+        # The viewport is not lattice-aligned, so the snap buys one extra bin.
+        assert len(d1.updates["x"]) == _snap_range(50.0, 300.0, 8)[2] == 9
 
     def test_hist_aligned_on_autorange_null_viewport(self):
         """A double-click autorange posts ``axis_ranges={"x": None}`` (unzoomed).

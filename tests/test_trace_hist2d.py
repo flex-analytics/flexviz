@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from flexviz.trace import hist2d as hist2d_mod
+from flexviz.trace import _hist_helpers as helpers_mod
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
@@ -204,6 +204,116 @@ class TestHist2DAggregation:
         )
         result = _aggregate_hist2d(df, x_bins=2, y_bins=2)
         assert all(v is None for row in result.updates["z"] for v in row)
+
+
+class TestHist2DViewportSnap:
+    """A zoomed grid snaps to the lattice of its own bin width, so a pan moves
+    the data under a grid that stands still."""
+
+    @staticmethod
+    def _edges(result: TraceResult) -> tuple[float, float, int]:
+        cells = result.updates["hover_bounds"]
+        return (cells[0][0]["x0"], cells[0][-1]["x1"], len(cells[0]))
+
+    def test_lattice_aligned_viewport_is_unchanged(self, grid_df):
+        # width 1.0, and both bounds are multiples of it.
+        result = _aggregate_hist2d(
+            grid_df,
+            x_bins=4,
+            y_bins=5,
+            update_range={"x": (2.0, 6.0), "y": (0.0, 10.0)},
+        )
+        assert self._edges(result) == (2.0, 6.0, 4)
+
+    def test_offset_viewport_snaps_outward_and_gains_a_bin(self, grid_df):
+        # width 0.8, so the lattice is ..., 1.6, 2.4, ...: [2.0, 6.0] snaps to
+        # [1.6, 6.4] and holds 6 bins instead of 5.
+        offset = _aggregate_hist2d(
+            grid_df,
+            x_bins=5,
+            y_bins=5,
+            update_range={"x": (2.0, 6.0), "y": (0.0, 10.0)},
+        )
+        lo, hi, n = self._edges(offset)
+        assert n == 6
+        assert math.isclose(lo, 1.6) and math.isclose(hi, 6.4)
+
+    def test_a_pan_keeps_every_shared_cell_in_place(self, grid_df):
+        """Panning by a fraction of a bin must not move the cell boundaries."""
+
+        def _bounds(x_lo, x_hi):
+            res = _aggregate_hist2d(
+                grid_df,
+                x_bins=5,
+                y_bins=5,
+                update_range={"x": (x_lo, x_hi), "y": (0.0, 10.0)},
+            )
+            return [c["x0"] for c in res.updates["hover_bounds"][0]]
+
+        before = _bounds(2.0, 6.0)
+        after = _bounds(2.3, 6.3)
+        shared = [x for x in after if any(math.isclose(x, b) for b in before)]
+        assert len(shared) >= 4
+
+    def test_the_snapped_rectangle_is_fully_counted(self):
+        """The mask must follow the snapped edges, so an edge cell is complete."""
+        df = pl.DataFrame({"x": [1.7, 2.5, 6.2], "y": [1.0, 1.0, 1.0]})
+        result = _aggregate_hist2d(
+            df, x_bins=5, y_bins=1, update_range={"x": (2.0, 6.0), "y": (0.0, 2.0)}
+        )
+        # 1.7 and 6.2 sit outside the viewport but inside the snapped [1.6, 6.4].
+        total = sum(v for row in result.updates["z"] for v in row if v is not None)
+        assert total == 3
+
+
+class TestHist2DPartialViewport:
+    """The client sends only the axes a zoom moved, so each axis re-bins on its
+    own: a zoom on x alone must not drag y back to the full domain."""
+
+    X_RANGE = (2.0, 6.0)
+    Y_RANGE = (3.0, 7.0)
+    # x_bins=5 over a span of 4.0 gives width 0.8, so [2.0, 6.0] snaps outward
+    # to [1.6, 6.4] over 6 bins. y_bins=4 over 4.0 gives width 1.0, a lattice
+    # multiple, so [3.0, 7.0] stays put.
+    SNAPPED = {"x": (1.6, 6.4, 6), "y": (3.0, 7.0, 4)}
+
+    @staticmethod
+    def _axis_edges(result: TraceResult, axis: str) -> tuple[float, float, int]:
+        cells = result.updates["hover_bounds"]
+        if axis == "x":
+            return (cells[0][0]["x0"], cells[0][-1]["x1"], len(cells[0]))
+        return (cells[0][0]["y0"], cells[-1][0]["y1"], len(cells))
+
+    @pytest.mark.parametrize("zoomed", [(), ("x",), ("y",), ("x", "y")])
+    def test_each_axis_resolves_on_its_own(self, grid_df, zoomed):
+        ranges = {"x": self.X_RANGE, "y": self.Y_RANGE}
+        update_range = {ax: ranges[ax] for ax in zoomed}
+        trace = Histogram2D(x="x", y="y", x_bins=5, y_bins=4)
+        assert trace.domain_cols(update_range) == tuple(
+            ax for ax in ("x", "y") if ax not in zoomed
+        )
+
+        result = _aggregate_hist2d(
+            grid_df, x_bins=5, y_bins=4, update_range=update_range
+        )
+        for axis in ("x", "y"):
+            lo, hi, n = self._axis_edges(result, axis)
+            if axis in zoomed:
+                assert (lo, hi, n) == pytest.approx(self.SNAPPED[axis])
+            else:
+                assert (lo, hi) == pytest.approx(
+                    (grid_df[axis].min(), grid_df[axis].max())
+                )
+
+    def test_an_x_only_zoom_masks_x_alone(self, grid_df):
+        """Every row inside the snapped x band is counted, whatever its y."""
+        result = _aggregate_hist2d(
+            grid_df, x_bins=5, y_bins=4, update_range={"x": self.X_RANGE}
+        )
+        x_lo, x_hi, _ = self.SNAPPED["x"]
+        expected = grid_df.filter(pl.col("x").is_between(x_lo, x_hi)).height
+        total = sum(v for row in result.updates["z"] for v in row if v is not None)
+        assert total == expected
 
 
 class TestHist2DHistfunc:
@@ -619,7 +729,7 @@ class TestHistogram2DTemporal:
     def test_temporal_x_viewport_tz_offset_bound(self):
         """A tz-aware (offset) viewport bound against a UTC temporal x must bin
         the zoomed window — not raise in the viewport mask path (_hist2d_bounds
-        → _typed_range_bounds → _typed_temporal_lit)."""
+        → _hist2d_bound_lits → _typed_temporal_lit)."""
         res = _aggregate_hist2d(
             self._temporal_df(tz="UTC"),
             x="t",
@@ -824,7 +934,7 @@ class TestHist2DScanFoldEquivalence:
     @pytest.mark.parametrize("histfunc", [None, "sum", "mean", "min", "max"])
     def test_fold_merges_across_batches(self, monkeypatch, histfunc):
         """A frame larger than one chunk must fold to the single-batch grid."""
-        monkeypatch.setattr(hist2d_mod, "_FOLD_CHUNK_ROWS", 7)
+        monkeypatch.setattr(helpers_mod, "_FOLD_CHUNK_ROWS", 7)
         seen: list[tuple[int, int]] = []
         original = pl.LazyFrame.collect_batches
 

@@ -24,6 +24,7 @@ from flexviz.dashboard import Dashboard
 from flexviz.figure import Figure
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
+from flexviz.trace._hist_helpers import _snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 pytestmark = pytest.mark.integration
@@ -459,10 +460,11 @@ class TestDashboardCubeRequest:
 
     def test_zoomed_viewports_resolve_cube_domains(self, client, df):
         """Source viewport → free domain verbatim (no epsilon); target viewport
-        → binned dim domain + uniform _HIST_BIN_EPSILON."""
+        → the SNAPPED display grid + uniform _HIST_BIN_EPSILON."""
         spec = _two_hist_dashboard(df)
         src_fig_uid = spec.figures[0].uid
         tgt_fig_uid = spec.figures[1].uid
+        tgt_bins = spec.figures[1].traces[0].params["bins"]
         spec.state.viewport[f"{src_fig_uid}/x"] = AxisRange(min=10.0, max=80.0)
         spec.state.viewport[f"{tgt_fig_uid}/x"] = AxisRange(min=5.0, max=60.0)
 
@@ -471,7 +473,26 @@ class TestDashboardCubeRequest:
         header = decode_fvcube_header(blob)
         assert header["free"]["domain"] == [10.0, 80.0]
         (dim,) = header["target_dims"]
-        assert dim["domain"] == [5.0, 60.0 + _HIST_BIN_EPSILON]
+        lo, hi, n = _snap_range(5.0, 60.0, tgt_bins)
+        assert n == tgt_bins + 1
+        assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
+        assert dim["bins"] == n
+
+    def test_zoomed_hist_cube_bars_land_on_the_display_bars(self, client, df):
+        """The client derives bar centers from (domain, bins), so a zoomed
+        hist1d target's cube grid must reproduce the display delta's centers."""
+        spec = _two_hist_dashboard(df)
+        tgt_fig = spec.figures[1]
+        spec.state.viewport[f"{tgt_fig.uid}/x"] = AxisRange(min=5.0, max=60.0)
+        display = _init_centers(client, spec, tgt_fig.uid)[tgt_fig.traces[0].uid]
+
+        body = _cube_body(
+            client.post(
+                "/dashboard/update", json=_cube_payload(spec, spec.figures[0].uid)
+            )
+        )
+        blob = body["cubes"][body["trace_cubes"][tgt_fig.traces[0].uid]]
+        assert _cube_centers(blob) == pytest.approx(display, abs=1e-9)
 
     def test_sibling_hist_targets_share_the_display_bin_domain(self, client, df):
         """Two histograms on one figure bin over their *union* min/max in the

@@ -26,9 +26,8 @@ Dashboard(lf).show()
 - **Parquet-backed frames** (`scan_parquet`) let Polars push filters into the
   scan and stream batches. Line and histogram traces then run a streaming plan
   whose memory does not grow with the row count, grouped as well as ungrouped.
-  2D histograms fold the scan in batches through the same kernel, so their
-  memory does not grow with the row count either. The geo 2D histogram still
-  loads the columns it aggregates.
+  2D histograms, geographic ones included, fold the scan in batches through
+  the same kernel, so their memory does not grow with the row count either.
 - Any transformation you apply before handing the frame over
   (`lf.filter(...).with_columns(...)`) stays lazy and is fused into every
   FlexViz query.
