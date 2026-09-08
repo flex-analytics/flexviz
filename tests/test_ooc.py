@@ -2,8 +2,8 @@
 
 One subprocess per (trace, size) via ``ooc_child.py`` isolates each
 measurement and lets each run start from a clean heap. Run with
-``make test-ooc``; excluded from ``make test`` because it takes minutes, not
-seconds, and needs its own CI job (see ``.github/workflows/ci.yml``).
+``make test-ooc``; excluded from ``make test`` because it takes 1-2 minutes,
+and needs its own CI job (see ``.github/workflows/ci.yml``).
 """
 
 from __future__ import annotations

@@ -167,8 +167,8 @@ jobs:
       - name: Browser tests
         run: uv run --no-sync pytest -m browser -p no:randomly --override-ini="addopts=" -n 6
 
-  # A separate job: it spawns one subprocess per trace and size (minutes, not
-  # seconds), and its memory counter only exists on Linux and macOS.
+  # A separate job: it spawns one subprocess per trace and size (1-2 minutes),
+  # and its memory counter only exists on Linux and macOS.
   ooc:
     needs: plugin
     runs-on: ubuntu-latest

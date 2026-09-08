@@ -386,7 +386,7 @@ def grouped_nth_plan(
             ).join(state, on=gcols, how="left", nulls_equal=True, maintain_order="left")
             kept.append(
                 joined.filter((pos % stride == 0) & (pos < stride * n_points)).select(
-                    *gcols, x_col, y_col
+                    *dict.fromkeys((*gcols, x_col, y_col))
                 )
             )
             counts = batch.group_by(gcols).agg(pl.len().alias(_NTH_COUNT))

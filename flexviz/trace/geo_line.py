@@ -47,7 +47,7 @@ import polars as pl
 from ..LF import AggregationSpec
 from ..spec import TraceSpec
 from .base import FlexTrace, TraceResult, _range_filter_expr
-from .line import nth_plan
+from .line import _N_POINTS_MAX, _N_POINTS_MIN, nth_plan
 
 import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
@@ -177,6 +177,13 @@ class GeoLine(FlexTrace):
         add_gaps: bool = True,
         update_on_zoom: bool = True,
     ) -> None:
+        if not isinstance(n_points, int) or not (
+            _N_POINTS_MIN <= n_points <= _N_POINTS_MAX
+        ):
+            raise ValueError(
+                f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
+                f"got {n_points}."
+            )
         super().__init__(
             backend_data={"lat": lat, "lon": lon},
             display={
