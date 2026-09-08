@@ -23,21 +23,32 @@ fig.add_line(
   right default for monitoring-style data.
 - **`"lttb"`**: MinMaxLTTB. Runs the min-max pass with four times the budget,
   then keeps the point with the largest triangle area in each of `n_points`
-  buckets. The output holds exactly `n_points` points when the prefetch holds
-  more, and fewer when x gaps leave buckets empty. The line looks smoother than
-  a min-max envelope on noisy data. A grouped line thins each series on its
-  own, and that second pass runs in Python once per group, so many groups at a
-  large `n_points` cost proportionally: 200 groups at `n_points=2000` spent
-  about 60 percent of a 0.8 s request in that pass. It is not a cross-filter
-  cube target.
+  buckets. The line looks smoother than a min-max envelope on noisy data. 
+  It is not a cross-filter cube target.  
+  MinMaxLTTB paper: https://arxiv.org/pdf/2305.00332
 - **`"fpcs"`**: Feature-Preserving Compensated Sampling. Runs the same min-max
   pass, then carries deferred extrema forward across buckets to reduce visual
-  artifacts on oscillating signals. It buckets by x width, grouped or not.
-  `n_points` is a target, not a cap: output can reach roughly `2 * n_points`,
-  and holds fewer points when the x gaps leave buckets empty.
+  artifacts on oscillating signals. It buckets by x width.  
+  FPCS paper: https://ieeevis.b-cdn.net/vis_2024/pdfs/v-full-1363.pdf 
 - **`"nth"`**: uniform stride, keeping every n-th row. Cheapest, but a spike
   between kept points disappears. Use it when the data is smooth or when you
   want deterministic spacing.
+
+## Point counts
+
+`n_points` is a target, not a guarantee. `minmax`, `lttb`, and `fpcs` bucket the
+visible x range, and a sparse viewport does not fill every bucket. An empty
+bucket gives no point. A bucket whose minimum and maximum are the same row gives
+one point, not two. FlexViz drops a row with a null or NaN y before this.
+
+Only the ceiling differs per strategy:
+
+| Strategy | Points per viewport |
+| --- | --- |
+| `minmax` | At most `n_points`: two per bucket, duplicates removed. |
+| `lttb` | Exactly `n_points` when the prefetch holds more. |
+| `fpcs` | Up to about `2 * n_points`. |
+| `nth` | `n_points`, or every row when the viewport holds fewer. Gaps do not lower it. |
 
 ## Grouped lines
 

@@ -116,10 +116,10 @@ class AggregationSpec:
     uid: str = ""
     #: Optional escape hatch for an aggregation that cannot be a select
     #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is named ``uid``, i.e. exactly the column
-    #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own plan — the out-of-core line envelope uses a streaming group_by
-    #: that cannot ride the shared select.
+    #: DataFrame whose single column is aliased to ``uid``, i.e. exactly the
+    #: column the batched ``select`` would have produced. Set only when a spec
+    #: needs a streaming plan or a batch fold that cannot ride the shared
+    #: select.
     plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
 
     def __post_init__(self) -> None:

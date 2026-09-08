@@ -17,13 +17,13 @@
 
 => SPEC is key to all of this
 
-- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, and `fixed_hist2d_reduce` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The hist and min-max pair kernels are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
+- **Rust plugin** — `flexviz_polars` crate exposes `every_nth`, `minmax_pairs_line`, `fixed_hist`, `fixed_hist2d`, `fixed_hist2d_reduce`, and `fixed_line_envelope2d` kernels; single-pass, no `len()` expression dependency, enabling N grouped sub-traces to parallelize on one scan. The 1-D and 2-D count histogram kernels and the min-max pair kernel are rayon-parallel on a dedicated pool sized from `POLARS_MAX_THREADS`, with serial fallbacks that produce identical output
 - **Grouped traces** — grouped parents stay logical-only, `LFQueryBuilder` batches shared grouped queries, and group→color mapping persists in client-owned spec state
 - **Multi-column labels and group_by** — `BarPlot.labels`, `PiePlot.labels`, and any trace's `group_by` accept either a string or a list of strings.  Multi-column values are stored as JSON-encoded composite strings (e.g. `'["Europe","Germany"]'`) for legend keys, color-domain mapping, and child-uid stability.  Aggregation uses multi-column `group_by(...)` in Polars; cross-filter emission decomposes the composite back into per-column clauses so the wire format remains a list of `ClauseFilter` objects, never a JSON-encoded string.
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
 - **Linked hover** — fully client-side; a single on/off toggle (`hover_mode`), with the runtime auto-selecting the projection from the hovered source trace: lines and 1D histograms project a point onto shared axes (guides + bin-bands), while 2D cell sources (histogram2d, geo) project a cell. Column-to-figure-axis mapping computed at page load; persists in spec state through share/restore
 - **Draggable dashboard grid** — optional GridStack layout (`layout.draggable=True`) with client-side drag/resize, persisted `grid_items`, and a toolbar lock button that toggles editability (`layout.grid_editable`) without backend round-trips
-- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, `GeoHistogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. `LFQueryBuilder.static` sets the memo rule: a resident frame and a `cache=True` scan keep the bounds, and a `cache=False` scan resolves them again, so an uncached reset sees changed data on disk.
+- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, `GeoHistogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. The bounds are memoized when the source is `static` (see the caching carve-out in the Server Layer).
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
@@ -452,29 +452,19 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 ```
 
 - `trace_type = "line"`
-- Four downsampling strategies, selected via `downsample` param:
-  - **`"nth"`** — uniform stride: uses the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`) — stride computed inside the kernel, no `len()` expression dependency, enabling N grouped sub-traces to parallelize in one `select()`.
-  - **`"minmax"` (default)** — min-max envelope: splits into `n_points // 2` buckets, keeps the argmin + argmax of y per bucket, and flattens the two into points. Preserves extrema and spikes on every path.
-    - **Stage 1.** One shape for all three x-width strategies: one `(x_min, y_min, x_max, y_max)` pair per non-empty bucket, in bucket order. `_to_update` is then the one place points are produced. `minmax` and `lttb` flatten the pairs (concat, unique, sort by x) and `fpcs` walks them.
-    - **Bucket grid.** Every x-width line buckets by equal **x width**, grouped or not. Both source kinds build the same grid (`bucket_grid`, in `trace/line_buckets.py`), with the one bucket count `_bucket_budget` gives, and read the bucket of a row with the same arithmetic: exact integer division on a whole width, and `floor((x - lo) * (1 / width))` on a fractional one. The reciprocal multiply is spelled out on both sides, because comparing x against `lo + i * width` rounds the other way at an edge. So `minmax` and `lttb` return the same y multiset on both source kinds, and differ only in which member of an exact y plateau they pick. `fpcs` can emit a different point set on such a plateau, because the walk orders each pair by x. The grid spans the viewport when zoomed, or the engine-resolved unfiltered `(min, max)` when not, so a cross-filter never moves the bucket edges. `domain_cols` requests `x_col` for every unzoomed x-width line, on either source kind.
-    - **Resident frame.** One `minmax_pairs_line` Rust kernel call with an `x_domain`. One call on purpose: Polars does not CSE opaque plugin expressions, so a per-field gather form runs the whole scan once per field.
-    - **Scan source.** The kernel would materialise the whole column, so the engine swaps in `pairs_plan`: one streaming `group_by` collect over the same grid, with `min_by`/`max_by` for the x at each extremum. That plan is order-independent and drops null and NaN x, so a scan needs only the dtype gate.
-    - **Grouped.** A grouped x-width line runs `pairs_plan` with its group columns on both source kinds: one streaming `group_by(key, bucket)`, collected with `engine="streaming"` even on a resident frame. Every group bins on the same `bucket_grid` as an ungrouped line over the same x and `n_points`, so a group that covers a tenth of the domain gets a tenth of the budget. That split is provisional (issue #16) and pinned by a test. A null or NaN x row falls out, and the y-plateau tie-break is the arbitrary one of the ungrouped scan plan. The plan is faster than the kernel inside `group_by().agg()`, and needs far less memory. Grouped `nth` keeps that kernel, with row-count buckets per group.
-    - **The grouped key.** `_grouped_bucket_keys` packs a single string-like group column and the bucket into one Int64 key, so the `group_by` hashes one column instead of two. Only that shape packs: a categorical physical is a small id the frame already carries, needing no resolved bounds. The group value comes back through `first()`. Every other shape (any other dtype, or two or more group columns) uses `group_by(*group_cols, bucket)`. Grouping therefore adds no column to `domain_cols`.
-    - **The x contract.** Every x-width strategy shares it, grouped or not. The trace is the one authority: the engine calls `FlexTrace.check_source(source)` for every trace before the domains are resolved, and `LinePlot.check_source` splits in two. `LinePlot.check_schema(schema)` runs for every line trace and reads dtypes only, never collects: both columns must be in the schema, an x-width line needs an x the grid can bucket (a 64-bit-or-smaller numeric, or a temporal) and a y the bucket pass can compare (not `Decimal`, `Int128`, `Categorical` or `Enum`, which the kernel panics on and the plan accepts), and an `lttb` line needs a y it can do arithmetic on. `LFQueryBuilder.check_line_x(col)` then reads the data, and only where the order matters: an ungrouped x-width line on a resident frame, once per x column per source. A grouped plan and a scan plan read x in no order, so they stop at the dtype gate. Both raise `ValueError`, and `assume_sorted_x=True` skips the data pass.
-    - **The resident-frame check.** On a resident frame `check_line_x` adds one collect: an O(1) null check, one pass asserting ascending order, and, on a float dtype, an O(1) trailing-NaN probe. NaN sorts last, so on a sorted null-free column every NaN is a suffix. A NaN in the middle fails the order pass instead.
-    - **`LFQueryBuilder.static`** is the same static-data contract as `physical_minmax`. A static source keeps the sorted flag, so the check runs once per source and column, and the min/max collect that follows is O(1). A `cache=False` source keeps nothing and re-checks on every request that reaches aggregation, zoomed or not.
-    - **Build time.** `Figure.add_line` runs no schema or data check. It only records the `assume_sorted_x` promise on the builder. Every check happens in the engine, on the first request. `n_points` is bounded to `[2, 25000]` in `LinePlot.__init__`, which is also the spec-decoding path the client posts on every update.
-    - **Not on the x-width grid.** An **infinite** bound has no finite bucket width, so `bucket_grid` rejects it on both source kinds. `nth` carries no grid at all: it gathers a stride, and it is not checked.
-    - **x is required.** `Figure.add_line` takes `x` as a positional argument, and x width is the one bucket semantic (issue #26). Equal-row-count buckets are the same path over a row index: plot against `df.with_row_index("i")`. There is no separate entry point.
-  - **`"lttb"`** — MinMaxLTTB. Stage 1 is the shared pair pass at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets, on either source kind. Stage 2 is `_lttb()` in `_to_update`: the Largest-Triangle-Three-Buckets rule in pure Python over the prefetched points. Output is exactly `n_points` points when the prefetch holds more, else the prefetch verbatim. The first and last prefetched points always survive. `_to_update` drops null and NaN rows before it flattens the pairs, on every strategy. x and y both go through `to_physical()` and are cast back, so a temporal y works. x and y are each shifted by their first value before the area math, so a nanosecond epoch stays exact in float64. Grouped too: stage 1 is the grouped plan, and the thinning runs once per child. `LinePlot.check_schema` rejects a y that is not numeric, temporal or Boolean, on every request. Not a cube target.
-  - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 1 is the shared pair pass. Stage 2 is `_fpcs_walk()` in `_to_update`, which carries a deferred extremum across bucket boundaries. It deduplicates on x alone: on sorted x the same x is the same row. Bucket count is `max(n_points - 2, 1)`. It uses the same x-width grid as `minmax`, grouped and ungrouped. `n_points` is a target, not a hard cap. The walk emits at most `2 * n_buckets + 1` points, and fewer when gaps in x leave buckets empty. It keeps no forced first or last point, because an x-width grid has no interior.
+- 4 downsampling strategies, selected via `downsample` param. `minmax`, `lttb` and `fpcs` share one **x-width bucket pass**; `nth` stands apart.
+  - **Stage 1, shared.** Every x-width line buckets by equal x width, grouped or not, and stage 1 returns one `(x_min, y_min, x_max, y_max)` pair per non-empty bucket, in bucket order. `_to_update` is the one place points are produced: it drops null and NaN rows, then `minmax` and `lttb` flatten the pairs (concat, unique, sort by x) and `fpcs` walks them.
+  - **Bucket grid.** `bucket_grid` (`trace/line_buckets.py`) builds the same grid on both source kinds, with the one bucket count `_bucket_budget` gives, and both read a row's bucket with the same arithmetic (the rounding rule is a comment there). So `minmax` and `lttb` return the same y multiset on both source kinds and differ only in which member of an exact y plateau they pick; `fpcs` can differ on such a plateau, because the walk orders each pair by x. The grid spans the viewport when zoomed, else the engine-resolved unfiltered `(min, max)` (`domain_cols` requests `x_col`), so a cross-filter never moves the bucket edges. An infinite bound has no finite width, so `bucket_grid` rejects it.
+  - **Resident frame, ungrouped.** One `minmax_pairs_line` Rust kernel call with an `x_domain`. One call on purpose: Polars does not CSE opaque plugin expressions, so a two-gather form runs the whole scan twice.
+  - **Scan source, and every grouped line.** `pairs_plan`: one streaming `group_by(key, bucket)` over the same grid, with `min_by`/`max_by` for the x at each extremum, collected with `engine="streaming"` even on a resident frame. The kernel would materialise the whole column, and inside `group_by().agg()` it holds every group's column at once. The plan is order-independent and drops null and NaN x, so it needs only the dtype gate; grouped lines take its y-plateau tie-break. Every group bins on the global grid, so a group that covers a tenth of the domain gets a tenth of the budget; that split is provisional (issue #16) and pinned by a test. A single string-like group column packs with the bucket into one Int64 key (`_grouped_bucket_keys`, issue #33); every other shape groups on the columns themselves. Grouping adds nothing to `domain_cols`.
+  - **The x contract.** The trace is the one authority: the engine calls `FlexTrace.check_source(source)` for every trace before the domains are resolved. `LinePlot.check_schema` runs for every line and reads dtypes only. `LFQueryBuilder.check_line_x` then reads the data, only where order matters: an ungrouped x-width line on a resident frame. Both raise `ValueError`; `assume_sorted_x=True` skips the data pass. `Figure.add_line` runs no check, it records the promise. `n_points` is clamped to `[2, 25000]` in `LinePlot.__init__`, which is also the spec-decoding path, so the clamp is the trust boundary for a decoded spec. `add_line` requires `x`, and x width is the one bucket semantic (issue #26). The dtype lists and the row-index recipe for equal-row-count buckets are in `docs/guides/line-downsampling.md`.
+  - **`"minmax"` (default)** — `n_points // 2` buckets; the flattened pairs are the output. Preserves extrema and spikes on every path.
+  - **`"lttb"`** — MinMaxLTTB. Stage 1 runs at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets. Stage 2 is `_lttb()` in `_to_update`: Largest-Triangle-Three-Buckets in pure Python over the prefetched points, exactly `n_points` when the prefetch holds more, else the prefetch verbatim; the first and last prefetched points always survive. x and y go through `to_physical()` and are cast back, so a temporal y works. Grouped, the thinning runs once per child. Not a cube target.
+  - **`"fpcs"`** — Feature-Preserving Compensated Sampling. Stage 2 is `_fpcs_walk()` in `_to_update`: it carries a deferred extremum across bucket boundaries over `max(n_points - 2, 1)` buckets and drops a repeated `(x, y)` pair. `n_points` is a target: at most `2 * n_buckets + 1` points, fewer when empty buckets leave gaps.
+  - **`"nth"`** — uniform stride: the `every_nth` Rust kernel (`pl.col(...).filter(vp).flexviz.every_nth(n_points)`), stride computed inside the kernel with no `len()` dependency, so N grouped sub-traces run in one `select()`. No grid and no data check, only the dtype gate; grouped `nth` keeps the kernel, with row-count buckets per group. -> TODO: make this also out-of-core
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan and the grouped histogram plan are the exceptions: both stream on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
-- Viewport restriction, ungrouped lines: an x-width line is sorted by contract, so its viewport is always a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
+- Viewport restriction, ungrouped lines: an ungrouped x-width line on a resident frame is sorted by contract, so its viewport is a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. The scan plan passes an `is_between` mask into `pairs_plan` instead. An `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines always mask (the filter runs frame-level, before `group_by`).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_axis_ranges` in `engine.py` — so neither formulation ever sees a reversed pair.
-- Grouped line traces use a true grouped query: viewport filtering is applied before
-  `group_by`, and downsampling happens inside it: one streaming plan for the x-width
-  strategies, an aggregation expression for `nth`.
 - `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/plotly/traces.js`) for every line trace — init, commit, and live cube.
 - Range-brush selections emit a `ClauseFilter(range=...)` per axis; the predicate compiler applies typed `is_between` filters.
 
@@ -486,10 +476,9 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
 
 - `trace_type = "histogram"`
 - Supports `x` or `y`, not both simultaneously.
-- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel over the whole column. On a scan source (`scan_source`) it folds the same kernel over streamed batches, carried on `AggregationSpec.plan` (`hist1d_fold_plan` in `trace/batch_fold.py`, the 1-D twin of the 2-D fold below): one `fixed_hist` per batch, counts summed in a NumPy accumulator, the viewport filter applied to the frame so the scan rejects the rows. Counts add exactly, so the output equals the kernel's. The fold is faster than the streaming `group_by(bin)` plan it replaced, which pays for its bin keys while the fold is flat in the bin count. The fold's peak memory is the Parquet reader's row-group prefetch window, not the batches. The library sets no Polars environment variable. A user can set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound that window, and with it the fold's peak memory.
+- Bin bounds are always explicit. On a resident frame an ungrouped histogram runs the `fixed_hist` Rust kernel over the whole column. On a scan source (`scan_source`) it folds the same kernel over streamed batches, carried on `AggregationSpec.plan` (`hist1d_fold_plan` in `trace/batch_fold.py`, the 1-D twin of the 2-D fold below): one `fixed_hist` per batch, counts summed in a NumPy accumulator, the viewport filter applied to the frame so the scan rejects the rows. Counts add exactly, so the output equals the kernel's. The fold is flat in the bin count, while the streaming `group_by(bin)` plan it replaced pays for its bin keys. Peak memory follows the 2-D fold rule below.
 - **Bin edges on the wire**: the delta carries one `[lo, step, n]` triple per binned axis (`x_edges`, or `y_edges` for a horizontal histogram; `Histogram2D` sends both). The bins are uniform, so the client derives every bin bound as `lo + i * step` (`_hoverBoundsFromEdges` in `plotly/traces.js`) and builds the `customdata` and hover cells linked hover matches on. Sending one bound object per bin or per cell instead was most of a histogram response.
-- `_FIXED_HIST_ROUND_EPS` (`cube.py`) mirrors `FIXED_HIST_ROUND_EPS` in the kernel: both add it before truncating, so a value on a bin edge lands in the bin above. It is not `_HIST_BIN_EPSILON`, which pads the upper bound.
-- A **grouped** histogram runs the streaming `group_by` plan (`_streaming_hist_plan` in `trace/hist.py`) on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. It uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical. The kernel would hold every group's column in memory at once, and a per-group kernel fold was measured as a dead end. So the plan serves the grouped case only.
+- A **grouped** histogram runs the streaming `group_by` plan (`_streaming_hist_plan` in `trace/hist.py`) on every source kind, carried on `GroupedAggregationSpec.plan`: one row per group, each holding that group's bins. The visible-range filter runs before `group_by`. It uses the cube's `_fixed_hist_bin_expr` (`cube.py`), the one Python mirror of the kernel's bin arithmetic, so the output is bit-identical. The kernel would hold every group's column in memory at once. A plan spec never fuses with other grouped specs, so it carries no `batch_key` / `pre_group_filter_key`.
 - **Temporal data axis**: `fixed_hist` is numeric-only, so a temporal column
   (`Date` / `Datetime`, any time zone) is binned on its `to_physical()`
   representation (µs / days). Viewport bounds and the engine-resolved
@@ -500,15 +489,12 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
   date axis, like the line trace) and emits the bin-edge triple in epoch-ms.
   Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
   `temporal_unit` (contract G).
-- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to a fixed lattice**: for a viewport `[lo, hi]` and `n` bins, `w = (hi - lo) / n`, `k0 = floor(lo / w + 1e-9)`, `k1 = max(ceil(hi / w - 1e-9), k0 + 1)`, and the edges become `k0 * w, k1 * w` over `k1 - k0` bins (`n` or `n + 1`). A pan keeps the span, so `w` and the lattice stay fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span (`w <= 0`) is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. Because the lattice is fixed, a client can request a margin around its viewport and skip requests while the user pans inside it. Not implemented yet.
+- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The 1-D trace then pads `hi` by `_HIST_BIN_EPSILON`, so it bins on `[lo, hi + 1e-10]` and a value on the upper bound lands in the last bin. The 2-D path passes the raw bounds instead and leaves the kernel's own span epsilon to do it.
 - A zoomed grid can hold one bin more than configured, so `_to_update` reads the grid the trace stored in `get_aggregation_spec` (`Histogram._bin_edges`) and the cube target dim carries the snapped `(domain, bins)`, not the configured `bins`. The 1-D plans emit `count` only and the kernel's `breakpoint` field is never read, so the grid travels beside the result rather than in it (issue #37). The client derives bar centers from those two, so cube-served bars land on the server's bars.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
   `fixed_hist`. Numeric and differing temporal physical units remain separate.
-- Grouped histogram traces run their own plan with the visible-range filter
-  applied before `group_by`. A plan spec never fuses with other grouped specs,
-  so it carries no `batch_key` / `pre_group_filter_key`.
-- `_to_update` normalizes counts per `histnorm`; returns `{"x": centers, "y": counts}` (vertical) or `{"x": counts, "y": centers, "orientation": "h"}` (horizontal).
+- `_to_update` normalizes counts per `histnorm`; returns `{"x": centers, "y": counts, "x_edges": [lo, step, n]}` (vertical) or `{"x": counts, "y": centers, "orientation": "h", "y_edges": [lo, step, n]}` (horizontal).
 
 ### BoxPlot
 
@@ -587,19 +573,19 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `trace_type = "histogram2d"` · `axes = ("x", "y")` · `recompute_axes = ("x", "y")` · `overlay_style = "filtered_only"`
 - `z` is optional — when `None`, rows are counted per bin (implicit count). When given, `histfunc` is required.
 - A **resident** frame runs one kernel expression: `fixed_hist2d` for the count, `fixed_hist2d_reduce` for a `z` column (`histfunc in {"sum", "mean", "min", "max"}`).
-- A **scan** source folds the same kernels over batches instead (`AggregationSpec.plan` → `hist2d_fold_plan` in `batch_fold.py`). As one expression the kernels need whole Series, so a scan materializes both axis columns before binning. The plan reads the frame through `LazyFrame.collect_batches(chunk_size=4M rows, maintain_order=False, engine="streaming")`, runs the kernel on each batch, and accumulates the grid in NumPy, so peak memory is one batch plus the grid. A streaming `group_by` on the flattened cell key is the obvious alternative, but it is unbounded above the Polars hot table size (measured), and `collect_batches` is the Polars escape hatch for custom logic over streamed batches. The fold matches the kernel's speed at a fraction of its peak memory. Zoomed, the fold is faster, because the viewport filter runs inside the scan.
-- Fold exactness: count, `min` and `max` are exact. `sum` and `mean` fold in a different order than the kernel, so they agree to about 1e-13 relative. `mean` folds a `fixed_hist2d_reduce(histfunc="sum")` grid over a `fixed_hist2d` count of the rows with a usable `z` (the reduce kernel skips null and NaN `z`), and finalizes as sum / count with `None` where the count is 0.
-- Both folds cross from Polars to NumPy through Arrow, never through Python objects: the kernel's grid is read as `out[...].struct.field("z_flat").item().to_numpy()` and the result is rebuilt from a Series. Indexing the struct row instead built a dict and a list of every cell once per batch, which at a 1000 x 1000 grid cost more than the binning. The crossing through Arrow is several times faster than indexing the struct row.
+- A **scan** source folds the same kernels over batches instead (`AggregationSpec.plan` → `hist2d_fold_plan` in `batch_fold.py`). The kernel expression would need both axis columns whole, which is why a scan folds instead. The plan reads the frame through `LazyFrame.collect_batches(chunk_size=4M rows, maintain_order=False, engine="streaming")`, runs the kernel on each batch, and accumulates the grid in NumPy, so peak memory is one batch plus the grid, bounded by the Parquet reader's row-group prefetch window (see Execution decisions) rather than by the file. A streaming `group_by` on the flattened cell key is the obvious alternative, but it holds a hot table of cell keys instead of a fixed grid, and `collect_batches` is the Polars escape hatch for custom logic over streamed batches. Zoomed, the viewport filter runs inside the scan, so the fold reads fewer rows.
+- Fold exactness: count, `min` and `max` are exact. `sum` and `mean` fold in a different order than the kernel, so they are not bit-equal; `tests/test_trace_hist2d.py::TestHist2DScanFoldEquivalence` pins them at `rel_tol=1e-9`. `mean` folds a `fixed_hist2d_reduce(histfunc="sum")` grid over a `fixed_hist2d` count of the rows with a usable `z` (the reduce kernel skips null and NaN `z`), and finalizes as sum / count with `None` where the count is 0.
+- Both folds cross from Polars to NumPy through Arrow (`out[...].struct.field("z_flat").item().to_numpy()`), never through Python objects: indexing the struct row would build a dict and a list of every cell once per batch.
 - `collect_batches` is marked unstable in Polars. A semantics test pins the chunking both folds rely on, so an API or chunking change fails there first.
 - A temporal x and/or y axis is binned on its `to_physical()` representation (the kernel is numeric-only) with physical bin edges; `_to_update` restores datetime centers on that axis (date axis) and emits that axis's bin-edge triple in epoch-ms — same scheme as the 1-D `Histogram`.
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges: each axis resolves on its own through the `Histogram` rule above, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the fixed lattice, and the mask filters on the snapped rectangle so an edge cell is complete.
+- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, which pads its own span, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale` and `color_range`; trace-owned defaults are `"viridis"` and `"auto"`.
-- `_to_update` returns `{"x": [...centers], "y": [...centers], "z": [[values]]}`.
+- `_to_update` returns `{"x": [...centers], "y": [...centers], "z": [[values]], "x_edges": [lo, step, n], "y_edges": [lo, step, n]}`.
 - Box-select inside the heatmap emits a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses (x and y columns).
 
 ### GeoHistogram2D
@@ -612,9 +598,9 @@ fig.add_geo_histogram2d(lat="lat", lon="lon", histfunc="mean", z="temperature")
 - `trace_type = "geo_histogram2d"` · `axes = None` · `recompute_axes = ("coordinates",)` · `overlay_style = "filtered_only"`
 - `GeoHistogram2D` bins through the same `hist2d_agg_spec` path as `Histogram2D` over a different column pair: `axis_edges` for the edges and the viewport mask, one kernel expression on a resident frame (`fixed_hist2d` for the count, `fixed_hist2d_reduce` for a `z` column), and `hist2d_fold_plan` on a scan source. lat maps to the kernel x (inner) axis and lon to the y (outer) axis so `z_flat` is already in the lon-major order the client's rectangle builder needs.
 - z-column support is `histfunc in {"sum", "mean", "min", "max"}`. `median` and `n_unique` are **not** supported on this fast path (mirrors `Histogram2D`); see the Roadmap below. `from_trace_spec` raises on legacy `median`/`n_unique` specs.
-- Rows are clipped to the snapped map bounds before binning: a resident frame filters inside the kernel expression, a scan filters the frame so the scan itself rejects the rows. Viewport is passed as `update_range["coordinates"]` — a list of `[lon, lat]` corner points (from `PlotlyAdapter` / map `relayout`). Fold exactness is the `Histogram2D` rule: count, `min` and `max` are exact, `sum` and `mean` agree to about 1e-13 relative.
+- Rows are clipped to the snapped map bounds before binning: a resident frame filters inside the kernel expression, a scan filters the frame so the scan itself rejects the rows. Viewport is passed as `update_range["coordinates"]` — a list of `[lon, lat]` corner points (from `PlotlyAdapter` / map `relayout`). Fold exactness is the `Histogram2D` rule: count, `min` and `max` are exact, `sum` and `mean` fold in a different order than the kernel.
 - Bin edges follow the `Histogram2D` rule exactly. Unzoomed, they span the engine-resolved unfiltered lat/lon domains (`domain_cols` returns both columns when `update_range` carries no `"coordinates"`), so a cross-filter recolors the grid instead of re-binning it. Zoomed, they span the map bounds snapped outward to a fixed lattice, so the grid stands still while the user pans. The snapped grid can hold one more bin per axis than configured, so `_to_update` unpacks `z_flat` with the grid the request actually binned on.
-- `histnorm` is applied in `_to_update` (post-kernel) over the flat z grid, with `bin_area = lat_step * lon_step`; bin centers/edges are derived from the kernel-echoed `lo`/`hi` and `nb`.
+- `histnorm` is applied over the flat z grid inside `unpack_hist2d_grid` (`trace/hist2d.py`), with `bin_area = lat_step * lon_step`. The delta carries the two edge triples and the flat z, no centers: the client derives every rectangle from them.
 - `_to_update` returns `{"lat_edges": [lo, step, n], "lon_edges": [lo, step, n], "z": [...]}`: one triple per axis and the flat lon-major grid, `null` for an empty cell. `_geoRectanglesFromEdges` (`plotly/traces.js`) builds the choropleth GeoJSON from them, one rectangle per non-empty cell with id `r{lat_i}_c{lon_j}`. The rectangles are most of a geo response, and every one of them is `lo + i * step`.
 - Cross-filtering: Plotly geo selections are derived from the selected choropleth bin ids (`locations`, built by the client with the rectangles) and collapsed to one lon/lat bounding box, then emitted as a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses on the trace's `lon` and `lat` columns.
 - Public style API: `color_scale` and `color_range`; defaults are `"viridis"` and `"auto"`.
@@ -674,7 +660,7 @@ All traces call these for consistent datetime, integer, and float casting in `is
 
 ## Plugin Layer
 
-`flexviz_polars` is a required Rust/Polars plugin crate in `flexviz_polars/`. It exposes performance-critical downsampling kernels as a `.flexviz` Polars expression namespace.
+`flexviz_polars` is a required Rust/Polars plugin crate in `flexviz_polars/`. It exposes performance-critical downsampling kernels as a `.flexviz` Polars expression namespace plus one module-level kernel.
 
 **Build and install** (requires Rust + maturin in dev dependencies):
 ```bash
@@ -682,7 +668,7 @@ make build-plugin          # debug build
 make build-plugin-release  # release build (use for benchmarks)
 ```
 
-**Public API** (activated by `import flexviz_polars`):
+**Kernels** (activated by `import flexviz_polars`):
 ```
 FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_expr_namespace
 ├── every_nth(n_points: int) → pl.Expr
@@ -707,19 +693,25 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 │     length 1; z_flat is row-major (yi * nb_x + xi). Empty bins have count 0.
 │     Used by Histogram2D (count) on a resident frame as one expression and on
 │     a scan once per streamed batch, and by GeoHistogram2D (count; lat→x,
-│     lon→y) as one expression on both source kinds. lo/hi may be literals or
-│     scalar expressions (e.g. a filtered min/max), and are echoed back
-│     unchanged for edge derivation.
+│     lon→y) as one expression on both source kinds. lo/hi are scalar literals,
+│     echoed back unchanged for edge derivation.
 │
-└── fixed_hist2d_reduce(y_expr, z_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y, histfunc) → pl.Expr
-      O(n) fixed-bin 2D reducer for histfunc ∈ {"sum", "mean", "min", "max"}.
-      Same typed-dispatch / cont_slice optimizations as fixed_hist2d. Returns
-      Struct{z_flat: List(Float64), x_lo, x_hi, y_lo, y_hi} of length 1; empty
-      bins are null; null and NaN z are skipped. Used by Histogram2D when z is
-      given, as one expression on a resident frame and once per streamed batch
-      on a scan (with histfunc="sum" when the trace asks for "mean"), and by
-      GeoHistogram2D as one expression on both source kinds.
-      `median` / `n_unique` are not implemented (see Roadmap).
+├── fixed_hist2d_reduce(y_expr, z_expr, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y, histfunc) → pl.Expr
+│     O(n) fixed-bin 2D reducer for histfunc ∈ {"sum", "mean", "min", "max"}.
+│     Same typed-dispatch / cont_slice optimizations as fixed_hist2d. Returns
+│     Struct{z_flat: List(Float64), x_lo, x_hi, y_lo, y_hi} of length 1; empty
+│     bins are null; null and NaN z are skipped. Used by Histogram2D when z is
+│     given, as one expression on a resident frame and once per streamed batch
+│     on a scan (with histfunc="sum" when the trace asks for "mean"), and by
+│     GeoHistogram2D as one expression on both source kinds.
+│     `median` / `n_unique` are not implemented (see Roadmap).
+│
+└── fixed_line_envelope2d(y_expr, free_expr, x_lo, x_hi, free_lo, free_hi, n_buckets, p) → pl.Expr
+      One-pass exact argmin/argmax-by-y envelope per (x bucket, free bin) cell.
+      Returns Struct{bucket, free_bin, y_min, x_at_ymin, y_max, x_at_ymax} with
+      one row per non-empty cell, sorted by (free_bin, bucket). Bin arithmetic is
+      the cube's natural floor on both axes, no epsilon and no clip; ties keep the
+      first row in scan order. Used by `cube.py` to build the `line_env` measure.
 
 flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
       Bucket pass that keeps the pairing: one row per non-empty bucket, in bucket
@@ -734,7 +726,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 **Rust internals** (`src/expressions.rs`):
 - `every_nth` — computes `stride = max(1, len / n_points)`, builds capped gather indices, calls `Series::take()`.
-- `minmax_pairs_line` — `x_width_offsets` gives the binary-searched windows of the equal-x-width buckets over the `x_domain` kwarg: it reads x through its physical representation and drops rows outside the domain. `pairs_for_offsets` then scans each window through `simd_argminmax` (SIMD fast path for contiguous numeric types) or `fallback_window_argminmax` (general Series API for nulls and other dtypes), and the kernel `take`s x and y at both indices inside the same call, one struct row per non-empty bucket, in bucket order. The window scan is rayon-parallel via `par_by_window` on the kernel pool — split by whole windows, so output is bit-identical to the serial path by construction. The split is by row count rather than by window count, because x-width windows are wildly uneven. The split is a trade against the memory-bandwidth ceiling (see its doc comment for the measured numbers): concurrent traces queue through the shared pool, so the split helps a single trace, costs a little at a few concurrent traces, and fades as the count grows.
+- `minmax_pairs_line` — binary-searched equal-x-width windows over the `x_domain` kwarg, read through x's physical representation, with rows outside the domain dropped. Each window is scanned SIMD-first with a Series fallback for nulls and other dtypes, and both takes happen inside the one call. The rayon split is by whole windows, so the output is bit-identical to the serial path by construction, and by row count rather than window count, because x-width windows are uneven.
 - `fixed_hist` — dispatches on native dtype via `FixedHistValue` trait (avoids full-column cast); maps each value to a bin with `((v - lo) * scale).floor()` (+ round eps), clamps boundaries. **Rayon-parallel**: null-free contiguous runs are split into work units folded into private per-group count tables and merged by add. Falls back to the scalar single-table loop for chunks with nulls, undispatched dtypes, input below `MIN_PAR` (2^17 rows), or when two private tables exceed the byte budget — counts are identical either way (asserted against an independent Python reference in `test_plugin_functions.py`).
 - `fixed_hist2d` — O(n) 2D binning, same parallel/fallback structure as `fixed_hist` (x/y chunks aligned via `align_chunks_binary`); counts (UInt32) stored row-major. `fixed_hist2d_reduce` (Float64 reductions) remains single-threaded.
 - **Private-table budget**: both parallel kernels bound live scratch by `MAX_PRIVATE_BYTES` (32 MiB). Work units are folded in at most `n_chunks` groups — one table per group — so fragmented (many-chunk) input cannot multiply tables past the budget; when even two tables do not fit (≳4M bins), the kernel stays scalar.
@@ -779,9 +771,8 @@ FlexEngine
          resolution or aggregation runs
       6. Resolve every domain the active traces need — each trace's own
          `domain_cols()` unioned with the histogram groups above — in one
-         `LFQueryBuilder.physical_minmax` call; memoized on a `static` source
-         (a resident frame, or a `cache=True` scan), so a fully cached
-         request resolves nothing
+         `LFQueryBuilder.physical_minmax` call; memoized when the source is
+         `static`, so a fully cached request resolves nothing
       7. Collect AggregationSpec / GroupedAggregationSpec per active trace,
          passing each trace its resolved domain bounds
       8. In update mode: aggregate once with selection filters
@@ -818,22 +809,15 @@ Because the engine keys its recompute/scoping on event type, `fvOnResetPanel` de
 The rules that decide how a trace runs locally. They hold across every trace, so
 a new trace inherits them instead of choosing again.
 
-- **Two paths, picked by source kind.** A resident frame runs a Rust kernel. A scan runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` is the only input to that choice. The choice is internal, and there is no public engine option.
+- **Two paths, picked by source kind and grouping.** A resident ungrouped trace runs a Rust kernel. A scan, or a grouped trace on either source kind, runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` and the presence of `group_by` are the only inputs to that choice. The choice is internal, and there is no public engine option.
 - **Every collect names its engine.** `"auto"` is never used. Each `.collect()` and `collect_batches()` in `flexviz/` passes an explicit `engine=`, from `LFQueryBuilder.collect_engine` or a literal.
-- **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and at least 2x faster in median latency on representative data. Otherwise the plan stays.
+- **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and measured faster on representative data with a release build. Otherwise the plan stays.
 - **Data type does not pick an implementation.** One exception, tracked in issue #33: a single string-like group column packs into the bucket key of a grouped line (`_grouped_bucket_keys` in `trace/line_buckets.py`).
 - **No process-wide Polars setting.** The library writes no environment variable and no `pl.Config` value. A user owns those. `POLARS_ROW_GROUP_PREFETCH_SIZE` is the one worth setting, because it bounds a scan fold's peak memory.
 - **No collection locks, no output-cell cap.** A dense 2-D grid and a high-cardinality grouped trace can still exceed memory out of core. Issue #19 tracks both.
 - **The out-of-core contract is one local Parquet file.** A multi-file, hive or cloud scan runs the same plans, and its memory is not characterized: the Polars reader holds buffers per file, per row group and per column.
-- **Domain resolution** runs request-wide, once, before the cross-filter predicates. See the `physical_minmax` bullet under Core Properties and the Data Layer for the memo rule.
-- **One bucket semantic for lines.** `add_line` requires `x`, and x width is the only bucket rule (issue #26). See the LinePlot section.
-- **Grouped lines share one global grid**, and a plan-carrying grouped spec never fuses. See the LinePlot section (issue #16) and the Data Layer (issue #17).
 
-Open gaps:
-
-- The `fixed_hist`, `fixed_hist2d` and `fixed_hist2d_reduce` kernels drop to their scalar path for any chunk that holds a null. Real data holds nulls, so a null-aware parallel path is worth having.
-- `fixed_hist2d_reduce` is single-threaded (see the Plugin Layer).
-- The grouped histogram streaming `group_by` runs on the default Polars hot table. A large group by bin product spills (issue #19).
+The open gaps these rules leave are rows in the Known Issues / Technical Debt table.
 
 ---
 
@@ -850,7 +834,7 @@ LFQueryBuilder
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan and the grouped histogram plan always stream)
 ├── static                       ← the data cannot change under this builder: a resident frame, or a cache=True scan
 ├── physical_minmax(cols, schema)  ← per-column unfiltered (min, max); Parquet footer first; kept on the builder only when static
-├── check_line_x(col)            ← line x data check on a resident frame: one collect (null check, is_sorted pass, O(1) trailing-NaN probe). Kept as the sorted flag only when static. The dtype gate lives on the trace (LinePlot.check_schema)
+├── check_line_x(col)            ← line x data check on a resident frame: one collect verifying x is null-free, sorted and NaN-free; the flag is kept only when static
 ├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
@@ -897,10 +881,11 @@ grouped `DataFrame` is then shared back to each logical parent uid in that batch
 A grouped spec can carry a `plan` instead of `agg_exprs`. A plan spec runs alone, after
 the cross-filter and its own `pre_group_filters`, and returns the same frame shape the
 fused query returns. Plan specs never fuse, so they need no `pre_group_filter_key`.
-Grouped x-width lines are the one user: each carries a streaming `group_by(key, bucket)`
-plan, so two such lines over the same group columns read the source twice (issue #17).
+Grouped x-width lines and grouped histograms are the users: each carries a streaming
+`group_by` plan, so two plan specs over the same group columns read the source twice
+(issue #17).
 
-On a bare single-file local Parquet scan, `physical_minmax` reads the footer statistics first and collects only the columns the footer cannot answer, which costs a few kilobytes instead of a column decode (`_parquet_path` rejects a multi-file or hive scan, a cloud URL, and any node above the scan, because the statistics then describe other rows). The probe is an optimization only: any problem with it falls back to the collect.
+On a bare single-file local Parquet scan, `physical_minmax` reads the footer statistics first and collects only the columns the footer cannot answer, which costs a few kilobytes instead of a column decode (`_parquet_path` rejects a multi-file or hive scan, a cloud URL, a row-count slice, and any node above the scan except a sorted hint, which keeps every row the footer describes). The probe is an optimization only: any problem with it falls back to the collect.
 
 `_to_update` receives the result as `df_agg[uid][0]` — a Python dict of `{field: value}` where array fields are Python lists (after `implode()` inside the trace expression).
 
@@ -924,7 +909,7 @@ The "stateless server" invariant forbids *authoritative interaction state* (view
 - **never authoritative** — a miss recomputes a byte-identical result, so correctness never depends on a hit (any replica may serve any request);
 - **droppable** — eviction is global (LRU/size), never per-session.
 
-Phase 1 caches only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #39). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
+The response cache covers only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #39). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
 
 - `init` and `reset` are viewport-free by construction (`reset` forces an empty `update_range`);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
@@ -969,7 +954,7 @@ answered out-of-band (not via the `UpdateResponse` / `DashboardResponse` JSON mo
 (no base64) plus the `trace_cubes` map (target trace uid → blob index) behind a thin binary
 envelope, and the cube path gzips it itself at a fixed low level (`_cube_response`) so the
 `GZipMiddleware` leaves it untouched. Shipping raw binary instead of base64-in-JSON avoids 33%
-inflation and the high-CPU gzip-of-text that dominated cached-cube TTFB. The single-figure
+inflation and the CPU cost of gzipping text. The single-figure
 `/update` cube path is plumbing only — one figure has no cross-filter targets, so it always
 returns an empty bundle.
 
@@ -1023,12 +1008,13 @@ finalizes locally:
 | `line_env` | per x-bucket: packed `(min_y, max_y)` as **f32** + the argmin/argmax x as **u16** offsets | min/max over y, keep extremal x | the x-bucket min-max envelope |
 
 f64 partials encode null as NaN. Counts and min/max reslice bit-exactly; sums/means/corr match a
-direct aggregation within ~1e-9 (combine-order float caveat — tested at that tolerance).
+direct aggregation within ~1e-9 (combine-order float caveat; `tests/test_cube.py` pins that
+tolerance).
 `median`/`n_unique` are not decomposable ⇒ those traces are not cube targets. The `line_env`
 and `corr` builds bin/scan the free axis as a numeric range OR partition it by category, so they
 require a range (continuous/temporal) **or categorical** free axis (`cube_target_buildable`); only a
 **box2d** (hist2d) source is rejected for them — it falls back to the per-commit recompute (the
-cell-count wall, #47), exactly like the `box`/`median` targets above. A categorical source partitions
+cell-count wall), exactly like the `box`/`median` targets above. A categorical source partitions
 the build by the free category (`__free__` columns) and runs the `fixed_line_envelope2d` kernel with
 a degenerate 1-bin free axis (line_env) or `group_by(__free__cols)` (corr).
 `corr` is **pearson-only** (spearman is rank-based, not decomposable) and needs ≥2 explicit numeric
@@ -1268,8 +1254,8 @@ them.
 
   | trace | target dims | measure |
   |---|---|---|
-  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly. Zoomed, the domain is the **snapped** viewport and `bins` is the snapped count, matching the display grid | count |
-  | hist (grouped) | (binned data col, *group cols as categorical) | count |
+  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly; zoomed: snapped `(domain, bins)`, see the Histogram section | count |
+  | hist (grouped) | (binned data col, *group cols as categorical) — same snap, `get_cube_target_spec` snaps before the grouped branch | count |
   | bar | (*label cols, *group cols — all categorical) | `count`/`sum`/`mean`/`min`/`max` over `values` |
   | pie | (*label cols as categorical) | same |
   | line | (binned x col @ `n_points/2` buckets, *group cols as categorical) — **minmax-only** | `line_env` over `y` |
@@ -1283,7 +1269,7 @@ them.
   Pearson heatmaps (`columns=[...]`, not schema-inferred columns). The
   `line` (`line_env`) and `corr_heatmap` (`corr`) targets build from a **range
   (hist/box/line) OR categorical (bar/pie/treemap) source** — only a **box2d**
-  (hist2d) source is excluded (the cell-count wall, #47): a categorical source
+  (hist2d) source is excluded (the cell-count wall): a categorical source
   partitions the build by the free category (`__free__` columns),
   reusing the `fixed_line_envelope2d` kernel with a degenerate 1-bin free axis (line) or
   `group_by(__free__cols)` (corr). The
@@ -1293,8 +1279,8 @@ them.
   live every frame, but a line target's commit **always POSTs** (`postRequired`) so the committed
   delta replaces the approximate envelope — keeping commit ≡ share/restore bit-exact. Both are
   x-width envelopes, but their bucket edges can differ: the cube pads its upper bound by
-  `_HIST_BIN_EPSILON` and floors on true division, while the trace grid comes from `bucket_grid`
-  with ceiling division on integer x.
+  `_HIST_BIN_EPSILON` and divides true, while `bucket_grid` rounds an integer viewport bound
+  inward and keeps a whole bucket width on integer and temporal x. Issue #24 tracks it.
 - **Dtype/name gates** (descriptor methods return `None`; a schema is required for categorical
   capability): every categorical dim column must be `String`/`Categorical`/`Enum`, with one
   exception — a **bar/pie label** column may also be **integer- or float-typed**, on **both** the
@@ -1323,8 +1309,8 @@ them.
   **cube bundle** envelope (`encode_cube_bundle` / `decodeCubeBundle`) as the
   `application/octet-stream` body of the `/dashboard/update` cube response; the same bytes can
   later move to WebSocket binary frames. The cube path **gzip-compresses** the bundle itself at a
-  fixed low level (binary numeric arrays barely compress, and high levels dominated cached-cube
-  TTFB) and the client decompresses transparently. The codec stays version 1 across these
+  fixed low level (binary numeric arrays barely compress) and the client decompresses
+  transparently. The codec stays version 1 across these
   extensions: blobs never outlive a process and client and server ship in lockstep.
 
 ### Invariants
@@ -1333,7 +1319,7 @@ them.
   `_sources` + request content.
 - Traces stay renderer-agnostic and cube-agnostic beyond the two descriptor methods; no
   `trace_type` reaches `cube.py`.
-- **`engine.build_cubes` has one trace-type-aware seam** (issue #72): it calls
+- **`engine.build_cubes` has one trace-type-aware seam**: it calls
   `_histogram_domain_cols_by_uid` to group shared bin domains, and that helper reads
   `trace_type` / `prop_key` / `data_col`. This is a **known, deliberate relaxation**, not an
   accident: the same grouping decides the legacy aggregation domains, and the two paths must
@@ -1342,7 +1328,7 @@ them.
   in one shared helper until shared-domain identity is expressible as a generic descriptor.
   Adding a trace type does **not** require touching it — only a trace with a *figure-shared*
   bin domain would. The helper gates shared domains by coordinate unit; its remaining known
-  limitation is the latent secondary-axis anchor mismatch (#73), which matters only if
+  limitation is the latent secondary-axis anchor mismatch, which matters only if
   secondary axes become renderer-supported.
 - Runtime cube state (store, gesture machine, remembered free domains) is client-only and never
   serialized into the spec; the committed *selection* (snapped, `closed="left"`) is ordinary
@@ -1384,6 +1370,7 @@ bundle composition (which sources go into `shared` / `plotly` / `echarts`) is de
 ```
 adapters/js/
 ├── theme.css                 ← CSS custom properties (design tokens)
+├── toolbar.css               ← toolbar and header styles
 ├── toolbar.js                ← shared toolbar hooks + state helpers
 ├── gridstack-bridge.js       ← GridStack.init() IIFE + change/resizestop handlers
 ├── panel.js                  ← <fv-panel> wrapper + shared panel-control binding
@@ -1401,7 +1388,7 @@ adapters/js/
 │   ├── render.js             ← _fvRenderFigure, axis helpers, lock/capture
 │   ├── events.js             ← relayout/selected/deselect/click handlers
 │   ├── hover.js              ← Plotly crosshair helpers
-│   └── init.js               ← bindFigure (per-figure event wiring), startup IIFE
+│   └── init.js               ← bindFigure, startup IIFE, fallback newPlot for undrawn figures
 └── echarts/
     ├── series.js             ← chartsByFig, series template builders
     ├── render.js             ← _fvRenderFigure, brush/zoom helpers
@@ -1497,11 +1484,20 @@ DEPRECATED => currently not maintained anymore.
 
 ## Directory Structure
 
+One `test_*.py` per module under `tests/`, plus `test_browser*.py` for the
+Playwright suites (`@pytest.mark.browser`). The files that rule does not
+predict are `conftest.py` (shared fixtures), `test_integration.py`,
+`test_cube_server.py`, `test_domain_resolution.py`, `test_html_adapters.py`,
+`test_path_predicate_selection.py`, `test_recompute_policy_docs.py`, and
+`test_trace_cube_descriptors.py`.
+
 ```
 flexviz/
 ├── flexviz/
 │   ├── __init__.py          ← public API: Figure, Dashboard, app,
 │   │                           register_source, mount_into
+│   ├── __main__.py          ← `python -m flexviz` entry; calls cli.main
+│   ├── cli.py               ← serve / schema / decode / skill install
 │   ├── spec.py              ← VisualizationSpec, DashboardSpec, FigureSpec,
 │   │                           TraceSpec, LayoutSpec, ToolbarConfig,
 │   │                           InteractionState, SelectionState,
@@ -1519,6 +1515,8 @@ flexviz/
 │   ├── server.py            ← FastAPI app, register_source, mount_into
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard
+│   ├── skills/
+│   │   └── flexviz-explore/SKILL.md  ← packaged agent skill (flexviz skill install)
 │   ├── trace/
 │   │   ├── __init__.py      ← build_trace_from_spec(), _REGISTRY
 │   │   ├── base.py          ← FlexTrace ABC + dtype filter helpers
@@ -1531,51 +1529,37 @@ flexviz/
 │   │   ├── treemap.py       ← TreeMap
 │   │   ├── hist2d.py        ← Histogram2D
 │   │   ├── geo_hist2d.py    ← GeoHistogram2D
-│   │   ├── bin_grid.py      ← shared bin grid: edges, viewport mask, kernel calls
+│   │   ├── geo_line.py      ← GeoLine
+│   │   ├── bin_grid.py      ← shared bin grid: snap_range, edges, viewport
+│   │   │                       mask, kernel calls
 │   │   ├── batch_fold.py    ← the kernels folded over streamed batches (scan sources)
-│   │   ├── _hist_helpers.py   ← shared histnorm / heatmap-color helpers
+│   │   ├── _hist_helpers.py ← shared histnorm / heatmap-color helpers
 │   │   └── corr_heatmap.py  ← CorrHeatmap
 │   └── adapters/
 │       ├── __init__.py
 │       ├── base.py          ← AbstractAdapter, shared toolbar + delivery
+│       ├── registry.py      ← renderer registry + capability validation
 │       ├── runtime.py       ← shared_runtime_js() — renderer-agnostic JS
+│       ├── js/              ← JS and CSS sources, bundled at import
+│       │                       (see JS Build Pipeline)
 │       ├── plotly_adapter.py
 │       └── echarts_adapter.py
 ├── flexviz_polars/          ← Rust/Polars plugin (build with make build-plugin)
+│   ├── README.md
 │   ├── src/
 │   │   ├── lib.rs           ← PyO3 module entry, global Polars allocator
-│   │   └── expressions.rs   ← every_nth, minmax_pairs_line kernels + shared helpers
+│   │   └── expressions.rs   ← the six plugin kernels + shared helpers
+│   ├── benches/
+│   │   └── bench_argminmax.rs
 │   ├── flexviz_polars/
 │   │   ├── __init__.py      ← FlexvizExprNamespace (@pl.api.register_expr_namespace)
 │   │   ├── _internal.pyi    ← type stub for compiled extension (__version__)
 │   │   └── typing.py        ← IntoExprColumn type alias
 │   ├── tests/
-│   │   └── test_plugin_functions.py ← unit tests for every_nth and minmax_pairs_line
+│   │   └── test_plugin_functions.py ← unit tests for the six plugin kernels
 │   ├── Cargo.toml
 │   └── pyproject.toml
 └── tests/
-    ├── conftest.py          ← shared fixtures (DataFrames, traces, API client)
-    ├── test_spec.py
-    ├── test_lf.py
-    ├── test_engine.py
-    ├── test_trace_base.py
-    ├── test_trace_line.py
-    ├── test_trace_hist.py
-    ├── test_trace_box.py
-    ├── test_trace_pie.py
-    ├── test_trace_treemap.py
-    ├── test_trace_hist2d.py
-    ├── test_trace_geo_hist2d.py
-    ├── test_trace_corr_heatmap.py
-    ├── test_adapters.py
-    ├── test_html_adapters.py
-    ├── test_integration.py
-    ├── test_predicates.py
-    ├── test_cube.py         ← cube build / codec / descriptor unit tests
-    ├── test_cube_server.py  ← request_cube server/engine path
-    ├── test_cache.py
-    ├── test_browser.py      ← Playwright (make test-browser)
-    └── test_browser_cube.py ← Playwright live-brush / cube gesture tests
 ```
 
 ---
@@ -1622,13 +1606,17 @@ EChartsAdapter is currently deprecated. No goal to support this in the near futu
 
 | Location | Description |
 |----------|-------------|
-| `LF.py` `check_line_x` | One O(n) pass over x to verify the minmax-line x contract on a resident frame, repeated per request on a `cache=False` source. `assume_sorted` available as opt-in |
-| `adapters/base.py` | `_deliver_browser` always routes through `POST /share` and opens an encoded URL, even for an ordinary local `fig.show()` call |
+| `LF.py` `check_line_x` | One O(n) collect the first time a resident-frame x-width line reads an x column; the sorted flag then skips it. `assume_sorted_x=True` opts out |
+| `adapters/base.py` | `_deliver_browser_shared` always routes through `POST /share` and opens an encoded URL, even for an ordinary local `fig.show()` call |
 | `EChartsAdapter` | Does not support `BoxPlot` or `TreeMap`; supports line, histogram, bar, pie, and heatmap |
 | `trace/` interface | `_backend_data`, `_display`, `_params` dicts have `TypedDict` hints (`TraceDisplay`, `TraceParams`); `backend_data` values are `str | list[str]` |
-| `LinePlot`, `Histogram`, `Histogram2D`, `GeoHistogram2D` | All require `flexviz_polars` plugin; raise `ImportError` at import time without it (no pure-Python fallback). |
-| Cube client temporal snapping | The server builds temporal-free-axis cubes (physical epoch cast), but the client gesture machine bails on non-numeric viewport ranges, so temporal source axes currently degrade to mouseup-only behavior. |
+| `LinePlot`, `Histogram`, `Histogram2D`, `GeoHistogram2D`, `GeoLine` | All require `flexviz_polars` plugin; raise `ImportError` at import time without it (no pure-Python fallback). |
+| `fixed_hist`, `fixed_hist2d` | Both drop to their scalar path for any chunk that holds a null. Real data holds nulls, so a null-aware parallel path is worth having |
+| `fixed_hist2d_reduce` | Single-threaded; it has no rayon path at all |
+| Grouped histogram plan | The streaming `group_by` runs on the default Polars hot table, so a large group by bin product spills (issue #19) |
+| `LinePlot` `nth` | No streaming formulation yet: the kernel runs on the whole column on both source kinds |
 
 ### Roadmap
 
-- **`median` / `n_unique` reducers for `Histogram`, `Histogram2D`, and `GeoHistogram2D`.** When these traces moved to the `flexviz_polars` Rust kernel they dropped `median` and `n_unique`, which the kernel does not implement (count + `sum`/`mean`/`min`/`max` only). Both break the kernel's fixed-memory, single-pass design — `median` needs per-bin value retention, `n_unique` needs a per-bin set. The intended path is to add `FixedHist2DReducer::Median` / `NUnique` (and a 1D equivalent for `Histogram`) so all three traces regain uniform, fast support; the reference implementation for the expected semantics lives only in git history (the pure-Polars `bin_2d` pipeline, commit `83add5f`, formerly `trace/_hist_helpers.py`). Until then, requesting `histfunc="median"` or `"n_unique"` on these traces raises `ValueError`.
+- **`median` / `n_unique` reducers for `Histogram`, `Histogram2D`, and `GeoHistogram2D`.** When these traces moved to the `flexviz_polars` Rust kernel they dropped `median` and `n_unique`, which the kernel does not implement (count + `sum`/`mean`/`min`/`max` only). Both break the kernel's fixed-memory, single-pass design — `median` needs per-bin value retention, `n_unique` needs a per-bin set. The intended path is to add `FixedHist2DReducer::Median` / `NUnique` (and a 1D equivalent for `Histogram`) so all three traces regain uniform, fast support; the reference implementation for the expected semantics lives only in git history: the pure-Polars `bin_2d` pipeline, commit `83add5f`. Until then, requesting `histfunc="median"` or `"n_unique"` on these traces raises `ValueError`.
+- **Skip viewport requests a fixed lattice makes redundant (issue #34).** The snapped bin lattice does not move under a pan, so a client could request a margin around its viewport and send nothing while the user pans inside it.

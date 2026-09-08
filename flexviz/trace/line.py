@@ -723,8 +723,7 @@ class LinePlot(FlexTrace):
 
             if scan_source:
                 # The kernel needs the whole column in memory, so a scan runs
-                # the streaming plan instead. `nth` already streams: a stride
-                # needs no state.
+                # the streaming plan instead.
                 return AggregationSpec(
                     uid=self.uid,
                     plan=pairs_plan(

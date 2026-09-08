@@ -1376,9 +1376,7 @@ class TestHistogramStreamingPlanArithmetic:
 
     @staticmethod
     def _plan_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
-        run = _streaming_hist_plan(
-            pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", ("g",)
-        )
+        run = _streaming_hist_plan(pl.col("v"), lo, hi, bins, "u", ("g",))
         out = run(df.with_columns(g=pl.lit("a")).lazy())
         return out["u"].item().struct.field("count").to_list()
 

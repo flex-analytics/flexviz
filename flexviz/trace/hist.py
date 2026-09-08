@@ -68,8 +68,8 @@ _HIST_BIN_EPSILON: float = 1e-10
 
 def _streaming_hist_plan(
     value_expr: pl.Expr,
-    lo_expr: pl.Expr,
-    hi_expr: pl.Expr,
+    lo: float,
+    hi: float,
     bins: int,
     uid: str,
     group_cols: tuple[str, ...],
@@ -97,11 +97,7 @@ def _streaming_hist_plan(
     """
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        # Both bounds are literal expressions, so this selects no data.
-        lo, hi = pl.select(lo_expr.alias("lo"), hi_expr.alias("hi")).row(0)
-        # The kernel reads its bounds as f64 and refuses an inverted span.
-        lo = 0.0 if lo is None else float(lo)
-        hi = 1.0 if hi is None else float(hi)
+        # The kernel refuses an inverted span; the bin mirror would bin silently.
         if hi < lo:
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
@@ -189,8 +185,9 @@ class Histogram(FlexTrace):
         self._data_temporal_dtype: pl.DataType | None = None
         # Resolved per-request in get_aggregation_spec: the exact bounds and bin
         # count the kernel bins with. _to_update derives the bin centers and the
-        # wire-format bin edges from them.
-        self._bin_edges: tuple[float, float, int] = (0.0, 1.0, bins)
+        # wire-format bin edges from them, so it fails loudly when the spec step
+        # was skipped instead of drawing a grid that was never binned on.
+        self._bin_edges: tuple[float, float, int] | None = None
 
         super().__init__(
             backend_data={prop_key: col},
@@ -376,7 +373,6 @@ class Histogram(FlexTrace):
             axis_range, domains, schema
         )
         self._bin_edges = (lo, hi, n_bins)
-        lo_expr, hi_expr = pl.lit(lo), pl.lit(hi)
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
@@ -396,12 +392,7 @@ class Histogram(FlexTrace):
                 agg_exprs=(),
                 pre_group_filters=(filter_expr,) if filter_expr is not None else (),
                 plan=_streaming_hist_plan(
-                    data_col_expr,
-                    lo_expr,
-                    hi_expr,
-                    n_bins,
-                    self.uid,
-                    group_by_cols,
+                    data_col_expr, lo, hi, n_bins, self.uid, group_by_cols
                 ),
             )
 
@@ -420,7 +411,7 @@ class Histogram(FlexTrace):
         data_expr = data_col_expr
         if filter_expr is not None:
             data_expr = data_expr.filter(filter_expr)
-        hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=n_bins)
+        hist_expr = data_expr.flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=n_bins)
         return AggregationSpec(expr=hist_expr.implode().alias(self.uid), uid=self.uid)
 
     def _histogram_bounds_exprs(
@@ -453,8 +444,10 @@ class Histogram(FlexTrace):
         bounds = resolved.values()
         los = [lo for lo, _ in bounds if lo is not None]
         his = [hi for _, hi in bounds if hi is not None]
-        lo = min(los) if los else 0.0
-        hi = max(his) if his else 1.0
+        # Domains keep integer bounds exact; the kernel and its mirror bin in
+        # f64, so the edges are floats from here on.
+        lo = float(min(los)) if los else 0.0
+        hi = float(max(his)) if his else 1.0
         return lo, hi + _HIST_BIN_EPSILON, self.bins, None
 
     def _to_update(

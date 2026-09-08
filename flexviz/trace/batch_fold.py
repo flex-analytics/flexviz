@@ -23,9 +23,7 @@ import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 _FOLD_CHUNK_ROWS = 4_000_000
 
 
-def _fold_result_frame(
-    uid: str, z_flat: pl.Series, bounds: tuple[float, float, float, float]
-) -> pl.DataFrame:
+def _fold_result_frame(uid: str, z_flat: pl.Series, bounds: Edges) -> pl.DataFrame:
     """The one-row, one-column frame the kernel expression would have produced.
 
     ``z_flat`` already carries the kernel's dtype (UInt32 counts, nullable
@@ -121,21 +119,12 @@ def hist2d_fold_plan(
     ``collect_batches`` is marked unstable in Polars; a semantics test pins the
     chunking this relies on.
     """
-    # Both bounds are literal expressions, so this selects no data. The kernel
-    # reads them as f64, and the result frame echoes them back.
-    bounds = tuple(
-        float(v)
-        for v in pl.select(
-            *(e.alias(name) for e, name in zip(edges, ("xl", "xh", "yl", "yh")))
-        ).row(0)
-    )
-    lits = tuple(pl.lit(v) for v in bounds)
     n_cells = nb_x * nb_y
     # z may be one of the axis columns, and a select refuses a duplicate.
     cols = list(dict.fromkeys(c for c in (x_col, y_col, z_col) if c is not None))
 
     if z_col is None:
-        exprs = [hist2d_count_expr(x_col, y_col, nb_x, nb_y, lits, None, "g", schema)]
+        exprs = [hist2d_count_expr(x_col, y_col, nb_x, nb_y, edges, None, "g", schema)]
     else:
         assert histfunc is not None
         exprs = [
@@ -145,7 +134,7 @@ def hist2d_fold_plan(
                 z_col,
                 nb_x,
                 nb_y,
-                lits,
+                edges,
                 None,
                 "g",
                 "sum" if histfunc == "mean" else histfunc,
@@ -161,7 +150,7 @@ def hist2d_fold_plan(
                     y_col,
                     nb_x,
                     nb_y,
-                    lits,
+                    edges,
                     _finite_z_expr(z_col, schema),
                     "c",
                     schema,
@@ -214,6 +203,6 @@ def hist2d_fold_plan(
             z_flat = pl.Series(mean).fill_nan(None)
         else:
             z_flat = pl.Series(np.where(seen, acc, np.nan)).fill_nan(None)
-        return _fold_result_frame(uid, z_flat, bounds)
+        return _fold_result_frame(uid, z_flat, edges)
 
     return run

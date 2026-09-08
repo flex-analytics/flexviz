@@ -21,8 +21,8 @@ from .base import (
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
-#: The (x_lo, x_hi, y_lo, y_hi) bin-edge literal expressions from axis_edges.
-Edges = tuple[pl.Expr, pl.Expr, pl.Expr, pl.Expr]
+#: The (x_lo, x_hi, y_lo, y_hi) bin edges from axis_edges, in the kernel's f64.
+Edges = tuple[float, float, float, float]
 
 
 def snap_range(lo: float, hi: float, n: int) -> tuple[float, float, int]:
@@ -87,8 +87,8 @@ def axis_edges(
     n: int,
     domains: Mapping[str, tuple[Any, Any]] | None,
     schema: pl.Schema | None,
-) -> tuple[pl.Expr, pl.Expr, pl.Expr | None, int]:
-    """One axis's bin-edge literals, its viewport mask, and its bin count.
+) -> tuple[float, float, pl.Expr | None, int]:
+    """One axis's bin edges, its viewport mask, and its bin count.
 
     Without a range the axis spans the engine-resolved unfiltered ``(min, max)``
     and needs no mask, so cross-filtering cannot move its bin edges. With one,
@@ -100,13 +100,13 @@ def axis_edges(
         # The kernel adds its own EPS to the span, so pass the raw bounds.
         lo, hi = (domains or {})[col]
         return (
-            pl.lit(0.0 if lo is None else lo),
-            pl.lit(1.0 if hi is None else hi),
+            0.0 if lo is None else float(lo),
+            1.0 if hi is None else float(hi),
             None,
             n,
         )
     lo, hi, n, mask = snapped_axis(col, range_, n, schema)
-    return pl.lit(lo), pl.lit(hi), mask, n
+    return lo, hi, mask, n
 
 
 def hist2d_phys_col(col: str, schema: pl.Schema | None) -> pl.Expr:
@@ -138,7 +138,8 @@ def hist2d_count_expr(
     y_phys = hist2d_phys_col(y_col, schema)
     x_expr = x_phys.filter(mask) if mask is not None else x_phys
     y_expr = y_phys.filter(mask) if mask is not None else y_phys
-    return x_expr.flexviz.fixed_hist2d(y_expr, *edges, nb_x, nb_y).alias(alias)
+    hist = x_expr.flexviz.fixed_hist2d(y_expr, *map(pl.lit, edges), nb_x, nb_y)
+    return hist.alias(alias)
 
 
 def hist2d_reduce_expr(
@@ -163,5 +164,5 @@ def hist2d_reduce_expr(
     y_expr = y_phys.filter(mask) if mask is not None else y_phys
     z_expr = pl.col(z_col).filter(mask) if mask is not None else pl.col(z_col)
     return x_expr.flexviz.fixed_hist2d_reduce(
-        y_expr, z_expr, *edges, nb_x, nb_y, histfunc
+        y_expr, z_expr, *map(pl.lit, edges), nb_x, nb_y, histfunc
     ).alias(alias)
