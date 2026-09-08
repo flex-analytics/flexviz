@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import math
+from collections.abc import Sequence
 
 import polars as pl
 import pytest
@@ -709,10 +709,10 @@ class TestHistogramBinStabilityRegression:
             cr.group_value_key: list(cr.updates["x"]) for cr in results_filtered
         }
 
-        for key in centers_full:
+        for key, centers in centers_full.items():
             if key in centers_filtered:
                 assert (
-                    centers_full[key] == centers_filtered[key]
+                    centers == centers_filtered[key]
                 ), f"Group {key}: bin centers shifted under cross-filter"
 
 
@@ -1039,7 +1039,7 @@ class TestHistogramScanPlanEquivalence:
     too, which is fine here: the point is the arithmetic, not the source kind.
     """
 
-    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]  # noqa: RUF012
 
     @staticmethod
     def _both_updates(
@@ -1051,7 +1051,7 @@ class TestHistogramScanPlanEquivalence:
         lf = LFQueryBuilder(df)
         trace = Histogram(x="v", bins=bins, histnorm=histnorm)
         update_range = {"x": x_range} if x_range is not None else {}
-        kwargs = dict(schema=lf.schema, domains=_domains(lf, trace, update_range))
+        kwargs = {"schema": lf.schema, "domains": _domains(lf, trace, update_range)}
         out = []
         for scan_source in (False, True):
             spec = trace.get_aggregation_spec(
@@ -1179,7 +1179,7 @@ class TestHistogramGroupedPlanEquivalence:
     compared after ``_to_grouped_update``, which is what the engine sends.
     """
 
-    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]  # noqa: RUF012
 
     @staticmethod
     def _children(result) -> list[dict]:
@@ -1324,8 +1324,8 @@ class TestGroupedHistogramColumnNameClashes:
     A group column named like one of them must not collide with it.
     """
 
-    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
-    _GROUPS = list("aabbaabb")
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]  # noqa: RUF012
+    _GROUPS = list("aabbaabb")  # noqa: RUF012
 
     @staticmethod
     def _children(src, x, group_by) -> list:

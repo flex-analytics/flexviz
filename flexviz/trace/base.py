@@ -11,16 +11,16 @@ FlexTrace deliberately contains zero renderer imports.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 import datetime
-from typing import Any, get_args
-from uuid import uuid4
 import hashlib
 import json
 import math
 import re
+from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, get_args
+from uuid import uuid4
 
 import polars as pl
 
@@ -164,7 +164,7 @@ class FlexTrace(ABC):
         map a brushed source trace onto its free-axis column(s)."""
         return self._default_select_axes()
 
-    def _make_selection_spec(self) -> "TraceSelectionSpec":
+    def _make_selection_spec(self) -> TraceSelectionSpec:
         """Return the cross-filter selection geometry for this trace.
 
         The default is ``kind="none"`` (not a cross-filter source).  Override in
@@ -175,7 +175,7 @@ class FlexTrace(ABC):
         """
         return TraceSelectionSpec()
 
-    def _range_selection_spec(self, multi: str = "replace") -> "TraceSelectionSpec":
+    def _range_selection_spec(self, multi: str = "replace") -> TraceSelectionSpec:
         """Build a ``kind="range"`` selection spec from this trace's policy.
 
         Maps each *selectable* anchor (``_default_select_axes()``) to its column by
@@ -202,7 +202,7 @@ class FlexTrace(ABC):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
-    ) -> "FreeAxisSpec | None":
+    ) -> FreeAxisSpec | None:
         """The free axis a brush on this trace defines, or None (not a cube source).
 
         axis_range — the source figure's viewport on this trace's selectable axis
@@ -214,11 +214,11 @@ class FlexTrace(ABC):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
-    ) -> "CubeTargetSpec | None":
+    ) -> CubeTargetSpec | None:
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
 
-    def check_source(self, source: "LFQueryBuilder") -> None:
+    def check_source(self, source: LFQueryBuilder) -> None:
         """Raise when this trace cannot run on the source.
 
         The engine calls it for every trace before the domains are resolved.
@@ -356,7 +356,7 @@ class FlexTrace(ABC):
     # Spec serialisation / deserialisation
     # ------------------------------------------------------------------
 
-    def _make_hover_spec(self) -> "TraceHoverSpec":
+    def _make_hover_spec(self) -> TraceHoverSpec:
         """Return the hover capability spec for this trace.
 
         Override in concrete subclasses to declare source/target modes.
@@ -399,7 +399,7 @@ class FlexTrace(ABC):
         )
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "FlexTrace":
+    def from_trace_spec(cls, spec: TraceSpec) -> FlexTrace:
         """Reconstruct a trace from a ``TraceSpec`` (server-side factory).
 
         The default implementation calls ``cls.__init__`` with the fields

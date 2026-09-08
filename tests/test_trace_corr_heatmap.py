@@ -7,8 +7,8 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.corr_heatmap import CorrHeatmap
 from flexviz.trace.base import TraceResult
+from flexviz.trace.corr_heatmap import CorrHeatmap
 
 
 def _aggregate_corr(

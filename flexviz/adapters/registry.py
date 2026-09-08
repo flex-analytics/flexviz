@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .base import AbstractAdapter
     from ..spec import DashboardSpec, FigureSpec
+    from .base import AbstractAdapter
 
 
 @dataclass(frozen=True)
@@ -29,12 +29,12 @@ class RendererDefinition:
     adapter_import_path: str
     capabilities: RendererCapabilities
 
-    def adapter_cls(self) -> type["AbstractAdapter"]:
+    def adapter_cls(self) -> type[AbstractAdapter]:
         module_name, _, class_name = self.adapter_import_path.rpartition(".")
         module = __import__(module_name, fromlist=[class_name])
         return getattr(module, class_name)
 
-    def build_adapter(self) -> "AbstractAdapter":
+    def build_adapter(self) -> AbstractAdapter:
         adapter_cls = self.adapter_cls()
         return adapter_cls()
 
@@ -103,11 +103,11 @@ def get_renderer_definition(renderer: str) -> RendererDefinition:
     return _RENDERERS[normalize_renderer_name(renderer)]
 
 
-def build_adapter(renderer: str) -> "AbstractAdapter":
+def build_adapter(renderer: str) -> AbstractAdapter:
     return get_renderer_definition(renderer).build_adapter()
 
 
-def _figure_label(fig_spec: "FigureSpec") -> str:
+def _figure_label(fig_spec: FigureSpec) -> str:
     title = (fig_spec.layout or {}).get("title")
     if isinstance(title, str) and title.strip():
         return title.strip()
@@ -118,7 +118,7 @@ def _figure_label(fig_spec: "FigureSpec") -> str:
     return fig_spec.uid
 
 
-def validate_dashboard_renderer(renderer: str, spec: "DashboardSpec") -> str:
+def validate_dashboard_renderer(renderer: str, spec: DashboardSpec) -> str:
     definition = get_renderer_definition(renderer)
     for fig_spec in spec.figures:
         for ts in fig_spec.traces:

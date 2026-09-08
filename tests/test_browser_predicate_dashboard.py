@@ -483,6 +483,6 @@ class TestSameColumnDifferentAxes:
         preds = _selection_predicates(page)[0]["preds"]
         # Two predicates: ts bound on x ([10,30]) and ts bound on y ([40,60]).
         ranges = sorted(
-            (c["range"] for p in preds for c in p["clauses"] if c["column"] == "ts")
+            c["range"] for p in preds for c in p["clauses"] if c["column"] == "ts"
         )
         assert ranges == [[10, 30], [40, 60]], f"a range was dropped: {preds}"

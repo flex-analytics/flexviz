@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import polars as pl
 import pytest
 
-from flexviz.LF import LFQueryBuilder, GroupedAggregationSpec
+from flexviz.LF import GroupedAggregationSpec, LFQueryBuilder
 from flexviz.trace.bar import BarPlot
 from flexviz.trace.base import TraceResult
 

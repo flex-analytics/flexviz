@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
+import random
 from collections.abc import Sequence
 
 import polars as pl
 import pytest
-
-import datetime as dt
-import math
-import random
 
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
@@ -527,8 +526,9 @@ class TestLinePlotHoverSpec:
 
     def test_line_hover_roundtrips_through_spec(self):
         import json
-        from flexviz.trace.line import LinePlot
+
         from flexviz.spec import TraceSpec
+        from flexviz.trace.line import LinePlot
 
         t = LinePlot(x="ts", y="val")
         spec = t.to_trace_spec()

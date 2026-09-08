@@ -24,12 +24,13 @@ import math
 import socket
 import threading
 import time
-from typing import Generator
+from collections.abc import Generator
 
 import polars as pl
 import pytest
 import uvicorn
-from playwright.sync_api import Page, Request as PWRequest
+from playwright.sync_api import Page
+from playwright.sync_api import Request as PWRequest
 
 pytestmark = pytest.mark.browser
 
@@ -669,9 +670,9 @@ def _grouped_child_count(page: Page, renderer: str) -> int:
 def _trace_layer(trace_id: str | None) -> str | None:
     if not trace_id:
         return None
-    if trace_id.endswith("__fv_layer_bg") or trace_id.endswith("::bg"):
+    if trace_id.endswith(["__fv_layer_bg", "::bg"]):
         return "bg"
-    if trace_id.endswith("__fv_layer_fg") or trace_id.endswith("::fg"):
+    if trace_id.endswith(["__fv_layer_fg", "::fg"]):
         return "fg"
     return None
 
@@ -1930,7 +1931,7 @@ class TestPlotlyBrowser:
         ranges_by_col = {c["column"]: c["range"] for c in clauses}
         # Two clauses: one for the x column (lon) and one for the y column (lat)
         assert len(ranges_by_col) == 2
-        assert list(ranges_by_col.values())[0] == pytest.approx(
+        assert next(iter(ranges_by_col.values())) == pytest.approx(
             selection_prep["expectedX"]
         )
         assert list(ranges_by_col.values())[1] == pytest.approx(
@@ -4318,6 +4319,7 @@ class TestCellHoverBrowser:
         """The hover toggle must be offered when a histogram shares a column with
         a line (a linkable source→target pair exists)."""
         import polars as pl
+
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import encode_spec
@@ -4357,6 +4359,7 @@ class TestCellHoverBrowser:
     ):
         """Cell hover on histogram must emit x_band to linked line figure."""
         import polars as pl
+
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import encode_spec
@@ -4418,6 +4421,7 @@ class TestCellHoverBrowser:
     ):
         """Cell hover must not emit any visual to the source figure."""
         import polars as pl
+
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import encode_spec
@@ -4475,6 +4479,7 @@ class TestCellHoverBrowser:
         must not be swallowed as a cell event because the bar carries customdata
         bin bounds."""
         import polars as pl
+
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import encode_spec

@@ -74,7 +74,8 @@ import math
 
 import polars as pl
 import pytest
-from playwright.sync_api import Page, Request as PWRequest
+from playwright.sync_api import Page
+from playwright.sync_api import Request as PWRequest
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 from flexviz.cube import (
@@ -88,7 +89,6 @@ from flexviz.cube import (
 )
 from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
-
 from tests.test_browser import _wait_for_init
 
 pytestmark = pytest.mark.browser

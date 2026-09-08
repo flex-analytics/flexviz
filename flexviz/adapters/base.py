@@ -34,7 +34,8 @@ import re
 import time
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 from ..events import InteractionEvent
 from ..spec import DashboardSpec, VisualizationSpec
@@ -247,7 +248,7 @@ class AbstractAdapter(ABC):
         """Return the shared dashboard container markup for either adapter."""
         layout = spec.layout
         layout_gap = _safe_css_gap(layout.gap)
-        from ..spec import GridItem, _GRIDSTACK_CELL_HEIGHT_PX, _auto_grid_items
+        from ..spec import _GRIDSTACK_CELL_HEIGHT_PX, GridItem, _auto_grid_items
 
         grid_items = layout.grid_items or _auto_grid_items(spec.figures)
         item_map = {gi.fig_uid: gi for gi in grid_items}
@@ -303,7 +304,7 @@ class AbstractAdapter(ABC):
         )
 
     @staticmethod
-    def _toolbar_html(toolbar: "Any | None" = None) -> str:
+    def _toolbar_html(toolbar: Any | None = None) -> str:
         """Return the shared FlexViz header HTML fragment.
 
         Includes the brand label and toolbar buttons.  Pass a ``ToolbarConfig``
@@ -436,8 +437,9 @@ class AbstractAdapter(ABC):
         spec: DashboardSpec, server_url: str, renderer: str
     ) -> None:
         """POST *spec* to ``/share`` and open the returned URL in the browser."""
-        import requests
         import webbrowser
+
+        import requests
 
         resp = requests.post(
             f"{server_url}/share",

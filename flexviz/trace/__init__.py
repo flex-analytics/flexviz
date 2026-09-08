@@ -6,18 +6,18 @@ server can reconstruct trace objects from a TraceSpec at request time.
 
 from __future__ import annotations
 
+from ..spec import TraceSpec
 from .bar import BarPlot
 from .base import FlexTrace
 from .box import BoxPlot
 from .corr_heatmap import CorrHeatmap
 from .geo_hist2d import GeoHistogram2D
+from .geo_line import GeoLine
 from .hist import Histogram
 from .hist2d import Histogram2D
 from .line import LinePlot
 from .pie import PiePlot
-from .geo_line import GeoLine
 from .treemap import TreeMap
-from ..spec import TraceSpec
 
 # ---------------------------------------------------------------------------
 # Trace type registry
@@ -106,14 +106,14 @@ def build_trace_from_spec(spec: TraceSpec) -> FlexTrace:
 __all__ = [
     "BarPlot",
     "BoxPlot",
+    "CorrHeatmap",
     "FlexTrace",
     "GeoHistogram2D",
+    "GeoLine",
     "Histogram",
-    "CorrHeatmap",
     "Histogram2D",
     "LinePlot",
     "PiePlot",
-    "GeoLine",
     "TreeMap",
     "build_trace_from_spec",
     "recompute_policy_table",

@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import polars as pl
 
@@ -156,7 +156,7 @@ class PeakSampler:
         self.base = 0
         self.peak = 0
 
-    def __enter__(self) -> "PeakSampler":
+    def __enter__(self) -> PeakSampler:
         self.base = anonymous_memory_bytes()
         self.peak = self.base
         self._thread = threading.Thread(target=self._run, daemon=True)

@@ -15,11 +15,11 @@ Example usage::
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import math
-import warnings
 import threading
-from typing import Any, Dict, List, Literal
+import warnings
+from collections.abc import Sequence
+from typing import Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -31,11 +31,11 @@ from .trace.base import FlexTrace, _composite_label
 from .trace.box import BoxPlot
 from .trace.corr_heatmap import CorrHeatmap
 from .trace.geo_hist2d import GeoHistogram2D
+from .trace.geo_line import GeoLine
 from .trace.hist import Histogram
 from .trace.hist2d import Histogram2D
 from .trace.line import LinePlot
 from .trace.pie import PiePlot
-from .trace.geo_line import GeoLine
 from .trace.treemap import TreeMap
 
 _HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap"})
@@ -225,15 +225,15 @@ class Figure:
             self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
         self._uid: str = str(uuid4())
-        self._traces: List[FlexTrace] = []
-        self._layout: Dict[str, Any] = {}
+        self._traces: list[FlexTrace] = []
+        self._layout: dict[str, Any] = {}
         self._cache_enabled: bool = cache
 
     # ------------------------------------------------------------------
     # Trace builders
     # ------------------------------------------------------------------
 
-    def _add_trace(self, trace: FlexTrace) -> "Figure":
+    def _add_trace(self, trace: FlexTrace) -> Figure:
         """Assign a uid and register a trace."""
         trace.uid = str(uuid4())
         self._traces.append(trace)
@@ -252,7 +252,7 @@ class Figure:
         axes: tuple[str, ...] = ("x", "y"),
         assume_sorted_x: bool = False,
         group_by: str | Sequence[str] | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a line trace backed by the figure's shared LazyFrame.
 
         Parameters
@@ -318,7 +318,7 @@ class Figure:
         color_map: dict | None = None,
         axes: tuple[str, ...] = ("x", "y"),
         group_by: str | Sequence[str] | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a histogram trace backed by the figure's shared LazyFrame.
 
         Parameters
@@ -363,7 +363,7 @@ class Figure:
         color_map: dict | None = None,
         axes: tuple[str, ...] = ("x", "y"),
         group_by: str | Sequence[str] | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a box plot trace backed by the figure's shared LazyFrame."""
         return self._add_trace(
             BoxPlot(
@@ -389,7 +389,7 @@ class Figure:
         group_by: str | Sequence[str] | None = None,
         color_map: dict | None = None,
         axes: tuple[str, ...] = ("x", "y"),
-    ) -> "Figure":
+    ) -> Figure:
         """Add a bar trace backed by the figure's shared LazyFrame.
 
         Parameters
@@ -442,7 +442,7 @@ class Figure:
         name: str | None = None,
         hole: float = 0.0,
         color_map: dict | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a pie (or donut) trace backed by the figure's shared LazyFrame.
 
         Parameters
@@ -481,7 +481,7 @@ class Figure:
         agg: Literal["sum", "mean", "median", "min", "max", "n_unique"] = "sum",
         name: str | None = None,
         color_map: dict | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a treemap trace backed by a Polars LazyFrame.
 
         Parameters
@@ -519,7 +519,7 @@ class Figure:
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
         axes: tuple[str, ...] = ("x", "y"),
-    ) -> "Figure":
+    ) -> Figure:
         """Add a 2D histogram / heatmap trace.
 
         Parameters
@@ -581,7 +581,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a geospatial 2D histogram (choropleth) trace.
 
         Parameters
@@ -637,7 +637,7 @@ class Figure:
         name: str | None = None,
         color: str | None = None,
         add_gaps: bool = True,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a scalable geo line trace.
 
         Parameters
@@ -676,7 +676,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
-    ) -> "Figure":
+    ) -> Figure:
         """Add a correlation heatmap trace.
 
         Parameters
@@ -712,27 +712,27 @@ class Figure:
     # Layout
     # ------------------------------------------------------------------
 
-    def title(self, text: str) -> "Figure":
+    def title(self, text: str) -> Figure:
         """Set a renderer-agnostic figure title."""
         self._layout["title"] = text
         return self
 
-    def xlabel(self, text: str) -> "Figure":
+    def xlabel(self, text: str) -> Figure:
         """Set a renderer-agnostic x-axis label."""
         self._layout["xlabel"] = text
         return self
 
-    def ylabel(self, text: str) -> "Figure":
+    def ylabel(self, text: str) -> Figure:
         """Set a renderer-agnostic y-axis label."""
         self._layout["ylabel"] = text
         return self
 
-    def legend(self, show: bool = True) -> "Figure":
+    def legend(self, show: bool = True) -> Figure:
         """Toggle legend visibility."""
         self._layout["legend"] = show
         return self
 
-    def update_layout(self, **kwargs: Any) -> "Figure":
+    def update_layout(self, **kwargs: Any) -> Figure:
         """Merge layout hints (title, width, height, …)."""
         self._layout.update(kwargs)
         return self
@@ -812,8 +812,8 @@ class Figure:
     def from_spec(
         cls,
         spec: VisualizationSpec,
-        backend_lf: "LFQueryBuilder | None" = None,
-    ) -> "Figure":
+        backend_lf: LFQueryBuilder | None = None,
+    ) -> Figure:
         """Reconstruct a ``Figure`` from a ``VisualizationSpec``.
 
         The Figure's uid and all trace uids are restored from the spec so
@@ -949,7 +949,7 @@ def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
 
 
 def _register_source_if_needed(
-    source_name: str, backend_lf: "LFQueryBuilder | None", cache: bool = False
+    source_name: str, backend_lf: LFQueryBuilder | None, cache: bool = False
 ) -> None:
     """Register *backend_lf* under *source_name*.
 
@@ -992,9 +992,9 @@ def _start_server_thread(host: str, port: int) -> None:
     if (host, port) in _started_servers:
         return
 
-    from .server import app
-
     import uvicorn
+
+    from .server import app
 
     threading.Thread(
         target=uvicorn.run,

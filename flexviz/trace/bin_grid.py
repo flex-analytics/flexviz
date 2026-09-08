@@ -7,19 +7,19 @@ different edges.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import math
+from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
+
+import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 from .base import (
     _physical_bound_expr,
     _temporal_dtype_for_col,
     _typed_range_bounds,
 )
-
-import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 #: The (x_lo, x_hi, y_lo, y_hi) bin edges from axis_edges, in the kernel's f64.
 Edges = tuple[float, float, float, float]

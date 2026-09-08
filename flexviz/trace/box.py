@@ -9,7 +9,7 @@ plus ``orientation`` and ``x0`` / ``y0`` for the orthogonal category label.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Dict
+from typing import Any
 
 import polars as pl
 
@@ -132,7 +132,7 @@ class BoxPlot(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         **_: Any,
     ) -> AggregationSpec | GroupedAggregationSpec:
@@ -190,7 +190,7 @@ class BoxPlot(FlexTrace):
         upper = min(quantiles[3] + 1.5 * iqr, quantiles[4])
 
         label = self._display.get("name", self.data_col)
-        updates: Dict[str, Any] = {
+        updates: dict[str, Any] = {
             "lowerfence": [lower],
             "q1": [quantiles[1]],
             "median": [quantiles[2]],
@@ -235,7 +235,7 @@ class BoxPlot(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "BoxPlot":
+    def from_trace_spec(cls, spec: TraceSpec) -> BoxPlot:
         prop_key = next(iter(spec.backend_data))
         col = spec.backend_data[prop_key]
         trace = cls(

@@ -226,7 +226,7 @@ class PiePlot(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "PiePlot":
+    def from_trace_spec(cls, spec: TraceSpec) -> PiePlot:
         old_agg = spec.params.get("agg", "sum")
         stored_values = spec.backend_data.get("values")
         # Backward compat: old specs always had "values"; if agg was "count" the

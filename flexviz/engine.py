@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Literal
+from typing import Any, Literal
 
 import polars as pl
 
@@ -22,7 +22,8 @@ from .cube import (
     temporal_unit,
 )
 from .events import ActiveSource, GroupedChildDelta, InteractionEvent, TraceDelta
-from .LF import LFQueryBuilder, AggregationSpec, GroupedAggregationSpec
+from .LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
+from .predicates import canonical_passive_key, predicates_to_expr
 from .spec import SelectionState
 from .trace.base import (
     FlexTrace,
@@ -31,7 +32,6 @@ from .trace.base import (
     child_uid_from_group_key,
 )
 from .trace.hist import _HIST_BIN_EPSILON
-from .predicates import canonical_passive_key, predicates_to_expr
 
 # Event types whose computation is unfiltered and viewport-free. These are the
 # only events cached in Phase 1: the engine forces them to drop all
@@ -56,13 +56,13 @@ class TraceInfo:
 class _AggregationTrace:
     info: TraceInfo
     trace: FlexTrace
-    update_range: Dict[str, Any]
+    update_range: dict[str, Any]
 
 
 def _union_shared_domains(
-    domains: Dict[str, tuple[float, float]],
+    domains: dict[str, tuple[float, float]],
     sibling_cols: tuple[str, ...] | None,
-) -> Dict[str, tuple[float, float]] | None:
+) -> dict[str, tuple[float, float]] | None:
     """Widen every ``sibling_cols`` domain to the union over the whole group.
 
     The target's own binned dim is one of ``sibling_cols``, so widening the
@@ -80,7 +80,7 @@ def _union_shared_domains(
     return {**domains, **{c: union for c in sibling_cols}}
 
 
-def _normalize_axis_ranges(ranges: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_axis_ranges(ranges: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``ranges`` with every descending ``(lo, hi)`` swapped.
 
     A reversed plotly axis reports its viewport high-to-low, and clients
@@ -90,7 +90,7 @@ def _normalize_axis_ranges(ranges: Dict[str, Any]) -> Dict[str, Any]:
     ingestion. Non-range values (``None``, map coordinate point lists) pass
     through untouched, as does any pair that does not compare.
     """
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for axis, rng in ranges.items():
         if (
             isinstance(rng, (list, tuple))
@@ -119,7 +119,7 @@ class FlexEngine:
     def __init__(
         self,
         backend_lf: LFQueryBuilder | None,
-        scalable_traces: Dict[str, FlexTrace],
+        scalable_traces: dict[str, FlexTrace],
         cache_backend: CacheBackend | None = None,
         source_name: str | None = None,
     ):
@@ -136,10 +136,10 @@ class FlexEngine:
     def process(
         self,
         event: InteractionEvent,
-        trace_infos: List[TraceInfo],
-        viewports_by_figure: Dict[str, Dict[str, Any]] | None = None,
+        trace_infos: list[TraceInfo],
+        viewports_by_figure: dict[str, dict[str, Any]] | None = None,
         cross_filter_mode: Literal["update", "overlay"] = "update",
-    ) -> List[TraceDelta]:
+    ) -> list[TraceDelta]:
         """Process an ``InteractionEvent`` and return per-trace deltas.
 
         Fully stateless: all interaction state is supplied by the caller on
@@ -296,12 +296,12 @@ class FlexEngine:
 
     def build_cubes(
         self,
-        trace_infos: List[TraceInfo],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
-        selections: List[SelectionState],
+        trace_infos: list[TraceInfo],
+        viewports_by_figure: dict[str, dict[str, Any]],
+        selections: list[SelectionState],
         active_source: ActiveSource,
         cube_cache: CacheBackend | None = None,
-    ) -> tuple[List[bytes], Dict[str, int]]:
+    ) -> tuple[list[bytes], dict[str, int]]:
         """Build (or fetch) the cubes serving a ``cube_request`` event.
 
         Fully stateless, like ``process``: the caller supplies the trace set,
@@ -423,9 +423,9 @@ class FlexEngine:
             return [], {}
 
         # Dedup by content key; build/fetch each distinct cube exactly once.
-        cubes: List[bytes] = []
-        index_by_key: Dict[str, int] = {}
-        trace_cubes: Dict[str, int] = {}
+        cubes: list[bytes] = []
+        index_by_key: dict[str, int] = {}
+        trace_cubes: dict[str, int] = {}
         for ti, trace, target in targets:
             uid = ti.uid
             # A line_env/corr target builds against a range OR categorical free
@@ -473,8 +473,8 @@ class FlexEngine:
 
     def _locate_free_axis(
         self,
-        trace_infos: List[TraceInfo],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        trace_infos: list[TraceInfo],
+        viewports_by_figure: dict[str, dict[str, Any]],
         active_source: ActiveSource,
         schema: pl.Schema | None,
     ) -> FreeAxisSpec | None:
@@ -526,7 +526,7 @@ class FlexEngine:
         self,
         candidate: FreeAxisSpec,
         ti: TraceInfo,
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        viewports_by_figure: dict[str, dict[str, Any]],
         schema: pl.Schema | None,
     ) -> FreeAxisSpec | None:
         """Resolve a box2d (hist2d) free axis's per-axis units and viewports
@@ -577,7 +577,7 @@ class FlexEngine:
 
     @staticmethod
     def _cube_axis_range(
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        viewports_by_figure: dict[str, dict[str, Any]],
         figure_uid: str | None,
         anchor: str | None,
         schema: pl.Schema | None = None,
@@ -622,7 +622,7 @@ class FlexEngine:
         target_specs: list[CubeTargetSpec],
         schema: pl.Schema | None,
         extra_cols: set[str] | None = None,
-    ) -> tuple[FreeAxisSpec | None, Dict[str, tuple[float, float]]]:
+    ) -> tuple[FreeAxisSpec | None, dict[str, tuple[float, float]]]:
         """Resolve ``domain=None`` (= full data domain) to concrete floats.
 
         One batched min/max ``select`` over the **unfiltered** LazyFrame covers
@@ -700,7 +700,7 @@ class FlexEngine:
                 return None, {}
             free = replace(free, domains=(cur[0], cur[1]))
 
-        domains: Dict[str, tuple[float, float]] = {}
+        domains: dict[str, tuple[float, float]] = {}
         for col in unresolved_cols:
             lo, hi = minmax[col]
             if lo is not None and hi is not None:
@@ -710,7 +710,7 @@ class FlexEngine:
     def _resolved_target_dims(
         self,
         target_dims: tuple,
-        domains: Dict[str, tuple[float, float]],
+        domains: dict[str, tuple[float, float]],
         schema: pl.Schema | None = None,
     ) -> tuple | None:
         """Resolve binned target dims and epsilon-pad their upper bounds.
@@ -748,17 +748,17 @@ class FlexEngine:
             dims.append(replace(d, domain=(domain[0], domain[1] + pad), unit=unit))
         return tuple(dims)
 
-    def _active_selections(self, event: InteractionEvent) -> List[Any]:
+    def _active_selections(self, event: InteractionEvent) -> list[Any]:
         if event.type in ("deselect", "reset", "init"):
             return []
         return list(event.selections)
 
     def _selection_filter_exprs(
         self,
-        active_selections: List[Any],
+        active_selections: list[Any],
         backend_schema: pl.Schema | None,
         event: InteractionEvent,
-    ) -> List[pl.Expr]:
+    ) -> list[pl.Expr]:
         """Build filter expressions from non-self selections' predicates.
 
         Each non-self selection contributes one Polars expression (its
@@ -771,7 +771,7 @@ class FlexEngine:
 
         ignore_source_uid = event.figure_uid if event.type == "viewport" else None
 
-        filter_exprs: List[pl.Expr] = []
+        filter_exprs: list[pl.Expr] = []
         for sel in active_selections:
             if sel.source_figure_uid is None:
                 continue
@@ -787,11 +787,14 @@ class FlexEngine:
         event: InteractionEvent,
         trace_info: TraceInfo,
         selection_fig_uids: set[str | None],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        viewports_by_figure: dict[str, dict[str, Any]],
     ) -> bool:
-        if selection_fig_uids and trace_info.figure_uid in selection_fig_uids:
-            if event.type == "selection" or trace_info.figure_uid != event.figure_uid:
-                return False
+        if (
+            selection_fig_uids
+            and trace_info.figure_uid in selection_fig_uids
+            and (event.type == "selection" or trace_info.figure_uid != event.figure_uid)
+        ):
+            return False
 
         scalable = self._scalable_traces[trace_info.uid]
         changed_axes = self._trace_event_ranges(
@@ -809,8 +812,8 @@ class FlexEngine:
         self,
         event: InteractionEvent,
         figure_uid: str | None,
-        viewports_by_figure: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        viewports_by_figure: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
         if event.type == "viewport":
             return _normalize_axis_ranges(event.axis_ranges)
         if figure_uid is None:
@@ -821,8 +824,8 @@ class FlexEngine:
         self,
         event: InteractionEvent,
         trace_info: TraceInfo,
-        viewports_by_figure: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        viewports_by_figure: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
         if event.type == "reset":
             return {}
         update_range = self._trace_event_ranges(
@@ -838,9 +841,9 @@ class FlexEngine:
     def _resolve_domains(
         self,
         aggregation_traces: list[_AggregationTrace],
-        histogram_domains: Dict[str, tuple[str, ...]],
+        histogram_domains: dict[str, tuple[str, ...]],
         schema: pl.Schema | None,
-    ) -> tuple[Dict[str, tuple[str, ...]], Dict[str, tuple[Any, Any]]]:
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[Any, Any]]]:
         """Resolve every unfiltered ``(min, max)`` this request needs, in one collect.
 
         Bin edges must not move when a cross-filter narrows the data, so the
@@ -867,10 +870,10 @@ class FlexEngine:
         self,
         aggregation_traces: list[_AggregationTrace],
         backend_schema: pl.Schema | None,
-        domain_cols: Dict[str, tuple[str, ...]],
-        domains: Dict[str, tuple[Any, Any]],
-    ) -> List[AggregationSpec | GroupedAggregationSpec]:
-        agg_specs: List[AggregationSpec | GroupedAggregationSpec] = []
+        domain_cols: dict[str, tuple[str, ...]],
+        domains: dict[str, tuple[Any, Any]],
+    ) -> list[AggregationSpec | GroupedAggregationSpec]:
+        agg_specs: list[AggregationSpec | GroupedAggregationSpec] = []
         lf = self._backend_lf
 
         for item in aggregation_traces:
@@ -927,7 +930,7 @@ class FlexEngine:
         self,
         event: InteractionEvent,
         aggregation_traces: list[_AggregationTrace],
-        histogram_domains: Dict[str, tuple[str, ...]],
+        histogram_domains: dict[str, tuple[str, ...]],
     ) -> list[tuple[_AggregationTrace, str]]:
         """Return ``(item, key)`` pairs for traces whose delta is cacheable.
 
@@ -951,7 +954,7 @@ class FlexEngine:
             )
         return items
 
-    def _cache_payload(self, delta: TraceDelta) -> Dict[str, Any]:
+    def _cache_payload(self, delta: TraceDelta) -> dict[str, Any]:
         """Reduce a ``TraceDelta`` to a uid-agnostic, JSON-safe payload.
 
         Grouped payloads keep ``group_value_key`` (not the resolved child uid)
@@ -972,7 +975,7 @@ class FlexEngine:
     def _delta_from_cached(
         self,
         item: _AggregationTrace,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         layer: Literal["bg", "fg"] | None,
     ) -> TraceDelta:
         uid = item.info.uid
@@ -994,7 +997,7 @@ class FlexEngine:
     def _store_in_cache(
         self,
         cache_items: list[tuple[_AggregationTrace, str]],
-        deltas: List[TraceDelta],
+        deltas: list[TraceDelta],
     ) -> None:
         key_by_uid = {item.info.uid: key for item, key in cache_items}
         for delta in deltas:
@@ -1005,9 +1008,9 @@ class FlexEngine:
     def _aggregation_traces(
         self,
         event: InteractionEvent,
-        trace_infos: List[TraceInfo],
+        trace_infos: list[TraceInfo],
         selection_fig_uids: set[str | None],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        viewports_by_figure: dict[str, dict[str, Any]],
     ) -> list[_AggregationTrace]:
         aggregation_traces: list[_AggregationTrace] = []
         for ti in trace_infos:
@@ -1036,7 +1039,7 @@ class FlexEngine:
         self,
         items: Iterable[tuple[TraceInfo, FlexTrace, bool]],
         schema: pl.Schema | None,
-    ) -> Dict[str, tuple[str, ...]]:
+    ) -> dict[str, tuple[str, ...]]:
         """Map each unzoomed histogram uid → the sibling columns it bins over.
 
         Same figure + same axes + same data axis + compatible coordinate unit ⇒
@@ -1045,8 +1048,8 @@ class FlexEngine:
         units (days/ms/us/ns) must never be unioned with each other or numerics.
         """
         _GroupKey = tuple[str | None, tuple[str, ...] | None, str, str | None]
-        groups: Dict[_GroupKey, list[str]] = {}
-        uid_to_group: Dict[str, _GroupKey] = {}
+        groups: dict[_GroupKey, list[str]] = {}
+        uid_to_group: dict[str, _GroupKey] = {}
 
         for ti, trace, data_axis_zoomed in items:
             if trace.trace_type != "histogram" or data_axis_zoomed:
@@ -1070,7 +1073,7 @@ class FlexEngine:
             uid: tuple(groups[group_key]) for uid, group_key in uid_to_group.items()
         }
 
-    def _normalise_updates(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalise_updates(self, updates: dict[str, Any]) -> dict[str, Any]:
         return {
             k: v.to_list() if isinstance(v, pl.Series) else v
             for k, v in updates.items()
@@ -1106,13 +1109,13 @@ class FlexEngine:
 
     def _process_update_mode(
         self,
-        agg_specs: List[AggregationSpec | GroupedAggregationSpec],
-        filter_exprs: List[pl.Expr],
-        trace_infos: List[TraceInfo],
+        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
+        filter_exprs: list[pl.Expr],
+        trace_infos: list[TraceInfo],
         event: InteractionEvent,
         selection_fig_uids: set[str | None],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
-    ) -> List[TraceDelta]:
+        viewports_by_figure: dict[str, dict[str, Any]],
+    ) -> list[TraceDelta]:
         t_start = time.perf_counter()
         df_agg, grouped_dfs = self._backend_lf.aggregate(filter_exprs, agg_specs)
         t_end = time.perf_counter()
@@ -1145,10 +1148,10 @@ class FlexEngine:
 
     def _specs_for_layer(
         self,
-        specs: List[AggregationSpec | GroupedAggregationSpec],
+        specs: list[AggregationSpec | GroupedAggregationSpec],
         layer: Literal["bg", "fg"],
         has_active_selections: bool,
-    ) -> List[AggregationSpec | GroupedAggregationSpec]:
+    ) -> list[AggregationSpec | GroupedAggregationSpec]:
         """Filter aggregation specs based on per-trace overlay policy.
 
         Every trace needs the sole unfiltered layer used by init/reset/deselect.
@@ -1170,19 +1173,19 @@ class FlexEngine:
 
     def _process_overlay_mode(
         self,
-        agg_specs: List[AggregationSpec | GroupedAggregationSpec],
-        filter_exprs: List[pl.Expr],
+        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
+        filter_exprs: list[pl.Expr],
         has_active_selections: bool,
-        trace_infos: List[TraceInfo],
+        trace_infos: list[TraceInfo],
         event: InteractionEvent,
         selection_fig_uids: set[str | None],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
-    ) -> List[TraceDelta]:
+        viewports_by_figure: dict[str, dict[str, Any]],
+    ) -> list[TraceDelta]:
         requested_layers = self._overlay_layers_for_event(
             event=event,
             has_active_selections=has_active_selections,
         )
-        deltas: List[TraceDelta] = []
+        deltas: list[TraceDelta] = []
         for layer in requested_layers:
             if layer == "fg" and not filter_exprs:
                 continue
@@ -1216,14 +1219,14 @@ class FlexEngine:
     def _build_deltas(
         self,
         event: InteractionEvent,
-        trace_infos: List[TraceInfo],
+        trace_infos: list[TraceInfo],
         selection_fig_uids: set[str | None],
-        viewports_by_figure: Dict[str, Dict[str, Any]],
+        viewports_by_figure: dict[str, dict[str, Any]],
         df_agg: pl.DataFrame,
-        grouped_dfs: Dict[str, pl.DataFrame],
+        grouped_dfs: dict[str, pl.DataFrame],
         layer: Literal["bg", "fg"] | None = None,
-    ) -> List[TraceDelta]:
-        deltas: List[TraceDelta] = []
+    ) -> list[TraceDelta]:
+        deltas: list[TraceDelta] = []
         for ti in trace_infos:
             if not self._should_process_trace(
                 event=event,

@@ -32,19 +32,19 @@ enforced by the Plotly adapter when building ``SelectionState``.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Dict
+from typing import Any
 
 import polars as pl
 
 from ..LF import AggregationSpec
 from ..spec import TraceHoverSpec, TraceSelectionSpec, TraceSpec
-from .base import FlexTrace, TraceResult
 from ._hist_helpers import (
-    HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    normalize_heatmap_color_scale,
+    HeatmapColorRange,
     normalize_heatmap_color_range,
+    normalize_heatmap_color_scale,
 )
+from .base import FlexTrace, TraceResult
 from .hist2d import hist2d_agg_spec, unpack_hist2d_grid
 
 _DEFAULT_COLOR_SCALE = "viridis"
@@ -111,7 +111,7 @@ class GeoHistogram2D(FlexTrace):
         if histnorm not in _HISTNORM_OPTIONS:
             raise ValueError(f"histnorm must be one of {_HISTNORM_OPTIONS}.")
 
-        backend_data: Dict[str, str] = {"lat": lat, "lon": lon}
+        backend_data: dict[str, str] = {"lat": lat, "lon": lon}
         if z is not None:
             backend_data["z"] = z
 
@@ -150,7 +150,7 @@ class GeoHistogram2D(FlexTrace):
             lat_column=self._backend_data["lat"],
         )
 
-    def _make_hover_spec(self) -> "TraceHoverSpec":
+    def _make_hover_spec(self) -> TraceHoverSpec:
         return TraceHoverSpec(
             source_modes=["cell"],
             target_modes=["cell"],
@@ -202,7 +202,7 @@ class GeoHistogram2D(FlexTrace):
 
     @staticmethod
     def _extract_lat_lon_range(
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
     ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
         """Extract lat/lon bounding box from a map viewport.
 
@@ -221,7 +221,7 @@ class GeoHistogram2D(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
-    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
+    def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         # A map viewport supplies both bounds at once, so it is all or nothing.
         if update_range.get("coordinates"):
             return ()
@@ -229,7 +229,7 @@ class GeoHistogram2D(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
@@ -286,7 +286,7 @@ class GeoHistogram2D(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "GeoHistogram2D":
+    def from_trace_spec(cls, spec: TraceSpec) -> GeoHistogram2D:
         trace = cls(
             lat=spec.backend_data["lat"],
             lon=spec.backend_data["lon"],

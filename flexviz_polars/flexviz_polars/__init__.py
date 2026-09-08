@@ -36,8 +36,8 @@ def _kernel_bound(value) -> int | float:
 
 
 def _minmax_pairs_line(
-    x_expr: "IntoExprColumn",
-    y_expr: "IntoExprColumn",
+    x_expr: IntoExprColumn,
+    y_expr: IntoExprColumn,
     n_buckets: int,
     x_domain: tuple[int | float, int | float],
 ) -> pl.Expr:
@@ -60,7 +60,7 @@ def _minmax_pairs_line(
 
 
 def _fixed_hist(
-    expr: "IntoExprColumn",
+    expr: IntoExprColumn,
     lo_expr: pl.Expr,
     hi_expr: pl.Expr,
     n_bins: int,
@@ -75,8 +75,8 @@ def _fixed_hist(
 
 
 def _fixed_hist2d(
-    x_expr: "IntoExprColumn",
-    y_expr: "IntoExprColumn",
+    x_expr: IntoExprColumn,
+    y_expr: IntoExprColumn,
     x_lo_expr: pl.Expr,
     x_hi_expr: pl.Expr,
     y_lo_expr: pl.Expr,
@@ -94,9 +94,9 @@ def _fixed_hist2d(
 
 
 def _fixed_hist2d_reduce(
-    x_expr: "IntoExprColumn",
-    y_expr: "IntoExprColumn",
-    z_expr: "IntoExprColumn",
+    x_expr: IntoExprColumn,
+    y_expr: IntoExprColumn,
+    z_expr: IntoExprColumn,
     x_lo_expr: pl.Expr,
     x_hi_expr: pl.Expr,
     y_lo_expr: pl.Expr,
@@ -115,9 +115,9 @@ def _fixed_hist2d_reduce(
 
 
 def _fixed_line_envelope2d(
-    x_expr: "IntoExprColumn",
-    y_expr: "IntoExprColumn",
-    free_expr: "IntoExprColumn",
+    x_expr: IntoExprColumn,
+    y_expr: IntoExprColumn,
+    free_expr: IntoExprColumn,
     x_lo_expr: pl.Expr,
     x_hi_expr: pl.Expr,
     free_lo_expr: pl.Expr,
@@ -192,7 +192,7 @@ class FlexvizExprNamespace:
 
     def fixed_hist2d(
         self,
-        y_expr: "IntoExprColumn",
+        y_expr: IntoExprColumn,
         x_lo_expr: pl.Expr,
         x_hi_expr: pl.Expr,
         y_lo_expr: pl.Expr,
@@ -223,8 +223,8 @@ class FlexvizExprNamespace:
 
     def fixed_hist2d_reduce(
         self,
-        y_expr: "IntoExprColumn",
-        z_expr: "IntoExprColumn",
+        y_expr: IntoExprColumn,
+        z_expr: IntoExprColumn,
         x_lo_expr: pl.Expr,
         x_hi_expr: pl.Expr,
         y_lo_expr: pl.Expr,
@@ -254,8 +254,8 @@ class FlexvizExprNamespace:
 
     def fixed_line_envelope2d(
         self,
-        y_expr: "IntoExprColumn",
-        free_expr: "IntoExprColumn",
+        y_expr: IntoExprColumn,
+        free_expr: IntoExprColumn,
         x_lo_expr: pl.Expr,
         x_hi_expr: pl.Expr,
         free_lo_expr: pl.Expr,

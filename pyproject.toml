@@ -70,6 +70,21 @@ docs = [
     "mkdocs>=1.6,<2",
 ]
 
+[tool.ruff.lint]
+ignore = [
+    "BLE001",   # blind-except — intentional in plugin/import guards
+    "B018",     # useless-expression — property-access assertions in tests
+    "B023",     # loop-variable binding — consumed immediately
+    "DTZ001",   # datetime without tzinfo — naive datetimes intentional in tests
+    "N999",     # invalid module name — LF.py is established
+    "PLR0124",  # comparison-with-itself — NaN checks (v != v)
+    "PLW1510",  # subprocess.run without check — return code inspected manually
+    "PYI034",   # non-self-return-type — test helper only
+    "RUF007",   # pairwise-over-zipped — zip(a, a[1:]) is the codebase pattern
+    "S110",     # try-except-pass — intentional suppression in fallback paths
+    "TRY401",   # redundant exception in logging.exception — explicit is fine
+]
+
 [tool.black]
 target-version = ["py310"]
 

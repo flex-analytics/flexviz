@@ -14,23 +14,23 @@ cross-filtered.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, Literal
+from typing import Any, ClassVar, Literal
 
 import polars as pl
 
 from ..cube import CubeTargetSpec, MeasureSpec
 from ..LF import AggregationSpec
 from ..spec import TraceSpec
-from .base import (
-    FlexTrace,
-    TraceResult,
-    _CUBE_RESERVED_COLS,
-    _dtype_for_col,
-)
 from ._hist_helpers import (
     HeatmapColorRange,
-    normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
+    normalize_heatmap_color_scale,
+)
+from .base import (
+    _CUBE_RESERVED_COLS,
+    FlexTrace,
+    TraceResult,
+    _dtype_for_col,
 )
 
 
@@ -147,7 +147,7 @@ class CorrHeatmap(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         **_: Any,
     ) -> AggregationSpec:
@@ -189,7 +189,7 @@ class CorrHeatmap(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
-    ) -> "CubeTargetSpec | None":
+    ) -> CubeTargetSpec | None:
         """A Pearson correlation heatmap is a ``corr`` cube target (contract I).
 
         The cube stores decomposable per-pair partials (mean-centered sums) over
@@ -235,7 +235,7 @@ class CorrHeatmap(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "CorrHeatmap":
+    def from_trace_spec(cls, spec: TraceSpec) -> CorrHeatmap:
         trace = cls(
             columns=spec.params.get("columns"),
             method=spec.params["method"],
@@ -278,14 +278,12 @@ def _corr_expr(
         for i in range(n):
             matrix[i][i] = 1.0
         pairs = df.row(0)
-        pair_idx = 0
-        for i, j in combinations(range(n), 2):
+        for pair_idx, (i, j) in enumerate(combinations(range(n), 2)):
             val = pairs[pair_idx]
             if val is None:
                 val = 0.0
             matrix[i][j] = val
             matrix[j][i] = val
-            pair_idx += 1
 
         z_flat: list[float] = []
         for row in matrix:

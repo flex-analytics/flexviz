@@ -54,7 +54,7 @@ class TestSnapRange:
 
     def test_float_error_does_not_buy_a_bin(self):
         # 0.1 * 3 != 0.3 in binary floating point; the epsilon must absorb it.
-        lo, hi, n = snap_range(0.1, 0.1 + 0.3, 3)
+        _lo, _hi, n = snap_range(0.1, 0.1 + 0.3, 3)
         assert n == 3
 
     def test_snapped_range_covers_the_viewport(self):

@@ -23,8 +23,9 @@ import hashlib
 import json
 import math
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence, Tuple
+from typing import Any, Literal
 
 import numpy as np
 import polars as pl
@@ -152,8 +153,8 @@ class FreeAxisSpec:
     column: str
     kind: FreeAxisKind = "continuous"
     p: int = 2048
-    domain: Tuple[float, float] | None = None
-    columns: Tuple[str, ...] | None = None
+    domain: tuple[float, float] | None = None
+    columns: tuple[str, ...] | None = None
     # Physical unit for kind="temporal" (contract G); the engine sets it from
     # the schema dtype (Datetime("ns") gates to no cube at all). unit="day"
     # switches the snap grid to integer days (see ``day_grid``). For box2d
@@ -162,7 +163,7 @@ class FreeAxisSpec:
     unit: Any = None
     # Per-axis domains for kind="box2d" (contract H): ((lox,hix),(loy,hiy)).
     # None until the engine resolves the two viewports / full-data ranges.
-    domains: Tuple[Tuple[float, float], Tuple[float, float]] | None = None
+    domains: tuple[tuple[float, float], tuple[float, float]] | None = None
 
     def __post_init__(self) -> None:
         if self.kind == "categorical":
@@ -218,7 +219,7 @@ class TargetDimSpec:
     column: str
     kind: TargetDimKind
     bins: int | None = None
-    domain: Tuple[float, float] | None = None
+    domain: tuple[float, float] | None = None
     unit: str | None = None
     bin_variant: Literal["hist1d", "hist2d"] = "hist1d"
 
@@ -250,7 +251,7 @@ class MeasureSpec:
 
     agg: MeasureAgg = "count"
     value_col: str | None = None
-    columns: Tuple[str, ...] | None = None
+    columns: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.agg == "corr":
@@ -276,7 +277,7 @@ class CubeTargetSpec:
     the active source's ``FreeAxisSpec`` into a full ``CubeSpec``.
     """
 
-    target_dims: Tuple[TargetDimSpec, ...]
+    target_dims: tuple[TargetDimSpec, ...]
     measure: MeasureSpec = field(default_factory=MeasureSpec)
 
 
@@ -286,14 +287,14 @@ class CubeSpec:
 
     source_name: str
     free: FreeAxisSpec
-    target_dims: Tuple[TargetDimSpec, ...]
+    target_dims: tuple[TargetDimSpec, ...]
     measure: MeasureSpec = field(default_factory=MeasureSpec)
     # Phase 1: no passive filters. Kept in the identity so later phases that bake
     # passive predicates collide correctly across sessions.
     passive_key: Any = None
 
     @property
-    def target_columns(self) -> Tuple[str, ...]:
+    def target_columns(self) -> tuple[str, ...]:
         return tuple(d.column for d in self.target_dims)
 
 
@@ -324,15 +325,15 @@ class CubeResult:
     frame: pl.DataFrame
     # Actual target group-column names in ``frame`` (categorical → raw column;
     # binned → ``__bin__{col}``). Set by ``build_cube``.
-    group_cols: Tuple[str, ...] = ()
+    group_cols: tuple[str, ...] = ()
     # Free-axis key column names in ``frame`` (``__free__{col}``) for a
     # categorical free axis; empty for range axes. Set by ``build_cube``.
-    free_key_cols: Tuple[str, ...] = ()
+    free_key_cols: tuple[str, ...] = ()
     # corr measure only (contract I): the global per-column means over the
     # passive-filtered build frame, in ``spec.measure.columns`` order. Shipped
     # informationally in the header (finalize is shift-invariant). Set by
     # ``_build_corr_cube``.
-    corr_means: Tuple[float, ...] = ()
+    corr_means: tuple[float, ...] = ()
 
     @property
     def n_cells(self) -> int:

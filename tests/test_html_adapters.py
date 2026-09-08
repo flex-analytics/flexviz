@@ -1165,7 +1165,7 @@ class TestTreeMapPlotly:
     @pytest.fixture()
     def html(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
-        from flexviz.spec import TraceSpec, FigureSpec, DashboardSpec
+        from flexviz.spec import DashboardSpec, FigureSpec, TraceSpec
 
         t = TraceSpec(
             uid="tm1",
@@ -1252,7 +1252,7 @@ class TestPieClickHandler:
     @pytest.fixture()
     def html(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
-        from flexviz.spec import TraceSpec, FigureSpec, DashboardSpec
+        from flexviz.spec import DashboardSpec, FigureSpec, TraceSpec
 
         t = TraceSpec(uid="pie1", trace_type="pie", params={"hole": 0.0})
         fig = FigureSpec(uid="fig1", layout={}, traces=[t])
@@ -1267,7 +1267,7 @@ class TestPieClickHandler:
 class TestNoClickHandlerForBarOnly:
     def test_no_click_handler_wired_for_bar_only(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
-        from flexviz.spec import TraceSpec, FigureSpec, DashboardSpec
+        from flexviz.spec import DashboardSpec, FigureSpec, TraceSpec
 
         t = TraceSpec(
             uid="b1",
@@ -1451,8 +1451,8 @@ class TestHeatmapECharts:
 
     def test_corr_heatmap_defaults_to_signed_visual_map(self):
         from flexviz.adapters.echarts_adapter import (
-            EChartsAdapter,
             _ECHARTS_HEATMAP_COLOR_SCALES,
+            EChartsAdapter,
         )
 
         t = TraceSpec(
@@ -1471,8 +1471,8 @@ class TestHeatmapECharts:
 
     def test_heatmap_accepts_plotly_style_named_scale_aliases(self):
         from flexviz.adapters.echarts_adapter import (
-            EChartsAdapter,
             _ECHARTS_HEATMAP_COLOR_SCALES,
+            EChartsAdapter,
         )
 
         t = TraceSpec(
@@ -1539,6 +1539,7 @@ class TestAutoLabelPlotly:
     @pytest.fixture()
     def html(self):
         import polars as pl
+
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
         from flexviz.figure import Figure
 
@@ -1561,6 +1562,7 @@ class TestAutoLabelECharts:
     @pytest.fixture()
     def initial_option(self):
         import polars as pl
+
         from flexviz.adapters.echarts_adapter import EChartsAdapter
         from flexviz.figure import Figure
 

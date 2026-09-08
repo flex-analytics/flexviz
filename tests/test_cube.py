@@ -11,7 +11,6 @@ import polars as pl
 import pytest
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
-
 from flexviz.cube import (
     CubeResult,
     CubeSpec,
@@ -197,7 +196,7 @@ class TestBuildAndSlice:
         # snap [25, 75) to the same P-grid the cube uses, then compare to a direct
         # filtered count over the snapped bin edges (exact, not approximate).
         lo_bin, hi_bin = cube._snap(25.0, 75.0)
-        edge = lambda b: 0.0 + (b) / 64 * 100.0  # noqa: E731
+        edge = lambda b: 0.0 + (b) / 64 * 100.0
         lo_v, hi_v = edge(lo_bin), edge(hi_bin + 1)
         sliced = cube.slice_count(25.0, 75.0).sort("cat")
         direct = (
@@ -1426,7 +1425,7 @@ class TestTemporalUnits:
 
         df = _temporal_df("day", span_days=365)
         lo, hi = _physical_domain(df, "t")
-        w, p_eff = day_grid(lo, hi, 2048)
+        _w, p_eff = day_grid(lo, hi, 2048)
         spec = CubeSpec(
             source_name="src",
             free=FreeAxisSpec(
@@ -2293,7 +2292,7 @@ class TestCorrCategoricalFreeAxis:
             measure=MeasureSpec(agg="corr", columns=("x", "y", "z")),
         )
 
-    PAIRS = [("x", "y", 0, 1), ("x", "z", 0, 2), ("y", "z", 1, 2)]
+    PAIRS = [("x", "y", 0, 1), ("x", "z", 0, 2), ("y", "z", 1, 2)]  # noqa: RUF012
 
     def test_build_has_free_key_cols_and_no_target_dims(self, cdf):
         cube = build_cube(cdf.lazy(), self._spec())
@@ -2316,7 +2315,7 @@ class TestCorrCategoricalFreeAxis:
 
 
 class TestCorrSliceParity:
-    PAIRS = [("x", "y", 0, 1), ("x", "z", 0, 2), ("y", "z", 1, 2)]
+    PAIRS = [("x", "y", 0, 1), ("x", "z", 0, 2), ("y", "z", 1, 2)]  # noqa: RUF012
 
     def test_full_range_slice_equals_pl_corr(self, corr_df):
         cube = build_cube(corr_df.lazy(), _corr_spec())
@@ -2592,7 +2591,7 @@ class TestCorrContentKey:
 # 2-D box free axis (contract H — hist2d source, composite CSR free bin)
 # ---------------------------------------------------------------------------
 
-from flexviz.cube import box2d_composite_stride  # noqa: E402
+from flexviz.cube import box2d_composite_stride
 
 _BOX2D_P = 128
 _BOX2D_S = _BOX2D_P + 1
@@ -2745,7 +2744,7 @@ class TestBox2dBuildAndSlice:
         cube = build_cube(box2d_df.lazy(), spec)
         # A brush reaching both domain maxima selects the degenerate top bins
         # (bin == P on each axis) — the composite index P*S + P must be present.
-        (lx, hx), (ly, hy) = cube._snap_box2d(100.0, 100.0, 50.0, 50.0)
+        (_lx, hx), (_ly, hy) = cube._snap_box2d(100.0, 100.0, 50.0, 50.0)
         assert hx == _BOX2D_P and hy == _BOX2D_P
         top_code = _BOX2D_P * _BOX2D_S + _BOX2D_P
         codes = cube.frame["free_bin"].to_list()
@@ -3248,9 +3247,7 @@ class TestTreeMapTargetCodec:
 
         df = _treemap_target_df()
         a_lo, a_hi = float(df["active"].min()), float(df["active"].max())
-        trace = TreeMap(
-            path=["cat", "sub"], values=values, agg=("sum" if values else "sum")
-        )
+        trace = TreeMap(path=["cat", "sub"], values=values, agg="sum")
         # build the spec from the trace's target descriptor
         target = trace.get_cube_target_spec(None, schema=df.schema)
         # Re-stamp the measure to exercise the requested agg explicitly.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal
+from typing import Any, Literal
 from urllib.parse import quote as _url_quote
 
 import polars as pl
@@ -101,7 +101,7 @@ class TreeMap(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
-    ) -> "CubeTargetSpec | None":
+    ) -> CubeTargetSpec | None:
         """A treemap is a categorical cube target on its **leaf** path: one
         categorical dim per path column (pinned root-to-leaf order). The cube
         ships the finalized *leaf* aggregate per full-path cell; the client
@@ -135,7 +135,7 @@ class TreeMap(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         **_: Any,
     ) -> GroupedAggregationSpec:
@@ -197,7 +197,7 @@ class TreeMap(FlexTrace):
         return TraceResult(updates=updates)
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "TreeMap":
+    def from_trace_spec(cls, spec: TraceSpec) -> TreeMap:
         agg = spec.params.get("agg", "sum")
         values = spec.backend_data.get("values")
         values = None if agg == "count" else values

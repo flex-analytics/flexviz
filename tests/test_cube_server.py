@@ -917,8 +917,8 @@ class TestCategoricalSourceCubeRequest:
         direct = {r["sub"]: r["mean"] for r in direct_df.iter_rows(named=True)}
         direct_n = {r["sub"]: r["n"] for r in direct_df.iter_rows(named=True)}
         assert set(sliced) == set(direct)
-        for k in direct:
-            assert math.isclose(sliced[k], direct[k], rel_tol=1e-9)
+        for k, v in direct.items():
+            assert math.isclose(sliced[k], v, rel_tol=1e-9)
         assert sliced_counts == direct_n  # contributing rows exact
 
     def test_sum_bar_target_from_hist_source_matches_direct_recompute(
@@ -977,8 +977,8 @@ class TestCategoricalSourceCubeRequest:
             .iter_rows(named=True)
         }
         assert set(sliced) == set(direct)
-        for k in direct:
-            assert math.isclose(sliced[k], direct[k], rel_tol=1e-9, abs_tol=1e-9)
+        for k, v in direct.items():
+            assert math.isclose(sliced[k], v, rel_tol=1e-9, abs_tol=1e-9)
 
     def test_bar_and_pie_same_descriptor_share_one_blob(self, cat_client, cat_df):
         """bar ≡ pie: identical labels + measure ⇒ identical CubeSpec ⇒ one
@@ -2132,7 +2132,7 @@ class TestCorrTargetCubeRequest:
         brush equals the legacy ``CorrHeatmap._to_update`` output on the same
         snapped ``closed="left"`` filter — triangular + absolute + reversal
         mirrored (the §8.2 parity property the server delta would produce)."""
-        from flexviz.cube import build_cube, CubeSpec, FreeAxisSpec, MeasureSpec
+        from flexviz.cube import CubeSpec, FreeAxisSpec, MeasureSpec, build_cube
         from flexviz.predicates import predicates_to_expr
         from flexviz.spec import ClauseFilter, SelectionPredicate
         from flexviz.trace.corr_heatmap import CorrHeatmap
@@ -2152,7 +2152,7 @@ class TestCorrTargetCubeRequest:
                 base64.b64decode(body["cubes"][body["trace_cubes"][corr_uid]])
             )
             a_lo, a_hi = header["free"]["domain"]
-            lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
+            _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
 
             # Client-equivalent: rebuild over the same (unfiltered) domain and
             # finalize the snapped slice through corr_matrix (== cube.js).
@@ -2236,7 +2236,7 @@ class TestCorrTargetCubeRequest:
         """A committed foreign selection pre-filters the corr build frame
         (contract E): the resliced r equals ``pl.corr`` on (passive ∧ active)
         rows. Domain resolution stays unfiltered (free domain = full ``a``)."""
-        from flexviz.cube import build_cube, CubeSpec, FreeAxisSpec, MeasureSpec
+        from flexviz.cube import CubeSpec, FreeAxisSpec, MeasureSpec, build_cube
 
         dash = Dashboard(corr_df)
         dash.add_figure(title="Source").add_histogram(x="a", bins=16)
@@ -2261,7 +2261,7 @@ class TestCorrTargetCubeRequest:
         # Free domain stays the UNFILTERED full ``a`` domain.
         a_lo, a_hi = corr_df["a"].min(), corr_df["a"].max()
         assert header["free"]["domain"] == [a_lo, a_hi]
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 18.0, 82.0)
+        _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 18.0, 82.0)
 
         passive_expr = pl.col("rr").is_between(0.0, 15.0)
         active_expr = pl.col("a").is_between(edge_lo, edge_hi, closed="left")

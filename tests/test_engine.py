@@ -15,8 +15,8 @@ from flexviz.events import InteractionEvent
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
 from flexviz.trace.bar import BarPlot
-from flexviz.trace.box import BoxPlot
 from flexviz.trace.bin_grid import snap_range
+from flexviz.trace.box import BoxPlot
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.hist import Histogram
 from flexviz.trace.hist2d import Histogram2D
@@ -271,7 +271,7 @@ class TestEngineReset:
 
 class TestEngineDeselect:
     def test_deselect_returns_all_traces(self, small_df: pl.DataFrame):
-        engine, infos, traces = _build_engine(small_df)
+        engine, infos, _traces = _build_engine(small_df)
         event = InteractionEvent(type="deselect", force_update=True)
         deltas = engine.process(event, infos)
         assert len(deltas) == 2
@@ -584,7 +584,7 @@ class TestEngineOverlay:
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert {d.layer for d in target_deltas} == {"bg", "fg"}
-        bg = next(d for d in target_deltas if d.layer == "bg")  # noqa: F841
+        bg = next(d for d in target_deltas if d.layer == "bg")
         fg = next(d for d in target_deltas if d.layer == "fg")
         assert all(0 <= v <= 6 for v in bg.updates["x"])
         assert all(2 <= v <= 4 for v in fg.updates["x"])
@@ -950,8 +950,8 @@ class TestCategoriesColumnCrossFilter:
 
     def test_treemap_continent_click_filters_bar(self, geo_df: LFQueryBuilder):
         """Clicking 'Europe' on a treemap cross-filters a bar in the same dashboard."""
-        from flexviz.trace.treemap import TreeMap
         from flexviz.trace.bar import BarPlot
+        from flexviz.trace.treemap import TreeMap
 
         treemap = TreeMap(path=["continent", "country"], values="population")
         bar = BarPlot(labels="country", values="population")
@@ -983,8 +983,8 @@ class TestCategoriesColumnCrossFilter:
 
     def test_treemap_country_click_filters_bar(self, geo_df: LFQueryBuilder):
         """Clicking 'Germany' (leaf level) cross-filters correctly via categories_column='country'."""
-        from flexviz.trace.treemap import TreeMap
         from flexviz.trace.bar import BarPlot
+        from flexviz.trace.treemap import TreeMap
 
         treemap = TreeMap(path=["continent", "country"], values="population")
         bar = BarPlot(labels="continent", values="population")
@@ -1013,8 +1013,8 @@ class TestCategoriesColumnCrossFilter:
 
     def test_pie_click_cross_filters_bar(self, geo_df: LFQueryBuilder):
         """Clicking a pie slice cross-filters a bar (categories_column is None for pie)."""
-        from flexviz.trace.pie import PiePlot
         from flexviz.trace.bar import BarPlot
+        from flexviz.trace.pie import PiePlot
 
         pie = PiePlot(labels="continent", values="population")
         bar = BarPlot(labels="country", values="population")
@@ -1044,8 +1044,8 @@ class TestCategoriesColumnCrossFilter:
         self, geo_df: LFQueryBuilder
     ):
         """If categories_column is missing, treemap produces no filter (all data shown)."""
-        from flexviz.trace.treemap import TreeMap
         from flexviz.trace.bar import BarPlot
+        from flexviz.trace.treemap import TreeMap
 
         treemap = TreeMap(path=["continent", "country"], values="population")
         bar = BarPlot(labels="country", values="population")
@@ -1820,7 +1820,7 @@ class TestEngineOverlaySequences:
 
     def test_init_overlay_emits_bg_only(self):
         """On init with no selection, overlay mode emits only bg for all traces."""
-        engine, infos, src, tgt = self._two_figure_setup()
+        engine, infos, _src, _tgt = self._two_figure_setup()
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         layers = {d.layer for d in deltas}
@@ -1829,7 +1829,7 @@ class TestEngineOverlaySequences:
 
     def test_deselect_overlay_returns_bg_only(self):
         """After a deselect, overlay mode emits only bg (clears the fg layer)."""
-        engine, infos, src, tgt = self._two_figure_setup()
+        engine, infos, _src, _tgt = self._two_figure_setup()
         event = InteractionEvent(
             type="deselect",
             force_update=True,
@@ -1842,7 +1842,7 @@ class TestEngineOverlaySequences:
 
     def test_reset_overlay_returns_bg_only(self):
         """After a reset, overlay mode emits only bg, same as init."""
-        engine, infos, src, tgt = self._two_figure_setup()
+        engine, infos, _src, _tgt = self._two_figure_setup()
         event = InteractionEvent(type="reset", force_update=True, selections=[])
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         layers = {d.layer for d in deltas}
@@ -1996,6 +1996,7 @@ class TestEngineSelectionFilterExprs:
     def test_predicates_filter_target_traces(self):
         """Selections with predicates filter target traces' aggregation."""
         import polars as pl
+
         from flexviz.engine import FlexEngine, TraceInfo
         from flexviz.events import InteractionEvent
         from flexviz.LF import LFQueryBuilder

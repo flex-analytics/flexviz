@@ -38,10 +38,12 @@ Downsampling strategies:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Dict, Literal, get_args
+from typing import Any, Literal, get_args
 
 import polars as pl
 import polars.selectors as cs
+
+import flexviz_polars as _fvp
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
 from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
@@ -55,14 +57,12 @@ from .base import (
     _dtype_for_col,
     _group_value_key,
     _group_values_from_frame,
-    _to_col_tuple,
     _range_cube_source_spec,
     _range_filter_expr,
+    _to_col_tuple,
     _typed_range_bounds,
 )
 from .line_buckets import bucket_grid, pairs_plan
-
-import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 
@@ -574,7 +574,7 @@ class LinePlot(FlexTrace):
     def _make_selection_spec(self):
         return self._range_selection_spec()
 
-    def _make_hover_spec(self) -> "TraceHoverSpec":
+    def _make_hover_spec(self) -> TraceHoverSpec:
         return TraceHoverSpec(
             source_modes=["axis"],
             target_modes=["axis"],
@@ -758,7 +758,7 @@ class LinePlot(FlexTrace):
                 f"first, or use downsample='minmax'."
             )
 
-    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
+    def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         # Every x-width line bins in x, on both source kinds, grouped or not.
         # A zoomed one takes its grid from the viewport, and ``nth`` needs no
         # grid at all.
@@ -768,7 +768,7 @@ class LinePlot(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
@@ -815,12 +815,12 @@ class LinePlot(FlexTrace):
                 if x_range is not None
                 else None
             )
-            spec = dict(
-                uid=self.uid,
-                group_cols=group_by_cols,
-                sort_cols=group_by_cols,
-                pre_group_filters=(vp_expr,) if vp_expr is not None else (),
-            )
+            spec = {
+                "uid": self.uid,
+                "group_cols": group_by_cols,
+                "sort_cols": group_by_cols,
+                "pre_group_filters": (vp_expr,) if vp_expr is not None else (),
+            }
             if self._x_width:
                 # One plan per grouped line, on both source kinds: the kernel
                 # would hold every column of every group in memory at once.
@@ -1061,7 +1061,7 @@ class LinePlot(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "LinePlot":  # type: ignore[override]
+    def from_trace_spec(cls, spec: TraceSpec) -> LinePlot:  # type: ignore[override]
         trace = cls(
             x=spec.backend_data.get("x", ""),
             y=spec.backend_data.get("y", ""),

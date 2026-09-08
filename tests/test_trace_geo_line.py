@@ -6,13 +6,13 @@ import numpy as np
 import polars as pl
 import pytest
 
-from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
+from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.geo_line import GeoLine, _extract_lat_lon_range
-from flexviz.trace.base import TraceResult
 from flexviz.trace import build_trace_from_spec
+from flexviz.trace.base import TraceResult
+from flexviz.trace.geo_line import GeoLine, _extract_lat_lon_range
 
 # ---------------------------------------------------------------------------
 # Helpers

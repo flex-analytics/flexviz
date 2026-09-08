@@ -40,16 +40,16 @@ We assume the dataframe is already in the desired sort order (same as
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import polars as pl
+
+import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 from ..LF import AggregationSpec
 from ..spec import TraceSpec
 from .base import FlexTrace, TraceResult, _range_filter_expr
 from .line import _N_POINTS_MAX, _N_POINTS_MIN, nth_plan
-
-import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 # ---------------------------------------------------------------------------
 # Aggregation expression builder
@@ -107,7 +107,7 @@ def _geo_line_nth_agg_expr(
 
 
 def _extract_lat_lon_range(
-    update_range: Dict[str, Any],
+    update_range: dict[str, Any],
 ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
     """Extract a lat/lon bounding box from a map viewport.
 
@@ -232,7 +232,7 @@ class GeoLine(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         *,
         scan_source: bool = False,
@@ -333,7 +333,7 @@ class GeoLine(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "GeoLine":
+    def from_trace_spec(cls, spec: TraceSpec) -> GeoLine:
         trace = cls(
             lat=spec.backend_data.get("lat", ""),
             lon=spec.backend_data.get("lon", ""),

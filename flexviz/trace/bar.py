@@ -326,7 +326,7 @@ class BarPlot(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "BarPlot":
+    def from_trace_spec(cls, spec: TraceSpec) -> BarPlot:
         bar_mode = spec.display.get("bar_mode", "group")
         if "x" in spec.backend_data:
             # Backward compat: old specs stored {"x": labels_col, "y": values_col}

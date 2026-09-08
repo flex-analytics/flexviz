@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta
 
 import polars as pl
 import pytest
+
 from flexviz.LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from flexviz.trace.line import LinePlot
 

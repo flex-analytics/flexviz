@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict
+from typing import Any
 
-
+from ..events import InteractionEvent
+from ..spec import DashboardSpec, FigureSpec
 from .base import (
     AbstractAdapter,
     _in_async_context,
@@ -33,8 +34,6 @@ from .runtime import (
     shared_runtime_js,
     theme_css,
 )
-from ..events import InteractionEvent
-from ..spec import DashboardSpec, FigureSpec
 
 _HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
 _PLOTLY_RANGE_INDEX_RE = re.compile(r"(x|y)axis(\d*)\.range\[([01])\]$")
@@ -255,10 +254,10 @@ def _plotly_geo_line_trace_obj(ts: Any, name: str) -> dict:
 
 
 def _plotly_axis_ranges(
-    relayout_data: Dict[str, Any],
-) -> tuple[Dict[str, tuple[Any, Any]], bool]:
+    relayout_data: dict[str, Any],
+) -> tuple[dict[str, tuple[Any, Any]], bool]:
     """Collect complete Plotly axis ranges from a ``relayoutData`` dict."""
-    axis_ranges: Dict[str, list[Any | None]] = {}
+    axis_ranges: dict[str, list[Any | None]] = {}
     has_autorange = False
 
     for key, value in relayout_data.items():
@@ -293,7 +292,7 @@ class PlotlyAdapter(AbstractAdapter):
     # parse_event
     # ------------------------------------------------------------------
 
-    def parse_event(self, relayout_data: Dict[str, Any]) -> InteractionEvent | None:
+    def parse_event(self, relayout_data: dict[str, Any]) -> InteractionEvent | None:
         """Parse Plotly ``relayoutData`` into an ``InteractionEvent``.
 
         Handles:

@@ -8,14 +8,14 @@ import numpy as np
 import polars as pl
 import pytest
 
-from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
+from flexviz.LF import LFQueryBuilder
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
+from flexviz.trace import build_trace_from_spec
+from flexviz.trace.base import TraceResult
 from flexviz.trace.geo_hist2d import GeoHistogram2D
 from flexviz.trace.line import LinePlot
-from flexviz.trace.base import TraceResult
-from flexviz.trace import build_trace_from_spec
 
 
 def _cells(updates: dict) -> list[float]:
@@ -450,7 +450,7 @@ class TestGeoHist2DTypedViewportBounds:
     — so these guard the wiring, not the output values.
     """
 
-    _VIEWPORT = {
+    _VIEWPORT = {  # noqa: RUF012
         "coordinates": [
             [-74.0, 40.0],
             [-72.0, 40.0],

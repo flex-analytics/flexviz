@@ -29,8 +29,10 @@ a ``type="deselect"`` event.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict
+from typing import Any
 
+from ..events import InteractionEvent
+from ..spec import DashboardSpec
 from .base import (
     AbstractAdapter,
     _in_async_context,
@@ -43,8 +45,6 @@ from .runtime import (
     shared_runtime_js,
     theme_css,
 )
-from ..events import InteractionEvent
-from ..spec import DashboardSpec
 
 _ECHARTS_JS = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"
 _HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
@@ -237,7 +237,7 @@ class EChartsAdapter(AbstractAdapter):
     # parse_event
     # ------------------------------------------------------------------
 
-    def parse_event(self, raw_event: Dict[str, Any]) -> InteractionEvent | None:
+    def parse_event(self, raw_event: dict[str, Any]) -> InteractionEvent | None:
         """Convert a raw event dict into an ``InteractionEvent``.
 
         Accepts:

@@ -27,7 +27,7 @@ expressions applied consistently.
 
 from __future__ import annotations
 
-from typing import Any, List, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -90,7 +90,7 @@ class Dashboard:
         if data is not None:
             self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
-        self._figures: List[Figure] = []
+        self._figures: list[Figure] = []
 
     # ------------------------------------------------------------------
     # Figure management

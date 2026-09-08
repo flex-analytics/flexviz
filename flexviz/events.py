@@ -10,7 +10,7 @@ no duplication, no translation layer.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,8 +55,8 @@ class InteractionEvent(BaseModel):
     """
 
     type: Literal["init", "viewport", "selection", "deselect", "reset", "cube_request"]
-    axis_ranges: Dict[str, Any] = Field(default_factory=dict)
-    selections: List[SelectionState] = Field(default_factory=list)
+    axis_ranges: dict[str, Any] = Field(default_factory=dict)
+    selections: list[SelectionState] = Field(default_factory=list)
     force_update: bool = False
     figure_uid: str | None = None
 
@@ -84,7 +84,7 @@ class GroupedChildDelta(BaseModel):
     """One child update inside a grouped parent delta."""
 
     uid: str
-    updates: Dict[str, Any] = Field(default_factory=dict)
+    updates: dict[str, Any] = Field(default_factory=dict)
     parent_uid: str
     group_value_key: str
 
@@ -107,11 +107,11 @@ class TraceDelta(BaseModel):
     """
 
     uid: str
-    updates: Dict[str, Any] = Field(default_factory=dict)
-    group_results: List[GroupedChildDelta] | None = None
+    updates: dict[str, Any] = Field(default_factory=dict)
+    group_results: list[GroupedChildDelta] | None = None
     layer: Literal["bg", "fg"] | None = None
 
     @property
-    def data(self) -> Dict[str, Any]:
+    def data(self) -> dict[str, Any]:
         """Canonical data dict (alias for updates)."""
         return self.updates

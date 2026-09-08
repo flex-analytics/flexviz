@@ -5,10 +5,10 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from flexviz.LF import LFQueryBuilder, GroupedAggregationSpec
-from flexviz.trace.treemap import TreeMap
-from flexviz.trace.base import TraceResult
+from flexviz.LF import GroupedAggregationSpec, LFQueryBuilder
 from flexviz.spec import TraceSpec
+from flexviz.trace.base import TraceResult
+from flexviz.trace.treemap import TreeMap
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -325,6 +325,7 @@ class TestTreeMapColorMap:
 class TestFigureAddTreemap:
     def test_add_treemap_registers_trace(self):
         import polars as pl
+
         from flexviz.figure import Figure
 
         df = pl.DataFrame({"cat": ["A", "B"], "val": [1.0, 2.0]})
@@ -337,6 +338,7 @@ class TestFigureAddTreemap:
 
     def test_add_treemap_invalid_agg(self):
         import polars as pl
+
         from flexviz.figure import Figure
 
         df = pl.DataFrame({"cat": ["A"], "val": [1.0]})

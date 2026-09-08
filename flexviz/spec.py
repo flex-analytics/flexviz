@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json as _json
-from typing import Any, Dict, List, Literal, Tuple, TypedDict, TypeAlias, Union
+from typing import Any, Literal, TypeAlias, TypedDict
 from uuid import uuid4
 
 from pydantic import (
@@ -50,9 +50,9 @@ class TraceDisplay(TypedDict, total=False):
     name: str
     color: str
     bar_mode: Literal["group", "stack"]
-    color_map: Dict[str, str]
+    color_map: dict[str, str]
     color_scale: str
-    color_range: Tuple[float, float] | Literal["auto"]
+    color_range: tuple[float, float] | Literal["auto"]
 
 
 class TraceParams(TypedDict, total=False):
@@ -84,11 +84,11 @@ class AxisRange(BaseModel):
     min: float | str
     max: float | str
 
-    def as_tuple(self) -> Tuple[float, float] | Tuple[str, str]:
+    def as_tuple(self) -> tuple[float, float] | tuple[str, str]:
         return (self.min, self.max)
 
 
-GeoViewportCoordinates: TypeAlias = List[Tuple[float, float]]
+GeoViewportCoordinates: TypeAlias = list[tuple[float, float]]
 ViewportStateValue: TypeAlias = AxisRange | GeoViewportCoordinates | None
 
 
@@ -103,12 +103,12 @@ class ClauseFilter(BaseModel):
     """
 
     column: str
-    range: Tuple[Any, Any] | None = None
-    values: List[Any] | None = None
+    range: tuple[Any, Any] | None = None
+    values: list[Any] | None = None
     closed: Literal["both", "left"] = "both"
 
     @model_validator(mode="after")
-    def _exactly_one_field(self) -> "ClauseFilter":
+    def _exactly_one_field(self) -> ClauseFilter:
         has_range = self.range is not None
         has_values = self.values is not None
         if has_range == has_values:
@@ -121,7 +121,7 @@ class ClauseFilter(BaseModel):
 class SelectionPredicate(BaseModel):
     """One OR-disjunct. Clauses inside are ANDed together."""
 
-    clauses: List[ClauseFilter] = Field(default_factory=list)
+    clauses: list[ClauseFilter] = Field(default_factory=list)
 
 
 class SelectionState(BaseModel):
@@ -135,7 +135,7 @@ class SelectionState(BaseModel):
     """
 
     source_figure_uid: str | None = None
-    predicates: List[SelectionPredicate] = Field(default_factory=list)
+    predicates: list[SelectionPredicate] = Field(default_factory=list)
 
 
 class TraceHoverSpec(BaseModel):
@@ -147,8 +147,8 @@ class TraceHoverSpec(BaseModel):
     runtime intersects with ``IMPLEMENTED_HOVER_MODES`` gates before dispatch.
     """
 
-    source_modes: List[HoverMode] = Field(default_factory=list)
-    target_modes: List[HoverMode] = Field(default_factory=list)
+    source_modes: list[HoverMode] = Field(default_factory=list)
+    target_modes: list[HoverMode] = Field(default_factory=list)
 
 
 SelectionKind = Literal["range", "categorical", "path", "geo_box", "none"]
@@ -184,9 +184,9 @@ class TraceSelectionSpec(BaseModel):
     """
 
     kind: SelectionKind = "none"
-    axis_columns: Dict[str, str] = Field(default_factory=dict)
-    label_columns: List[str] = Field(default_factory=list)
-    path_columns: List[str] = Field(default_factory=list)
+    axis_columns: dict[str, str] = Field(default_factory=dict)
+    label_columns: list[str] = Field(default_factory=list)
+    path_columns: list[str] = Field(default_factory=list)
     path_separator: str = "/"
     lon_column: str | None = None
     lat_column: str | None = None
@@ -212,10 +212,10 @@ class TraceSpec(BaseModel):
     trace_type: str
     # (x_anchor, y_anchor) for cartesian axes;
     # empty tuple or None for traces with no axis binding.
-    axes: Tuple[str, ...] | None = None
-    backend_data: Dict[str, BackendDataValue] = Field(default_factory=dict)
-    params: Dict[str, Any] = Field(default_factory=dict)
-    display: Dict[str, Any] = Field(default_factory=dict)
+    axes: tuple[str, ...] | None = None
+    backend_data: dict[str, BackendDataValue] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+    display: dict[str, Any] = Field(default_factory=dict)
     # Anchor ids whose viewport range parameterizes this trace's aggregation
     # (e.g. ``("x",)`` for a line, ``("coordinates",)`` for a map trace).
     # Read by both the client (to suppress no-op /update POSTs) and the engine
@@ -226,7 +226,7 @@ class TraceSpec(BaseModel):
     # server-side trace reconstruction may derive the default policy from it,
     # but the browser does not repair it and treats null/omitted as no
     # recompute axes.
-    recompute_axes: Tuple[str, ...] | None = None
+    recompute_axes: tuple[str, ...] | None = None
     # Declarative cross-filter selection geometry — how a gesture on this trace
     # becomes predicate clauses.  Read by the generic client runtime (no
     # per-``trace_type`` branching) and the source of the figure's Plotly
@@ -254,8 +254,8 @@ class FigureSpec(BaseModel):
 
     uid: str = Field(default_factory=lambda: str(uuid4()))
     source: str | None = None
-    layout: Dict[str, Any] = Field(default_factory=dict)
-    traces: List[TraceSpec] = Field(default_factory=list)
+    layout: dict[str, Any] = Field(default_factory=dict)
+    traces: list[TraceSpec] = Field(default_factory=list)
 
 
 class GroupDomainState(BaseModel):
@@ -266,7 +266,7 @@ class GroupDomainState(BaseModel):
     ``next_color_index`` tracks which palette index to assign next.
     """
 
-    mapping: Dict[str, str] = Field(default_factory=dict)
+    mapping: dict[str, str] = Field(default_factory=dict)
     next_color_index: int = 0
 
 
@@ -277,16 +277,16 @@ class InteractionState(BaseModel):
     the server remains fully stateless.
     """
 
-    viewport: Dict[str, ViewportStateValue] = Field(default_factory=dict)
-    selections: List[SelectionState] = Field(default_factory=list)
-    group_domains: Dict[str, GroupDomainState] = Field(default_factory=dict)
+    viewport: dict[str, ViewportStateValue] = Field(default_factory=dict)
+    selections: list[SelectionState] = Field(default_factory=list)
+    group_domains: dict[str, GroupDomainState] = Field(default_factory=dict)
     cross_filter_mode: Literal["update", "overlay"] = "update"
 
     @field_serializer("viewport")
     def _serialize_viewport(
-        self, viewport: Dict[str, ViewportStateValue]
-    ) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
+        self, viewport: dict[str, ViewportStateValue]
+    ) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         for key, value in viewport.items():
             if value is None or isinstance(value, AxisRange):
                 out[key] = value
@@ -317,8 +317,8 @@ class ClientState(BaseModel):
 
     hover_mode: HoverToggle = "off"
     live_brush: Literal["auto", "off"] = "auto"
-    axis_locks: Dict[str, bool] = Field(default_factory=dict)
-    axis_lock_ranges: Dict[str, AxisRange] = Field(default_factory=dict)
+    axis_locks: dict[str, bool] = Field(default_factory=dict)
+    axis_lock_ranges: dict[str, AxisRange] = Field(default_factory=dict)
 
 
 class VisualizationSpec(BaseModel):
@@ -353,10 +353,10 @@ class GridItem(BaseModel):
 
 
 def _auto_grid_items(
-    figures: "List[FigureSpec]",
+    figures: list[FigureSpec],
     rows: int | None = None,
     cols: int | None = None,
-) -> "list[GridItem]":
+) -> list[GridItem]:
     """Generate ``GridItem`` positions from row/column seed hints.
 
     Used when ``LayoutSpec.grid_items`` is ``None``.
@@ -457,7 +457,7 @@ class LayoutSpec(BaseModel):
     gap: str = "8px"
     draggable: bool = True
     grid_editable: bool = False
-    grid_items: List[GridItem] | None = None
+    grid_items: list[GridItem] | None = None
     toolbar: ToolbarConfig = Field(default_factory=ToolbarConfig)
 
 
@@ -482,7 +482,7 @@ class DashboardSpec(BaseModel):
     """
 
     version: str = _SPEC_VERSION
-    figures: List[FigureSpec] = Field(default_factory=list)
+    figures: list[FigureSpec] = Field(default_factory=list)
     state: InteractionState = Field(default_factory=InteractionState)
     layout: LayoutSpec = Field(default_factory=LayoutSpec)
     client_state: ClientState = Field(default_factory=ClientState)
@@ -493,7 +493,7 @@ class DashboardSpec(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def encode_spec(spec: "Union[VisualizationSpec, DashboardSpec, dict]") -> str:
+def encode_spec(spec: VisualizationSpec | DashboardSpec | dict) -> str:
     """Encode a spec to a compact, URL-safe string.
 
     The spec is JSON-serialised, gzip-compressed (level 9), and
@@ -521,7 +521,7 @@ def encode_spec(spec: "Union[VisualizationSpec, DashboardSpec, dict]") -> str:
     return base64.urlsafe_b64encode(compressed).rstrip(b"=").decode()
 
 
-def decode_spec(encoded: str) -> "Union[VisualizationSpec, DashboardSpec]":
+def decode_spec(encoded: str) -> VisualizationSpec | DashboardSpec:
     """Decode a string produced by :func:`encode_spec` into a spec model.
 
     The spec type is detected from the decoded JSON: a dict containing the

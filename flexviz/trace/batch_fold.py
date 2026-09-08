@@ -7,15 +7,15 @@ time and accumulates in NumPy, at bounded memory. Each plan is carried on an
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
 
+import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
+
 from .base import _dtype_for_col
 from .bin_grid import Edges, hist2d_count_expr, hist2d_reduce_expr
-
-import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
 #: Rows per streamed batch. The streaming engine keeps about one batch per
 #: thread in flight, so peak memory is near threads x chunk x row bytes.

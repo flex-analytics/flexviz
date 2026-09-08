@@ -46,7 +46,7 @@ import logging
 import threading
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -63,8 +63,8 @@ from flexviz.cache import (
 )
 from flexviz.cube import encode_cube_bundle
 from flexviz.engine import FlexEngine, TraceInfo
-from flexviz.LF import LFQueryBuilder, polars_lf_from
 from flexviz.events import ActiveSource, InteractionEvent, TraceDelta
+from flexviz.LF import LFQueryBuilder, polars_lf_from
 from flexviz.spec import (
     AxisRange,
     DashboardSpec,
@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 # Populated before the server starts; read-only during request handling.
 # ---------------------------------------------------------------------------
 
-_sources: Dict[str, LFQueryBuilder] = dict()
+_sources: dict[str, LFQueryBuilder] = {}
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:
@@ -178,7 +178,7 @@ class UpdateResponse(BaseModel):
     ``_cube_response``.
     """
 
-    deltas: List[Dict[str, Any]]
+    deltas: list[dict[str, Any]]
 
 
 class DashboardRequest(BaseModel):
@@ -209,7 +209,7 @@ class DashboardResponse(BaseModel):
     ``_cube_response``.
     """
 
-    figure_deltas: Dict[str, List[Dict[str, Any]]]
+    figure_deltas: dict[str, list[dict[str, Any]]]
 
 
 class ShareRequest(BaseModel):
@@ -221,7 +221,7 @@ class ShareRequest(BaseModel):
     returned shareable URL.
     """
 
-    spec: Dict[str, Any]
+    spec: dict[str, Any]
     server_url: str
 
 
@@ -241,8 +241,8 @@ def _viewport_state_value(value: Any) -> Any:
 def _figure_viewport_from_state(
     state: InteractionState,
     figure_uid: str | None = None,
-) -> Dict[str, Any]:
-    viewport: Dict[str, Any] = {}
+) -> dict[str, Any]:
+    viewport: dict[str, Any] = {}
     for key, value in state.viewport.items():
         axis_id = key
         if "/" in key:
@@ -260,7 +260,7 @@ def _build_trace_infos(
     figure: FigureSpec,
     *,
     figure_uid: str | None = None,
-) -> List[TraceInfo]:
+) -> list[TraceInfo]:
     """Derive ``TraceInfo`` objects directly from a ``FigureSpec``.
 
     ``TraceSpec`` now carries ``axes`` so no live figure
@@ -279,17 +279,17 @@ def _build_trace_infos(
 
 def _viewports_by_figure(
     state: InteractionState,
-    figures: List[FigureSpec],
-) -> Dict[str, Dict[str, tuple[Any, Any] | None]]:
+    figures: list[FigureSpec],
+) -> dict[str, dict[str, tuple[Any, Any] | None]]:
     """Build per-figure viewport ranges from shared interaction state."""
     return {fig.uid: _figure_viewport_from_state(state, fig.uid) for fig in figures}
 
 
 def _active_trace_infos_for_event(
     event: InteractionEvent,
-    infos: List[TraceInfo],
-    uid_to_fig_uid: Dict[str, str],
-) -> List[TraceInfo]:
+    infos: list[TraceInfo],
+    uid_to_fig_uid: dict[str, str],
+) -> list[TraceInfo]:
     """Scope dashboard traces to the figures affected by a given event."""
     if event.figure_uid is None or event.type not in ("viewport", "reset"):
         return infos
@@ -305,9 +305,9 @@ def _active_trace_infos_for_event(
     return [ti for ti in infos if uid_to_fig_uid.get(ti.uid) in active_fig_uids]
 
 
-def _serialise_updates(updates: Dict[str, Any], uid: str) -> Dict[str, Any]:
+def _serialise_updates(updates: dict[str, Any], uid: str) -> dict[str, Any]:
     """Serialise a single ``updates`` dict to JSON-safe types."""
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for k, v in updates.items():
         if hasattr(v, "tolist"):
             v = v.tolist()
@@ -320,7 +320,7 @@ def _serialise_updates(updates: Dict[str, Any], uid: str) -> Dict[str, Any]:
     return out
 
 
-def _deltas_to_json(deltas: List[TraceDelta]) -> List[Dict[str, Any]]:
+def _deltas_to_json(deltas: list[TraceDelta]) -> list[dict[str, Any]]:
     """Serialise ``TraceDelta`` objects to plain JSON-safe dicts.
 
     Converts numpy arrays to Python lists; raises ``TypeError`` early if an
@@ -331,7 +331,7 @@ def _deltas_to_json(deltas: List[TraceDelta]) -> List[Dict[str, Any]]:
     result = []
     for d in deltas:
         updates = _serialise_updates(d.updates, d.uid)
-        item: Dict[str, Any] = {"uid": d.uid, "updates": updates}
+        item: dict[str, Any] = {"uid": d.uid, "updates": updates}
         if d.group_results is not None:
             item["group_results"] = [
                 {
@@ -356,7 +356,7 @@ _CUBE_GZIP_LEVEL = 1
 
 
 def _encode_cube_bundle(
-    blobs: List[bytes], trace_cubes: Dict[str, int], gzip_ok: bool
+    blobs: list[bytes], trace_cubes: dict[str, int], gzip_ok: bool
 ) -> tuple[bytes, str | None]:
     """Pack the blobs into a bundle, gzip-compressing it when the client
     accepts gzip. Returns ``(body, content_encoding)`` (encoding ``None`` when
@@ -370,8 +370,8 @@ def _encode_cube_bundle(
 
 async def _run_cube_path(
     engine: FlexEngine,
-    trace_infos: List[TraceInfo],
-    viewports_by_figure: Dict[str, Dict[str, Any]],
+    trace_infos: list[TraceInfo],
+    viewports_by_figure: dict[str, dict[str, Any]],
     state: InteractionState,
     active_source: ActiveSource | None,
     source_name: str | None,
@@ -386,8 +386,8 @@ async def _run_cube_path(
     the gzip step compresses binary, not 33%-inflated text — see the
     ``GZipMiddleware`` note below for why that matters for TTFB.
     """
-    blobs: List[bytes] = []
-    trace_cubes: Dict[str, int] = {}
+    blobs: list[bytes] = []
+    trace_cubes: dict[str, int] = {}
     if active_source is not None and is_source_cacheable(source_name):
         try:
             blobs, trace_cubes = await run_in_threadpool(
@@ -457,7 +457,7 @@ app.add_middleware(
 # *except* for an ``event.type == "cube_request"``, where they return a binary
 # cube bundle (``application/octet-stream``; see ``_cube_response``). Declare that
 # extra media type so the generated OpenAPI schema does not advertise JSON only.
-_CUBE_BUNDLE_RESPONSE: Dict[int | str, Dict[str, Any]] = {
+_CUBE_BUNDLE_RESPONSE: dict[int | str, dict[str, Any]] = {
     200: {
         "content": {
             "application/octet-stream": {
@@ -477,8 +477,8 @@ _CUBE_BUNDLE_RESPONSE: Dict[int | str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
-@app.get("/sources", response_model=List[str])
-async def list_sources() -> List[str]:  # type: ignore[return]
+@app.get("/sources", response_model=list[str])
+async def list_sources() -> list[str]:  # type: ignore[return]
     """Return the names of all registered data sources.
 
     Useful for health checks and frontend introspection.
@@ -487,7 +487,7 @@ async def list_sources() -> List[str]:  # type: ignore[return]
 
 
 @app.get("/cache/stats")
-async def cache_stats() -> Dict[str, Any]:
+async def cache_stats() -> dict[str, Any]:
     """Return cache backend stats (entries/hits/misses) and cacheable sources.
 
     Introspection mirror of ``/sources``; the cache is content-addressed and
@@ -570,7 +570,7 @@ async def update(req: UpdateRequest, request: Request) -> UpdateResponse:
 
     # -- 3. run aggregation off the event loop ---------------------------------
     try:
-        deltas: List[TraceDelta] = await run_in_threadpool(
+        deltas: list[TraceDelta] = await run_in_threadpool(
             engine.process,
             event,
             trace_infos,
@@ -592,7 +592,7 @@ async def update(req: UpdateRequest, request: Request) -> UpdateResponse:
 
 
 @app.post("/share")
-async def share(req: ShareRequest) -> Dict[str, str]:
+async def share(req: ShareRequest) -> dict[str, str]:
     """Encode a spec dict to a shareable ``/view`` URL.
 
     The spec is gzip-compressed and base64url-encoded so it fits in a URL
@@ -680,7 +680,7 @@ async def dashboard_update(
     event = req.event
 
     # -- 1. resolve unique sources --------------------------------------------
-    source_map: Dict[str, LFQueryBuilder | None] = {}
+    source_map: dict[str, LFQueryBuilder | None] = {}
     for fig_spec in req.spec.figures:
         name = fig_spec.source
         if name not in source_map:
@@ -693,9 +693,9 @@ async def dashboard_update(
                     raise HTTPException(status_code=404, detail=str(exc))
 
     # -- 2. reconstruct FlexTrace objects; build uid → figure_uid map ----------
-    uid_to_fig_uid: Dict[str, str] = {}
+    uid_to_fig_uid: dict[str, str] = {}
     # source_name → (scalable_traces, trace_infos)
-    per_source_traces: Dict[str | None, tuple[Dict[str, Any], List[TraceInfo]]] = {
+    per_source_traces: dict[str | None, tuple[dict[str, Any], list[TraceInfo]]] = {
         name: ({}, []) for name in source_map
     }
 
@@ -752,7 +752,7 @@ async def dashboard_update(
         return _cube_response(body, enc)
 
     # -- 3. run engine per distinct source -------------------------------------
-    all_deltas: List[TraceDelta] = []
+    all_deltas: list[TraceDelta] = []
     for src_name, (scalable, infos) in per_source_traces.items():
         if not infos:
             continue
@@ -773,7 +773,7 @@ async def dashboard_update(
             source_name=src_name,
         )
         try:
-            src_deltas: List[TraceDelta] = await run_in_threadpool(
+            src_deltas: list[TraceDelta] = await run_in_threadpool(
                 engine.process,
                 event,
                 active_infos,
@@ -786,7 +786,7 @@ async def dashboard_update(
         all_deltas.extend(src_deltas)
 
     # -- 4. partition by figure uid -------------------------------------------
-    figure_deltas: Dict[str, List[Dict[str, Any]]] = {
+    figure_deltas: dict[str, list[dict[str, Any]]] = {
         fig_spec.uid: [] for fig_spec in req.spec.figures
     }
     try:

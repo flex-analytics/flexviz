@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 import re
 import struct
-
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import cached_property
+from typing import Any
 
 import polars as pl
-
-from typing import Any, Callable, List, Set, Tuple
-from dataclasses import dataclass
 
 try:
     import pandas as pd
@@ -39,8 +38,8 @@ def get_col_name(col: str | pl.Expr) -> str:
 
 
 def _parquet_footer_minmax(
-    path: str, columns: List[str], sch: pl.Schema
-) -> dict[str, Tuple[Any, Any]]:
+    path: str, columns: list[str], sch: pl.Schema
+) -> dict[str, tuple[Any, Any]]:
     """``(min, max)`` per column from the Parquet footer, in physical form.
 
     Returns only the columns the footer can answer. The footer holds per
@@ -57,7 +56,7 @@ def _parquet_footer_minmax(
     if len(arrow_schema) != meta.num_columns:
         return {}
 
-    out: dict[str, Tuple[Any, Any]] = {}
+    out: dict[str, tuple[Any, Any]] = {}
     for c in columns:
         dtype = sch.get(c)
         if dtype is None:
@@ -120,7 +119,7 @@ class AggregationSpec:
     #: column the batched ``select`` would have produced. Set only when a spec
     #: needs a streaming plan or a batch fold that cannot ride the shared
     #: select.
-    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+    plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
 
     def __post_init__(self) -> None:
         if self.expr is None and self.plan is None:
@@ -139,12 +138,12 @@ class GroupedAggregationSpec:
     """
 
     uid: str
-    group_cols: Tuple[str, ...]
-    sort_cols: Tuple[str, ...]
-    agg_exprs: Tuple[pl.Expr, ...]
-    pre_group_filters: Tuple[pl.Expr, ...] = ()
+    group_cols: tuple[str, ...]
+    sort_cols: tuple[str, ...]
+    agg_exprs: tuple[pl.Expr, ...]
+    pre_group_filters: tuple[pl.Expr, ...] = ()
     pre_group_filter_key: Any = None
-    batch_key: Tuple[Any, ...] = ()
+    batch_key: tuple[Any, ...] = ()
     #: Optional escape hatch for a grouped aggregation that is a whole plan
     #: instead of an expression list. Called as ``plan(batch_ldf)``, where
     #: ``batch_ldf`` already carries the cross-filter and this spec's
@@ -152,7 +151,7 @@ class GroupedAggregationSpec:
     #: one column named ``uid``, the shape the fused grouped query returns.
     #: ``agg_exprs`` is ignored when ``plan`` is set, and a plan spec never
     #: fuses with other grouped specs.
-    plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
+    plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
 
 
 class LFQueryBuilder:
@@ -172,8 +171,8 @@ class LFQueryBuilder:
         assert isinstance(ldf, pl.LazyFrame)
         self._ldf: pl.LazyFrame = ldf
         self.cache: bool = cache  # the registrar's static-data assertion
-        self._sorted_cols: Set[str] = set()  # columns that are sorted
-        self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
+        self._sorted_cols: set[str] = set()  # columns that are sorted
+        self._minmax_memo: dict[str, tuple[Any, Any]] = {}
 
     @property
     def static(self) -> bool:
@@ -258,9 +257,9 @@ class LFQueryBuilder:
 
     def physical_minmax(
         self,
-        columns: List[str],
+        columns: list[str],
         schema: pl.Schema | None = None,
-    ) -> dict[str, Tuple[Any, Any]]:
+    ) -> dict[str, tuple[Any, Any]]:
         """``(min, max)`` of each column in its physical representation.
 
         Temporal columns reduce on ``to_physical()``; every other column on its
@@ -293,7 +292,7 @@ class LFQueryBuilder:
             memo.update(found)
             missing = [c for c in missing if c not in found]
         if missing:
-            exprs: List[pl.Expr] = []
+            exprs: list[pl.Expr] = []
             for c in missing:
                 val = pl.col(c)
                 dtype = sch.get(c) if hasattr(sch, "get") else None
@@ -389,9 +388,9 @@ class LFQueryBuilder:
 
     def aggregate(
         self,
-        filter_exprs: List[pl.Expr],
-        agg_specs: "List[AggregationSpec | GroupedAggregationSpec]",
-    ) -> "Tuple[pl.DataFrame, dict[str, pl.DataFrame]]":
+        filter_exprs: list[pl.Expr],
+        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
+    ) -> tuple[pl.DataFrame, dict[str, pl.DataFrame]]:
         """Aggregate the data using the provided specifications.
 
         Parameters

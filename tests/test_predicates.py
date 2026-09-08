@@ -78,6 +78,7 @@ class TestPredicatesToExpr:
 
     def test_temporal_range_casts_strings(self):
         import datetime as dt
+
         from flexviz.predicates import predicates_to_expr
 
         df = pl.DataFrame(
@@ -160,6 +161,7 @@ class TestClosedRanges:
 
     def test_temporal_closed_left_excludes_upper_bound(self):
         import datetime as dt
+
         from flexviz.predicates import predicates_to_expr
 
         df = pl.DataFrame(

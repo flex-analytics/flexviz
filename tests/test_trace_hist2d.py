@@ -9,12 +9,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-from flexviz.trace import batch_fold as batch_fold_mod
-
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace.hist2d import Histogram2D
+from flexviz.trace import batch_fold as batch_fold_mod
 from flexviz.trace.base import TraceResult
+from flexviz.trace.hist2d import Histogram2D
 
 
 def _aggregate_hist2d(
@@ -246,7 +245,7 @@ class TestHist2DPartialViewport:
     # x_bins=5 over a span of 4.0 gives width 0.8, so [2.0, 6.0] snaps outward
     # to [1.6, 6.4] over 6 bins. y_bins=4 over 4.0 gives width 1.0, a lattice
     # multiple, so [3.0, 7.0] stays put.
-    SNAPPED = {"x": (1.6, 6.4, 6), "y": (3.0, 7.0, 4)}
+    SNAPPED = {"x": (1.6, 6.4, 6), "y": (3.0, 7.0, 4)}  # noqa: RUF012
 
     @staticmethod
     def _axis_edges(result: TraceResult, axis: str) -> tuple[float, float, int]:

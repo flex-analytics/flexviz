@@ -17,7 +17,7 @@ Supported ``histnorm`` values
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Dict
+from typing import Any
 
 import polars as pl
 
@@ -32,6 +32,7 @@ from ..cube import (
 )
 from ..LF import AggregationSpec, GroupedAggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
+from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
 from .base import (
     FlexTrace,
     GroupedChildResult,
@@ -46,7 +47,6 @@ from .base import (
     _temporal_dtype_for_col,
     _to_col_tuple,
 )
-from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
 from .batch_fold import hist1d_fold_plan
 from .bin_grid import snap_range, snapped_axis
 
@@ -218,7 +218,7 @@ class Histogram(FlexTrace):
     def _make_selection_spec(self):
         return self._range_selection_spec()
 
-    def _make_hover_spec(self) -> "TraceHoverSpec":
+    def _make_hover_spec(self) -> TraceHoverSpec:
         return TraceHoverSpec(
             source_modes=["axis", "cell"],
             target_modes=["axis", "cell"],
@@ -318,14 +318,14 @@ class Histogram(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
-    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
+    def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         if update_range.get(self.prop_key) is not None:
             return ()
         return (self.data_col,)
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
@@ -526,7 +526,7 @@ class Histogram(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "Histogram":
+    def from_trace_spec(cls, spec: TraceSpec) -> Histogram:
         prop_key = next(iter(spec.backend_data))  # "x" or "y"
         col = spec.backend_data[prop_key]
         trace = cls(

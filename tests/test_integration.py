@@ -712,7 +712,7 @@ class TestPostDashboardUpdate:
             f = dash.add_figure()
             f.add_line(x="ts", y="val", n_points=10_000)
         spec = dash.to_spec(source_name=_SRC)
-        uid_a, uid_b = [f.uid for f in spec.figures]
+        uid_a, _uid_b = [f.uid for f in spec.figures]
 
         payload = {
             "spec": spec.model_dump(),
@@ -964,7 +964,7 @@ class TestCrossFilterScenarios:
         self, client: TestClient, three_fig_spec: DashboardSpec
     ):
         spec = three_fig_spec
-        uid_a, uid_b, uid_c = [f.uid for f in spec.figures]
+        uid_a, uid_b, _uid_c = [f.uid for f in spec.figures]
 
         # Step 1: init to get the full data count for B.
         init_resp = client.post(
@@ -1555,6 +1555,7 @@ class TestFigureFromSpec:
 class TestMountInto:
     def test_mount_routes_accessible(self):
         from fastapi import FastAPI as _FastAPI
+
         from flexviz.server import mount_into
 
         host = _FastAPI()

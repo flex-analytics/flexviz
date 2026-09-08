@@ -20,7 +20,7 @@ import hashlib
 import json
 import threading
 from collections import OrderedDict
-from typing import Any, Dict, Protocol, Set, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Backend protocol
@@ -42,7 +42,7 @@ class CacheBackend(Protocol):
 
     def clear(self) -> None: ...
 
-    def stats(self) -> Dict[str, int]: ...
+    def stats(self) -> dict[str, int]: ...
 
 
 class InMemoryLRUCache:
@@ -56,7 +56,7 @@ class InMemoryLRUCache:
 
     def __init__(self, max_entries: int = 1000) -> None:
         self._max_entries = max_entries
-        self._data: "OrderedDict[str, Any]" = OrderedDict()
+        self._data: OrderedDict[str, Any] = OrderedDict()
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
@@ -83,7 +83,7 @@ class InMemoryLRUCache:
             self._hits = 0
             self._misses = 0
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         with self._lock:
             return {
                 "entries": len(self._data),
@@ -105,7 +105,7 @@ class InMemoryByteLRUCache:
 
     def __init__(self, max_bytes: int = 512 * 2**20) -> None:
         self._max_bytes = max_bytes
-        self._data: "OrderedDict[str, bytes]" = OrderedDict()
+        self._data: OrderedDict[str, bytes] = OrderedDict()
         self._bytes = 0
         self._lock = threading.Lock()
         self._hits = 0
@@ -141,7 +141,7 @@ class InMemoryByteLRUCache:
             self._hits = 0
             self._misses = 0
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         with self._lock:
             return {
                 "entries": len(self._data),
@@ -159,7 +159,7 @@ class InMemoryByteLRUCache:
 
 _cache: CacheBackend = InMemoryLRUCache()
 _cube_cache: CacheBackend = InMemoryByteLRUCache()
-_cacheable_sources: Set[str] = set()
+_cacheable_sources: set[str] = set()
 
 
 def get_cache() -> CacheBackend:
@@ -209,7 +209,7 @@ def is_source_cacheable(name: str | None) -> bool:
     return name is not None and name in _cacheable_sources
 
 
-def cacheable_sources() -> Set[str]:
+def cacheable_sources() -> set[str]:
     """Return the set of source names that opted into caching."""
     return set(_cacheable_sources)
 
@@ -234,8 +234,8 @@ def content_key(
     source_name: str,
     trace_type: str,
     axes: Any,
-    backend_data: Dict[str, Any],
-    params: Dict[str, Any],
+    backend_data: dict[str, Any],
+    params: dict[str, Any],
     domain_cols: tuple[str, ...] | None = None,
 ) -> str:
     """Compute the Phase-1 per-trace content key.

@@ -8,8 +8,8 @@ import polars as pl
 import pytest
 
 from flexviz.LF import LFQueryBuilder
-from flexviz.trace.pie import PiePlot
 from flexviz.trace.base import TraceResult
+from flexviz.trace.pie import PiePlot
 
 
 def _aggregate_pie(

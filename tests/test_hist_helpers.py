@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from flexviz.trace._hist_helpers import (
-    normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
+    normalize_heatmap_color_scale,
 )
 
 # ---------------------------------------------------------------------------

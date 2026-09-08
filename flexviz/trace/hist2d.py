@@ -23,28 +23,28 @@ a fixed lattice, so the grid stands still while the user pans.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Dict
+from typing import Any
 
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
 from ..LF import AggregationSpec
 from ..spec import TraceHoverSpec, TraceSpec
+from ._hist_helpers import (
+    _HISTNORM_OPTIONS,
+    HeatmapColorRange,
+    apply_histnorm,
+    normalize_heatmap_color_range,
+    normalize_heatmap_color_scale,
+)
 from .base import (
+    _CUBE_RESERVED_COLS,
     FlexTrace,
     TraceResult,
-    _CUBE_RESERVED_COLS,
     _dtype_for_col,
     _phys_epoch_ms_factor,
     _physical_to_temporal_series,
     _temporal_dtype_for_col,
-)
-from ._hist_helpers import (
-    HeatmapColorRange,
-    _HISTNORM_OPTIONS,
-    apply_histnorm,
-    normalize_heatmap_color_scale,
-    normalize_heatmap_color_range,
 )
 from .batch_fold import hist2d_fold_plan
 from .bin_grid import axis_edges, hist2d_count_expr, hist2d_reduce_expr
@@ -204,7 +204,7 @@ class Histogram2D(FlexTrace):
         if histnorm not in _HISTNORM_OPTIONS:
             raise ValueError(f"histnorm must be one of {_HISTNORM_OPTIONS}.")
 
-        backend_data: Dict[str, str] = {"x": x, "y": y}
+        backend_data: dict[str, str] = {"x": x, "y": y}
         if z is not None:
             backend_data["z"] = z
 
@@ -243,7 +243,7 @@ class Histogram2D(FlexTrace):
     def _make_selection_spec(self):
         return self._range_selection_spec()
 
-    def _make_hover_spec(self) -> "TraceHoverSpec":
+    def _make_hover_spec(self) -> TraceHoverSpec:
         return TraceHoverSpec(
             source_modes=["cell"],
             target_modes=["cell", "axis"],
@@ -329,7 +329,7 @@ class Histogram2D(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
-    ) -> "CubeTargetSpec | None":
+    ) -> CubeTargetSpec | None:
         """A 2-D histogram is a ``count``/reduce cube target (contract K).
 
         Its grouping dims are its own ``(x_col, y_col)`` bin axes (order pinned:
@@ -400,7 +400,7 @@ class Histogram2D(FlexTrace):
     # FlexTrace interface
     # ------------------------------------------------------------------
 
-    def domain_cols(self, update_range: Dict[str, Any]) -> tuple[str, ...]:
+    def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         # Each axis re-bins on its own, so only an axis the viewport leaves
         # out still needs its unfiltered domain.
         return tuple(
@@ -411,7 +411,7 @@ class Histogram2D(FlexTrace):
 
     def get_aggregation_spec(
         self,
-        update_range: Dict[str, Any],
+        update_range: dict[str, Any],
         schema: pl.Schema | None = None,
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
@@ -495,7 +495,7 @@ class Histogram2D(FlexTrace):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_trace_spec(cls, spec: TraceSpec) -> "Histogram2D":
+    def from_trace_spec(cls, spec: TraceSpec) -> Histogram2D:
         trace = cls(
             x=spec.backend_data["x"],
             y=spec.backend_data["y"],

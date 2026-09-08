@@ -14,15 +14,15 @@ from flexviz.spec import (
     AxisRange,
     ClientState,
     DashboardSpec,
+    FigureSpec,
     GridItem,
     GroupDomainState,
-    TraceDisplay,
-    TraceHoverSpec,
-    TraceParams,
-    FigureSpec,
     InteractionState,
     LayoutSpec,
     SelectionState,
+    TraceDisplay,
+    TraceHoverSpec,
+    TraceParams,
     TraceSpec,
     VisualizationSpec,
     _auto_grid_items,
@@ -1079,15 +1079,17 @@ class TestClauseFilter:
         assert c.range is None
 
     def test_clause_rejects_both_range_and_values(self):
-        from flexviz.spec import ClauseFilter
         from pydantic import ValidationError
+
+        from flexviz.spec import ClauseFilter
 
         with pytest.raises(ValidationError):
             ClauseFilter(column="x", range=(0, 1), values=["a"])
 
     def test_clause_rejects_neither(self):
-        from flexviz.spec import ClauseFilter
         from pydantic import ValidationError
+
+        from flexviz.spec import ClauseFilter
 
         with pytest.raises(ValidationError):
             ClauseFilter(column="x")
@@ -1106,8 +1108,9 @@ class TestClauseFilter:
         assert c.closed == "both"
 
     def test_clause_rejects_values_with_closed_left(self):
-        from flexviz.spec import ClauseFilter
         from pydantic import ValidationError
+
+        from flexviz.spec import ClauseFilter
 
         with pytest.raises(ValidationError):
             ClauseFilter(column="country", values=["NL"], closed="left")

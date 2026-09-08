@@ -35,25 +35,25 @@ def test_content_key_independent_of_dict_order():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        dict(source_name="other"),
-        dict(trace_type="bar"),
-        dict(axes=("x",)),
-        dict(backend_data={"x": "z"}),
-        dict(params={"n": 2}),
+        {"source_name": "other"},
+        {"trace_type": "bar"},
+        {"axes": ("x",)},
+        {"backend_data": {"x": "z"}},
+        {"params": {"n": 2}},
         # A histogram binning over a sibling's range is a different result
         # than the same histogram alone (shared bin domain).
-        dict(domain_cols=("x", "sibling")),
+        {"domain_cols": ("x", "sibling")},
     ],
 )
 def test_content_key_sensitive_to_each_field(kwargs):
-    base = dict(
-        source_name="s",
-        trace_type="line",
-        axes=("x", "y"),
-        backend_data={"x": "x"},
-        params={"n": 1},
-        domain_cols=("x",),
-    )
+    base = {
+        "source_name": "s",
+        "trace_type": "line",
+        "axes": ("x", "y"),
+        "backend_data": {"x": "x"},
+        "params": {"n": 1},
+        "domain_cols": ("x",),
+    }
     changed = {**base, **kwargs}
     assert content_key(**base) != content_key(**changed)
 

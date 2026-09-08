@@ -7,7 +7,6 @@ from collections.abc import Sequence
 import polars as pl
 import pytest
 
-
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
 from flexviz.trace.box import BoxPlot

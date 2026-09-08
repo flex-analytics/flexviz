@@ -6,9 +6,9 @@ import polars as pl
 import pytest
 from playwright.sync_api import Page
 
-from flexviz.LF import LFQueryBuilder
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
+from flexviz.LF import LFQueryBuilder
 from flexviz.spec import (
     ClauseFilter,
     LayoutSpec,
