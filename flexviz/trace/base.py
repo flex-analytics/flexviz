@@ -24,8 +24,8 @@ import re
 
 import polars as pl
 
-from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec
-from ..LF import AggregationSpec, GroupedAggregationSpec
+from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
+from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import BackendDataValue, TraceHoverSpec, TraceSelectionSpec, TraceSpec
 
 
@@ -217,6 +217,13 @@ class FlexTrace(ABC):
     ) -> "CubeTargetSpec | None":
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
+
+    def check_source(self, source: "LFQueryBuilder") -> None:
+        """Raise when this trace cannot run on the source.
+
+        The engine calls it for every trace before the domains are resolved.
+        Reads the schema, and may read data.
+        """
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose **unfiltered** ``(min, max)`` this trace's spec needs.
@@ -568,6 +575,33 @@ def _cube_measure_spec(
     if dtype is None or not dtype.is_numeric():
         return None
     return MeasureSpec(agg=agg, value_col=value_col)
+
+
+def _range_cube_source_spec(
+    column: str,
+    axis_range: tuple[float, float] | None,
+    schema: pl.Schema | None,
+) -> FreeAxisSpec | None:
+    """Shared 1-D range cube-source descriptor (hist-shaped; cube plan step 8).
+
+    Continuous/temporal kind from the schema dtype; temporal axes carry their
+    physical ``unit`` (contract G) and unsupported temporal dtypes
+    (``Datetime("ns")``, ``Time``) gate to ``None``, as do non-numeric dtypes.
+    Without a schema the kind defaults to ``"continuous"``. ``domain`` is the
+    viewport range verbatim (``None`` = unzoomed; engine-resolved).
+    """
+    dtype = _dtype_for_col(schema, column)
+    if dtype is not None:
+        if dtype.is_temporal():
+            unit = temporal_unit(dtype)
+            if unit is None:
+                return None
+            return FreeAxisSpec(
+                column=column, kind="temporal", p=2048, domain=axis_range, unit=unit
+            )
+        if not dtype.is_numeric():
+            return None
+    return FreeAxisSpec(column=column, kind="continuous", p=2048, domain=axis_range)
 
 
 def _typed_temporal_lit(value: Any, dtype: pl.DataType | None) -> pl.Expr:

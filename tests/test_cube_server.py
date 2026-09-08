@@ -24,7 +24,7 @@ from flexviz.dashboard import Dashboard
 from flexviz.figure import Figure
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
-from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 pytestmark = pytest.mark.integration
@@ -217,7 +217,7 @@ def _direct_hist(
         .collect()["h"]
         .item()
     )
-    return raw.explode().struct.unnest()["count"].to_list()
+    return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
 def _snap(domain: tuple[float, float], a: float, b: float):
@@ -316,7 +316,7 @@ class TestDashboardCubeRequest:
             .collect()["h"]
             .item()
         )
-        direct = raw.explode().struct.unnest()["count"].to_list()
+        direct = raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
         assert sum(sliced) > 0  # non-vacuous: the brush selects rows
         assert sum(sliced) < df.height  # ... but not all of them
         assert sliced == direct  # bit-exact counts
@@ -473,7 +473,7 @@ class TestDashboardCubeRequest:
         header = decode_fvcube_header(blob)
         assert header["free"]["domain"] == [10.0, 80.0]
         (dim,) = header["target_dims"]
-        lo, hi, n = _snap_range(5.0, 60.0, tgt_bins)
+        lo, hi, n = snap_range(5.0, 60.0, tgt_bins)
         assert n == tgt_bins + 1
         assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
         assert dim["bins"] == n

@@ -42,15 +42,108 @@ from .base import (
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    _hist2d_agg_spec,
     apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
+from .batch_fold import hist2d_fold_plan
+from .bin_grid import axis_edges, hist2d_count_expr, hist2d_reduce_expr
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
 _HIST2D_HISTFUNC_OPTIONS = ("sum", "mean", "min", "max")
+
+
+def hist2d_agg_spec(
+    x_col: str,
+    y_col: str,
+    z_col: str | None,
+    histfunc: str | None,
+    x_range: tuple | None,
+    y_range: tuple | None,
+    nb_x: int,
+    nb_y: int,
+    uid: str,
+    domains: Mapping[str, tuple[Any, Any]] | None,
+    schema: pl.Schema | None,
+    scan_source: bool,
+) -> tuple[AggregationSpec, tuple[int, int]]:
+    """The 2-D histogram aggregation spec, plus the grid it bins on.
+
+    ``Histogram2D`` and ``GeoHistogram2D`` bin the same way over different
+    column pairs, so both come through here. The client sends only the axes a
+    zoom moved, so each axis resolves on its own: an axis without a range needs
+    its column in ``domains``, where a ``(None, None)`` entry means an empty or
+    all-null column, and an axis with one snaps its edges to a lattice, which
+    can add a bin. So the caller must keep the returned grid and unpack
+    ``z_flat`` with it.
+
+    ``scan_source`` says the rows come from storage rather than a resident
+    frame. The kernels need both axis columns in memory at once, so a scan takes
+    ``hist2d_fold_plan`` instead: the same kernels, run over streamed batches and
+    folded in NumPy, at bounded memory. A resident frame keeps the plain kernel
+    expression, which joins the shared select.
+    """
+    x_lo, x_hi, x_mask, nb_x = axis_edges(x_col, x_range, nb_x, domains, schema)
+    y_lo, y_hi, y_mask, nb_y = axis_edges(y_col, y_range, nb_y, domains, schema)
+    edges = (x_lo, x_hi, y_lo, y_hi)
+    masks = [m for m in (x_mask, y_mask) if m is not None]
+    mask = masks[0] & masks[1] if len(masks) == 2 else (masks[0] if masks else None)
+    grid = (nb_x, nb_y)
+
+    if scan_source:
+        plan = hist2d_fold_plan(
+            x_col, y_col, z_col, nb_x, nb_y, histfunc, edges, mask, uid, schema
+        )
+        return AggregationSpec(uid=uid, plan=plan), grid
+
+    if z_col is None:
+        expr = hist2d_count_expr(x_col, y_col, nb_x, nb_y, edges, mask, uid, schema)
+    else:
+        assert histfunc is not None
+        expr = hist2d_reduce_expr(
+            x_col, y_col, z_col, nb_x, nb_y, edges, mask, uid, histfunc, schema
+        )
+    return AggregationSpec(expr=expr, uid=uid), grid
+
+
+def unpack_hist2d_grid(
+    raw: Any,
+    grid: tuple[int, int],
+    *,
+    counts: bool,
+    histnorm: str | None,
+) -> tuple[list, float, float, float, float, float, float]:
+    """A kernel or fold ``Struct{z_flat, x_lo, x_hi, y_lo, y_hi}`` row as a flat
+    z plus its bin geometry: ``(z, x_lo, x_hi, y_lo, y_hi, x_step, y_step)``.
+
+    Both 2-D traces read the same struct. A cell with no value must reach the
+    client as ``None`` so it draws no rectangle: the count kernel marks an empty
+    cell with a 0, the reduce kernel with a null, and a reduction that is NaN (z
+    holding +inf and -inf) has no value either. ``counts`` says which kernel
+    ran. Normalization happens here because its bin area is this grid's cell
+    area.
+    """
+    nb_x, nb_y = grid
+    x_lo, x_hi = float(raw["x_lo"]), float(raw["x_hi"])
+    y_lo, y_hi = float(raw["y_lo"]), float(raw["y_hi"])
+    x_step = (x_hi - x_lo) / nb_x
+    y_step = (y_hi - y_lo) / nb_y
+
+    if counts:
+        z_flat = [None if v == 0 else float(v) for v in raw["z_flat"]]
+    else:
+        z_flat = [None if v is None or v != v else float(v) for v in raw["z_flat"]]
+
+    if histnorm is not None:
+        z_df = apply_histnorm(
+            pl.DataFrame({"value": pl.Series("value", z_flat, dtype=pl.Float64)}),
+            "value",
+            histnorm,
+            x_step * y_step,
+        )
+        z_flat = z_df["value"].to_list()
+    return z_flat, x_lo, x_hi, y_lo, y_hi, x_step, y_step
 
 
 class Histogram2D(FlexTrace):
@@ -63,9 +156,11 @@ class Histogram2D(FlexTrace):
     y:
         Column name for the vertical axis.
     x_bins:
-        Number of bins along x (default 20).
+        Number of bins along x (default 20). A zoomed axis can show one more, because
+        the grid snaps to a fixed lattice.
     y_bins:
-        Number of bins along y (default 20).
+        Number of bins along y (default 20). A zoomed axis can show one more, because
+        the grid snaps to a fixed lattice.
     z:
         Column name for the value to aggregate per bin.  When ``None``
         (default) the trace counts rows per bin.
@@ -321,14 +416,14 @@ class Histogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec:
-        """Return the 2-D histogram aggregation spec (see ``_hist2d_agg_spec``)."""
+        """Return the 2-D histogram aggregation spec (see ``hist2d_agg_spec``)."""
         # Temporal axes bin on their physical representation; _to_update restores
         # datetime centers afterward.
         self._x_temporal_dtype = _temporal_dtype_for_col(self.x_col, schema)
         self._y_temporal_dtype = _temporal_dtype_for_col(self.y_col, schema)
-        spec, self._grid = _hist2d_agg_spec(
+        spec, self._grid = hist2d_agg_spec(
             self.x_col,
             self.y_col,
             self.z_col,
@@ -345,39 +440,15 @@ class Histogram2D(FlexTrace):
         return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
-        raw = df[self.uid][0]
         nb_x, nb_y = self._grid
-
-        # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}
-        z_flat_raw: list = raw["z_flat"]
-        x_lo: float = raw["x_lo"]
-        x_hi: float = raw["x_hi"]
-        y_lo: float = raw["y_lo"]
-        y_hi: float = raw["y_hi"]
-
-        if self.z_col is None:
-            # Count kernel returns UInt32; 0 indicates an empty bin →
-            # emit None to match the documented gap-rendering contract.
-            z_flat: list = [None if v == 0 else float(v) for v in z_flat_raw]
-        else:
-            # Reducer kernel returns nullable Float64 values directly.
-            z_flat = [None if v is None else float(v) for v in z_flat_raw]
-
+        z_flat, x_lo, x_hi, y_lo, y_hi, x_step, y_step = unpack_hist2d_grid(
+            df[self.uid][0],
+            self._grid,
+            counts=self.z_col is None,
+            histnorm=self.histnorm,
+        )
         x_centers = _centers(x_lo, x_hi, nb_x)
         y_centers = _centers(y_lo, y_hi, nb_y)
-
-        if self.histnorm is not None:
-            x_step = (x_hi - x_lo) / nb_x
-            y_step = (y_hi - y_lo) / nb_y
-            z_series = pl.Series("value", z_flat, dtype=pl.Float64)
-            z_df = apply_histnorm(
-                pl.DataFrame({"value": z_series}),
-                "value",
-                self.histnorm,
-                x_step * y_step,
-            )
-            z_flat = z_df["value"].to_list()
-
         z = [z_flat[j * nb_x : (j + 1) * nb_x] for j in range(nb_y)]
 
         # Temporal axes are binned in physical space: restore datetime centers
@@ -388,32 +459,15 @@ class Histogram2D(FlexTrace):
         x_edge = self._edge_scale(self._x_temporal_dtype)
         y_edge = self._edge_scale(self._y_temporal_dtype)
 
-        # -- hover_bounds: 2D array of cell bounds matching z shape
-        x_step = (x_hi - x_lo) / nb_x
-        y_step = (y_hi - y_lo) / nb_y
-        hover_bounds = []
-        for row in range(nb_y):
-            hover_bounds.append([])
-            for col in range(nb_x):
-                x0 = x_lo + col * x_step
-                x1 = x0 + x_step
-                y0 = y_lo + row * y_step
-                y1 = y0 + y_step
-                hover_bounds[-1].append(
-                    {
-                        "x0": x_edge(x0),
-                        "x1": x_edge(x1),
-                        "y0": y_edge(y0),
-                        "y1": y_edge(y1),
-                    }
-                )
-
+        # The client derives one {x0,x1,y0,y1} per cell from these triples;
+        # sending the per-cell objects instead is most of a hist2d response.
         return TraceResult(
             updates={
                 "x": x_out,
                 "y": y_out,
                 "z": z,
-                "hover_bounds": hover_bounds,
+                "x_edges": [x_edge(x_lo), x_edge(x_step), nb_x],
+                "y_edges": [y_edge(y_lo), y_edge(y_step), nb_y],
             }
         )
 
@@ -442,26 +496,13 @@ class Histogram2D(FlexTrace):
 
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> "Histogram2D":
-        z = spec.backend_data.get("z")
-        raw_histfunc = spec.params.get("histfunc")
-        # Backward compat: old specs stored histfunc="count" when z was None.
-        if raw_histfunc == "count" or raw_histfunc is None:
-            histfunc = None
-        elif raw_histfunc in ("median", "n_unique"):
-            raise ValueError(
-                f"histfunc={raw_histfunc!r} is no longer supported by Histogram2D "
-                f"(removed in favour of the Rust kernel). "
-                f"Use one of: {_HIST2D_HISTFUNC_OPTIONS}."
-            )
-        else:
-            histfunc = raw_histfunc
         trace = cls(
             x=spec.backend_data["x"],
             y=spec.backend_data["y"],
             x_bins=spec.params.get("x_bins", 20),
             y_bins=spec.params.get("y_bins", 20),
-            z=z,
-            histfunc=histfunc if z is not None else None,
+            z=spec.backend_data.get("z"),
+            histfunc=spec.params.get("histfunc"),
             histnorm=spec.params.get("histnorm"),
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),

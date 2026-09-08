@@ -1,9 +1,10 @@
 """Request-wide unfiltered-domain resolution and per-source-kind engine pinning.
 
 Bin edges come from the unfiltered frame, so a cross-filter never moves them.
-The engine resolves every column a request needs in one min/max collect, and
-every collect names its Polars engine: streaming for a scan, in-memory for a
-resident frame.
+The engine resolves every column a request needs in one min/max pass: the
+Parquet footer on a single-file Parquet scan, one collect otherwise. Every
+collect names its Polars engine: streaming for a scan, in-memory for a resident
+frame.
 """
 
 from __future__ import annotations
@@ -95,19 +96,18 @@ class TestResolveCount:
         assert collects.minmax == []
 
     def test_one_collect_covers_every_column_in_the_request(self, tmp_path, collects):
-        """Two histograms, a hist2d and a scan line resolve in a single scan."""
-        src = _write(
-            tmp_path / "d.parquet",
-            pl.DataFrame(
-                {
-                    "a": [float(i) for i in range(200)],
-                    "b": [float(i % 7) for i in range(200)],
-                    "ts": list(range(200)),
-                }
-            ),
-        )
+        """A CSV scan has no footer to read, so the columns of two histograms, a
+        hist2d and a scan line must resolve in a single min/max collect."""
+        path = tmp_path / "d.csv"
+        pl.DataFrame(
+            {
+                "a": [float(i) for i in range(200)],
+                "b": [float(i % 7) for i in range(200)],
+                "ts": list(range(200)),
+            }
+        ).write_csv(path)
         engine, infos = _engine(
-            src,
+            pl.scan_csv(path),
             [
                 Histogram(x="a", bins=10),
                 Histogram(x="b", bins=10),
@@ -120,12 +120,11 @@ class TestResolveCount:
         assert len(collects.minmax) == 1
         plan = collects.minmax[0][1]
         assert all(f"__min_{c}__" in plan for c in ("a", "b", "ts"))
-        # min/max + one streaming plan per ungrouped histogram + the line
-        # envelope group_by. A plan spec cannot join the batched select, so each
-        # brings its own collect. The hist2d adds none: on a scan it folds
-        # through collect_batches, which is not a collect. A fifth would mean the
-        # line plan re-probed its own x domain instead of taking the resolved one.
-        assert len(collects.calls) == 4
+        # min/max + the line envelope group_by. Both histograms and the hist2d
+        # add none: on a scan they fold through collect_batches, which is not a
+        # collect. A third would mean the line plan re-probed its own x domain
+        # instead of taking the resolved one.
+        assert len(collects.calls) == 2
 
     def test_resident_line_resolves_its_x_domain(self, collects):
         """A resident minmax line bins in x too, so it needs the domain."""
@@ -165,7 +164,8 @@ class TestResolveCount:
 
     @pytest.mark.parametrize("n_traces", [1, 5])
     def test_scan_collect_counts(self, tmp_path, collects, n_traces):
-        """One min/max scan plus one streaming plan per ungrouped histogram."""
+        """The footer resolves the bounds and the histograms fold over batches,
+        so a Parquet scan of any number of them collects nothing."""
         src = _write(
             tmp_path / "d.parquet",
             pl.DataFrame({"a": [float(i) for i in range(200)]}),
@@ -175,9 +175,9 @@ class TestResolveCount:
         )
         _init(engine, infos)
 
-        assert len(collects.minmax) == 1
-        # A plan spec runs alone: it trades the shared select for bounded memory.
-        assert len(collects.calls) == 1 + n_traces
+        assert collects.minmax == []
+        # collect_batches is not a collect: the fold never enters the spy.
+        assert collects.calls == []
 
 
 # ---- fixed engine per source kind ------------------------------------------
@@ -193,14 +193,16 @@ class TestEnginePinning:
         assert set(collects.engines) == {"in-memory"}
 
     def test_scan_collects_streaming(self, tmp_path, collects):
+        # A line, not a histogram: a scanned histogram folds over batches and
+        # never collects, so it has no engine to pin.
         src = _write(
             tmp_path / "d.parquet",
-            pl.DataFrame({"a": [float(i) for i in range(200)]}),
+            pl.DataFrame({"ts": list(range(200)), "a": [float(i) for i in range(200)]}),
         )
-        engine, infos = _engine(src, [Histogram(x="a", bins=10)])
+        engine, infos = _engine(src, [LinePlot(x="ts", y="a", n_points=20)])
         _init(engine, infos)
 
-        assert len(collects.minmax) == 1
+        assert collects.minmax == []  # the footer answered
         assert set(collects.engines) == {"streaming"}
 
 
@@ -222,23 +224,64 @@ class TestBoundsFreshness:
     def test_memoized_bounds_survive_a_source_rewrite(self, tmp_path):
         """``cache=True`` contracts the data as static, so the memo stands."""
         path = tmp_path / "d.parquet"
-        lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})))
-        assert lf.physical_minmax(["a"], memoize=True) == {"a": (0.0, 10.0)}
+        lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})), cache=True)
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
 
         pl.DataFrame({"a": [0.0, 100.0]}).write_parquet(path)
-        assert lf.physical_minmax(["a"], memoize=True) == {"a": (0.0, 10.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
         # Re-registering a source builds a new builder, dropping the memo.
-        fresh = LFQueryBuilder(pl.scan_parquet(path))
-        assert fresh.physical_minmax(["a"], memoize=True) == {"a": (0.0, 100.0)}
+        fresh = LFQueryBuilder(pl.scan_parquet(path), cache=True)
+        assert fresh.physical_minmax(["a"]) == {"a": (0.0, 100.0)}
 
-    def test_unmemoized_call_neither_reads_nor_writes_the_memo(self, tmp_path):
+    def test_an_uncached_scan_neither_reads_nor_writes_the_memo(self, tmp_path):
         path = tmp_path / "d.parquet"
         lf = LFQueryBuilder(_write(path, pl.DataFrame({"a": [0.0, 10.0]})))
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (0.0, 10.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 10.0)}
         assert lf._minmax_memo == {}
 
         pl.DataFrame({"a": [0.0, 100.0]}).write_parquet(path)
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (0.0, 100.0)}
+        assert lf.physical_minmax(["a"]) == {"a": (0.0, 100.0)}
+
+    def test_uncached_resident_engine_memoizes(self, collects):
+        """A resident frame is a snapshot: its bounds are resolved once, with
+        or without a cache backend."""
+        df = pl.DataFrame({"a": [float(i) for i in range(50)]})
+        engine, infos = _engine(df, [Histogram(x="a", bins=4)])
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+
+    def test_uncached_scan_engine_resolves_every_request(self, tmp_path, collects):
+        """A scan may change on disk, so without a cache backend every request
+        resolves again (a CSV scan: no footer to answer from)."""
+        path = tmp_path / "d.csv"
+        pl.DataFrame({"a": [float(i) for i in range(50)]}).write_csv(path)
+        engine, infos = _engine(pl.scan_csv(path), [Histogram(x="a", bins=4)])
+        _init(engine, infos)
+        _init(engine, infos)
+        assert len(collects.minmax) == 2
+
+    def test_a_registered_builder_learns_the_cache_flag(self, tmp_path, collects):
+        """``register_source`` declares the static-data contract, so a prebuilt
+        builder registered with ``cache=True`` memoizes like one built with it.
+        A CSV scan has no footer, so every resolve is a real collect."""
+        from flexviz.server import _sources, register_source
+
+        path = tmp_path / "prebuilt.csv"
+        pl.DataFrame({"a": [float(i) for i in range(50)]}).write_csv(path)
+        builder = LFQueryBuilder(pl.scan_csv(path))
+        register_source("prebuilt_domain_src", builder, cache=True)
+        try:
+            hist = Histogram(x="a", bins=4)
+            engine = FlexEngine(backend_lf=builder, scalable_traces={hist.uid: hist})
+            infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="hist")]
+            _init(engine, infos)
+            assert len(collects.minmax) == 1
+            _init(engine, infos)
+            assert len(collects.minmax) == 1
+        finally:
+            _sources.pop("prebuilt_domain_src", None)
 
     def test_cached_engine_memoizes(self, collects):
         """A second request on a cached source re-uses the resolved bounds."""
@@ -263,13 +306,13 @@ class TestExactBounds:
     def test_large_integers_are_not_rounded(self):
         lo, hi = 2**53 + 1, 2**53 + 12345
         lf = LFQueryBuilder(pl.DataFrame({"a": [lo, hi]}, schema={"a": pl.Int64}))
-        assert lf.physical_minmax(["a"], memoize=False) == {"a": (lo, hi)}
+        assert lf.physical_minmax(["a"]) == {"a": (lo, hi)}
 
     def test_temporal_bounds_stay_integral(self):
         lf = LFQueryBuilder(
             pl.DataFrame({"t": [dt.date(2020, 1, 1), dt.date(2020, 1, 11)]})
         )
-        lo, hi = lf.physical_minmax(["t"], memoize=False)["t"]
+        lo, hi = lf.physical_minmax(["t"])["t"]
         assert isinstance(lo, int) and hi - lo == 10
 
     def test_all_null_column_falls_back_to_unit_domain(self):

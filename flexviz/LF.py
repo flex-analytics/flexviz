@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+import re
+import struct
+
+from functools import cached_property
+
 import polars as pl
 
 from typing import Any, Callable, List, Set, Tuple
@@ -10,10 +16,7 @@ try:
 except ImportError:
     pd = None
 
-try:
-    import pyarrow as pa
-except ImportError:
-    pa = None
+import pyarrow as pa
 
 
 def polars_lf_from(data) -> pl.LazyFrame:
@@ -21,7 +24,7 @@ def polars_lf_from(data) -> pl.LazyFrame:
         return data.lazy()
     elif pd is not None and isinstance(data, pd.DataFrame):
         return pl.from_pandas(data).lazy()
-    elif pa is not None and isinstance(data, pa.Table):
+    elif isinstance(data, pa.Table):
         return pl.from_arrow(data).lazy()
     # elif hasattr("__dataframe__", data): ??? # TODO?
     #     return pl.from_dataframe(data)
@@ -33,6 +36,71 @@ def get_col_name(col: str | pl.Expr) -> str:
         return col
     assert col.meta.is_column()
     return col.meta.output_name()
+
+
+def _parquet_footer_minmax(
+    path: str, columns: List[str], sch: pl.Schema
+) -> dict[str, Tuple[Any, Any]]:
+    """``(min, max)`` per column from the Parquet footer, in physical form.
+
+    Returns only the columns the footer can answer. The footer holds per
+    row-group statistics, so this reads a few kilobytes instead of decoding the
+    column. Values match what ``pl.col(c).min()`` (or ``.to_physical().min()``
+    for a temporal column) would collect.
+    """
+    import pyarrow.parquet as pq
+
+    meta = pq.read_metadata(path)
+    arrow_schema = meta.schema.to_arrow_schema()
+    # A nested column contributes several leaves, so an arrow field index stops
+    # being a leaf index and the statistics would be read off the wrong column.
+    if len(arrow_schema) != meta.num_columns:
+        return {}
+
+    out: dict[str, Tuple[Any, Any]] = {}
+    for c in columns:
+        dtype = sch.get(c)
+        if dtype is None:
+            continue
+        temporal = dtype.is_temporal()
+        # Only these reduce to a scalar that is comparable across row groups and
+        # convertible back to the physical value the collect path returns.
+        if not (temporal or dtype.is_integer() or dtype.is_float()):
+            continue
+        half = dtype == pl.Float16
+        idx = arrow_schema.get_field_index(c)
+        if idx < 0:
+            continue
+
+        lo = hi = None
+        for rg in range(meta.num_row_groups):
+            stats = meta.row_group(rg).column(idx).statistics
+            if stats is None or not stats.has_min_max:
+                lo = None  # no statistics for this column, leave it to the collect
+                break
+            # Unsigned ints need the decoded value: the raw one is the signed
+            # reading of the same bytes. Temporal columns need the raw one: the
+            # decoded one is a Python datetime and cannot hold nanoseconds.
+            mn, mx = (
+                (stats.min_raw, stats.max_raw) if temporal else (stats.min, stats.max)
+            )
+            if half:
+                # A Float16 statistic comes back as its raw 2-byte half, and
+                # comparing raw bytes orders negative values wrong, so it is
+                # decoded before the fold.
+                mn, mx = struct.unpack("<e", mn)[0], struct.unpack("<e", mx)[0]
+            lo = mn if lo is None else min(lo, mn)
+            hi = mx if hi is None else max(hi, mx)
+        if lo is None:
+            continue
+
+        if temporal:
+            # Read the raw ints back through the file's own arrow type, so a unit
+            # the Polars dtype does not share (a millisecond time, say) converts.
+            raw = pa.array([lo, hi], type=arrow_schema.field(idx).type)
+            lo, hi = pl.from_arrow(raw).cast(dtype).to_physical()
+        out[c] = (lo, hi)
+    return out
 
 
 @dataclass(frozen=True)
@@ -48,10 +116,10 @@ class AggregationSpec:
     uid: str = ""
     #: Optional escape hatch for an aggregation that cannot be a select
     #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is named ``uid``, i.e. exactly the column
-    #: the batched ``select`` would have produced. Set only when a spec needs
-    #: its own plan — the out-of-core line envelope uses a streaming group_by
-    #: that cannot ride the shared select.
+    #: DataFrame whose single column is aliased to ``uid``, i.e. exactly the
+    #: column the batched ``select`` would have produced. Set only when a spec
+    #: needs a streaming plan or a batch fold that cannot ride the shared
+    #: select.
     plan: "Callable[[pl.LazyFrame], pl.DataFrame] | None" = None
 
     def __post_init__(self) -> None:
@@ -98,16 +166,26 @@ class LFQueryBuilder:
     def __init__(
         self,
         ldf: pl.DataFrame | pl.LazyFrame,
-        cache_schema: bool = True,
+        cache: bool = False,
     ):
         ldf = polars_lf_from(ldf)
         assert isinstance(ldf, pl.LazyFrame)
         self._ldf: pl.LazyFrame = ldf
-        self._cache_schema: bool = cache_schema  # whether to cache the ldf its schema
+        self.cache: bool = cache  # the registrar's static-data assertion
         self._sorted_cols: Set[str] = set()  # columns that are sorted
         self._minmax_memo: dict[str, Tuple[Any, Any]] = {}
 
     @property
+    def static(self) -> bool:
+        """Whether the data cannot change under this builder.
+
+        A resident frame is a snapshot, and a ``cache=True`` scan is declared
+        static by the cache contract. Everything the builder keeps across
+        requests (resolved bounds, the sorted flag) rests on this.
+        """
+        return self.cache or not self.is_scan
+
+    @cached_property
     def is_scan(self) -> bool:
         """Whether this source reads from storage rather than a resident frame.
 
@@ -119,14 +197,48 @@ class LFQueryBuilder:
         Not a correctness switch: both paths must produce identical output, and
         there is a test that asserts it. It only selects which formulation runs.
         """
-        if not hasattr(self, "_cached_is_scan"):
-            try:
-                self._cached_is_scan = "SCAN [" in self._ldf.explain(optimized=False)
-            except Exception:
-                # An un-explainable plan is treated as resident: that is the
-                # path that works for every source, just not bounded.
-                self._cached_is_scan = False
-        return self._cached_is_scan
+        try:
+            return "SCAN [" in self._ldf.explain(optimized=False)
+        except Exception:
+            # An un-explainable plan is treated as resident: that is the path
+            # that works for every source, just not bounded.
+            return False
+
+    @cached_property
+    def _parquet_path(self) -> str | None:
+        """The file behind a bare single-file local Parquet scan, else ``None``.
+
+        Only that shape lets the footer speak for the whole source. A multi-file
+        or hive scan, a cloud URL, or any node above the scan changes which rows
+        the statistics describe. Computed once, like ``is_scan``.
+        """
+        try:
+            lines = [
+                ln.strip() for ln in self._ldf.explain(optimized=False).split("\n")
+            ]
+        except Exception:
+            return None
+        # A sorted hint (``set_sorted``, so ``assume_sorted`` too) keeps every
+        # row the footer describes, so it is the only node the probe looks
+        # through. Each hint indents the plan below it one more level.
+        while lines and lines[0].startswith("hint.sorted("):
+            lines.pop(0)
+        scan = re.fullmatch(r"Parquet SCAN \[(.+)\]", lines[0]) if lines else None
+        if scan is None:
+            return None
+        path = scan[1]
+        # A comma means several files; ``isfile`` rules out cloud URLs. A slice
+        # (``scan_parquet(n_rows=...)``) sits inside the scan node and reads
+        # fewer rows than the footer describes.
+        if (
+            "," in path
+            or any(ln.startswith("SLICE") for ln in lines[1:])
+            or not os.path.isfile(path)
+        ):
+            return None
+        # Polars prints forward slashes on every OS; normalize so the path
+        # compares equal to what the caller passed in.
+        return os.path.normpath(path)
 
     @property
     def collect_engine(self) -> str:
@@ -134,29 +246,20 @@ class LFQueryBuilder:
 
         Fixed per source kind rather than left to ``"auto"``: a file scan must
         stream, a resident frame must not pay the streaming machinery. The line
-        bucket plan is the exception: it streams on both source kinds.
+        bucket plan and the grouped histogram plan are the exceptions: both
+        stream on both source kinds.
         """
         return "streaming" if self.is_scan else "in-memory"
 
     # Is ~ 40x faster than LazyFrame.collect_schema() when the LazyFrame is in memory
-    @property
+    @cached_property
     def schema(self):
-        if self._cache_schema and hasattr(self, "_cached_schema"):
-            return self._cached_schema
-
-        schema = self._ldf.collect_schema()
-
-        if self._cache_schema:
-            self._cached_schema = schema
-
-        return schema
+        return self._ldf.collect_schema()
 
     def physical_minmax(
         self,
         columns: List[str],
         schema: pl.Schema | None = None,
-        *,
-        memoize: bool,
     ) -> dict[str, Tuple[Any, Any]]:
         """``(min, max)`` of each column in its physical representation.
 
@@ -164,19 +267,31 @@ class LFQueryBuilder:
         raw value. Nothing is cast to Float64, so large integer bounds stay
         exact. An empty or all-null column yields ``(None, None)``.
 
-        ``memoize`` keeps the result for the builder's lifetime. Only a
-        ``cache=True`` source may set it — the same static-data contract that
-        governs schema caching — because otherwise a reset must be able to see
-        changed source data. Re-registering a source with raw data or a new
-        builder replaces the builder and drops the memo. Re-registering the
-        same builder object keeps it, and the server warns.
+        On a bare single-file Parquet scan the Parquet footer answers what it
+        can, which reads a few kilobytes instead of decoding the column.
+        Whatever the footer cannot answer is collected as before. The footer is
+        an optimization only: any problem with it falls back to the collect.
+
+        A ``static`` source keeps the result for the builder's lifetime. An
+        uncached scan may change on disk between requests, so it resolves again
+        and an uncached reset sees the changed data. Re-registering a source
+        with raw data or a new builder replaces the builder and drops the memo.
+        Re-registering the same builder object keeps it, and the server warns.
         """
-        memo = self._minmax_memo if memoize else {}
+        memo = self._minmax_memo if self.static else {}
         sch = schema if schema is not None else self.schema
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
         # already be memoized. ``dict.fromkeys`` preserves first-seen order.
-        missing = [c for c in dict.fromkeys(columns) if c not in memo]
+        missing = list(dict.fromkeys(c for c in columns if c not in memo))
+        path = self._parquet_path if missing else None
+        if path is not None:
+            try:
+                found = _parquet_footer_minmax(path, missing, sch)
+            except Exception:
+                found = {}
+            memo.update(found)
+            missing = [c for c in missing if c not in found]
         if missing:
             exprs: List[pl.Expr] = []
             for c in missing:
@@ -193,7 +308,7 @@ class LFQueryBuilder:
 
     # --------------- Handling flags ---------------
 
-    def check_line_x(self, col: str | pl.Expr, *, memoize: bool) -> None:
+    def check_line_x(self, col: str | pl.Expr) -> None:
         """Verify the data of an x column against the resident-frame line contract.
 
         The x-width kernel needs x sorted ascending and free of nulls and NaN.
@@ -202,16 +317,14 @@ class LFQueryBuilder:
         last, so on a sorted null-free column every NaN is a suffix.
 
         The dtype half of the contract lives on the trace
-        (``LinePlot.check_schema``), and the engine calls this only where the
-        data matters: an ungrouped x-width line on a resident frame. A grouped
-        plan and a scan plan read x in no order.
+        (``LinePlot.check_schema``), and ``LinePlot.check_source`` calls this
+        only where the data matters: an ungrouped x-width line on a resident
+        frame. A grouped plan and a scan plan read x in no order.
 
-        ``memoize`` flags a passing column sorted in ``._sorted_cols``, which
-        skips the collect on later requests. The flags of a LazyFrame cannot be
-        queried, hence the set. Only a ``cache=True`` source may set it, the
-        same static-data contract that governs ``physical_minmax``. On any other
-        source the data may have changed since the check, so nothing is kept and
-        the next request checks again.
+        A ``static`` source flags a passing column sorted in ``._sorted_cols``,
+        which skips the collect on later requests, and sets the Polars sorted
+        flag, which turns the column's min/max into an O(1) read. The flags of a
+        LazyFrame cannot be queried, hence the set.
 
         Raises
         ------
@@ -245,7 +358,7 @@ class LFQueryBuilder:
                 f"x column '{col_name}' has NaN values. A minmax line needs "
                 f"a NaN-free x. Drop the NaN rows first."
             )
-        if memoize:
+        if self.static:
             self._ldf = self._ldf.set_sorted(col_name)
             self._sorted_cols.add(col_name)
 

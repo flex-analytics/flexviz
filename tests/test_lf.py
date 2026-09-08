@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 import polars as pl
 import pytest
@@ -77,7 +77,7 @@ class TestLFQueryBuilderAggregate:
         t_high = LinePlot(x="ts", y="a", n_points=2000)
         t_low = LinePlot(x="ts", y="b", n_points=500)
         schema = lf.schema
-        domains = lf.physical_minmax(["ts"], memoize=False)
+        domains = lf.physical_minmax(["ts"])
         result, _ = lf.aggregate(
             [],
             [
@@ -346,13 +346,13 @@ class TestLFQueryBuilderAssumeSorted:
 class TestPhysicalMinMax:
     def test_basic_minmax(self):
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 5.0, 3.0]}).lazy())
-        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 5.0)}
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 5.0)}
 
     def test_temporal_uses_physical(self):
         b = LFQueryBuilder(
             pl.DataFrame({"t": [date(2020, 1, 1), date(2020, 1, 11)]}).lazy()
         )
-        lo, hi = b.physical_minmax(["t"], memoize=True)["t"]
+        lo, hi = b.physical_minmax(["t"])["t"]
         # Date physical = days since epoch; the span is 10 days.
         assert hi - lo == 10
 
@@ -360,15 +360,15 @@ class TestPhysicalMinMax:
         """Second call must not re-collect — sabotage the LazyFrame to prove
         the value comes from the memo (the cube cache-hit TTFB guarantee)."""
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 2.0, 3.0]}).lazy())
-        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
         b._ldf = None  # any further .collect() would raise
-        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
 
     def test_partial_memo_only_collects_missing(self):
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 3.0], "c": [10.0, 40.0]}).lazy())
-        assert b.physical_minmax(["a"], memoize=True) == {"a": (1.0, 3.0)}
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
         # "a" is memoized; "c" is new — both returned, "a" not recomputed.
-        assert b.physical_minmax(["a", "c"], memoize=True) == {
+        assert b.physical_minmax(["a", "c"]) == {
             "a": (1.0, 3.0),
             "c": (10.0, 40.0),
         }
@@ -377,13 +377,13 @@ class TestPhysicalMinMax:
         b = LFQueryBuilder(
             pl.DataFrame({"a": pl.Series([None, None], dtype=pl.Float64)}).lazy()
         )
-        assert b.physical_minmax(["a"], memoize=True) == {"a": (None, None)}
+        assert b.physical_minmax(["a"]) == {"a": (None, None)}
 
     def test_duplicate_columns_deduped(self):
         """The same column in several roles (free axis == target dim) must not
         build duplicate select aliases (Polars DuplicateError)."""
         b = LFQueryBuilder(pl.DataFrame({"a": [1.0, 4.0], "b": [2.0, 8.0]}).lazy())
-        out = b.physical_minmax(["a", "a", "b", "a"], memoize=True)
+        out = b.physical_minmax(["a", "a", "b", "a"])
         assert out == {"a": (1.0, 4.0), "b": (2.0, 8.0)}
 
 
@@ -403,52 +403,326 @@ class TestCheckLineX:
 
     def test_sorted_numeric_x_passes_and_is_flagged(self):
         lf = self._lf([1.0, 2.0, 3.0])
-        lf.check_line_x("ts", memoize=True)
+        lf.check_line_x("ts")
         assert "ts" in lf.sorted_cols
 
     def test_null_x_is_rejected(self):
         lf = self._lf([1.0, None, 3.0])
         with pytest.raises(ValueError, match="null values"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
 
     def test_trailing_nan_x_is_rejected(self):
         # A NaN sorts last, so this column passes `is_sorted`.
         lf = self._lf([1.0, 2.0, float("nan")])
         with pytest.raises(ValueError, match="NaN values"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
 
     def test_nan_in_the_middle_is_rejected(self):
         # A NaN sorts last, so it breaks the order first. Either message names
         # a real defect of the column.
         lf = self._lf([1.0, float("nan"), 3.0])
         with pytest.raises(ValueError, match="not sorted ascending"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
 
     def test_failing_column_is_not_memoized(self):
         lf = self._lf([1.0, 2.0, float("nan")])
         for _ in range(2):
             with pytest.raises(ValueError, match="NaN values"):
-                lf.check_line_x("ts", memoize=True)
+                lf.check_line_x("ts")
         assert "ts" not in lf.sorted_cols
 
     def test_unsorted_x_is_rejected(self):
         lf = self._lf([3.0, 1.0, 2.0])
         with pytest.raises(ValueError, match="not sorted ascending"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
 
     def test_memoized_column_is_checked_once(self, monkeypatch):
         lf = self._lf([1.0, 2.0, 3.0])
-        lf.check_line_x("ts", memoize=True)
+        lf.check_line_x("ts")
         monkeypatch.setattr(
             pl.LazyFrame, "collect", lambda *a, **k: pytest.fail("collected twice")
         )
-        lf.check_line_x("ts", memoize=True)
+        lf.check_line_x("ts")
 
-    def test_without_memoize_nothing_is_kept(self):
-        # An uncached source may have changed since the last request, so the
-        # pass is not remembered and the next call collects again.
-        lf = self._lf([1.0, 2.0, 3.0])
-        lf.check_line_x("ts", memoize=False)
-        assert "ts" not in lf.sorted_cols
-        assert lf._sorted_cols == set()
-        lf.check_line_x("ts", memoize=False)  # collects again, still passes
+    def test_an_uncached_scan_keeps_nothing(self, tmp_path):
+        # An uncached scan may have changed since the last request, so the pass
+        # is not remembered and the next call collects again.
+        path = tmp_path / "x.parquet"
+        pl.DataFrame({"ts": [1.0, 2.0, 3.0], "val": [0.0] * 3}).write_parquet(path)
+        lf = LFQueryBuilder(pl.scan_parquet(str(path)))
+        lf.check_line_x("ts")
+        assert lf.sorted_cols == frozenset()
+        lf.check_line_x("ts")  # collects again, still passes
+
+
+# ---- physical_minmax: the Parquet footer path ------------------------------
+
+
+def _no_collect(*args, **kwargs):
+    raise AssertionError("physical_minmax must not collect here")
+
+
+def _raise_footer_error(*args, **kwargs):
+    raise OSError("corrupt footer")
+
+
+def _footer_sample_frame() -> pl.DataFrame:
+    base = datetime(2024, 1, 2, 3, 4, 5, 123456)
+    df = pl.DataFrame(
+        {
+            "i64": [3, 1, 2],
+            "u64": pl.Series([1, 2**63 + 7, 5], dtype=pl.UInt64),
+            "f32": pl.Series([1.5, 3.25, 2.0], dtype=pl.Float32),
+            "f64": [1.5, 3.25, 2.0],
+            "date": [date(2024, 1, 1), date(2025, 1, 1), date(2024, 6, 1)],
+            "dt_ms": pl.Series(
+                [base, base + timedelta(days=1), base], dtype=pl.Datetime("ms")
+            ),
+            "dt_us": pl.Series(
+                [base, base + timedelta(days=1), base], dtype=pl.Datetime("us")
+            ),
+            # Not whole microseconds: the footer must keep the nanoseconds.
+            "dt_ns": pl.Series(
+                [1704164645123456789, 1704251045987654321, 1704164645123456790],
+                dtype=pl.Int64,
+            ).cast(pl.Datetime("ns")),
+            "time": [time(1, 2, 3), time(23, 59, 59), time(0, 0, 1)],
+            "dur": pl.Series([1, 3, 2], dtype=pl.Int64).cast(pl.Duration("us")),
+        }
+    )
+    return df.with_columns(
+        dt_bru=pl.col("dt_us").dt.replace_time_zone("Europe/Brussels"),
+        dt_utc=pl.col("dt_us").dt.replace_time_zone("UTC"),
+        dt_ns_bru=pl.col("dt_ns").dt.replace_time_zone("Europe/Brussels"),
+    )
+
+
+class TestParquetFooterMinMax:
+    def test_footer_matches_collect(self, tmp_path, monkeypatch):
+        """Every supported dtype: the footer must give what the collect gives,
+        and it must answer without reading the column data."""
+        df = _footer_sample_frame()
+        cols = list(df.columns)
+        path = tmp_path / "s.parquet"
+        df.write_parquet(path)
+
+        expected = LFQueryBuilder(df.lazy()).physical_minmax(cols)
+
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b._parquet_path == str(path)
+        b.schema  # resolve the schema before the collect is sabotaged
+        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
+        assert b.physical_minmax(cols) == expected
+
+    def test_polars_writes_statistics(self, tmp_path):
+        """The footer path rests on Polars writing min/max. Pin that."""
+        pq = pytest.importorskip("pyarrow.parquet")
+        path = tmp_path / "s.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        stats = pq.read_metadata(str(path)).row_group(0).column(0).statistics
+        assert stats is not None and stats.has_min_max
+
+    def test_float16_statistics_are_decoded(self, tmp_path):
+        """A Float16 statistic arrives as its raw 2-byte half, so folding the
+        row groups on the raw bytes would order the negative values wrong."""
+        path = tmp_path / "f16.parquet"
+        df = pl.DataFrame({"a": pl.Series([-3.5, 2.5, -7.25, 9.0], dtype=pl.Float16)})
+        df.write_parquet(path, row_group_size=2)
+        expected = LFQueryBuilder(df.lazy()).physical_minmax(["a"])
+        assert expected == {"a": (-7.25, 9.0)}
+        assert (
+            LFQueryBuilder(pl.scan_parquet(str(path))).physical_minmax(["a"])
+            == expected
+        )
+
+    def test_folds_over_row_groups(self, tmp_path):
+        path = tmp_path / "many.parquet"
+        pl.DataFrame({"a": [float(i) for i in range(2000)]}).write_parquet(
+            path, row_group_size=250
+        )
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (0.0, 1999.0)}
+
+    def test_mixed_footer_and_collect(self, tmp_path):
+        """A String column the footer skips must still be answered."""
+        path = tmp_path / "mixed.parquet"
+        pl.DataFrame({"a": [1.0, 3.0], "s": ["b", "a"]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a", "s"]) == {
+            "a": (1.0, 3.0),
+            "s": ("a", "b"),
+        }
+
+    def test_nan_column_falls_back(self, tmp_path):
+        """Parquet statistics leave NaN out, so Polars writes no min/max for a
+        NaN column and the collect answers. Were a writer to store the finite
+        bounds anyway, the finite value is the one the histogram kernels want:
+        they skip NaN rows, and a NaN bound would break the binning."""
+        path = tmp_path / "nan.parquet"
+        pl.DataFrame({"a": [1.0, float("nan"), 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
+    def test_all_nan_column_falls_back(self, tmp_path, monkeypatch):
+        path = tmp_path / "allnan.parquet"
+        pl.DataFrame({"a": [float("nan"), float("nan")]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        b.schema
+        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
+        with pytest.raises(AssertionError):
+            b.physical_minmax(["a"])
+
+    def test_all_null_column_falls_back(self, tmp_path):
+        path = tmp_path / "null.parquet"
+        pl.DataFrame({"a": pl.Series([None, None], dtype=pl.Float64)}).write_parquet(
+            path
+        )
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (None, None)}
+
+    def test_memoizes_footer_results(self, tmp_path):
+        path = tmp_path / "s.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)), cache=True)
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        b._ldf = None  # neither the footer nor a collect can run now
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
+    def test_no_memo_rereads_the_footer(self, tmp_path):
+        path = tmp_path / "s.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        assert b._minmax_memo == {}
+        pl.DataFrame({"a": [7.0, 9.0]}).write_parquet(path)
+        assert b.physical_minmax(["a"]) == {"a": (7.0, 9.0)}
+
+    def test_footer_error_falls_back(self, tmp_path, monkeypatch):
+        """A corrupt or unreadable footer still gets bounds from the collect."""
+        path = tmp_path / "s.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        monkeypatch.setattr("flexviz.LF._parquet_footer_minmax", _raise_footer_error)
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
+    def test_statistics_disabled_falls_back(self, tmp_path, monkeypatch):
+        path = tmp_path / "nostats.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path, statistics=False)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+        b.schema
+        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
+        with pytest.raises(AssertionError):
+            b.physical_minmax(["a"])
+
+    def test_nested_column_file_falls_back(self, tmp_path):
+        """A struct adds leaves, so a field index is no longer a leaf index."""
+        path = tmp_path / "nested.parquet"
+        pl.DataFrame({"s": [{"x": 1}], "a": [2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b._parquet_path == str(path)
+        assert b.physical_minmax(["a"]) == {"a": (2.0, 2.0)}
+
+
+class TestParquetPathDetection:
+    """Only a bare single-file local Parquet scan may use the footer."""
+
+    def test_single_file(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0]}).write_parquet(path)
+        assert LFQueryBuilder(pl.scan_parquet(str(path)))._parquet_path == str(path)
+
+    def test_glob_and_file_list(self, tmp_path):
+        one, two = tmp_path / "one.parquet", tmp_path / "two.parquet"
+        pl.DataFrame({"a": [1.0]}).write_parquet(one)
+        pl.DataFrame({"a": [2.0]}).write_parquet(two)
+        glob = LFQueryBuilder(pl.scan_parquet(str(tmp_path / "*.parquet")))
+        assert glob._parquet_path is None
+        assert glob.physical_minmax(["a"]) == {"a": (1.0, 2.0)}
+        assert (
+            LFQueryBuilder(pl.scan_parquet([str(one), str(two)]))._parquet_path is None
+        )
+
+    def test_hive_directory(self, tmp_path):
+        pl.DataFrame({"a": [1.0, 2.0], "h": ["x", "y"]}).write_parquet(
+            tmp_path / "hive", partition_by="h"
+        )
+        b = LFQueryBuilder(
+            pl.scan_parquet(str(tmp_path / "hive"), hive_partitioning=True)
+        )
+        assert b._parquet_path is None
+
+    def test_node_above_the_scan(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 5.0]}).write_parquet(path)
+        for lf in (
+            pl.scan_parquet(str(path)).filter(pl.col("a") > 2),
+            pl.scan_parquet(str(path)).with_columns(pl.col("a") * 2),
+            pl.scan_parquet(str(path)).select("a"),
+        ):
+            assert LFQueryBuilder(lf)._parquet_path is None
+
+    def test_sorted_hint(self, tmp_path):
+        """A sorted hint leaves the same rows behind the footer statistics."""
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a"))
+        assert b._parquet_path == str(path)
+
+    def test_assume_sorted_hint(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        b.assume_sorted("a")
+        assert b._parquet_path == str(path)
+
+    def test_stacked_sorted_hints(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a").set_sorted("b"))
+        assert b._parquet_path == str(path)
+
+    def test_sorted_hint_over_a_slice(self, tmp_path):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 2.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path), n_rows=2).set_sorted("a"))
+        assert b._parquet_path is None
+
+    def test_sorted_hint_answers_from_the_footer(self, tmp_path, monkeypatch):
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).set_sorted("a"))
+        b.schema  # resolve the schema before the collect is sabotaged
+        monkeypatch.setattr(pl.LazyFrame, "collect", _no_collect)
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
+    def test_filtered_scan_answers_from_the_rows(self, tmp_path):
+        """The footer describes the file, not the rows a filter keeps."""
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 5.0, 9.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)).filter(pl.col("a") > 2))
+        assert b.physical_minmax(["a"]) == {"a": (5.0, 9.0)}
+
+    def test_sliced_scan(self, tmp_path):
+        """``n_rows`` lives inside the scan node, so the plan head still reads
+        like a bare scan while the footer describes rows the query drops."""
+        path = tmp_path / "one.parquet"
+        pl.DataFrame({"a": [1.0, 5.0, 9.0]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path), n_rows=2))
+        assert b._parquet_path is None
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 5.0)}
+
+    def test_csv_scan(self, tmp_path):
+        path = tmp_path / "one.csv"
+        pl.DataFrame({"a": [1.0, 3.0]}).write_csv(path)
+        b = LFQueryBuilder(pl.scan_csv(str(path)))
+        assert b._parquet_path is None
+        assert b.physical_minmax(["a"]) == {"a": (1.0, 3.0)}
+
+    def test_resident_frame(self):
+        assert LFQueryBuilder(pl.DataFrame({"a": [1.0]}).lazy())._parquet_path is None
+
+    def test_missing_file(self, tmp_path):
+        """A path Polars accepts lazily but that is not on this machine."""
+        b = LFQueryBuilder(pl.scan_parquet(str(tmp_path / "gone.parquet")))
+        assert b._parquet_path is None

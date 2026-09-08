@@ -388,11 +388,11 @@ class TestPlotlyHtml:
         assert "'group'" in body
         assert "histogram" in body
 
-    def test_plotly_waits_for_initial_newplot_before_restore(self, html):
-        # Bundle uses .map() form instead of literal array
-        assert "const initialPlotPromises = _fvAllFigUids.map(" in html
-        assert "await Promise.all(initialPlotPromises);" in html
-        assert "await restoreDashboardFromSpec();" in html
+    def test_plotly_requests_init_before_any_plot(self, html):
+        # No stub render blocks the init request; Plotly.react plots the div.
+        body = _js_function_body(html, "(async function _fvInitPlotly()")
+        assert body.lstrip("{").strip().startswith("await restoreDashboardFromSpec();")
+        assert "bindFigure(figUid);" in html
 
     # Linked hover infrastructure
     def test_hover_col_to_fig_axis_built(self, html):
@@ -1339,7 +1339,7 @@ class TestHeatmapPlotly:
     def test_initial_plot_uses_config_per_fig(self, html):
         # Bundle uses figIdx variable form rather than literal indices
         assert (
-            "Plotly.newPlot(divs[figIdx], tracesByFig[figIdx], layoutsByFig[figIdx], configsByFig[figIdx])"
+            "Plotly.newPlot(gd, tracesByFig[figIdx], layoutsByFig[figIdx], configsByFig[figIdx])"
             in html
         )
 

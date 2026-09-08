@@ -8,11 +8,10 @@ It is therefore invariant to *who* or *how many* clients are connected, which
 keeps the server horizontally scalable and consistent with the stateless
 invariant documented in ``Architecture.md``.
 
-Phase 1 scope (see issue #26): only the *unfiltered, no-viewport* computation
+Phase 1 scope: only the *unfiltered, no-viewport* computation
 (``init`` / ``reset`` / ``deselect``) is cached.  The ``cache`` flag on a
 source asserts the data is static for the process lifetime, so there is no
-invalidation yet (data-driven invalidation is issue #27; a shared
-Redis/disk backend is issue #28).
+invalidation yet (data-driven invalidation is issue #39).
 """
 
 from __future__ import annotations
@@ -169,7 +168,7 @@ def get_cache() -> CacheBackend:
 
 
 def set_cache_backend(backend: CacheBackend) -> None:
-    """Swap the global cache backend (e.g. for a Redis/disk backend, #28)."""
+    """Swap the global cache backend (e.g. for a Redis/disk backend)."""
     global _cache
     _cache = backend
 
@@ -186,7 +185,7 @@ def get_cube_cache() -> CacheBackend:
 
 
 def set_cube_cache_backend(backend: CacheBackend) -> None:
-    """Swap the global cube cache backend (e.g. for a Redis/disk backend, #28)."""
+    """Swap the global cube cache backend (e.g. for a Redis/disk backend)."""
     global _cube_cache
     _cube_cache = backend
 

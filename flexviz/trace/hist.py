@@ -47,7 +47,8 @@ from .base import (
     _to_col_tuple,
 )
 from ._hist_helpers import _HISTNORM_OPTIONS as _HIST2D_HISTNORM_OPTIONS
-from ._hist_helpers import _snap_range, _snapped_axis, _snapped_axis_mask
+from .batch_fold import hist1d_fold_plan
+from .bin_grid import snap_range, snapped_axis
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -67,80 +68,57 @@ _HIST_BIN_EPSILON: float = 1e-10
 
 def _streaming_hist_plan(
     value_expr: pl.Expr,
-    lo_expr: pl.Expr,
-    hi_expr: pl.Expr,
+    lo: float,
+    hi: float,
     bins: int,
     uid: str,
-    filter_expr: pl.Expr | None,
-    *,
-    group_cols: tuple[str, ...] | None = None,
+    group_cols: tuple[str, ...],
 ):
-    """The kernel's histogram as a streaming ``group_by``.
+    """The grouped kernel histogram as a streaming ``group_by``.
 
-    The ``fixed_hist`` kernel materializes the whole column; this reads it in
+    The ``fixed_hist`` kernel materializes the whole column, and a grouped
+    histogram would hold every group's column at once; this reads the frame in
     batches instead. The bin index comes from the cube's
     ``_fixed_hist_bin_expr``, the one Python mirror of the kernel arithmetic;
     its non-strict cast turns NaN into null so NaN and null both drop out at
-    the dense join. Empty bins come back as zero, ordered, so ``_to_update``
-    sees the kernel's shape.
+    the dense join. Empty bins come back as zero, ordered: only the counts are
+    emitted, because the trace derives its bin centers from the bounds.
 
-    Ungrouped it returns one row holding every bin. Grouped it returns one row
-    per group, sorted by group value, each holding that group's bins: the shape
-    the fused grouped query returns. A null group value keeps its own child,
-    because the dense join compares null keys as equal. ``filter_expr`` must be
-    None then: a grouped plan already gets the viewport through
-    ``pre_group_filters``.
+    It returns one row per group, sorted by group value, each holding that
+    group's bins: the shape the fused grouped query returns. A null group value
+    keeps its own child, because the dense join compares null keys as equal. The
+    viewport arrives through ``pre_group_filters``, before the group split, so
+    the plan takes no filter of its own.
+
+    The plan's own columns share the frame with the group columns, so they carry
+    a ``__fv_`` prefix: a group column named ``count`` would otherwise collide.
+    The emitted struct still calls its field ``count``, the name the kernel uses
+    and ``_to_update`` reads.
     """
-    assert group_cols is None or filter_expr is None
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        # Both bounds are literal expressions, so this selects no data.
-        lo, hi = pl.select(lo_expr.alias("lo"), hi_expr.alias("hi")).row(0)
-        # The kernel reads its bounds as f64 and refuses an inverted span.
-        lo = 0.0 if lo is None else float(lo)
-        hi = 1.0 if hi is None else float(hi)
+        # The kernel refuses an inverted span; the bin mirror would bin silently.
         if hi < lo:
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
-        # hi == lo is the kernel's degenerate span: every value lands in bin 0
-        # and every breakpoint is lo.
-        step = (hi - lo) / bins if hi > lo else 0.0
-        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__b")
-        src = filtered_ldf if filter_expr is None else filtered_ldf.filter(filter_expr)
-        all_bins = pl.DataFrame({"__b": range(bins)}, schema={"__b": pl.Int32})
-        dense_cols = (
-            (pl.lit(lo) + (pl.col("__b") + 1) * step).alias("breakpoint"),
-            pl.col("count").fill_null(0).cast(pl.UInt32),
-        )
-
-        if group_cols is None:
-            counted = (
-                src.group_by(bin_idx)
-                .agg(pl.len().alias("count"))
-                .collect(engine="streaming")
-            )
-            return (
-                all_bins.join(counted, on="__b", how="left")
-                .sort("__b")
-                .with_columns(*dense_cols)
-                .select(pl.struct("breakpoint", "count").implode().alias(uid))
-            )
+        bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__fv_b")
+        all_bins = pl.DataFrame({"__fv_b": range(bins)}, schema={"__fv_b": pl.Int32})
 
         cols = list(group_cols)
         counted = (
-            src.group_by([*cols, bin_idx])
-            .agg(pl.len().alias("count"))
+            filtered_ldf.group_by([*cols, bin_idx])
+            .agg(pl.len().alias("__fv_count"))
             .collect(engine="streaming")
         )
         # No rows leaves no groups, so the chain returns a zero-row frame of the
         # right shape and needs no branch of its own.
         dense = counted.select(cols).unique().join(all_bins, how="cross")
         return (
-            dense.join(counted, on=[*cols, "__b"], how="left", nulls_equal=True)
-            .sort([*cols, "__b"])
-            .with_columns(*dense_cols)
+            dense.join(counted, on=[*cols, "__fv_b"], how="left", nulls_equal=True)
+            .sort([*cols, "__fv_b"])
+            .with_columns(pl.col("__fv_count").fill_null(0).cast(pl.UInt32))
             .group_by(cols, maintain_order=True)
-            .agg(pl.struct("breakpoint", "count").alias(uid))
+            .agg(pl.struct(pl.col("__fv_count").alias("count")).alias(uid))
             .sort(cols)
         )
 
@@ -158,7 +136,8 @@ class Histogram(FlexTrace):
     y:
         Column name for the data axis when orientation is horizontal.
     bins:
-        Number of bins.
+        Number of bins. A zoomed axis can show one more, because the grid snaps to a
+        fixed lattice.
     histnorm:
         Normalization mode.  One of ``"count"``, ``"percent"``,
         ``"probability"``, ``"density"``, ``"probability density"``.
@@ -204,6 +183,11 @@ class Histogram(FlexTrace):
         # temporal (binning runs on the physical representation); read back in
         # _to_update to restore datetime bin centers. None ⇒ non-temporal.
         self._data_temporal_dtype: pl.DataType | None = None
+        # Resolved per-request in get_aggregation_spec: the exact bounds and bin
+        # count the kernel bins with. _to_update derives the bin centers and the
+        # wire-format bin edges from them, so it fails loudly when the spec step
+        # was skipped instead of drawing a grid that was never binned on.
+        self._bin_edges: tuple[float, float, int] | None = None
 
         super().__init__(
             backend_data={prop_key: col},
@@ -313,7 +297,7 @@ class Histogram(FlexTrace):
             return None
         bins, domain = self.bins, None
         if axis_range is not None:
-            lo, hi, bins = _snap_range(
+            lo, hi, bins = snap_range(
                 float(axis_range[0]), float(axis_range[1]), self.bins
             )
             domain = (lo, hi)
@@ -346,7 +330,7 @@ class Histogram(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
 
@@ -369,10 +353,11 @@ class Histogram(FlexTrace):
 
         ``scan_source`` says the rows come from storage rather than a resident
         frame. The ``fixed_hist`` kernel needs the whole column in memory, so an
-        ungrouped histogram on a scan takes ``_streaming_hist_plan`` instead: the
-        same bin arithmetic as a streaming ``group_by``, bit-identical output at
-        bounded memory. A grouped histogram takes that plan on both source
-        kinds, so the kernel serves only the ungrouped resident case.
+        ungrouped histogram on a scan takes ``hist1d_fold_plan`` instead: the
+        same kernel, run per streamed batch and summed, at bounded memory. A
+        grouped histogram takes the streaming ``group_by`` plan on both source
+        kinds, because one kernel per group would hold every group's column at
+        once.
         """
         axis_range = update_range.get(self.prop_key)
 
@@ -384,9 +369,10 @@ class Histogram(FlexTrace):
             if self._data_temporal_dtype is not None
             else pl.col(self.data_col)
         )
-        lo_expr, hi_expr, n_bins, filter_expr = self._histogram_bounds_exprs(
+        lo, hi, n_bins, filter_expr = self._histogram_bounds_exprs(
             axis_range, domains, schema
         )
+        self._bin_edges = (lo, hi, n_bins)
 
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
@@ -406,32 +392,26 @@ class Histogram(FlexTrace):
                 agg_exprs=(),
                 pre_group_filters=(filter_expr,) if filter_expr is not None else (),
                 plan=_streaming_hist_plan(
-                    data_col_expr,
-                    lo_expr,
-                    hi_expr,
-                    n_bins,
-                    self.uid,
-                    None,
-                    group_cols=group_by_cols,
+                    data_col_expr, lo, hi, n_bins, self.uid, group_by_cols
                 ),
             )
 
         # ----------------------------------------------------------------------
         # Ungrouped path: the viewport mask runs inside the kernel expression;
-        # the scan plan filters the frame, so the scan itself rejects the rows.
+        # the scan fold filters the frame, so the scan itself rejects the rows.
         # ----------------------------------------------------------------------
         if scan_source:
             return AggregationSpec(
                 uid=self.uid,
-                plan=_streaming_hist_plan(
-                    data_col_expr, lo_expr, hi_expr, n_bins, self.uid, filter_expr
+                plan=hist1d_fold_plan(
+                    data_col_expr, lo, hi, n_bins, self.uid, filter_expr
                 ),
             )
 
         data_expr = data_col_expr
         if filter_expr is not None:
             data_expr = data_expr.filter(filter_expr)
-        hist_expr = data_expr.flexviz.fixed_hist(lo_expr, hi_expr, n_bins=n_bins)
+        hist_expr = data_expr.flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=n_bins)
         return AggregationSpec(expr=hist_expr.implode().alias(self.uid), uid=self.uid)
 
     def _histogram_bounds_exprs(
@@ -439,7 +419,7 @@ class Histogram(FlexTrace):
         axis_range: Any,
         domains: Mapping[str, tuple[Any, Any]] | None,
         schema: pl.Schema | None = None,
-    ) -> tuple[pl.Expr, pl.Expr, int, pl.Expr | None]:
+    ) -> tuple[float, float, int, pl.Expr | None]:
         """Bin edges in the kernel's data space, the bin count, and the viewport
         mask (``None`` when unzoomed).
 
@@ -450,15 +430,8 @@ class Histogram(FlexTrace):
         comes back too.
         """
         if axis_range is not None:
-            lo, hi, n, dtype = _snapped_axis(
-                self.data_col, axis_range, self.bins, schema
-            )
-            return (
-                pl.lit(lo),
-                pl.lit(hi + _HIST_BIN_EPSILON),
-                n,
-                _snapped_axis_mask(self.data_col, lo, hi, dtype, schema),
-            )
+            lo, hi, n, mask = snapped_axis(self.data_col, axis_range, self.bins, schema)
+            return lo, hi + _HIST_BIN_EPSILON, n, mask
 
         # The trace's own column must be a resolved key; a missing key means
         # the caller violated the unzoomed-domains contract.
@@ -471,95 +444,63 @@ class Histogram(FlexTrace):
         bounds = resolved.values()
         los = [lo for lo, _ in bounds if lo is not None]
         his = [hi for _, hi in bounds if hi is not None]
-        lo = min(los) if los else 0.0
-        hi = max(his) if his else 1.0
-        return pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), self.bins, None
+        # Domains keep integer bounds exact; the kernel and its mirror bin in
+        # f64, so the edges are floats from here on.
+        lo = float(min(los)) if los else 0.0
+        hi = float(max(his)) if his else 1.0
+        return lo, hi + _HIST_BIN_EPSILON, self.bins, None
 
     def _to_update(
         self,
         df_agg: pl.DataFrame,
     ) -> TraceResult:
         """Unpack the histogram struct and apply normalization."""
-        raw: pl.Series = df_agg[self.uid].item()
-        df_hist = (
-            raw.explode()
-            .struct.unnest()
-            .with_columns(pl.col("breakpoint") - pl.col("breakpoint").diff().mean() / 2)
-            .rename({"breakpoint": "center"})
+        counts: pl.Series = (
+            df_agg[self.uid].item().explode(empty_as_null=True).struct.field("count")
         )
 
-        # -- normalize the counts (if needed)
-        bin_width = df_hist["center"].diff().drop_nulls().mean()
-        if bin_width is None or bin_width == 0.0:
-            # Degenerate case: bins=1, or all data in a single bin.
-            # Use 1.0 so density-normalized values stay finite.
-            bin_width = 1.0
-        total = df_hist["count"].sum()
+        lo, hi, n_bins = self._bin_edges
+        step = (hi - lo) / n_bins
+        # hi == lo is the kernel's degenerate span: its epsilon pad vanishes at
+        # the column's magnitude. Use 1.0 so density norms stay finite.
+        bin_width = step if step > 0.0 else 1.0
+        centers = (pl.int_range(0, n_bins, eager=True) + 0.5) * step + lo
 
+        total = counts.sum()
         if self.histnorm == "percent":
-            df_hist = df_hist.with_columns(pl.col("count") / total * 100)
+            counts = counts / total * 100
         elif self.histnorm == "probability":
-            df_hist = df_hist.with_columns(pl.col("count") / total)
+            counts = counts / total
         elif self.histnorm == "density":
-            df_hist = df_hist.with_columns(pl.col("count") / bin_width)
+            counts = counts / bin_width
         elif self.histnorm == "probability density":
-            df_hist = df_hist.with_columns(pl.col("count") / (total * bin_width))
-
-        # -- hover_bounds: explicit bin edges for cell hover
-        half_w = bin_width / 2.0
-        centers = df_hist["center"].to_list()
+            counts = counts / (total * bin_width)
 
         # Temporal data axis: emit datetime bin centers (so the renderer auto-
-        # detects a date axis) and epoch-ms hover bounds (Plotly's numeric date
+        # detects a date axis) and epoch-ms bin edges (Plotly's numeric date
         # coordinate, what hover-band matching compares against).
         temporal = self._data_temporal_dtype
         if temporal is not None:
-            data_axis = _physical_to_temporal_series(
-                df_hist["center"], temporal, self.data_col
-            )
+            data_axis = _physical_to_temporal_series(centers, temporal, self.data_col)
             factor = _phys_epoch_ms_factor(temporal)
-
-            def _edge(v: Any) -> float | None:
-                return None if v is None else float(v) * factor
-
         else:
-            data_axis = df_hist["center"]
+            data_axis = centers
+            factor = 1.0
 
-            def _edge(v: Any) -> float | None:
-                return None if v is None else float(v)
+        # The client derives one {x0,x1} per bin from this triple; sending the
+        # per-bin objects instead is most of a histogram response.
+        edges = [float(lo) * factor, step * factor, n_bins]
 
         if self.prop_key == "x":
-            hover_bounds = [
-                (
-                    {"x0": _edge(c - half_w), "x1": _edge(c + half_w)}
-                    if c is not None
-                    else {"x0": None, "x1": None}
-                )
-                for c in centers
-            ]
-            return TraceResult(
-                updates={
-                    "x": data_axis,
-                    "y": df_hist["count"],
-                    "hover_bounds": hover_bounds,
-                }
-            )
+            return TraceResult(updates={"x": data_axis, "y": counts, "x_edges": edges})
 
         assert self.prop_key == "y"
-        hover_bounds = [
-            (
-                {"y0": _edge(c - half_w), "y1": _edge(c + half_w)}
-                if c is not None
-                else {"y0": None, "y1": None}
-            )
-            for c in centers
-        ]
         return TraceResult(
             updates={
-                "x": df_hist["count"],
+                "x": counts,
                 "y": data_axis,
                 "orientation": "h",
-                "hover_bounds": hover_bounds,
+                "y_edges": edges,
             }
         )
 

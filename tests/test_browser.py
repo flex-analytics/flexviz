@@ -155,7 +155,7 @@ def _dashboard_url_selection_duplicate_repro(port: int) -> str:
     dash.add_figure().add_histogram(x="y_pos", color=c1, bins=21).add_histogram(
         x="y_neg", color=c2, bins=21
     )
-    dash.add_figure().add_line(x="x", y="x")
+    dash.add_figure().add_line(x="x", y="y_pos")
     dash.add_figure().add_histogram(x="x", bins=21)
 
     encoded = encode_spec(dash.to_spec(source_name=source_name))
@@ -740,6 +740,43 @@ window.__renders = [];
 """
 
 
+# Records every Plotly draw (with or without data) and when the init request
+# went out, so a test can assert the order of the two.
+_TRACE_DRAWS_JS = """
+window.__draws = [];
+window.__updateSentAt = null;
+(function () {
+  var origFetch = window.fetch;
+  window.fetch = function (input) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf('/dashboard/update') !== -1 && window.__updateSentAt === null) {
+      window.__updateSentAt = performance.now();
+    }
+    return origFetch.apply(this, arguments);
+  };
+  var wrap = function (plotly) {
+    ['react', 'newPlot'].forEach(function (m) {
+      var orig = plotly[m].bind(plotly);
+      plotly[m] = function () {
+        var call = { method: m, startedAt: performance.now(), doneAt: null };
+        window.__draws.push(call);
+        return Promise.resolve(orig.apply(this, arguments)).then(function (r) {
+          call.doneAt = performance.now();
+          return r;
+        });
+      };
+    });
+  };
+  var held;
+  Object.defineProperty(window, 'Plotly', {
+    configurable: true,
+    get: function () { return held; },
+    set: function (v) { held = v; if (v && v.react) wrap(v); }
+  });
+})();
+"""
+
+
 @pytest.fixture(scope="module")
 def server_port() -> Generator[int, None, None]:
     port = _free_port()
@@ -803,6 +840,28 @@ class TestPlotlyBrowser:
         assert (
             len(renders) == 2
         ), f"expected one data render per figure, got {len(renders)}: {renders}"
+
+    def test_open_draws_once_per_figure_after_the_request(
+        self, page: Page, server_port: int
+    ):
+        """The init request must go out before any Plotly draw, and each figure
+        must be handed to Plotly exactly once.
+
+        Plotly.react plots a div that was never plotted, so no stub render is
+        needed to hold a place for the response.
+        """
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        page.add_init_script(_TRACE_DRAWS_JS)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        draws = page.evaluate("() => window.__draws")
+        sent_at = page.evaluate("() => window.__updateSentAt")
+        # react() plots an unplotted div through its own module reference, so
+        # the hook on window.Plotly only ever sees the react call.
+        assert [d["method"] for d in draws] == ["react", "react"], draws
+        assert sent_at is not None, "no /dashboard/update request was sent"
+        assert sent_at < min(d["startedAt"] for d in draws), (sent_at, draws)
 
     def test_saved_viewport_is_applied_on_open(self, page: Page, server_port: int):
         """A saved viewport must reach Plotly's axes in one request and one render.
@@ -4788,6 +4847,236 @@ class TestCellHoverBrowser:
             "A 1D histogram source must highlight the bin strip (y_band) on the "
             f"hist2d that plots the shared column on y, got {types}"
         )
+
+
+@pytest.mark.browser
+class TestBinEdgeTripleBrowser:
+    """The server sends one ``[lo, step, n]`` triple per binned axis instead of
+    one hover-bounds object per bin/cell. These tests pin that the client
+    rebuilds bin bounds, geo rectangles, and the linked-hover cell lookup
+    correctly from the triple."""
+
+    def test_histogram_edges_and_hover_cell_lookup(self, page: Page, server_port: int):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        df = pl.DataFrame(
+            {
+                "ts": list(range(300)),
+                "val": [float((i * 37) % 300) for i in range(300)],
+            }
+        )
+        register_source("_browser_edges_hist", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="ts", y="val")  # fig0: axis source
+        dash.add_figure().add_histogram(x="val", bins=10)  # fig1: axis target
+        spec = dash.to_spec(source_name="_browser_edges_hist")
+        url = (
+            f"http://127.0.0.1:{server_port}/view?"
+            f"spec={encode_spec(spec)}&renderer=plotly"
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        base = page.evaluate("""() => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            const idx = figUidToIdx[figUid];
+            const traceUid = DASHBOARD_SPEC.figures[1].traces[0].uid;
+            const trace = tracesByFig[idx][0];
+            const [lo, step, n] = layerDataByUid[traceUid].base.x_edges;
+            return {
+                n, lo, step,
+                customdataLen: trace.customdata.length,
+                first: trace.customdata[0],
+                last: trace.customdata[trace.customdata.length - 1],
+            };
+        }""")
+
+        n, lo, step = base["n"], base["lo"], base["step"]
+        assert base["customdataLen"] == n, "customdata must carry one bound per bin"
+        assert base["first"]["x0"] == pytest.approx(lo)
+        assert base["first"]["x1"] == pytest.approx(lo + step)
+        assert base["last"]["x0"] == pytest.approx(lo + (n - 1) * step)
+        assert base["last"]["x1"] == pytest.approx(lo + n * step)
+
+        target_bin = n // 2
+        probe_val = lo + (target_bin + 0.5) * step
+        band = page.evaluate(
+            """(probeVal) => {
+                const lineFigUid = DASHBOARD_SPEC.figures[0].uid;
+                const histFigUid = DASHBOARD_SPEC.figures[1].uid;
+                const lineTraceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+                DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+                handlePlotlyHover({
+                    points: [{ x: 0, y: probeVal, data: { uid: lineTraceUid } }],
+                }, lineFigUid);
+                const band = (__fvHoverGuidesByFig[histFigUid] || [])
+                    .find(g => g.tag === 'linked:x_band');
+                return band ? { x0: band.x0, x1: band.x1 } : null;
+            }""",
+            probe_val,
+        )
+
+        assert (
+            band is not None
+        ), "axis-mode hover must resolve the probe value to a bin band"
+        assert band["x0"] == pytest.approx(lo + target_bin * step)
+        assert band["x1"] == pytest.approx(lo + (target_bin + 1) * step)
+
+    def test_histogram2d_edges_and_hover_cell_lookup(
+        self, page: Page, server_port: int
+    ):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        df = pl.DataFrame(
+            {
+                "a": [float(i % 60) for i in range(600)],
+                "b": [float((i * 7) % 50) for i in range(600)],
+            }
+        )
+        register_source("_browser_edges_hist2d", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_histogram2d(
+            x="a", y="b", x_bins=6, y_bins=5
+        )  # fig0: source
+        dash.add_figure().add_histogram2d(
+            x="a", y="b", x_bins=6, y_bins=5
+        )  # fig1: target
+        spec = dash.to_spec(source_name="_browser_edges_hist2d")
+        url = (
+            f"http://127.0.0.1:{server_port}/view?"
+            f"spec={encode_spec(spec)}&renderer=plotly"
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        base = page.evaluate("""() => {
+            const figUid = DASHBOARD_SPEC.figures[0].uid;
+            const idx = figUidToIdx[figUid];
+            const traceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+            const trace = tracesByFig[idx][0];
+            const [xLo, xStep, nx] = layerDataByUid[traceUid].base.x_edges;
+            const [yLo, yStep, ny] = layerDataByUid[traceUid].base.y_edges;
+            return {
+                nx, ny, xLo, xStep, yLo, yStep,
+                rows: trace.customdata.length,
+                cols: trace.customdata[0].length,
+                firstCell: trace.customdata[0][0],
+                lastCell: trace.customdata[ny - 1][nx - 1],
+            };
+        }""")
+
+        nx, ny = base["nx"], base["ny"]
+        xLo, xStep, yLo, yStep = base["xLo"], base["xStep"], base["yLo"], base["yStep"]
+        assert base["rows"] == ny, "customdata must have one row per y bin"
+        assert base["cols"] == nx, "customdata rows must have one entry per x bin"
+        first, last = base["firstCell"], base["lastCell"]
+        assert first["x0"] == pytest.approx(xLo)
+        assert first["x1"] == pytest.approx(xLo + xStep)
+        assert first["y0"] == pytest.approx(yLo)
+        assert first["y1"] == pytest.approx(yLo + yStep)
+        assert last["x0"] == pytest.approx(xLo + (nx - 1) * xStep)
+        assert last["x1"] == pytest.approx(xLo + nx * xStep)
+        assert last["y0"] == pytest.approx(yLo + (ny - 1) * yStep)
+        assert last["y1"] == pytest.approx(yLo + ny * yStep)
+
+        target_col = min(nx - 1, 3)
+        target_row = min(ny - 1, 2)
+        probe_x = xLo + (target_col + 0.5) * xStep
+        probe_y = yLo + (target_row + 0.5) * yStep
+
+        rect = page.evaluate(
+            """({probeX, probeY}) => {
+                const srcFigUid = DASHBOARD_SPEC.figures[0].uid;
+                const targetFigUid = DASHBOARD_SPEC.figures[1].uid;
+                const srcTraceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+                DASHBOARD_SPEC.client_state.hover_mode = 'cell';
+                handlePlotlyHover({
+                    points: [{
+                        customdata: { x0: probeX, x1: probeX, y0: probeY, y1: probeY },
+                        data: { uid: srcTraceUid },
+                    }],
+                }, srcFigUid);
+                const rect = (__fvHoverGuidesByFig[targetFigUid] || [])
+                    .find(g => g.tag === 'linked:rect');
+                return rect ? rect.bounds : null;
+            }""",
+            {"probeX": probe_x, "probeY": probe_y},
+        )
+
+        assert (
+            rect is not None
+        ), "cell-mode hover must resolve the probe point to a target cell"
+        assert rect["x0"] == pytest.approx(xLo + target_col * xStep)
+        assert rect["x1"] == pytest.approx(xLo + (target_col + 1) * xStep)
+        assert rect["y0"] == pytest.approx(yLo + target_row * yStep)
+        assert rect["y1"] == pytest.approx(yLo + (target_row + 1) * yStep)
+
+    def test_geo_histogram2d_edges_and_rectangles(self, page: Page, server_port: int):
+        url = _dashboard_url_geo(server_port, "plotly")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        result = page.evaluate(r"""() => {
+            const figUid = DASHBOARD_SPEC.figures[0].uid;
+            const idx = figUidToIdx[figUid];
+            const traceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+            const trace = tracesByFig[idx][0];
+            const layer = layerDataByUid[traceUid].base;
+            const [latLo, latStep, nbLat] = layer.lat_edges;
+            const [lonLo, lonStep, nbLon] = layer.lon_edges;
+            const rawZ = layer.z || [];
+            const nonNull = rawZ.filter(v => v !== null && v !== undefined).length;
+            const features = (trace.geojson && trace.geojson.features) || [];
+            const cells = features.map(f => {
+                const m = /^r(\d+)_c(\d+)$/.exec(f.id);
+                const ring = f.geometry.coordinates[0];
+                return {
+                    id: f.id,
+                    i: m ? Number(m[1]) : null,
+                    j: m ? Number(m[2]) : null,
+                    ringLen: ring.length,
+                    bl: ring[0],
+                    tr: ring[2],
+                };
+            });
+            return {
+                nbLat, nbLon, latLo, latStep, lonLo, lonStep,
+                nonNull,
+                featureCount: features.length,
+                locationCount: (trace.locations || []).length,
+                zCount: (trace.z || []).length,
+                cells,
+            };
+        }""")
+
+        assert (
+            result["nonNull"]
+            == result["featureCount"]
+            == result["locationCount"]
+            == result["zCount"]
+        ), "features/locations/z must all cover exactly the non-null cells"
+        assert (
+            result["featureCount"] == result["nbLat"] * result["nbLon"]
+        ), "the deterministic geo fixture fills every cell"
+
+        lat_lo, lat_step = result["latLo"], result["latStep"]
+        lon_lo, lon_step = result["lonLo"], result["lonStep"]
+        for cell in result["cells"]:
+            assert cell["ringLen"] == 5, "a rectangle ring must have 5 points (closed)"
+            assert (
+                cell["i"] is not None and cell["j"] is not None
+            ), f"feature id must match r{{i}}_c{{j}}, got {cell['id']!r}"
+            i, j = cell["i"], cell["j"]
+            assert cell["bl"][0] == pytest.approx(lon_lo + j * lon_step)
+            assert cell["bl"][1] == pytest.approx(lat_lo + i * lat_step)
+            assert cell["tr"][0] == pytest.approx(lon_lo + (j + 1) * lon_step)
+            assert cell["tr"][1] == pytest.approx(lat_lo + (i + 1) * lat_step)
 
 
 # ---------------------------------------------------------------------------

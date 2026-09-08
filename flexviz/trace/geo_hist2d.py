@@ -42,11 +42,10 @@ from .base import FlexTrace, TraceResult
 from ._hist_helpers import (
     HeatmapColorRange,
     _HISTNORM_OPTIONS,
-    _hist2d_agg_spec,
-    apply_histnorm,
     normalize_heatmap_color_scale,
     normalize_heatmap_color_range,
 )
+from .hist2d import hist2d_agg_spec, unpack_hist2d_grid
 
 _DEFAULT_COLOR_SCALE = "viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
@@ -67,9 +66,11 @@ class GeoHistogram2D(FlexTrace):
     lon:
         Column name for longitude.
     lat_bins:
-        Number of bins along latitude (default 64).
+        Number of bins along latitude (default 64). A zoomed axis can show one more,
+        because the grid snaps to a fixed lattice.
     lon_bins:
-        Number of bins along longitude (default 64).
+        Number of bins along longitude (default 64). A zoomed axis can show one more,
+        because the grid snaps to a fixed lattice.
     z:
         Column name for the value to aggregate per bin.  When ``None``
         (default) the trace counts rows per bin.
@@ -233,16 +234,16 @@ class GeoHistogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> AggregationSpec:
         """Return the geo 2-D histogram aggregation spec.
 
         lat maps to the kernel x (inner) axis and lon to its y (outer) axis, so
         ``z_flat`` comes back in the lon-major order the GeoJSON builder wants.
-        Binning itself is the shared path (see ``_hist2d_agg_spec``).
+        Binning itself is the shared path (see ``hist2d_agg_spec``).
         """
         lat_range, lon_range = self._extract_lat_lon_range(update_range)
-        spec, self._grid = _hist2d_agg_spec(
+        spec, self._grid = hist2d_agg_spec(
             self.lat_col,
             self.lon_col,
             self.z_col,
@@ -259,58 +260,24 @@ class GeoHistogram2D(FlexTrace):
         return spec
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
-        raw = df[self.uid][0]
         nb_lat, nb_lon = self._grid
-
-        # Rust kernel output: Struct{z_flat, x_lo, x_hi, y_lo, y_hi}.
-        # We map lat -> kernel x (inner axis), lon -> kernel y (outer axis), so
-        # z_flat is laid out as z_flat[lon_idx * nb_lat + lat_idx] — exactly the
-        # row-major (lon-major) order _build_geojson_rectangles expects.
-        z_flat_raw: list = raw["z_flat"]
-        lat_lo: float = raw["x_lo"]
-        lat_hi: float = raw["x_hi"]
-        lon_lo: float = raw["y_lo"]
-        lon_hi: float = raw["y_hi"]
-
-        if self.z_col is None:
-            # Count kernel returns UInt32; 0 marks an empty bin → emit None so
-            # _build_geojson_rectangles skips it (no rectangle drawn).
-            z_flat = [None if v == 0 else float(v) for v in z_flat_raw]
-        else:
-            # Reducer kernel returns nullable Float64 values directly.
-            z_flat = [None if v is None else float(v) for v in z_flat_raw]
-
-        lat_step = (lat_hi - lat_lo) / nb_lat
-        lon_step = (lon_hi - lon_lo) / nb_lon
-
-        if self.histnorm is not None:
-            z_series = pl.Series("value", z_flat, dtype=pl.Float64)
-            z_df = apply_histnorm(
-                pl.DataFrame({"value": z_series}),
-                "value",
-                self.histnorm,
-                lat_step * lon_step,
-            )
-            z_flat = z_df["value"].to_list()
-
-        lat_centers = [lat_lo + (i + 0.5) * lat_step for i in range(nb_lat)]
-        lon_centers = [lon_lo + (j + 0.5) * lon_step for j in range(nb_lon)]
-        lat_edges = [lat_lo + i * lat_step for i in range(nb_lat + 1)]
-        lon_edges = [lon_lo + j * lon_step for j in range(nb_lon + 1)]
-
-        geojson, locations, values = _build_geojson_rectangles(
-            lat_centers,
-            lon_centers,
-            lat_edges,
-            lon_edges,
-            z_flat,
+        # lat maps to the kernel x (inner) axis and lon to its y (outer) axis,
+        # so z_flat is laid out as z_flat[lon_idx * nb_lat + lat_idx] — exactly
+        # the row-major (lon-major) order the client's rectangle builder wants.
+        z_flat, lat_lo, _, lon_lo, _, lat_step, lon_step = unpack_hist2d_grid(
+            df[self.uid][0],
+            self._grid,
+            counts=self.z_col is None,
+            histnorm=self.histnorm,
         )
 
+        # The client builds one GeoJSON rectangle per non-empty cell from these
+        # triples and the flat z; the rectangles are most of a geo response.
         return TraceResult(
             updates={
-                "geojson": geojson,
-                "locations": locations,
-                "z": values,
+                "lat_edges": [lat_lo, lat_step, nb_lat],
+                "lon_edges": [lon_lo, lon_step, nb_lon],
+                "z": z_flat,
             }
         )
 
@@ -320,26 +287,13 @@ class GeoHistogram2D(FlexTrace):
 
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> "GeoHistogram2D":
-        z = spec.backend_data.get("z")
-        raw_histfunc = spec.params.get("histfunc")
-        # Backward compat: old specs stored histfunc="count" when z was None.
-        if raw_histfunc == "count" or raw_histfunc is None:
-            histfunc = None
-        elif raw_histfunc in ("median", "n_unique"):
-            raise ValueError(
-                f"histfunc={raw_histfunc!r} is no longer supported by "
-                f"GeoHistogram2D (removed in favour of the Rust kernel). "
-                f"Use one of: {_GEO_HIST2D_HISTFUNC_OPTIONS}."
-            )
-        else:
-            histfunc = raw_histfunc
         trace = cls(
             lat=spec.backend_data["lat"],
             lon=spec.backend_data["lon"],
             lat_bins=spec.params.get("lat_bins", 64),
             lon_bins=spec.params.get("lon_bins", 64),
-            z=z,
-            histfunc=histfunc if z is not None else None,
+            z=spec.backend_data.get("z"),
+            histfunc=spec.params.get("histfunc"),
             histnorm=spec.params.get("histnorm"),
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),
@@ -347,65 +301,3 @@ class GeoHistogram2D(FlexTrace):
         )
         trace.uid = spec.uid
         return trace
-
-
-# ---------------------------------------------------------------------------
-# GeoJSON rectangle builder
-# ---------------------------------------------------------------------------
-
-
-def _build_geojson_rectangles(
-    lat_centers: list[float],
-    lon_centers: list[float],
-    lat_edges: list[float],
-    lon_edges: list[float],
-    z_flat: list,
-) -> tuple[dict, list, list]:
-    """Build a GeoJSON FeatureCollection of rectangle polygons.
-
-    *z_flat* is in row-major (lon-major) order: ``z_flat[j * nb_lat + i]``
-    corresponds to bin ``(lat_i, lon_j)``.
-
-    Returns ``(geojson, locations, values)`` where *locations* are feature IDs
-    and *values* are the filtered (non-null) z values.
-    """
-    nb_lat = len(lat_centers)
-    nb_lon = len(lon_centers)
-    features: list[dict] = []
-    locations: list[str] = []
-    values: list[float] = []
-
-    for j in range(nb_lon):
-        lon_left = lon_edges[j]
-        lon_right = lon_edges[j + 1]
-        for i in range(nb_lat):
-            idx = j * nb_lat + i
-            val = z_flat[idx]
-            if val is None:
-                continue
-
-            lat_bottom = lat_edges[i]
-            lat_top = lat_edges[i + 1]
-            bin_id = f"r{i}_c{j}"
-            locations.append(bin_id)
-            values.append(val)
-
-            coordinates = [
-                [
-                    [lon_left, lat_bottom],
-                    [lon_right, lat_bottom],
-                    [lon_right, lat_top],
-                    [lon_left, lat_top],
-                    [lon_left, lat_bottom],
-                ]
-            ]
-            features.append(
-                {
-                    "type": "Feature",
-                    "id": bin_id,
-                    "geometry": {"type": "Polygon", "coordinates": coordinates},
-                }
-            )
-
-    geojson = {"type": "FeatureCollection", "features": features}
-    return geojson, locations, values

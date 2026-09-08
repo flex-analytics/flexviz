@@ -247,7 +247,89 @@ function syncHeatmapOverlayColorScale(traces, figSpec, showForeground) {
 }
 
 /**
- * Flatten hover_bounds into hoverCellsByTraceUid for cell matching.
+ * Bin bounds for hover, derived from the per-axis [lo, step, n] triples the
+ * server sends (one triple per axis instead of one object per bin/cell).
+ * Every edge is lo + i * step, the arithmetic the server bins with.
+ * @param {object} updates
+ * @returns {Array|null} 1D [{x0,x1}|{y0,y1}, ...] or 2D [[{x0,x1,y0,y1}, ...], ...]
+ */
+function _hoverBoundsFromEdges(updates) {
+  const xe = updates && updates.x_edges;
+  const ye = updates && updates.y_edges;
+  if (!xe && !ye) return null;
+  if (xe && ye) {
+    // 2D: outer = row (y bin), inner = col (x bin), matching z.
+    const rows = [];
+    for (let r = 0; r < ye[2]; r++) {
+      const row = [];
+      for (let c = 0; c < xe[2]; c++) {
+        row.push({
+          x0: xe[0] + c * xe[1], x1: xe[0] + (c + 1) * xe[1],
+          y0: ye[0] + r * ye[1], y1: ye[0] + (r + 1) * ye[1],
+        });
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+  // 1D: x= histogram bins on x, y= (horizontal) histogram bins on y.
+  const e = xe || ye;
+  const lo = xe ? 'x0' : 'y0';
+  const hi = xe ? 'x1' : 'y1';
+  const out = [];
+  for (let i = 0; i < e[2]; i++) {
+    out.push({ [lo]: e[0] + i * e[1], [hi]: e[0] + (i + 1) * e[1] });
+  }
+  return out;
+}
+
+/**
+ * One GeoJSON rectangle per non-empty cell of a geo histogram, from the two
+ * [lo, step, n] triples and the flat z the server sends (z[j * nbLat + i],
+ * null = empty cell). The map selection reads these rings back to build its
+ * lon/lat box, so the ids and the ring order are part of the contract.
+ * @param {object} updates
+ * @returns {{geojson: object, locations: Array<string>, z: Array<number>}}
+ */
+function _geoRectanglesFromEdges(updates) {
+  const [latLo, latStep, nbLat] = updates.lat_edges;
+  const [lonLo, lonStep, nbLon] = updates.lon_edges;
+  const zFlat = updates.z || [];
+  const features = [];
+  const locations = [];
+  const z = [];
+  for (let j = 0; j < nbLon; j++) {
+    const lonLeft = lonLo + j * lonStep;
+    const lonRight = lonLo + (j + 1) * lonStep;
+    for (let i = 0; i < nbLat; i++) {
+      const value = zFlat[j * nbLat + i];
+      if (value === null || value === undefined) continue;
+      const latBottom = latLo + i * latStep;
+      const latTop = latLo + (i + 1) * latStep;
+      const id = 'r' + i + '_c' + j;
+      locations.push(id);
+      z.push(value);
+      features.push({
+        type: 'Feature',
+        id,
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [lonLeft, latBottom],
+            [lonRight, latBottom],
+            [lonRight, latTop],
+            [lonLeft, latTop],
+            [lonLeft, latBottom],
+          ]],
+        },
+      });
+    }
+  }
+  return { geojson: { type: 'FeatureCollection', features }, locations, z };
+}
+
+/**
+ * Flatten hover bounds into hoverCellsByTraceUid for cell matching.
  * hoverBounds can be:
  *   - 1D array: [{x0,x1}, ...] or [{y0,y1}, ...] (histogram)
  *   - 2D array: [[{x0,x1,y0,y1}, ...], ...] (histogram2d, outer=rows/y, inner=cols/x)
@@ -304,12 +386,18 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
   if (template.line) trace.line = { ...template.line };
   if (template.marker) trace.marker = { ...template.marker };
   for (const [k, v] of Object.entries(updates || {})) {
-    if (k === 'hover_bounds') continue;  // handled below as customdata
+    // Bin-edge triples are expanded below, not copied onto the trace.
+    if (k === 'x_edges' || k === 'y_edges') continue;
+    if (k === 'lat_edges' || k === 'lon_edges') continue;
     trace[k] = v;
   }
-  if (updates && updates.hover_bounds) {
-    trace.customdata = updates.hover_bounds;
-    _rebuildHoverCells(logicalUid, updates.hover_bounds);
+  if (updates && updates.lat_edges && updates.lon_edges) {
+    Object.assign(trace, _geoRectanglesFromEdges(updates));
+  }
+  const hoverBounds = _hoverBoundsFromEdges(updates);
+  if (hoverBounds) {
+    trace.customdata = hoverBounds;
+    _rebuildHoverCells(logicalUid, hoverBounds);
   }
   if (trace.type === 'bar' && forceBarOffsetgroup) {
     trace.offsetgroup = logicalUid;

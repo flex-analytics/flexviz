@@ -40,15 +40,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Literal, get_args
 
 import polars as pl
+import polars.selectors as cs
 
-from ..cube import (
-    CubeTargetSpec,
-    FreeAxisSpec,
-    MeasureSpec,
-    TargetDimSpec,
-    temporal_unit,
-)
-from ..LF import AggregationSpec, GroupedAggregationSpec
+from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureSpec, TargetDimSpec
+from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import TraceHoverSpec, TraceSpec
 from .base import (
     FlexTrace,
@@ -60,6 +55,7 @@ from .base import (
     _group_value_key,
     _group_values_from_frame,
     _to_col_tuple,
+    _range_cube_source_spec,
     _range_filter_expr,
     _typed_range_bounds,
 )
@@ -69,37 +65,17 @@ import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namesp
 
 LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 
-# Downsamplers that bucket by x width, grouped or not. They share the x
-# contract (see ``LinePlot.buckets_by_x_width``): a dtype the grid can bucket,
-# and ungrouped also sorted, finite, null-free x.
-_X_WIDTH_DOWNSAMPLES = ("minmax", "lttb", "fpcs")
-
 # LTTB stage 1 prefetch, as a multiple of ``n_points``: four candidates per
 # output point. Fewer starves the triangle rule, more only grows the Python
 # pass. Not a public knob until someone needs to tune it.
 _LTTB_MINMAX_RATIO = 4
 
-# Dtypes the x-width kernel dispatches: it searches bucket edges as i64 or f64,
-# so a wider numeric (Int128, Decimal) has no edge type there and the plugin
-# returns an error. Temporal columns reduce to their i64 physical.
-_LINE_X_NUMERIC = (
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.Int64,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-    pl.UInt64,
-    pl.Float32,
-    pl.Float64,
-)
-
-# Dtypes the pair kernel panics on: it argmin/argmaxes y through a Polars build
-# that carries neither the wide-integer nor the categorical dtype. The plan
-# takes them, so without this gate the same line would work on a file source
-# and fail on a resident frame.
-_LINE_Y_UNSUPPORTED = (pl.Decimal, pl.Int128, pl.Categorical, pl.Enum)
+# Dtypes both Rust kernels panic on: they read a column through a Polars build
+# that carries neither the wide-integer nor the categorical dtype. The pair
+# kernel reads y, so without this gate an x-width line would work on a file
+# source (the plan takes them) and fail on a resident frame; the stride kernel
+# reads x and y, and runs on both source kinds.
+_LINE_KERNEL_UNSUPPORTED = (pl.Decimal, pl.Int128, pl.Categorical, pl.Enum)
 
 # Two points make a line, and 25k already exceeds the pixel width of any screen
 # the browser draws them on.
@@ -108,7 +84,6 @@ _N_POINTS_MAX = 25_000
 
 # A viewport restriction: either an ``is_between`` mask, or a zero-copy
 # ``(offset, length)`` slice when x is known sorted.
-# TODO: should we not always assume that x is sorted? (KISS)
 Viewport = pl.Expr | tuple[pl.Expr, pl.Expr]
 
 
@@ -344,36 +319,6 @@ def _bucket_budget(n_points: int, downsample: LineDownsample) -> int:
     return max(n_points // 2, 1)
 
 
-def _range_cube_source_spec(
-    column: str,
-    axis_range: tuple[float, float] | None,
-    schema: pl.Schema | None,
-) -> FreeAxisSpec | None:
-    """Shared 1-D range cube-source descriptor (hist-shaped; cube plan step 8).
-
-    Continuous/temporal kind from the schema dtype; temporal axes carry their
-    physical ``unit`` (contract G) and unsupported temporal dtypes
-    (``Datetime("ns")``, ``Time``) gate to ``None``, as do non-numeric dtypes.
-    Without a schema the kind defaults to ``"continuous"``. ``domain`` is the
-    viewport range verbatim (``None`` = unzoomed; engine-resolved).
-
-    A twin lives in ``box.py`` — keep the two in sync (a shared home in
-    ``base.py`` is deliberately out of this step's file scope).
-    """
-    dtype = _dtype_for_col(schema, column)
-    if dtype is not None:
-        if dtype.is_temporal():
-            unit = temporal_unit(dtype)
-            if unit is None:
-                return None
-            return FreeAxisSpec(
-                column=column, kind="temporal", p=2048, domain=axis_range, unit=unit
-            )
-        if not dtype.is_numeric():
-            return None
-    return FreeAxisSpec(column=column, kind="continuous", p=2048, domain=axis_range)
-
-
 # ---------------------------------------------------------------------------
 # LinePlot trace
 # ---------------------------------------------------------------------------
@@ -441,7 +386,15 @@ class LinePlot(FlexTrace):
     ) -> None:
         # The trust boundary: the client posts the spec on every update, and a
         # decoded spec builds the trace through here as well.
-        if not _N_POINTS_MIN <= n_points <= _N_POINTS_MAX:
+        if x == y:
+            # One column cannot hold both roles: the pair plan and the point
+            # flattening each name two outputs after it.
+            raise ValueError(f"x and y must be different columns, got '{x}' twice.")
+        # A float passes the range test and is then rejected deep inside the
+        # kernels, or silently truncates the minmax scan plan to two points.
+        if not isinstance(n_points, int) or not (
+            _N_POINTS_MIN <= n_points <= _N_POINTS_MAX
+        ):
             raise ValueError(
                 f"n_points must be between {_N_POINTS_MIN} and {_N_POINTS_MAX}, "
                 f"got {n_points}."
@@ -601,13 +554,24 @@ class LinePlot(FlexTrace):
         return self._params["downsample"]
 
     @property
-    def buckets_by_x_width(self) -> bool:
+    def _x_width(self) -> bool:
         """Whether the buckets are equal in x width, which is the x contract.
 
-        Grouped or not, the x-width strategies share it. ``nth`` gathers a
+        Grouped or not, every strategy but ``nth`` shares it. ``nth`` gathers a
         stride and carries no grid.
         """
-        return self.downsample in _X_WIDTH_DOWNSAMPLES
+        return self.downsample != "nth"
+
+    def check_source(self, source: LFQueryBuilder) -> None:
+        """The line contract: the dtypes always, the x data where order matters.
+
+        Only an ungrouped x-width line on a resident frame reads x in order. A
+        grouped plan and a scan plan read x in no order, so they stop at the
+        dtype gate.
+        """
+        self.check_schema(source.schema)
+        if self._x_width and self.group_by_cols is None and not source.is_scan:
+            source.check_line_x(self.x_col)
 
     def check_schema(self, schema: pl.Schema) -> None:
         """Raise when the schema cannot feed this line. Reads dtypes, never collects.
@@ -619,21 +583,32 @@ class LinePlot(FlexTrace):
         for col in (self.x_col, self.y_col):
             if col not in schema:
                 raise ValueError(f"Column '{col}' not in schema")
-        if self.buckets_by_x_width:
-            # The grid is arithmetic on x, grouped or not.
+        if self._x_width:
+            # The grid is arithmetic on x, grouped or not. The kernel searches
+            # bucket edges as i64 or f64, so a wider numeric has no edge type
+            # there. A UInt64 x above i64::MAX shares that limit but only where
+            # the kernel runs, so it is gated on the resolved grid bound in
+            # ``get_aggregation_spec``. Temporal columns reduce to their i64
+            # physical.
             x_dtype = schema[self.x_col]
-            if not (x_dtype in _LINE_X_NUMERIC or x_dtype.is_temporal()):
+            if not (
+                (x_dtype.is_numeric() and x_dtype not in (pl.Int128, pl.Decimal))
+                or x_dtype.is_temporal()
+            ):
                 raise ValueError(
                     f"x column '{self.x_col}' must be a 64-bit-or-smaller numeric "
                     f"or a temporal for an x-width line, got {x_dtype}. Cast the "
                     f"column first."
                 )
-            # The bucket pass compares y, on both source kinds.
-            if schema[self.y_col] in _LINE_Y_UNSUPPORTED:
+        # The bucket pass compares y and the stride kernel gathers both columns,
+        # so both panic on these dtypes, on both source kinds. An x-width x is
+        # already gated above, on the stricter grid rule.
+        for col in (self.y_col,) if self._x_width else (self.x_col, self.y_col):
+            if schema[col] in _LINE_KERNEL_UNSUPPORTED:
                 raise ValueError(
-                    f"y column '{self.y_col}' must not be a Decimal, an Int128 "
-                    f"or a categorical for an x-width line, got "
-                    f"{schema[self.y_col]}. Cast the column first."
+                    f"column '{col}' must not be a Decimal, an Int128 or a "
+                    f"categorical for a line, got {schema[col]}. Cast the "
+                    f"column first."
                 )
         if self.downsample != "lttb":
             return
@@ -650,7 +625,7 @@ class LinePlot(FlexTrace):
         # Every x-width line bins in x, on both source kinds, grouped or not.
         # A zoomed one takes its grid from the viewport, and ``nth`` needs no
         # grid at all.
-        if not self.buckets_by_x_width or update_range.get("x") is not None:
+        if not self._x_width or update_range.get("x") is not None:
             return ()
         return (self.x_col,)
 
@@ -705,7 +680,7 @@ class LinePlot(FlexTrace):
                 sort_cols=group_by_cols,
                 pre_group_filters=(vp_expr,) if vp_expr is not None else (),
             )
-            if self.buckets_by_x_width:
+            if self._x_width:
                 # One plan per grouped line, on both source kinds: the kernel
                 # would hold every column of every group in memory at once.
                 # A plan spec runs alone and never joins the fused select, so
@@ -742,14 +717,13 @@ class LinePlot(FlexTrace):
                 ),
             )
 
-        if self.buckets_by_x_width:
+        if self._x_width:
             n_buckets = _bucket_budget(self.n_points, self.downsample)
             x_domain = None if x_range is not None else (domains or {})[self.x_col]
 
             if scan_source:
                 # The kernel needs the whole column in memory, so a scan runs
-                # the streaming plan instead. `nth` already streams: a stride
-                # needs no state.
+                # the streaming plan instead.
                 return AggregationSpec(
                     uid=self.uid,
                     plan=pairs_plan(
@@ -770,12 +744,25 @@ class LinePlot(FlexTrace):
 
             x_dtype = schema.get(self.x_col) if schema else None
             grid = bucket_grid(self.x_col, x_range, x_domain, x_dtype)
+            # The kernel takes an integer grid bound as an i64, so a UInt64 x
+            # above i64::MAX cannot be handed to it. The plan reads the same
+            # bound as a Polars literal and takes it, but routing follows the
+            # source kind, never the data, so this is an error rather than a
+            # switch to the plan.
+            if (
+                x_dtype is not None
+                and x_dtype.is_integer()
+                and not all(-(2**63) <= b < 2**63 for b in grid)
+            ):
+                raise ValueError(
+                    f"x column '{self.x_col}' has a bound outside the signed "
+                    f"64-bit range the bucket kernel searches {grid}. Cast "
+                    f"'{self.x_col}' to Int64 or Float64."
+                )
             # The kernel rebuilds the same width from ``(lo, hi)`` and reads a
             # bucket with the same floor division, so grid and kernel never
             # disagree. It drops rows outside ``[lo, hi]``, so the viewport
-            # slice agrees with the grid. A ``None`` grid (empty or all-null x)
-            # becomes a zero-span sentinel: the kernel returns no points.
-            kernel_domain = grid if grid is not None else (0.0, 0.0)
+            # slice agrees with the grid.
             return AggregationSpec(
                 expr=_plugin_pairs_agg_expr(
                     self.x_col,
@@ -785,7 +772,7 @@ class LinePlot(FlexTrace):
                     _viewport_window(self.x_col, x_range, schema, True),
                     n_buckets,
                     self.uid,
-                    kernel_domain,
+                    grid,
                 ),
                 uid=self.uid,
             )
@@ -817,7 +804,7 @@ class LinePlot(FlexTrace):
         (``adapters/js/plotly/traces.js``); the server emits gapless x/y.
         """
         raw: pl.Series = df_agg[self.uid].item()
-        df_line = raw.explode().struct.unnest()
+        df_line = raw.explode(empty_as_null=True).struct.unnest()
         if self.downsample == "nth":
             return TraceResult(
                 updates={"x": df_line[self.x_col], "y": df_line[self.y_col]}
@@ -826,10 +813,10 @@ class LinePlot(FlexTrace):
         # A bucket whose y is all null or all NaN still emits that value as its
         # extremum, and a line skips a null or NaN point on every path.
         df_line = df_line.drop_nulls()
+        # A selector, not a dtype list: Float16 is a float too, and a list here
+        # would have to grow with Polars.
         if any(dtype.is_float() for dtype in df_line.dtypes):
-            df_line = df_line.filter(
-                pl.all_horizontal(pl.col(pl.Float32, pl.Float64).is_not_nan())
-            )
+            df_line = df_line.filter(pl.all_horizontal(cs.float().is_not_nan()))
 
         if self.downsample == "fpcs":
             # The walk orders each pair by x, so it reads the pairs whole.

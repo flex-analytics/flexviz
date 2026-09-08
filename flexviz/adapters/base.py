@@ -431,19 +431,6 @@ class AbstractAdapter(ABC):
         data_uri = f"data:text/html;base64,{encoded}"
         display(IFrame(src=data_uri, width="100%", height=height))
 
-    # @staticmethod
-    # def _deliver_browser_local(html: str) -> None:
-    #     """Write *html* to a temp file and open it in the default browser."""
-    #     import tempfile
-    #     import webbrowser
-
-    #     with tempfile.NamedTemporaryFile(
-    #         mode="w", suffix=".html", delete=False, encoding="utf-8"
-    #     ) as f:
-    #         f.write(html)
-    #         path = f.name
-    #     webbrowser.open(f"file://{path}")
-
     @staticmethod
     def _deliver_browser_shared(
         spec: DashboardSpec, server_url: str, renderer: str

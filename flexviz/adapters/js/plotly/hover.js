@@ -218,7 +218,8 @@ function normalizePlotlyHover(eventData, traceSpecByUid, mode) {
   // carries customdata bin bounds, but in axis mode it acts as a normal
   // point source (e.g. a histogram bar projects an x-guide at its bin centre),
   // so the cell branch must not shadow the point branch outside cell mode.
-  // customdata is the raw hover_bounds entry: {x0,x1} or {x0,x1,y0,y1}.
+  // customdata is a bound object derived client-side from the axis edge
+  // triple: {x0,x1} or {x0,x1,y0,y1}.
   if (mode === 'cell'
       && pt.customdata && typeof pt.customdata === 'object' && !Array.isArray(pt.customdata)
       && ('x0' in pt.customdata || 'y0' in pt.customdata)) {

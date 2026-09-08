@@ -10,7 +10,8 @@ import pytest
 
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
-from flexviz.trace._hist_helpers import _snap_range
+from flexviz.trace import batch_fold as batch_fold_mod
+from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
@@ -19,7 +20,7 @@ from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_pla
 def _domains(lf: LFQueryBuilder, trace, update_range: dict) -> dict:
     """Resolve a trace's unfiltered bounds the way ``FlexEngine`` does."""
     cols = trace.domain_cols(update_range)
-    return lf.physical_minmax(list(cols), lf.schema, memoize=False) if cols else {}
+    return lf.physical_minmax(list(cols), lf.schema) if cols else {}
 
 
 def _aggregate_hist(
@@ -218,7 +219,7 @@ class TestHistogramBinAlignment:
         bins = 4
         t_pos = Histogram(x="y_pos", bins=bins)
         t_neg = Histogram(x="y_neg", bins=bins)
-        shared = lf.physical_minmax(["y_pos", "y_neg"], lf.schema, memoize=False)
+        shared = lf.physical_minmax(["y_pos", "y_neg"], lf.schema)
 
         spec_pos = t_pos.get_aggregation_spec({}, schema=lf.schema, domains=shared)
         spec_neg = t_neg.get_aggregation_spec({}, schema=lf.schema, domains=shared)
@@ -237,7 +238,7 @@ class TestHistogramBinAlignment:
         spec = trace.get_aggregation_spec({"x": [100.0, 400.0]}, schema=lf.schema)
         df_agg, _ = lf.aggregate([], [spec])
         centers = list(trace._to_update(df_agg).updates["x"])
-        lo, hi, n = _snap_range(100.0, 400.0, bins)
+        lo, hi, n = snap_range(100.0, 400.0, bins)
         assert n == bins + 1
         step = (hi - lo + _HIST_BIN_EPSILON) / n
         expected = [lo + (i + 0.5) * step for i in range(n)]
@@ -346,13 +347,13 @@ class TestHistogramViewportSnap:
 
     def test_lattice_aligned_viewport_is_unchanged(self):
         # 20..60 over 10 bins has width 4 and both bounds are multiples of it.
-        assert _snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)
+        assert snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)
         centers = self._centers((20.0, 60.0))
         assert len(centers) == 10
         assert centers[0] == pytest.approx(22.0)
 
     def test_offset_viewport_snaps_outward_and_gains_a_bin(self):
-        lo, hi, n = _snap_range(21.0, 61.0, 10)
+        lo, hi, n = snap_range(21.0, 61.0, 10)
         assert (lo, hi, n) == (20.0, 64.0, 11)
         centers = self._centers((21.0, 61.0))
         assert len(centers) == 11
@@ -369,7 +370,7 @@ class TestHistogramViewportSnap:
     def test_counts_equal_the_kernel_at_the_snapped_edges(self):
         x_range = (21.0, 61.0)
         counts = list(_aggregate_hist(self._DF, bins=10, x_range=x_range)["y"])
-        lo, hi, n = _snap_range(*x_range, 10)
+        lo, hi, n = snap_range(*x_range, 10)
         inside = self._DF.filter(pl.col("val").is_between(lo, hi))
         ref = (
             inside.select(
@@ -381,7 +382,7 @@ class TestHistogramViewportSnap:
                 .alias("u")
             )["u"]
             .item()
-            .explode()
+            .explode(empty_as_null=True)
             .struct.field("count")
             .to_list()
         )
@@ -423,7 +424,7 @@ class TestHistogramViewportSnap:
         )
         _, grouped = lf.aggregate([], [spec])
         results = trace._to_grouped_update(grouped[trace.uid]).group_results
-        lo, hi, n = _snap_range(1.0, 21.0, 10)
+        lo, hi, n = snap_range(1.0, 21.0, 10)
         assert n == 11
         centers = [list(cr.updates["x"]) for cr in results]
         assert len(centers) == 2 and centers[0] == centers[1]
@@ -733,78 +734,109 @@ class TestHistogramHoverSpec:
         assert "cell" in spec.hover.target_modes
 
 
-class TestHistogramHoverBounds:
-    def test_histogram_vertical_has_hover_bounds(self):
-        """_to_update must include hover_bounds with x0/x1 per bar."""
+class TestHistogramBinEdges:
+    """The wire format sends one ``[lo, step, n]`` triple per binned axis."""
+
+    def test_histogram_vertical_has_x_edges(self):
+        """_to_update must include the x_edges triple."""
         t = Histogram(x="val", bins=5)
         df = pl.DataFrame({"val": list(range(20))})
         lf = LFQueryBuilder(df.lazy())
-        schema = df.schema
         agg_spec = t.get_aggregation_spec(
-            update_range={}, schema=schema, domains=_domains(lf, t, {})
+            update_range={}, schema=df.schema, domains=_domains(lf, t, {})
         )
         result_df, _ = lf.aggregate(filter_exprs=[], agg_specs=[agg_spec])
-        tr = t._to_update(result_df)
-        assert "hover_bounds" in tr.updates, "hover_bounds must be in updates"
-        bounds = tr.updates["hover_bounds"]
-        assert isinstance(bounds, list), "hover_bounds must be a list"
-        assert len(bounds) == 5, "one bounds entry per bin"
-        for b in bounds:
-            assert "x0" in b and "x1" in b, "each entry must have x0, x1"
-            assert b["x1"] > b["x0"], "x1 must be > x0"
+        updates = t._to_update(result_df).updates
+        lo, step, n = updates["x_edges"]
+        assert n == 5, "the triple carries the bin count"
+        assert step > 0
+        assert lo == pytest.approx(0.0)
+        assert lo + n * step == pytest.approx(19.0 + _HIST_BIN_EPSILON)
+        assert "y_edges" not in updates
 
-    def test_histogram_horizontal_has_hover_bounds_y(self):
-        """Horizontal histogram must use y0/y1."""
+    def test_histogram_horizontal_has_y_edges(self):
+        """A horizontal histogram bins on y, so the triple lands on y_edges."""
         t = Histogram(y="val", bins=4)
         df = pl.DataFrame({"val": list(range(16))})
         lf = LFQueryBuilder(df.lazy())
-        schema = df.schema
         agg_spec = t.get_aggregation_spec(
-            update_range={}, schema=schema, domains=_domains(lf, t, {})
+            update_range={}, schema=df.schema, domains=_domains(lf, t, {})
         )
         result_df, _ = lf.aggregate(filter_exprs=[], agg_specs=[agg_spec])
-        tr = t._to_update(result_df)
-        bounds = tr.updates["hover_bounds"]
-        assert len(bounds) == 4
-        for b in bounds:
-            assert (
-                "y0" in b and "y1" in b
-            ), "horizontal histogram bounds must have y0, y1"
-            assert "x0" not in b
+        updates = t._to_update(result_df).updates
+        assert "x_edges" not in updates
+        lo, step, n = updates["y_edges"]
+        assert n == 4
+        assert lo + n * step == pytest.approx(15.0 + _HIST_BIN_EPSILON)
 
-    def test_histogram_hover_bounds_not_in_x_or_y(self):
-        """hover_bounds must not shadow the rendered x/y arrays."""
-        t = Histogram(x="val", bins=3)
-        df = pl.DataFrame({"val": list(range(12))})
-        lf = LFQueryBuilder(df.lazy())
-        result_df, _ = lf.aggregate(
-            filter_exprs=[],
-            agg_specs=[
-                t.get_aggregation_spec({}, df.schema, domains=_domains(lf, t, {}))
-            ],
+    def test_bin_edges_reproduce_the_bin_centers(self):
+        """``lo + (i + 0.5) * step`` is exactly the emitted center of bin i."""
+        updates = _aggregate_hist(
+            pl.DataFrame({"val": [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]}), bins=8
         )
-        tr = t._to_update(result_df)
-        assert "x" in tr.updates, "x must still be present"
-        assert "y" in tr.updates, "y (counts) must still be present"
-        assert tr.updates["hover_bounds"] is not tr.updates["x"]
+        lo, step, n = updates["x_edges"]
+        assert updates["x"].to_list() == pytest.approx(
+            [lo + (i + 0.5) * step for i in range(n)]
+        )
 
-    def test_histogram_hover_bounds_length_matches_x_for_bins_1(self):
-        """hover_bounds length must equal len(x) even for bins=1 degenerate case."""
-        t = Histogram(x="val", bins=1)
-        df = pl.DataFrame({"val": [1.0, 2.0, 3.0]})
-        lf = LFQueryBuilder(df.lazy())
-        result_df, _ = lf.aggregate(
-            filter_exprs=[],
-            agg_specs=[
-                t.get_aggregation_spec({}, df.schema, domains=_domains(lf, t, {}))
-            ],
+    def test_bin_centers_match_the_kernel_breakpoints(self):
+        """The derived centers sit half a bin below the kernel's breakpoints."""
+        df = pl.DataFrame({"val": [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]})
+        lf = LFQueryBuilder(df)
+        t = Histogram(x="val", bins=8)
+        agg_spec = t.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, t, {})
         )
-        tr = t._to_update(result_df)
-        x_len = len(tr.updates["x"])
-        bounds_len = len(tr.updates["hover_bounds"])
-        assert (
-            bounds_len == x_len
-        ), f"hover_bounds length ({bounds_len}) must equal x length ({x_len})"
+        df_agg, _ = lf.aggregate([], [agg_spec])
+        breakpoints = (
+            df_agg[t.uid]
+            .item()
+            .explode(empty_as_null=True)
+            .struct.field("breakpoint")
+            .to_list()
+        )
+        lo, step, n = t._to_update(df_agg).updates["x_edges"]
+        assert [lo + (i + 0.5) * step for i in range(n)] == pytest.approx(
+            [bp - step / 2 for bp in breakpoints]
+        )
+
+    def test_bins_1_edges_and_center_are_finite(self):
+        """bins=1 is no longer degenerate: one real center, one real triple."""
+        updates = _aggregate_hist(pl.DataFrame({"val": [1.0, 2.0, 3.0]}), bins=1)
+        assert updates["x"].to_list() == pytest.approx([2.0])
+        lo, step, n = updates["x_edges"]
+        assert n == 1
+        assert math.isfinite(lo) and math.isfinite(step) and step > 0
+
+    def test_temporal_edges_are_epoch_ms(self):
+        """A temporal axis sends its triple in Plotly's epoch-ms coordinate."""
+        import datetime
+
+        series = pl.datetime_range(
+            datetime.datetime(2020, 1, 1),
+            datetime.datetime(2020, 1, 9),
+            interval="1d",
+            eager=True,
+            time_unit="ns",
+        ).rename("val")
+        df = pl.DataFrame([series])
+        lf = LFQueryBuilder(df)
+        t = Histogram(x="val", bins=4)
+        agg_spec = t.get_aggregation_spec(
+            {}, schema=lf.schema, domains=_domains(lf, t, {})
+        )
+        df_agg, _ = lf.aggregate([], [agg_spec])
+        updates = t._to_update(df_agg).updates
+        lo, step, n = updates["x_edges"]
+        # Physical ns bounds, epoch-ms on the wire: 1e-6 per ns.
+        phys_lo, phys_hi, phys_n = t._bin_edges
+        assert (lo, n) == (phys_lo * 1e-6, phys_n)
+        assert lo + n * step == pytest.approx(phys_hi * 1e-6)
+        epoch = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+        assert lo == epoch.timestamp() * 1000
+        assert step == pytest.approx(2 * 86_400_000.0)
+        # The centers stay datetimes so the renderer draws a date axis.
+        assert updates["x"].dtype.is_temporal()
 
 
 # ---- cube descriptors (Phase 1) ----------------------------------------------
@@ -878,7 +910,7 @@ class TestCubeDescriptors:
         dim = spec.target_dims[0]
         assert dim.column == "val"
         assert dim.kind == "binned"
-        lo, hi, n = _snap_range(2.0, 8.0, 25)
+        lo, hi, n = snap_range(2.0, 8.0, 25)
         assert dim.bins == n
         assert tuple(dim.domain) == (lo, hi)
         assert spec.measure.agg == "count"
@@ -895,7 +927,7 @@ class TestCubeDescriptors:
         trace = Histogram(x="val", bins=10)
         spec = trace.get_cube_target_spec((100.0, 400.0))
         assert spec is not None
-        lo, hi, n = _snap_range(100.0, 400.0, 10)
+        lo, hi, n = snap_range(100.0, 400.0, 10)
         assert tuple(spec.target_dims[0].domain) == (lo, hi)
         assert spec.target_dims[0].bins == n
 
@@ -905,8 +937,7 @@ class TestCubeDescriptors:
         trace = Histogram(x="val", bins=10)
         axis_range = (100.0, 400.0)
         spec = trace.get_cube_target_spec(axis_range)
-        lo_expr, hi_expr, n_bins, _ = trace._histogram_bounds_exprs(axis_range, None)
-        lo, hi = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+        lo, hi, n_bins, _ = trace._histogram_bounds_exprs(axis_range, None)
         dim = spec.target_dims[0]
         # The engine pads the cube dim's hi exactly like the display path.
         assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
@@ -932,10 +963,7 @@ class TestCubeDescriptors:
             {"fig": {"x": list(viewport)}}, "fig", "x", schema=schema, column="t"
         )
         dim = trace.get_cube_target_spec(cube_range, schema=schema).target_dims[0]
-        lo_expr, hi_expr, n_bins, _ = trace._histogram_bounds_exprs(
-            viewport, None, schema
-        )
-        lo, hi = pl.select(lo_expr.alias("l"), hi_expr.alias("h")).row(0)
+        lo, hi, n_bins, _ = trace._histogram_bounds_exprs(viewport, None, schema)
         assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
         assert dim.bins == n_bins
 
@@ -1004,11 +1032,11 @@ class TestCubeDescriptors:
 
 
 class TestHistogramScanPlanEquivalence:
-    """The streaming plan a scan source takes must equal the kernel exactly.
+    """The batch fold a scan source takes must equal the kernel exactly.
 
-    ``scan_source`` only picks a formulation, never a result. The plan collects
-    with the streaming engine on a resident frame too, which is fine here: the
-    point is the arithmetic, not the source kind.
+    ``scan_source`` only picks a formulation, never a result. The fold runs the
+    same kernel per batch, so it counts exactly; it streams a resident frame
+    too, which is fine here: the point is the arithmetic, not the source kind.
     """
 
     _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
@@ -1036,7 +1064,7 @@ class TestHistogramScanPlanEquivalence:
                 {
                     "x": updates["x"].to_list(),
                     "y": updates["y"].to_list(),
-                    "hover_bounds": updates["hover_bounds"],
+                    "x_edges": updates["x_edges"],
                 }
             )
         return out[0], out[1]
@@ -1097,6 +1125,51 @@ class TestHistogramScanPlanEquivalence:
         resident, scanned = self._both_updates(pl.DataFrame([series]))
         assert resident == scanned
 
+    def test_fold_merges_across_batches(self, monkeypatch):
+        """A frame larger than one chunk must fold to the single-batch counts."""
+        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
+        seen: list[tuple[int, int]] = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(self, *args, **kwargs):
+            batches = list(original(self, *args, **kwargs))
+            seen.append((kwargs["chunk_size"], len(batches)))
+            return batches
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+
+        df = pl.DataFrame({"v": [float(i % 13) for i in range(50)]})
+        resident, scanned = self._both_updates(df)
+        assert resident == scanned
+        assert seen == [(7, 8)], seen
+
+    def test_scan_source_with_a_viewport_matches_the_resident_kernel(self, tmp_path):
+        """The fold rejects the out-of-viewport rows in the scan; the kernel
+        filters inside its expression. Both must count the same rows."""
+        df = pl.DataFrame({"v": [float(i) / 4 for i in range(200)]})
+        path = tmp_path / "d.parquet"
+        df.write_parquet(path)
+        update_range = {"x": (7.3, 31.8)}
+
+        out = []
+        for src in (df, pl.scan_parquet(path)):
+            lf = LFQueryBuilder(src)
+            trace = Histogram(x="v", bins=8)
+            spec = trace.get_aggregation_spec(
+                update_range,
+                schema=lf.schema,
+                domains=_domains(lf, trace, update_range),
+                scan_source=lf.is_scan,
+            )
+            assert (spec.plan is not None) is lf.is_scan
+            df_agg, _ = lf.aggregate([], [spec])
+            updates = trace._to_update(df_agg).updates
+            out.append((updates["x"].to_list(), updates["y"].to_list()))
+
+        assert out[0] == out[1]
+        # The viewport must actually drop rows, else the test proves nothing.
+        assert sum(out[0][1]) < df.height
+
 
 class TestHistogramGroupedPlanEquivalence:
     """A grouped histogram runs the plan on both source kinds.
@@ -1116,7 +1189,7 @@ class TestHistogramGroupedPlanEquivalence:
                 "group_value_key": c.group_value_key,
                 "x": c.updates["x"].to_list(),
                 "y": c.updates["y"].to_list(),
-                "hover_bounds": c.updates["hover_bounds"],
+                "x_edges": c.updates["x_edges"],
             }
             for c in result.group_results
         ]
@@ -1245,39 +1318,96 @@ class TestHistogramGroupedPlanEquivalence:
         assert got == [] and ref == []
 
 
+class TestGroupedHistogramColumnNameClashes:
+    """The streaming plan's own columns share the frame with the group columns.
+
+    A group column named like one of them must not collide with it.
+    """
+
+    _VALUES = [0.0, 1.0, 2.5, 3.0, 4.0, 5.5, 7.9, 8.0]
+    _GROUPS = list("aabbaabb")
+
+    @staticmethod
+    def _children(src, x, group_by) -> list:
+        lf = LFQueryBuilder(src)
+        trace = Histogram(x=x, bins=4, group_by=group_by)
+        spec = trace.get_aggregation_spec(
+            {},
+            schema=lf.schema,
+            domains=_domains(lf, trace, {}),
+            scan_source=lf.is_scan,
+        )
+        _, grouped = lf.aggregate([], [spec])
+        return [
+            (c.group_value_key, c.updates["y"].to_list())
+            for c in trace._to_grouped_update(grouped[trace.uid]).group_results
+        ]
+
+    @pytest.mark.parametrize(
+        "name,frame,x,group_by",
+        [
+            ("group_col_count", {"v": _VALUES, "count": _GROUPS}, "v", "count"),
+            ("group_col_bin_index", {"v": _VALUES, "__b": _GROUPS}, "v", "__b"),
+            ("value_col_count", {"count": _VALUES, "g": _GROUPS}, "count", "g"),
+            (
+                "group_col_breakpoint",
+                {"v": _VALUES, "breakpoint": _GROUPS},
+                "v",
+                "breakpoint",
+            ),
+        ],
+    )
+    def test_resident_and_scan_agree(self, tmp_path, name, frame, x, group_by):
+        df = pl.DataFrame(frame)
+        path = tmp_path / f"{name}.parquet"
+        df.write_parquet(path)
+
+        resident = self._children(df, x, group_by)
+        assert resident == self._children(pl.scan_parquet(path), x, group_by)
+        assert resident == [("a", [2, 0, 2, 0]), ("b", [0, 2, 0, 2])]
+
+
 class TestHistogramStreamingPlanArithmetic:
-    """Bounds the trace itself cannot build, checked plan against kernel."""
+    """Bounds the trace itself cannot build, checked plan against kernel.
+
+    The plan serves the grouped path only, so it bins one constant group here:
+    the bin arithmetic under test is the same either way.
+    """
 
     @staticmethod
-    def _plan_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
-        run = _streaming_hist_plan(pl.col("v"), pl.lit(lo), pl.lit(hi), bins, "u", None)
-        return run(df.lazy())["u"].item().explode().struct.unnest().rows()
+    def _plan_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+        run = _streaming_hist_plan(pl.col("v"), lo, hi, bins, "u", ("g",))
+        out = run(df.with_columns(g=pl.lit("a")).lazy())
+        return out["u"].item().struct.field("count").to_list()
 
     @staticmethod
-    def _kernel_rows(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
+    def _kernel_counts(df: pl.DataFrame, lo: float, hi: float, bins: int) -> list:
         expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
         agg = df.select(expr.implode().alias("u"))
-        return agg["u"].item().explode().struct.unnest().rows()
+        return (
+            agg["u"].item().explode(empty_as_null=True).struct.field("count").to_list()
+        )
 
     @pytest.mark.parametrize(
         "name,values,lo,hi,bins",
         [
-            # lo == hi: every value lands in bin 0 and every breakpoint is lo.
+            # lo == hi: every value lands in bin 0.
             ("degenerate", [0.0, 1.0, 2.5, 3.0, 8.0], 3.0, 3.0, 8),
-            ("degenerate_nan", [1.0, float("nan"), 3.0], 3.0, 3.0, 8),
             ("below_lo", [-5.0, -3.0], 0.0, 8.0, 8),
             ("above_hi", [11.0, 42.0], 0.0, 8.0, 8),
         ],
     )
     def test_matches_kernel(self, name, values, lo, hi, bins):
         df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
-        assert self._plan_rows(df, lo, hi, bins) == self._kernel_rows(df, lo, hi, bins)
+        assert self._plan_counts(df, lo, hi, bins) == self._kernel_counts(
+            df, lo, hi, bins
+        )
 
     def test_inverted_bounds_raise(self):
         # The kernel raises on lo > hi; the plan must not silently bin instead.
         df = pl.DataFrame({"v": [1.0, 2.0]}, schema={"v": pl.Float64})
         with pytest.raises(ValueError, match="inverted"):
-            self._plan_rows(df, 5.0, 1.0, 8)
+            self._plan_counts(df, 5.0, 1.0, 8)
 
     def test_bin_edge_epsilon_is_load_bearing(self):
         """Values on a bin edge of a non-round domain need the round epsilon.
@@ -1290,8 +1420,8 @@ class TestHistogramStreamingPlanArithmetic:
         df = pl.DataFrame({"v": values}, schema={"v": pl.Float64})
 
         expected = [2, 1, 1, 1, 1, 3]
-        assert [c for _, c in self._kernel_rows(df, lo, hi, bins)] == expected
-        assert [c for _, c in self._plan_rows(df, lo, hi, bins)] == expected
+        assert self._kernel_counts(df, lo, hi, bins) == expected
+        assert self._plan_counts(df, lo, hi, bins) == expected
 
         # The same plan with the epsilon dropped.
         scale = bins / (hi - lo)

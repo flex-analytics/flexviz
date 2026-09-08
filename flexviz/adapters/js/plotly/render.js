@@ -336,6 +336,7 @@ function _fvRenderFigure(figUid) {
   layoutsByFig[figIdx].selections = selectionBoxesForFigure(figUid);
   const renderPromise = Plotly.react(divs[figIdx], tracesByFig[figIdx], layoutsByFig[figIdx], configsByFig[figIdx]);
   Promise.resolve(renderPromise).then(() => {
+    bindFigure(figUid);
     applyCategorySelectionStyles(figUid);
     renderHoverOverlay(figUid);
     return window.fvFinalizeHeatmapOverlayColorbars?.(figUid);

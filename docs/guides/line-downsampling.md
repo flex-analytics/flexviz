@@ -23,21 +23,32 @@ fig.add_line(
   right default for monitoring-style data.
 - **`"lttb"`**: MinMaxLTTB. Runs the min-max pass with four times the budget,
   then keeps the point with the largest triangle area in each of `n_points`
-  buckets. The output holds exactly `n_points` points when the prefetch holds
-  more, and fewer when x gaps leave buckets empty. The line looks smoother than
-  a min-max envelope on noisy data. A grouped line thins each series on its
-  own, and that second pass runs in Python once per group, so many groups at a
-  large `n_points` cost proportionally: 200 groups at `n_points=2000` spent
-  about 60 percent of a 0.8 s request in that pass. It is not a cross-filter
-  cube target.
+  buckets. The line looks smoother than a min-max envelope on noisy data. 
+  It is not a cross-filter cube target.  
+  MinMaxLTTB paper: https://arxiv.org/pdf/2305.00332
 - **`"fpcs"`**: Feature-Preserving Compensated Sampling. Runs the same min-max
   pass, then carries deferred extrema forward across buckets to reduce visual
-  artifacts on oscillating signals. It buckets by x width, grouped or not.
-  `n_points` is a target, not a cap: output can reach roughly `2 * n_points`,
-  and holds fewer points when the x gaps leave buckets empty.
+  artifacts on oscillating signals. It buckets by x width.  
+  FPCS paper: https://ieeevis.b-cdn.net/vis_2024/pdfs/v-full-1363.pdf 
 - **`"nth"`**: uniform stride, keeping every n-th row. Cheapest, but a spike
   between kept points disappears. Use it when the data is smooth or when you
   want deterministic spacing.
+
+## Point counts
+
+`n_points` is a target, not a guarantee. `minmax`, `lttb`, and `fpcs` bucket the
+visible x range, and a sparse viewport does not fill every bucket. An empty
+bucket gives no point. A bucket whose minimum and maximum are the same row gives
+one point, not two. FlexViz drops a row with a null or NaN y before this.
+
+Only the ceiling differs per strategy:
+
+| Strategy | Points per viewport |
+| --- | --- |
+| `minmax` | At most `n_points`: two per bucket, duplicates removed. |
+| `lttb` | Exactly `n_points` when the prefetch holds more. |
+| `fpcs` | Up to about `2 * n_points`. |
+| `nth` | `n_points`, or every row when the viewport holds fewer. Gaps do not lower it. |
 
 ## Grouped lines
 
@@ -57,6 +68,10 @@ ascending and free of nulls and NaN. The engine verifies this before it
 aggregates and raises `ValueError` when the column breaks the contract.
 `Figure.add_line` itself checks nothing.
 
+A `UInt64` x whose values go above `i64::MAX` fails on a resident frame,
+because the kernel reads its bounds as signed 64-bit integers. Cast the column
+to `Int64` or `Float64` first.
+
 A file source runs an order-independent plan that drops null and NaN x, so only
 its dtype is gated.
 
@@ -66,10 +81,9 @@ file-source plan can, so without the gate the same line would work on one source
 kind and fail on the other. An `"lttb"` line asks for more, a numeric, temporal
 or Boolean y, because the triangle rule does arithmetic on it.
 
-- The order, null, and NaN check costs one pass over x. A `cache=True` source
-  pays it once per source and column. A `cache=False` source may have changed
-  since the last request, so it pays it on every request that reaches
-  aggregation, zoomed or not.
+- The order, null, and NaN check costs one pass over x, and only an ungrouped
+  x-width line on a resident frame runs it. A resident frame is a snapshot, so
+  the check runs once per source and column.
 - `add_line(..., assume_sorted_x=True)` skips the check. Only pass it when you
   can guarantee the column. A column that breaks the contract then produces
   wrong output.
@@ -85,9 +99,10 @@ or Boolean y, because the triangle rule does arithmetic on it.
 
 ### Equal-row-count buckets
 
-An x-width line spends its budget on x width, so a dense burst in a narrow x
-span gets few points. To spend the budget on row count instead, plot against a
-row index:
+`add_line` requires `x`, and x width is the only bucket rule FlexViz offers. An
+x-width line spends its budget on x width, so a dense burst in a narrow x span
+gets few points. To spend the budget on row count instead, plot against a row
+index. There is no separate entry point:
 
 ```python
 df = df.with_row_index("i")
@@ -99,7 +114,10 @@ fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal row
 | Column | What happens |
 | --- | --- |
 | x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source and a grouped line drop the row. |
-| y | Skipped, on every downsampling path. |
+| y | `nth` is a stride. It keeps every nth row, null or NaN y included, so the renderer draws a gap at the true position. `minmax`, `lttb`, and `fpcs` drop a row with a null or NaN y. |
+
+An infinite y is a value: the x-width strategies keep it as an extremum, and
+only null and NaN are dropped.
 
 An infinite bound has no finite bucket width, so the grid cannot be built. Drop
 the rows first:

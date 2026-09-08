@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, Dict, Literal
 from urllib.parse import quote as _url_quote
 
@@ -138,10 +137,7 @@ class TreeMap(FlexTrace):
         self,
         update_range: Dict[str, Any],
         schema: pl.Schema | None = None,
-        *,
-        domains: Mapping[str, tuple[Any, Any]] | None = None,
-        scan_source: bool = False,
-        sorted_cols: frozenset[str] = frozenset(),
+        **_: Any,
     ) -> GroupedAggregationSpec:
         path = self._params["path"]
         values_col = self._backend_data.get("values")

@@ -81,16 +81,16 @@ class Dashboard:
         cache:
             Opt the shared source into init-load caching.  Asserts the data
             is static for the process lifetime (no invalidation yet; see
-            ``register_source`` and issue #27).  Can be overridden in
+            ``register_source`` and issue #39).  Can be overridden in
             :meth:`show`.
         """
         self._uid: str = str(uuid4())
+        self._cache_enabled: bool = cache
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(polars_lf_from(data))
+            self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
         self._figures: List[Figure] = []
-        self._cache_enabled: bool = cache
 
     # ------------------------------------------------------------------
     # Figure management

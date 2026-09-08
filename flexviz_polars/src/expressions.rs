@@ -100,15 +100,6 @@ impl XBound {
     }
 }
 
-/// Whether `[lo, hi]` spans anything, compared without an f64 round trip so
-/// that two integer bounds one apart never look equal.
-fn positive_span(lo: XBound, hi: XBound) -> bool {
-    match (lo, hi) {
-        (XBound::Int(lo), XBound::Int(hi)) => hi > lo,
-        _ => hi.as_f64() > lo.as_f64(),
-    }
-}
-
 #[derive(Deserialize)]
 struct MinmaxPairsKwargs {
     n_buckets: usize,
@@ -255,14 +246,19 @@ fn minmax_pairs_line(inputs: &[Series], kwargs: MinmaxPairsKwargs) -> PolarsResu
     );
 
     let (lo, hi) = kwargs.x_domain;
-    let pairs = if y.is_empty() || !positive_span(lo, hi) {
+    // Integer bounds compare without an f64 round trip.
+    let spans = match (lo, hi) {
+        (XBound::Int(lo), XBound::Int(hi)) => hi > lo,
+        _ => hi.as_f64() > lo.as_f64(),
+    };
+    let pairs = if y.is_empty() || !spans {
         // A zero span is the caller's sentinel for "no grid": no bucket, no row.
         Vec::new()
     } else {
         // The bucket count is not clamped to the row count: it divides `[lo, hi]`,
         // so a smaller count would widen the buckets and build a different grid
         // than the caller's. Only the output allocation is bounded by the rows
-        // (`bucket_offsets`).
+        // (`chunked_bucket_offsets`).
         pairs_for_offsets(y, &x_width_offsets(x, lo, hi, kwargs.n_buckets)?)
     };
 
@@ -324,8 +320,8 @@ fn x_width_offsets(
                     let (lo_i, hi_i) = int_bounds(lo, hi, x.dtype())?;
                     // Ceiling division, so the kernel rebuilds the same width
                     // as `_bucket_grid`. Truncating would narrow it and open
-                    // more buckets than the budget. Span and count are positive
-                    // (`positive_span`), so add-then-floor is the ceiling.
+                    // more buckets than the budget. Span and count are positive,
+                    // so add-then-floor is the ceiling.
                     let n = n_buckets as i128;
                     let width = (hi_i - lo_i + n - 1) / n;
                     return Ok(chunked_bucket_offsets(
@@ -402,12 +398,15 @@ fn int_bounds(lo: XBound, hi: XBound, dtype: &DataType) -> PolarsResult<(i128, i
     }
 }
 
-/// `bucket_offsets` over a chunked x, searched without a per-element `get`.
+/// `(start, len)` of every non-empty bucket over a chunked x, searched without
+/// a per-element `get`.
 ///
 /// `ChunkedArray::get` resolves the chunk by walking the chunk lengths, so a
 /// binary search over it costs O(chunks) per access: measurably ~10x slower per
 /// edge on a 1000-chunk Parquet read. Searching the per-chunk last values first
 /// and then one contiguous slice keeps every edge at O(log chunks + log len).
+/// `n_buckets` bounds the allocation only loosely: every bucket kept holds at
+/// least one row, so more buckets than rows cannot all be kept.
 fn chunked_bucket_offsets<T, K>(
     ca: &ChunkedArray<T>,
     n_buckets: usize,
@@ -452,31 +451,11 @@ where
         }
     };
 
-    bucket_offsets(n_buckets, len, edge, search)
-}
-
-/// `(start, len)` of every non-empty bucket, given its edges and a search.
-///
-/// Generic over the edge type so an integer x can search exact i128 edges while
-/// a float x searches f64 ones. `n_rows` bounds the allocation: every bucket
-/// kept holds at least one row, so more buckets than rows cannot all be kept.
-fn bucket_offsets<E, FE, FS>(
-    n_buckets: usize,
-    n_rows: usize,
-    edge: FE,
-    search: FS,
-) -> Vec<(usize, usize)>
-where
-    E: Copy,
-    FE: Fn(usize) -> E,
-    FS: Fn(E, bool) -> usize,
-{
-    let mut offsets = Vec::with_capacity(n_buckets.min(n_rows));
+    let mut offsets = Vec::with_capacity(n_buckets.min(len));
     let mut start = search(edge(0), false);
     for i in 1..=n_buckets {
-        // The last bucket is closed so that x == hi is kept. `.max(start)` guards
-        // an x that is not really sorted, which `assume_sorted_x=True` allows: the
-        // search then returns an index below `start` and `end - start` underflows.
+        // The last bucket is closed so x == hi is kept. `.max(start)` guards an
+        // x that is not really sorted, which `assume_sorted_x=True` allows.
         let end = search(edge(i), i == n_buckets).max(start);
         if end > start {
             offsets.push((start, end - start));

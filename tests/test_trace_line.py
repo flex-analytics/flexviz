@@ -25,7 +25,7 @@ from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 def _domains(lf: LFQueryBuilder, trace: LinePlot, update_range: dict) -> dict:
     """The unfiltered bounds the engine would resolve for this trace."""
     cols = trace.domain_cols(update_range)
-    return lf.physical_minmax(list(cols), memoize=False) if cols else {}
+    return lf.physical_minmax(list(cols)) if cols else {}
 
 
 def _aggregate_line(
@@ -900,7 +900,7 @@ class TestLineXWidthBuckets:
         )
         lf = LFQueryBuilder(df)
         with pytest.raises(ValueError, match="null values"):
-            lf.check_line_x("ts", memoize=True)
+            lf.check_line_x("ts")
         out = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=20))
         assert len(out["x"]) == 0 or all(v is None for v in out["x"].to_list())
 
@@ -998,6 +998,70 @@ class TestLineXWidthBuckets:
         )
         assert len(resident["x"]) == expected
         assert resident["x"].to_list() == scanned["x"].to_list()
+
+    def test_a_float16_x_scan_returns_points(self, tmp_path):
+        # The footer answers the domain probe for a Float16 x too.
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([float(i) for i in range(200)], dtype=pl.Float16),
+                "val": [float(i) for i in range(200)],
+            }
+        )
+        path = tmp_path / "f16_x.parquet"
+        df.write_parquet(path)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        assert (
+            len(_minmax_points(scan, LinePlot(x="ts", y="val", n_points=20))["x"]) > 0
+        )
+
+    @pytest.mark.parametrize("big", [False, True], ids=["under", "over"])
+    def test_a_uint64_x_past_the_kernel_limit_says_so(self, tmp_path, big):
+        # The kernel takes its grid bound as an i64; the scan plan does not.
+        # Routing follows the source kind, so the frame gets a clear error.
+        top = 2**63 + 7 if big else 2**62
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([1, top], dtype=pl.UInt64),
+                "val": [1.0, 2.0],
+            }
+        )
+        path = tmp_path / "u64.parquet"
+        df.write_parquet(path)
+        scan = LFQueryBuilder(pl.scan_parquet(path))
+        trace = LinePlot(x="ts", y="val", n_points=10)
+        assert len(_minmax_points(scan, trace)["x"]) == 2
+
+        resident = LFQueryBuilder(df)
+        if not big:
+            assert len(_minmax_points(resident, trace)["x"]) == 2
+            return
+        with pytest.raises(ValueError, match="signed 64-bit range"):
+            _minmax_points(resident, trace)
+
+    @pytest.mark.parametrize(
+        "value,dtype",
+        [
+            (1e20, pl.Float64),
+            (1.7e18, pl.Float64),
+            (0.5, pl.Float64),
+            (7, pl.Int64),
+            (dt.datetime(2023, 1, 1), pl.Datetime("ns")),
+        ],
+        ids=["float_1e20", "float_epoch_ns", "float_small", "int", "datetime_ns"],
+    )
+    def test_a_constant_x_keeps_its_two_extrema(self, tmp_path, value, dtype):
+        # Past 2**53 the one-unit fallback span rounds away, leaving a zero
+        # bucket width: no points on a frame, a division by zero on a scan.
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series([value] * 50, dtype=dtype),
+                "val": [float(i) for i in range(50)],
+            }
+        )
+        resident, scanned = self._resident_and_scan(df, tmp_path, n_points=20)
+        for out in (resident, scanned):
+            assert sorted(out["y"].to_list()) == [0.0, 49.0]
+            assert set(out["x"].to_list()) == {df["ts"][0]}
 
 
 # ---- equal-x-width buckets (grouped) ----------------------------------------
@@ -1236,12 +1300,12 @@ class TestGroupedXWidthBuckets:
     @pytest.mark.parametrize(
         "group_cols,expected",
         [
-            (("g",), ["__b"]),
-            (("gc",), ["__b"]),
-            (("gi",), ["gi", "__b"]),
-            (("val",), ["val", "__b"]),
-            (("g", "site"), ["g", "site", "__b"]),
-            (("g", "gi"), ["g", "gi", "__b"]),
+            (("g",), ["__fv_b"]),
+            (("gc",), ["__fv_b"]),
+            (("gi",), ["gi", "__fv_b"]),
+            (("val",), ["val", "__fv_b"]),
+            (("g", "site"), ["g", "site", "__fv_b"]),
+            (("g", "gi"), ["g", "gi", "__fv_b"]),
         ],
         ids=["str", "cat", "int", "float", "two_str", "str_int"],
     )
@@ -1294,6 +1358,57 @@ class TestPlanDropsNaNAndNullX:
         assert self._pairs() == expected
         assert self._pairs(("gs",)) == expected
         assert self._pairs(("gi",)) == expected
+
+
+# ---- plan-internal aliases vs user columns ----------------------------------
+
+#: Names the plan once used for its own columns, plus a cube-reserved one.
+_ALIAS_NAMES = ["__b", "x_min", "y_max", "__lo_ts", "__hi_val", "count"]
+
+
+class TestPlanAliasNames:
+    """A user column may carry any name the bucket plan uses internally."""
+
+    @pytest.mark.parametrize("name", _ALIAS_NAMES)
+    @pytest.mark.parametrize("role", ["x", "y"])
+    def test_an_ungrouped_line_keeps_its_own_columns(self, tmp_path, role, name):
+        x, y = (name, "val") if role == "x" else ("ts", name)
+        df = pl.DataFrame(
+            {
+                x: [float(i) for i in range(200)],
+                y: [float((i * 7) % 31) for i in range(200)],
+            }
+        )
+        got = [
+            _points(_minmax_points(lf, LinePlot(x=x, y=y, n_points=20)))
+            for lf in _both_sources(df, tmp_path / "alias.parquet")
+        ]
+        assert got[0] == got[1]
+        # The scan plan used to return bucket indices as x here.
+        assert got[0][0] and set(got[0][0]) <= set(df[x].to_list())
+
+    @pytest.mark.parametrize("name", _ALIAS_NAMES)
+    def test_a_grouped_line_keeps_its_group_column(self, tmp_path, name):
+        n = 100
+        df = pl.DataFrame(
+            {
+                "ts": [float(i) for i in range(n)] * 2,
+                "val": [float(i) for i in range(2 * n)],
+                name: ["a"] * n + ["b"] * n,
+            }
+        )
+        got = [
+            {
+                k: _points(u)
+                for k, u in _grouped_points(
+                    lf, LinePlot(x="ts", y="val", n_points=20, group_by=name)
+                ).items()
+            }
+            for lf in _both_sources(df, tmp_path / "alias_grouped.parquet")
+        ]
+        assert set(got[0]) == {"a", "b"}
+        assert all(pts[0] for pts in got[0].values())
+        assert got[0] == got[1]
 
 
 # ---- lttb (MinMaxLTTB) ------------------------------------------------------
@@ -1526,26 +1641,49 @@ class TestLineNPointsBounds:
         with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
             LinePlot.from_trace_spec(spec)
 
+    def test_a_float_is_rejected(self):
+        # It passes the range test, then the kernels reject it and the minmax
+        # scan plan quietly returns two points.
+        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0]}))
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            fig.add_line(x="ts", y="val", n_points=2.5)
+
+    def test_a_decoded_float_is_rejected_too(self):
+        spec = LinePlot(x="ts", y="val", n_points=1000).to_trace_spec()
+        spec.params["n_points"] = 2.5
+        with pytest.raises(ValueError, match="n_points must be between 2 and 25000"):
+            LinePlot.from_trace_spec(spec)
+
+
+class TestLineColumnRoles:
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
+    def test_x_equal_to_y_is_rejected(self, downsample):
+        # It used to raise a DuplicateError on two strategies and quietly plot
+        # a column against itself on the other two.
+        fig = Figure(pl.DataFrame({"ts": [1.0, 2.0], "val": [1.0, 2.0]}))
+        with pytest.raises(ValueError, match="must be different columns"):
+            fig.add_line(x="ts", y="ts", n_points=10, downsample=downsample)
+
 
 class TestBucketsByXWidth:
-    """The property that tells the engine which lines carry the x contract."""
+    """The property that tells which lines carry the x contract."""
 
     @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
     def test_ungrouped_x_width_lines(self, downsample):
-        assert LinePlot(x="ts", y="val", downsample=downsample).buckets_by_x_width
+        assert LinePlot(x="ts", y="val", downsample=downsample)._x_width
 
     def test_nth_buckets_by_row_count(self):
-        assert not LinePlot(x="ts", y="val", downsample="nth").buckets_by_x_width
+        assert not LinePlot(x="ts", y="val", downsample="nth")._x_width
 
     def test_a_grouped_line_buckets_by_x_width_too(self):
         # One grid across the groups, so a series covering a tenth of the x
         # domain gets a tenth of the points.
-        assert LinePlot(x="ts", y="val", group_by="sensor").buckets_by_x_width
+        assert LinePlot(x="ts", y="val", group_by="sensor")._x_width
 
     def test_a_grouped_nth_line_buckets_by_row_count(self):
         assert not LinePlot(
             x="ts", y="val", group_by="sensor", downsample="nth"
-        ).buckets_by_x_width
+        )._x_width
 
 
 def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
@@ -1619,11 +1757,43 @@ class TestCheckSchema:
                 self._schema(pl.Int64, y_dtype=dtype)
             )
 
-    def test_an_nth_line_takes_any_y(self):
-        # A stride gathers rows and compares nothing.
-        LinePlot(x="ts", y="val", downsample="nth").check_schema(
-            self._schema(pl.Int64, y_dtype=pl.Decimal(10, 2))
+    @pytest.mark.parametrize("role", ["x", "y"])
+    @pytest.mark.parametrize(
+        "dtype",
+        [
+            pl.Decimal(10, 2),
+            pl.Int128,
+            pl.Categorical(),
+            pl.Enum([str(i) for i in range(50)]),
+        ],
+    )
+    def test_an_nth_line_rejects_what_its_kernel_panics_on(self, tmp_path, dtype, role):
+        # The stride kernel gathers both columns, so it panics on these dtypes
+        # too, on both source kinds.
+        col = pl.col("i")
+        col = (
+            col.cast(pl.String).cast(dtype)
+            if isinstance(dtype, (pl.Categorical, pl.Enum))
+            else col.cast(dtype)
         )
+        df = pl.DataFrame({"i": list(range(50))}).select(
+            ts=col if role == "x" else pl.col("i"),
+            val=col if role == "y" else pl.col("i").cast(pl.Float64),
+        )
+        for lf in _both_sources(df, tmp_path / "nth.parquet"):
+            with pytest.raises(ValueError, match="must not be a Decimal"):
+                _run_line(lf, LinePlot(x="ts", y="val", n_points=10, downsample="nth"))
+
+    @pytest.mark.parametrize("dtype", [pl.Boolean, pl.String])
+    def test_an_nth_line_still_takes_a_boolean_or_string_y(self, tmp_path, dtype):
+        df = pl.DataFrame({"ts": list(range(50))}).with_columns(
+            val=pl.col("ts").cast(dtype)
+        )
+        for lf in _both_sources(df, tmp_path / "nth_ok.parquet"):
+            deltas = _run_line(
+                lf, LinePlot(x="ts", y="val", n_points=10, downsample="nth")
+            )
+            assert len(deltas[0].updates["x"]) > 0
 
     @pytest.mark.parametrize("downsample", ["minmax", "lttb"])
     def test_a_decimal_y_is_rejected_on_both_source_kinds(self, tmp_path, downsample):
@@ -1686,6 +1856,19 @@ class TestLineDownsampleValidation:
 
 class TestStageTwoDropsNaN:
     """A whole NaN bucket still emits its NaN extremum from stage 1."""
+
+    @pytest.mark.parametrize("dtype", [pl.Float16, pl.Float32, pl.Float64])
+    def test_an_all_nan_y_gives_an_empty_line(self, tmp_path, dtype):
+        # Every float dtype, not a hand-kept list of two of them.
+        df = pl.DataFrame(
+            {
+                "ts": list(range(200)),
+                "val": pl.Series([float("nan")] * 200, dtype=dtype),
+            }
+        )
+        for lf in _both_sources(df, tmp_path / "nan_y.parquet"):
+            deltas = _run_line(lf, LinePlot(x="ts", y="val", n_points=10))
+            assert list(deltas[0].updates["y"]) == []
 
     @pytest.mark.parametrize("downsample", ["lttb", "fpcs"])
     def test_nan_y_never_reaches_the_output(self, downsample):

@@ -18,6 +18,43 @@ documented in the release notes below instead.
 `flexviz` and `flexviz-polars` are released together but versioned
 independently. `flexviz` pins a compatible `flexviz-polars` range.
 
+## [Unreleased]
+
+### Added
+
+- `downsample="lttb"` on `add_line`. MinMaxLTTB thins the min-max pass down to
+  `n_points` points, which reads smoother than an envelope on noisy data.
+- Equal x-width buckets for every line except `"nth"`, grouped lines included.
+- An x contract for those lines: x must be sorted, null-free and NaN-free on a
+  resident frame, and `n_points` must be between 2 and 25000.
+- Out-of-core histograms. 1-D, 2-D and geographic histograms run on a Parquet
+  scan at memory that does not grow with the row count.
+- A Parquet footer probe. On a single-file local scan, column bounds come from
+  the footer statistics instead of a column decode.
+
+### Changed
+
+- A zoomed histogram grid snaps to a fixed lattice, so bars keep their place
+  while you pan. A zoomed axis can show one bin more than configured.
+- Delta wire format: `hover_bounds` is replaced by an `x_edges` / `y_edges` /
+  `lat_edges` / `lon_edges` triple per binned axis. The client derives every
+  bin bound from the triple, and builds the geographic rectangles itself.
+- A figure is drawn once on load instead of twice.
+- Domain bounds are memoized on a static source: a resident frame, or a scan
+  registered with `cache=True`. A `cache=False` scan resolves them again, so an
+  uncached reset sees changed data on disk.
+- Spec version 0.5.
+- `pyarrow` is now a required dependency. The Parquet footer probe reads
+  row-group statistics through it.
+
+### Removed
+
+- `bin_boundaries` on `add_geo_histogram2d`.
+- `row_index_col` on `Figure` and `Dashboard`.
+- The `arg_min_max`, `fpcs`, `minmax_line` and `fpcs_line` plugin kernels.
+- `LFQueryBuilder.check_sorted`, replaced by `check_line_x`.
+- `cache_schema` on `LFQueryBuilder`, replaced by `cache`.
+
 ## [0.1.0b2] - 2026-08-28
 
 ### Added
