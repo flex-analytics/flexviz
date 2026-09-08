@@ -16,6 +16,10 @@ test:
 test-browser:
 	uv run pytest -m browser -p no:randomly --override-ini="addopts=" -v -n 6
 
+.PHONY: test-ooc
+test-ooc:
+	uv run pytest -m ooc --override-ini="addopts=" -v tests/test_ooc.py
+
 .PHONY: docs
 docs:
 	uv run --group docs mkdocs serve
