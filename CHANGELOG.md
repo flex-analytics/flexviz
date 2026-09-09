@@ -20,6 +20,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+## [0.1.0b3] - 2026-09-09
+
 ### Added
 
 - `downsample="lttb"` on `add_line`. MinMaxLTTB thins the min-max pass down to
@@ -29,8 +31,14 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   resident frame, and `n_points` must be between 2 and 25000.
 - Out-of-core histograms. 1-D, 2-D and geographic histograms run on a Parquet
   scan at memory that does not grow with the row count.
+- Out-of-core `"nth"` lines. Ungrouped and grouped nth traces stream on a scan
+  source via an ordered `collect_batches` fold.
 - A Parquet footer probe. On a single-file local scan, column bounds come from
   the footer statistics instead of a column decode.
+- Branded page title, favicon, and wordmark. The header links to the project
+  website.
+- User-scope skill install (`flexviz skill install --user`) and distribution
+  through the Codex marketplace.
 
 ### Changed
 
@@ -52,8 +60,16 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `bin_boundaries` on `add_geo_histogram2d`.
 - `row_index_col` on `Figure` and `Dashboard`.
 - The `arg_min_max`, `fpcs`, `minmax_line` and `fpcs_line` plugin kernels.
+  The default line kernel is now a fused pairs envelope
+  (`minmax_pairs_line`).
 - `LFQueryBuilder.check_sorted`, replaced by `check_line_x`.
 - `cache_schema` on `LFQueryBuilder`, replaced by `cache`.
+
+### Fixed
+
+- `register_source(cache=True)` silently ignored the `cache` flag.
+- Re-registering the same source name raised an error instead of warning.
+- 2-D histogram emitted wrong cells when a reduction produced NaN.
 
 ## [0.1.0b2] - 2026-08-28
 
@@ -125,5 +141,6 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
   the two are released together.
 
+[0.1.0b3]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b1
