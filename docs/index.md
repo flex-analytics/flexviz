@@ -118,7 +118,12 @@ See [Agents](guides/ai-agents.md) for the full loop and the privacy notes.
 
 - **Polars-native.** Your data stays a lazy `LazyFrame` until the moment a
   chart needs an aggregate. In-memory frames and Parquet-backed sources both
-  work, and larger-than-RAM sources stream through Polars' streaming engine.
+  work. That laziness is what gives out-of-core support: sources larger than
+  RAM stream rather than load, so peak memory stays flat as the row count
+  grows instead of scaling with it. A 1B-row, 24 GB Parquet source drives a
+  line and histogram dashboard, including zoom and cross-filter, in under
+  400 MB of resident memory. `make test-ooc` asserts that flatness per trace.
+  Box plots are the exception, because Polars computes quantiles in memory.
 - **Rust kernels.** Line downsampling and fixed-bin histogram binning run as
   parallel Polars expression plugins at memory-bandwidth speed.
 - **Aggregates over the wire.** The browser receives a few thousand points

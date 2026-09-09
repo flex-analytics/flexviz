@@ -29,14 +29,9 @@
 
 ---
 
-FlexViz is a visualization library for exploring datasets that are far too big
-for conventional Python dashboarding tools.  
-Charts stay interactive (zoom, pan, cross-filter) at 100M+ rows because every
-interaction is answered by lazy [Polars](https://github.com/pola-rs/polars)
-aggregations and Rust kernels instead of by shipping raw data to the browser.  
-The same engine serves a coding agent: it builds the dashboard, hands you the
-URL, and reads back what you zoomed and brushed. You explore the data
-together, and neither of you loads it.
+FlexViz is a visualization library for exploring datasets that are too big for conventional Python dashboarding tools.  
+Charts stay interactive (zoom, pan, cross-filter) at 100M+ rows because every interaction is answered by lazy [Polars](https://github.com/pola-rs/polars) aggregations and Rust kernels instead of by shipping raw data to the browser.  
+The same engine serves a coding agent: it builds the dashboard, hands you the URL, and reads back what you zoomed and brushed. You explore the data together, and neither of you loads it.
 
 <p align="center">
   <a href="https://flexviz.tech/demo.html">
@@ -162,9 +157,14 @@ own infra, and rows never leave it.
 
 ## Why it scales
 
-- **Polars-native.** Data stays a lazy `LazyFrame` until the last moment;
-  in-memory frames and parquet-backed sources both work, and larger-than-RAM
-  sources stream through Polars' streaming engine (*WIP*).
+- **Polars-native.** Data stays a lazy `LazyFrame` until the last moment.
+  In-memory frames and Parquet-backed sources both work. That laziness is
+  what gives out-of-core support: sources larger than RAM stream rather than
+  load, so peak memory stays flat as the row count grows instead of scaling
+  with it. A 1B-row, 24 GB Parquet source drives a line and histogram
+  dashboard, including zoom and cross-filter, in under 400 MB of resident
+  memory. `make test-ooc` asserts that flatness per trace. Box plots are the
+  exception, because Polars computes quantiles in memory.
 - **Rust kernels.** Min/max line downsampling and fixed-bin histogram/heatmap
   binning run as parallel Polars expression plugins
   (`flexviz_polars`), at memory-bandwidth speed.
