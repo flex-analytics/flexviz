@@ -137,9 +137,8 @@ class FlexvizExprNamespace:
     """Polars expression namespace for flexviz downsampling kernels.
 
     Activated by ``import flexviz_polars``. After that, any Polars expression
-    supports ``.flexviz.fixed_hist(...)``,
-    ``.flexviz.fixed_hist2d(...)``, ``.flexviz.fixed_hist2d_reduce(...)`` and
-    ``.flexviz.fixed_line_envelope2d(...)``.
+    supports ``.flexviz.fixed_hist(...)``, ``.flexviz.fixed_hist2d(...)``,
+    ``.flexviz.fixed_hist2d_reduce(...)`` and ``.flexviz.fixed_line_envelope2d(...)``.
     """
 
     def __init__(self, expr: pl.Expr) -> None:
