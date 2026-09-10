@@ -3,8 +3,8 @@
 Bin edges come from the unfiltered frame, so a cross-filter never moves them.
 The engine resolves every column a request needs in one min/max pass: the
 Parquet footer on a single-file Parquet scan, one collect otherwise. Every
-collect names its Polars engine: streaming for a scan, in-memory for a resident
-frame.
+collect names its Polars engine: streaming for a scan and for the probe,
+in-memory for a resident frame's aggregation.
 """
 
 from __future__ import annotations
@@ -184,13 +184,15 @@ class TestResolveCount:
 
 
 class TestEnginePinning:
-    def test_resident_frame_collects_in_memory(self, collects):
+    def test_resident_frame_streams_the_probe_and_aggregates_in_memory(self, collects):
+        """The probe streams on both source kinds; only the aggregation pins."""
         df = pl.DataFrame({"a": [float(i) for i in range(50)]})
         engine, infos = _engine(df, [Histogram(x="a", bins=10)])
         _init(engine, infos)
 
-        assert len(collects.minmax) == 1
-        assert set(collects.engines) == {"in-memory"}
+        assert [engine for engine, _ in collects.minmax] == ["streaming"]
+        rest = [engine for engine, plan in collects.calls if "__min_" not in plan]
+        assert set(rest) == {"in-memory"}
 
     def test_scan_collects_streaming(self, tmp_path, collects):
         # A line, not a histogram: a scanned histogram folds over batches and

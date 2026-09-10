@@ -20,6 +20,10 @@ test-browser:
 test-ooc:
 	uv run pytest -m ooc --override-ini="addopts=" -v tests/test_ooc.py
 
+.PHONY: test-perf
+test-perf:
+	uv run pytest -m benchmark --override-ini="addopts=" -v tests/test_perf_choices.py
+
 .PHONY: docs
 docs:
 	uv run --group docs mkdocs serve

@@ -245,8 +245,8 @@ class LFQueryBuilder:
 
         Fixed per source kind rather than left to ``"auto"``: a file scan must
         stream, a resident frame must not pay the streaming machinery. The line
-        bucket plan and the grouped histogram plan are the exceptions: both
-        stream on both source kinds.
+        bucket plan, the grouped histogram plan and the domain probe are the
+        exceptions: all stream on both source kinds.
         """
         return "streaming" if self.is_scan else "in-memory"
 
@@ -300,7 +300,9 @@ class LFQueryBuilder:
                     val = val.to_physical()
                 exprs.append(val.min().alias(f"__min_{c}__"))
                 exprs.append(val.max().alias(f"__max_{c}__"))
-            stats = self._ldf.select(exprs).collect(engine=self.collect_engine)
+            # Always streaming: the min/max select is ~2x faster on the
+            # streaming engine than on the in-memory one, on both source kinds.
+            stats = self._ldf.select(exprs).collect(engine="streaming")
             for c in missing:
                 memo[c] = (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
         return {c: memo[c] for c in columns}
