@@ -98,7 +98,7 @@ markers = [
     "integration: tests that spin up a FastAPI TestClient",
     "slow: benchmarks and large-dataset tests",
     "browser: browser-based tests that require Playwright (run with make test-browser)",
-    "benchmark: performance benchmarks (reserved for the future benchmark suite)",
+    "benchmark: performance-decision checks in tests/test_perf_choices.py (run with make test-perf)",
     "ooc: out-of-core memory matrix, one subprocess per trace and size (run with make test-ooc)",
 ]
 

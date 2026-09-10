@@ -168,7 +168,8 @@ jobs:
         run: uv run --no-sync pytest -m browser -p no:randomly --override-ini="addopts=" -n 6
 
   # A separate job: it spawns one subprocess per trace and size (1-2 minutes),
-  # and its memory counter only exists on Linux and macOS.
+  # its memory counter only exists on Linux and macOS, and it also runs the
+  # performance-decision checks, which need the built plugin and several cores.
   ooc:
     needs: plugin
     runs-on: ubuntu-latest
@@ -193,3 +194,6 @@ jobs:
 
       - name: Out-of-core memory matrix
         run: uv run --no-sync pytest -m ooc --override-ini="addopts=" -v tests/test_ooc.py
+
+      - name: Performance choices
+        run: uv run --no-sync pytest -m benchmark --override-ini="addopts=" -v tests/test_perf_choices.py
