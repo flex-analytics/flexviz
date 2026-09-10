@@ -28,11 +28,10 @@ Downsampling strategies:
   roughly ``2 * n_points`` points, fewer on gappy x.
 
 * ``"nth"`` — uniform stride gather: every ``max(1, n // n_points)``-th row,
-  as one Polars ``gather`` expression on both source kinds.
-  A resident frame runs the Rust kernel, which computes the stride itself (no
-  Polars ``len()`` expression dependency), so N grouped sub-traces parallelize
-  in a single ``select()``. An ungrouped ``nth`` on a scan takes ``nth_plan``,
-  which filters the frame before the gather so the reader prunes row groups.
+  as one Polars ``gather`` expression on both source kinds. The stride comes
+  from the column's own ``len()``, so grouped sub-traces share one ``select()``.
+  An ungrouped ``nth`` on a scan takes ``nth_plan`` instead, which filters the
+  frame before the gather so the reader prunes row groups.
 
 """
 
@@ -271,17 +270,15 @@ def _nth_agg_expr(
 ) -> pl.Expr:
     """Every-nth as one ``gather`` expression, for both source kinds.
 
-    The positions come from the column's own ``len()``, so the same expression
-    serves a ``select`` (the frame, or the viewport slice of it) and a
-    ``group_by`` aggregation (the group). The struct fields are named after the
-    columns, so ``_to_update`` reads every path the same way. An empty input
-    implodes to one row holding an empty list, which ``_to_update`` explodes
-    away.
+    Positions come from the column's own ``len()``, so the same expression
+    serves a ``select`` (the frame or its viewport slice) and a ``group_by``
+    aggregation. Struct fields are named after the columns, so ``_to_update``
+    reads every path the same way; an empty input implodes to one empty-list
+    row that ``_to_update`` explodes away.
 
-    On a scan the streaming engine cannot stream a ``gather`` and materializes
-    the gathered columns instead (the whole column unzoomed, the pruned window
-    zoomed), so a grouped ``nth`` on a scan is not out-of-core; ``test_ooc.py``
-    marks it so.
+    A scan cannot stream a ``gather``, so it materializes the gathered columns
+    (the whole column unzoomed, the pruned window zoomed). A grouped ``nth`` on
+    a scan is therefore not out-of-core; ``test_ooc.py`` marks it so.
     """
     x = _apply_viewport(pl.col(x_col), vp)
     y = _apply_viewport(pl.col(y_col), vp)
@@ -300,21 +297,18 @@ def nth_plan(
 ):
     """Ungrouped every-nth on a scan: count, then a strided gather.
 
-    Two streaming passes over the same frame, because the stride needs the row
-    count and one streaming plan cannot read ``len()`` and gather from it. Both
-    passes stream, so the peak stays flat in rows where ``_nth_agg_expr`` would
-    materialize the columns. Unfiltered the count is Parquet metadata. Filtered,
-    the viewport is a frame-level filter that reaches the reader, so it prunes
-    row groups; the expression filters inside the select, where the reader
-    never sees it.
+    Two streaming passes over the same frame: the stride needs the row count,
+    and one streaming plan cannot read ``len()`` and gather from it. Both passes
+    stream, so peak memory stays flat in rows where ``_nth_agg_expr`` would
+    materialize the columns. Unfiltered, the count is Parquet metadata. Filtered,
+    the viewport is a frame-level filter the reader prunes row groups with, where
+    ``_nth_agg_expr`` filters inside the select and the reader never sees it.
 
     ``gather_every`` keeps its stride phase across morsels, so the plan returns
-    the rows ``_nth_agg_expr`` returns. Polars does not document that, so a
-    scan-versus-resident parity test pins it.
-
-    The struct fields are named after the columns, the shape the expression
-    emits, so ``_to_update`` reads both the same way. An empty source implodes
-    to one row holding an empty list, which ``_to_update`` explodes away.
+    the same rows as ``_nth_agg_expr``. Polars does not document that, so a
+    scan-versus-resident parity test pins it. Struct output matches
+    ``_nth_agg_expr``: fields named after the columns, an empty source imploding
+    to one empty-list row.
     """
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:

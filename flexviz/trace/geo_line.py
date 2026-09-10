@@ -7,10 +7,9 @@ map viewport using the **every-nth** strategy, then optionally inserts
 Aggregation strategy
 --------------------
 Only ``"nth"`` (uniform-stride gather) is supported: every
-``max(1, n // n_points)``-th row is kept.  On a resident frame the trace runs
-``_nth_agg_expr`` (shared with ``LinePlot``), one ``gather`` expression that
-joins the fused ``select()``.  On a scan it runs ``nth_plan`` (also shared),
-which streams and returns the same rows.
+``max(1, n // n_points)``-th row is kept.  A resident frame runs the shared
+``_nth_agg_expr``, one ``gather`` in the fused ``select()``.  A scan runs the
+shared ``nth_plan``, which streams and returns the same rows.
 
 Map viewport
 ------------
