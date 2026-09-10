@@ -7,11 +7,10 @@ map viewport using the **every-nth** strategy, then optionally inserts
 Aggregation strategy
 --------------------
 Only ``"nth"`` (uniform-stride gather) is supported: every
-``max(1, n // n_points)``-th row is kept.  On a resident frame the stride is
-computed inside the ``flexviz_polars`` Rust kernel, with no ``len()``
-expression dependency, so the aggregation parallelizes within a single
-``select()`` call.  On a scan the trace runs ``nth_plan`` (shared with
-``LinePlot``), which streams and returns the same rows.
+``max(1, n // n_points)``-th row is kept.  On a resident frame the trace runs
+``_nth_agg_expr`` (shared with ``LinePlot``), one ``gather`` expression that
+joins the fused ``select()``.  On a scan it runs ``nth_plan`` (also shared),
+which streams and returns the same rows.
 
 Map viewport
 ------------
@@ -44,62 +43,10 @@ from typing import Any
 
 import polars as pl
 
-import flexviz_polars as _fvp  # noqa: F401 — registers pl.Expr.flexviz namespace
-
 from ..LF import AggregationSpec
 from ..spec import TraceSpec
 from .base import FlexTrace, TraceResult, _range_filter_expr
-from .line import _N_POINTS_MAX, _N_POINTS_MIN, nth_plan
-
-# ---------------------------------------------------------------------------
-# Aggregation expression builder
-# ---------------------------------------------------------------------------
-
-
-def _geo_line_nth_agg_expr(
-    lat_col: str,
-    lon_col: str,
-    vp_expr: pl.Expr | None,
-    n_points: int,
-    uid: str,
-) -> pl.Expr:
-    """Single-pass every-nth downsampling using the flexviz_polars Rust kernel.
-
-    Serves a resident frame. Stride is computed inside the kernel, with no
-    ``len()`` expression dependency, so the aggregation can parallelize with
-    other traces in the same ``select()`` call. A scan takes ``nth_plan``
-    instead: the kernel reads the whole column into memory.
-
-    Parameters
-    ----------
-    lat_col:
-        Column name for latitude.
-    lon_col:
-        Column name for longitude.
-    vp_expr:
-        Optional combined boolean filter expression (lat AND lon bounding
-        box).  Applied via ``.filter()`` before stride selection.
-    n_points:
-        Maximum number of points to return.
-    uid:
-        Alias for the output column (trace uid).
-    """
-    lat = pl.col(lat_col)
-    lon = pl.col(lon_col)
-    if vp_expr is not None:
-        lat = lat.filter(vp_expr)
-        lon = lon.filter(vp_expr)
-    return (
-        pl.struct(
-            **{
-                lat_col: lat.flexviz.every_nth(n_points),
-                lon_col: lon.flexviz.every_nth(n_points),
-            }
-        )
-        .implode()
-        .alias(uid)
-    )
-
+from .line import _N_POINTS_MAX, _N_POINTS_MIN, _nth_agg_expr, nth_plan
 
 # ---------------------------------------------------------------------------
 # Viewport helper
@@ -249,8 +196,8 @@ class GeoLine(FlexTrace):
                 vp_expr = lat_f & lon_f
 
         if scan_source:
-            # The kernel reads the whole column into memory, so a scan runs the
-            # streaming plan instead.
+            # The expression materializes the gathered columns, so a scan runs
+            # the two-pass streaming plan instead.
             return AggregationSpec(
                 uid=self.uid,
                 plan=nth_plan(
@@ -258,7 +205,8 @@ class GeoLine(FlexTrace):
                 ),
             )
 
-        expr = _geo_line_nth_agg_expr(
+        # The map viewport is a lat/lon box, never a slice, so it is a mask.
+        expr = _nth_agg_expr(
             self.lat_col, self.lon_col, vp_expr, self.n_points, self.uid
         )
         return AggregationSpec(expr=expr, uid=self.uid)

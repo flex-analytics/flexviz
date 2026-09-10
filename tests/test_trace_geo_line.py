@@ -452,7 +452,7 @@ class TestGeoLineEngine:
 
 
 class TestGeoLineNthScanPlan:
-    """``nth`` on a scan runs ``nth_plan`` and returns what the kernel returns.
+    """``nth`` on a scan runs ``nth_plan`` and returns what the expression returns.
 
     The gather keeps its stride phase across streaming morsels, so the frames
     are written with small row groups to give the streaming engine many of them.

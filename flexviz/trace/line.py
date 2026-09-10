@@ -27,11 +27,12 @@ Downsampling strategies:
   boundaries.  ``n_points`` is a target, not a hard cap: the walk emits up to
   roughly ``2 * n_points`` points, fewer on gappy x.
 
-* ``"nth"`` — uniform stride gather: every ``max(1, n // n_points)``-th row.
+* ``"nth"`` — uniform stride gather: every ``max(1, n // n_points)``-th row,
+  as one Polars ``gather`` expression on both source kinds.
   A resident frame runs the Rust kernel, which computes the stride itself (no
   Polars ``len()`` expression dependency), so N grouped sub-traces parallelize
-  in a single ``select()``. A scan streams instead: ``nth_plan`` ungrouped,
-  ``grouped_nth_plan`` grouped.
+  in a single ``select()``. An ungrouped ``nth`` on a scan takes ``nth_plan``,
+  which filters the frame before the gather so the reader prunes row groups.
 
 """
 
@@ -248,32 +249,45 @@ def _fpcs_walk(x_min: list, y_min: list, x_max: list, y_max: list) -> tuple[list
 # ---------------------------------------------------------------------------
 
 
-def _plugin_nth_agg_expr(
+def _nth_indices(length: pl.Expr, n_points: int) -> pl.Expr:
+    """Within-column positions ``0, s, 2s, ...`` with ``s = max(1, n // n_points)``,
+    capped at ``n_points`` rows, for a column of ``length`` rows.
+
+    Fewer rows than ``n_points`` keeps every row (stride 1). The tail past
+    ``n_points * s`` is never reached: ``nth`` is a stride, not a uniform
+    sample. An empty column yields no positions.
+    """
+    stride = pl.max_horizontal(length // n_points, 1)
+    n_out = pl.min_horizontal((length + stride - 1) // stride, n_points)
+    return pl.int_range(n_out) * stride
+
+
+def _nth_agg_expr(
     x_col: str,
     y_col: str,
     vp: Viewport | None,
     n_points: int,
     uid: str,
 ) -> pl.Expr:
-    """Single-pass every-nth using the flexviz_polars Rust kernel.
+    """Every-nth as one ``gather`` expression, for both source kinds.
 
-    Serves a resident frame, grouped or not. Stride is computed inside the
-    kernel, with no ``len()`` expression dependency, so N sub-traces inside one
-    ``select()`` can parallelize in a single pass over the frame. A scan takes
-    ``nth_plan`` or ``grouped_nth_plan`` instead: the kernel reads the whole
-    column into memory.
+    The positions come from the column's own ``len()``, so the same expression
+    serves a ``select`` (the frame, or the viewport slice of it) and a
+    ``group_by`` aggregation (the group). The struct fields are named after the
+    columns, so ``_to_update`` reads every path the same way. An empty input
+    implodes to one row holding an empty list, which ``_to_update`` explodes
+    away.
+
+    On a scan the streaming engine cannot stream a ``gather`` and materializes
+    the gathered columns instead (the whole column unzoomed, the pruned window
+    zoomed), so a grouped ``nth`` on a scan is not out-of-core; ``test_ooc.py``
+    marks it so.
     """
     x = _apply_viewport(pl.col(x_col), vp)
     y = _apply_viewport(pl.col(y_col), vp)
+    idx = _nth_indices(x.len(), n_points)
     return (
-        pl.struct(
-            **{
-                x_col: x.flexviz.every_nth(n_points),
-                y_col: y.flexviz.every_nth(n_points),
-            }
-        )
-        .implode()
-        .alias(uid)
+        pl.struct(**{x_col: x.gather(idx), y_col: y.gather(idx)}).implode().alias(uid)
     )
 
 
@@ -287,18 +301,20 @@ def nth_plan(
     """Ungrouped every-nth on a scan: count, then a strided gather.
 
     Two streaming passes over the same frame, because the stride needs the row
-    count and one streaming plan cannot read ``len()`` and gather from it.
-    Unfiltered the count is Parquet metadata. Filtered, the viewport is a
-    frame-level filter that reaches the reader, so it prunes row groups; the
-    kernel filters inside the expression, where the reader never sees it.
+    count and one streaming plan cannot read ``len()`` and gather from it. Both
+    passes stream, so the peak stays flat in rows where ``_nth_agg_expr`` would
+    materialize the columns. Unfiltered the count is Parquet metadata. Filtered,
+    the viewport is a frame-level filter that reaches the reader, so it prunes
+    row groups; the expression filters inside the select, where the reader
+    never sees it.
 
     ``gather_every`` keeps its stride phase across morsels, so the plan returns
-    the rows the kernel returns. Polars does not document that, so a
+    the rows ``_nth_agg_expr`` returns. Polars does not document that, so a
     scan-versus-resident parity test pins it.
 
-    The struct fields are named after the columns, the shape the kernel emits,
-    so ``_to_update`` reads both the same way. An empty source implodes to one
-    row holding an empty list, which ``_to_update`` explodes away.
+    The struct fields are named after the columns, the shape the expression
+    emits, so ``_to_update`` reads both the same way. An empty source implodes
+    to one row holding an empty list, which ``_to_update`` explodes away.
     """
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
@@ -313,98 +329,6 @@ def nth_plan(
             .head(n_points)
             .select(pl.struct(pl.col(a_col), pl.col(b_col)).implode().alias(uid))
             .collect(engine="streaming")
-        )
-
-    return run
-
-
-# Rows per streamed batch in the grouped nth fold. A quarter of the histogram
-# folds' chunk (``batch_fold._FOLD_CHUNK_ROWS``): those reduce a batch to a bin
-# grid, while this one carries x, y and the group column through a per-group
-# position pass, a join and a filter. Measured on a 16M-row scan, 10 groups:
-# 1M peaks at 654 MB, 500k at 468 MB, 250k at 381 MB, and 100k gains nothing
-# more.
-_NTH_FOLD_CHUNK_ROWS = 250_000
-
-# Every column the grouped nth fold adds carries this prefix, so a user column
-# can only collide by using the prefix itself.
-_NTH_POS = "__fv_pos"
-_NTH_OFF = "__fv_off"
-_NTH_STRIDE = "__fv_stride"
-_NTH_COUNT = "__fv_c"
-
-
-def grouped_nth_plan(
-    x_col: str,
-    y_col: str,
-    n_points: int,
-    uid: str,
-    group_cols: tuple[str, ...],
-):
-    """Grouped every-nth on a scan: count per group, then an ordered fold.
-
-    The kernel keeps, per group, the rows at within-group positions
-    ``0, s, 2s, ...`` with ``s = max(1, n_g // n_points)``, capped at
-    ``n_points`` rows. Polars streams neither an ``.over()`` row index nor a
-    non-reduction aggregation inside a streaming ``group_by``, so this counts
-    the rows per group in one streaming pass and then folds over the batches.
-
-    Order matters here, unlike the histogram folds: ``maintain_order=True`` is
-    what makes the positions match the kernel. The state frame carries, per
-    group, the stride and the rows earlier batches already held, and that offset
-    plus the within-batch position is the position the kernel strides over. The
-    joins keep null group values matched (``nulls_equal``) so a null group keeps
-    its own child, and the batch join keeps the left order so the kept rows stay
-    in frame order.
-
-    The struct fields are named after the columns, the shape the kernel emits,
-    so ``_to_update`` reads both the same way.
-    """
-    gcols = list(group_cols)
-
-    def run(batch_ldf: pl.LazyFrame) -> pl.DataFrame:
-        src = batch_ldf.select(list(dict.fromkeys((*gcols, x_col, y_col))))
-        state = (
-            src.group_by(gcols)
-            .agg(
-                pl.max_horizontal(pl.len() // n_points, 1)
-                .cast(pl.Int64)
-                .alias(_NTH_STRIDE)
-            )
-            .collect(engine="streaming")
-            .with_columns(pl.lit(0, dtype=pl.Int64).alias(_NTH_OFF))
-        )
-
-        pos = pl.col(_NTH_POS) + pl.col(_NTH_OFF)
-        stride = pl.col(_NTH_STRIDE)
-        kept: list[pl.DataFrame] = []
-        for batch in src.collect_batches(
-            chunk_size=_NTH_FOLD_CHUNK_ROWS, maintain_order=True, engine="streaming"
-        ):
-            joined = batch.with_columns(
-                pl.int_range(pl.len()).over(gcols).alias(_NTH_POS)
-            ).join(state, on=gcols, how="left", nulls_equal=True, maintain_order="left")
-            kept.append(
-                joined.filter((pos % stride == 0) & (pos < stride * n_points)).select(
-                    *dict.fromkeys((*gcols, x_col, y_col))
-                )
-            )
-            counts = batch.group_by(gcols).agg(pl.len().alias(_NTH_COUNT))
-            state = (
-                state.join(counts, on=gcols, how="left", nulls_equal=True)
-                .with_columns(
-                    (pl.col(_NTH_OFF) + pl.col(_NTH_COUNT).fill_null(0)).alias(_NTH_OFF)
-                )
-                .drop(_NTH_COUNT)
-            )
-
-        # No batches means an empty source; the typed empty frame gives the
-        # zero-group result the kernel path returns for one.
-        out = pl.concat(kept) if kept else src.head(0).collect()
-        return (
-            out.group_by(gcols)
-            .agg(pl.struct(pl.col(x_col), pl.col(y_col)).alias(uid))
-            .sort(gcols)
         )
 
     return run
@@ -490,9 +414,9 @@ class LinePlot(FlexTrace):
         envelope algorithm; ``"lttb"`` thins a 4x min-max prefetch with the
         MinMaxLTTB triangle rule; ``"fpcs"`` uses
         Feature-Preserving Compensated Sampling; ``"nth"`` selects every nth
-        row.  All of them need the ``flexviz_polars`` plugin.  The first three
-        bucket by x width, and grouped they share one grid across the groups,
-        so the budget follows the x span of each series.
+        row as a plain Polars ``gather``.  The first three need the
+        ``flexviz_polars`` plugin, bucket by x width, and grouped they share one
+        grid across the groups, so the budget follows the x span of each series.
     axes:
         Tuple of axis anchors, e.g. ``("x", "y")``.  Used by the engine to
         match viewport events to this trace.
@@ -781,7 +705,7 @@ class LinePlot(FlexTrace):
         column is ascending (set by ``assume_sorted_x`` / ``check_line_x``). It
         only enables a faster viewport restriction, and only for a resident
         ``nth``: an ungrouped x-width line on a resident frame is sorted by
-        contract, so it always slices, and the scan plans always mask. The
+        contract, so it always slices, and the scan plan always masks. The
         output is unchanged either way.
 
         ``scan_source`` says the rows come from storage rather than a resident
@@ -793,13 +717,13 @@ class LinePlot(FlexTrace):
         only in which member of an exact ``y`` plateau they pick. ``fpcs`` can
         emit a different point set on such a plateau, because the walk orders
         each pair by x. ``nth`` takes ``nth_plan``, which returns the same rows
-        as the kernel.
+        as ``_nth_agg_expr``.
 
         A grouped x-width line takes ``pairs_plan`` on both source kinds, on the
         same grid as an ungrouped line over the same x. Its plateau tie-break is
-        the arbitrary one of the ungrouped scan plan. Grouped ``nth`` keeps its
-        kernel inside the ``group_by`` on a resident frame, and on a scan takes
-        ``grouped_nth_plan``, which returns the same rows.
+        the arbitrary one of the ungrouped scan plan. A grouped ``nth`` runs
+        ``_nth_agg_expr`` inside the fused ``group_by`` on both source kinds;
+        on a scan that holds the grouped columns in memory (see the expression).
 
         An unzoomed x-width trace requires ``x_col`` in ``domains``. A
         ``(None, None)`` entry means an empty or all-null column.
@@ -842,24 +766,10 @@ class LinePlot(FlexTrace):
                         group_cols=group_by_cols,
                     ),
                 )
-            if scan_source:
-                # The kernel holds every group's columns in memory at once, so
-                # a scan folds over streamed batches instead.
-                return GroupedAggregationSpec(
-                    **spec,
-                    agg_exprs=(),
-                    plan=grouped_nth_plan(
-                        self.x_col,
-                        self.y_col,
-                        self.n_points,
-                        self.uid,
-                        group_by_cols,
-                    ),
-                )
             return GroupedAggregationSpec(
                 **spec,
                 agg_exprs=(
-                    _plugin_nth_agg_expr(
+                    _nth_agg_expr(
                         self.x_col, self.y_col, None, self.n_points, self.uid
                     ),
                 ),
@@ -933,8 +843,8 @@ class LinePlot(FlexTrace):
             )
 
         if scan_source:
-            # The kernel reads the whole column into memory, so a scan runs the
-            # streaming plan instead.
+            # The expression materializes the gathered columns, so a scan runs
+            # the two-pass streaming plan instead.
             return AggregationSpec(
                 uid=self.uid,
                 plan=nth_plan(
@@ -950,7 +860,7 @@ class LinePlot(FlexTrace):
                 ),
             )
 
-        expr = _plugin_nth_agg_expr(
+        expr = _nth_agg_expr(
             self.x_col,
             self.y_col,
             _viewport_window(self.x_col, x_range, schema, self.x_col in sorted_cols),
