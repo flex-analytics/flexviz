@@ -2289,13 +2289,14 @@ class TestResidencySeam:
         assert resident.plan is None, "a resident source must keep the kernel"
         assert scanned.plan is not None, "a scan source must bring its own plan"
 
-    def test_grouped_nth_keeps_the_kernel_only_on_a_resident_frame(self):
-        """A scan folds over batches; a resident frame keeps the kernel."""
+    def test_grouped_nth_takes_the_expression_on_both_source_kinds(self):
+        """The gather expression joins the fused group_by on either source."""
         line = LinePlot(
             x="ts", y="val", n_points=1000, downsample="nth", group_by="sensor"
         )
-        assert line.get_aggregation_spec({}, scan_source=False).plan is None
-        assert line.get_aggregation_spec({}, scan_source=True).plan is not None
+        for scan_source in (False, True):
+            spec = line.get_aggregation_spec({}, scan_source=scan_source)
+            assert spec.plan is None and len(spec.agg_exprs) == 1
 
     def test_grouped_histogram_uses_the_plan_on_both_source_kinds(self):
         """The kernel serves only the ungrouped resident histogram."""

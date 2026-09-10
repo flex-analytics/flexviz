@@ -15,16 +15,6 @@ if TYPE_CHECKING:
 LIB = Path(__file__).parent
 
 
-def _every_nth(expr: IntoExprColumn, n_points: int) -> pl.Expr:
-    return register_plugin_function(
-        args=[expr],
-        plugin_path=LIB,
-        function_name="every_nth",
-        kwargs={"n_points": n_points},
-        is_elementwise=False,
-    )
-
-
 def _kernel_bound(value) -> int | float:
     """Normalize one ``x_domain`` bound to the Python type the kernel reads.
 
@@ -147,26 +137,12 @@ class FlexvizExprNamespace:
     """Polars expression namespace for flexviz downsampling kernels.
 
     Activated by ``import flexviz_polars``. After that, any Polars expression
-    supports ``.flexviz.every_nth(...)``, ``.flexviz.fixed_hist(...)``,
-    ``.flexviz.fixed_hist2d(...)``, ``.flexviz.fixed_hist2d_reduce(...)`` and
-    ``.flexviz.fixed_line_envelope2d(...)``.
+    supports ``.flexviz.fixed_hist(...)``, ``.flexviz.fixed_hist2d(...)``,
+    ``.flexviz.fixed_hist2d_reduce(...)`` and ``.flexviz.fixed_line_envelope2d(...)``.
     """
 
     def __init__(self, expr: pl.Expr) -> None:
         self._expr = expr
-
-    def every_nth(self, n_points: int) -> pl.Expr:
-        """Return every nth element of the series (stride computed from series length).
-
-        Parameters
-        ----------
-        n_points:
-            Target number of output points.  The kernel computes
-            ``stride = max(1, len // n_points)`` internally — no Polars
-            ``len()`` expression dependency.  When ``n_points >= len``,
-            the full series is returned unchanged.
-        """
-        return _every_nth(self._expr, n_points)
 
     def fixed_hist(self, lo_expr: pl.Expr, hi_expr: pl.Expr, n_bins: int) -> pl.Expr:
         """Compute a fixed-bin 1D histogram using O(n) direct floor-division indexing.

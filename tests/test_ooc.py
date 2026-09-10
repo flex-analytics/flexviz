@@ -47,6 +47,11 @@ _XFAIL_QUANTILE = pytest.mark.xfail(
 _XFAIL_BY_NAME = {
     "box": _XFAIL_QUANTILE,
     "box-grouped": _XFAIL_QUANTILE,
+    # The grouped gather runs in memory on a scan: Polars streams no
+    # non-reduction aggregation, and the grouped columns are materialized.
+    "line-grouped-nth": pytest.mark.xfail(
+        strict=True, reason="grouped nth gathers in memory on a scan"
+    ),
 }
 
 _PARAMS = [

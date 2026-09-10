@@ -1,4 +1,4 @@
-"""Unit tests for flexviz_polars plugin functions: every_nth and minmax_pairs_line."""
+"""Unit tests for flexviz_polars plugin functions."""
 
 from __future__ import annotations
 
@@ -12,10 +12,6 @@ import flexviz_polars  # registers pl.Expr.flexviz namespace
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _every_nth(series: pl.Series, n_points: int) -> pl.Series:
-    return pl.select(pl.lit(series).flexviz.every_nth(n_points)).to_series()
 
 
 def _minmax_pairs_line(
@@ -247,68 +243,6 @@ def _fixed_hist2d_reduce_values(
 ) -> list[float | None]:
     result = _fixed_hist2d_reduce(x, y, z, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y, histfunc)
     return result[0]["z_flat"]
-
-
-# ---------------------------------------------------------------------------
-# every_nth
-# ---------------------------------------------------------------------------
-
-
-class TestEveryNth:
-    def test_empty_series(self):
-        s = pl.Series("x", [], dtype=pl.Int64)
-        result = _every_nth(s, n_points=10)
-        assert result.is_empty()
-        assert result.dtype == pl.Int64
-
-    def test_len_less_than_n_points(self):
-        s = pl.Series("x", [1, 2, 3, 4, 5])
-        result = _every_nth(s, n_points=100)
-        # stride = max(1, 5//100) = 1, so full series returned
-        assert result.to_list() == [1, 2, 3, 4, 5]
-
-    def test_len_equal_n_points(self):
-        s = pl.Series("x", list(range(10)))
-        result = _every_nth(s, n_points=10)
-        # stride = max(1, 10//10) = 1
-        assert len(result) == 10
-        assert result.to_list() == list(range(10))
-
-    def test_stride_2(self):
-        s = pl.Series("x", list(range(100)))
-        result = _every_nth(s, n_points=50)
-        # stride = max(1, 100//50) = 2 → elements at 0, 2, 4, ...
-        assert len(result) == 50
-        assert result.to_list() == list(range(0, 100, 2))
-
-    def test_output_count_le_n_points(self):
-        for n_rows, n_points in [(1000, 200), (999, 100), (1, 50), (500, 500)]:
-            s = pl.Series("x", list(range(n_rows)))
-            result = _every_nth(s, n_points=n_points)
-            assert len(result) <= n_points, f"n_rows={n_rows}, n_points={n_points}"
-
-    def test_output_dtype_preserved_float(self):
-        s = pl.Series("x", [1.0, 2.0, 3.0, 4.0], dtype=pl.Float64)
-        result = _every_nth(s, n_points=2)
-        assert result.dtype == pl.Float64
-
-    def test_output_dtype_preserved_int32(self):
-        s = pl.Series("x", [1, 2, 3, 4], dtype=pl.Int32)
-        result = _every_nth(s, n_points=2)
-        assert result.dtype == pl.Int32
-
-    def test_single_element(self):
-        s = pl.Series("x", [42])
-        result = _every_nth(s, n_points=10)
-        assert result.to_list() == [42]
-
-    def test_large_stride(self):
-        s = pl.Series("x", list(range(1000)))
-        result = _every_nth(s, n_points=10)
-        # stride = 100
-        assert len(result) == 10
-        assert result[0] == 0
-        assert result[1] == 100
 
 
 # ---------------------------------------------------------------------------

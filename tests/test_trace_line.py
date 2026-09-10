@@ -15,7 +15,7 @@ from flexviz.events import InteractionEvent
 from flexviz.figure import Figure
 from flexviz.LF import LFQueryBuilder
 from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState, TraceSpec
-from flexviz.trace.line import LinePlot
+from flexviz.trace.line import LinePlot, _nth_agg_expr
 from flexviz.trace.line_buckets import _grouped_bucket_keys, pairs_plan
 
 # ---- helpers ---------------------------------------------------------------
@@ -1892,8 +1892,71 @@ class TestStageTwoDropsNaN:
         assert xs == sorted(xs)
 
 
+class TestNthExpr:
+    """``_nth_agg_expr`` keeps the stride semantics the Rust kernel had.
+
+    ``stride = max(1, len // n_points)``, positions ``0, s, 2s, ...``, at most
+    ``n_points`` rows, every row when there are fewer than ``n_points``.
+    """
+
+    @staticmethod
+    def _rows(xs: list, n_points: int, dtype=None) -> tuple[list, list]:
+        df = pl.DataFrame({"x": pl.Series(xs, dtype=dtype), "y": xs})
+        out = df.select(_nth_agg_expr("x", "y", None, n_points, "u"))
+        pts = out["u"].item().explode(empty_as_null=True).struct.unnest()
+        return pts["x"].to_list(), pts["x"].dtype
+
+    def test_stride_two(self):
+        xs, _ = self._rows(list(range(100)), 50)
+        assert xs == list(range(0, 100, 2))
+
+    def test_fewer_rows_than_n_points_keeps_every_row(self):
+        xs, _ = self._rows([1, 2, 3, 4, 5], 100)
+        assert xs == [1, 2, 3, 4, 5]
+
+    @pytest.mark.parametrize(
+        "n_rows, n_points", [(1000, 200), (999, 100), (1, 50), (500, 500), (10, 10)]
+    )
+    def test_at_most_n_points_and_a_multiple_of_the_stride(self, n_rows, n_points):
+        xs, _ = self._rows(list(range(n_rows)), n_points)
+        stride = max(1, n_rows // n_points)
+        assert len(xs) == min(-(-n_rows // stride), n_points)
+        assert xs == [i * stride for i in range(len(xs))]
+
+    def test_empty_input_returns_no_rows(self):
+        xs, dtype = self._rows([], 10, dtype=pl.Int64)
+        assert xs == [] and dtype == pl.Int64
+
+    @pytest.mark.parametrize("dtype", [pl.Int32, pl.Float64, pl.String, pl.Boolean])
+    def test_dtype_is_preserved_and_nulls_are_kept(self, dtype):
+        vals = [None if i % 3 == 0 else i for i in range(12)]
+        if dtype == pl.String:
+            vals = [None if v is None else str(v) for v in vals]
+        elif dtype == pl.Boolean:
+            vals = [None if v is None else bool(v % 2) for v in vals]
+        xs, out_dtype = self._rows(vals, 6, dtype=dtype)
+        assert out_dtype == dtype
+        assert xs == vals[::2]
+
+    def test_a_viewport_slice_and_mask_agree(self):
+        df = pl.DataFrame({"x": list(range(1000)), "y": list(range(1000))})
+        sliced = df.select(_nth_agg_expr("x", "y", (pl.lit(200), pl.lit(500)), 50, "u"))
+        masked = df.select(
+            _nth_agg_expr("x", "y", (pl.col("x") >= 200) & (pl.col("x") < 700), 50, "u")
+        )
+        assert sliced.equals(masked)
+        xs = (
+            sliced["u"]
+            .item()
+            .explode(empty_as_null=True)
+            .struct.unnest()["x"]
+            .to_list()
+        )
+        assert xs == list(range(200, 700, 10))
+
+
 class TestNthScanPlan:
-    """``nth`` on a scan runs ``nth_plan`` and returns what the kernel returns.
+    """``nth`` on a scan runs ``nth_plan`` and returns what the expression returns.
 
     The gather keeps its stride phase across streaming morsels. Polars does not
     document that, so the parity tests here pin it: the frames are written with
@@ -1983,7 +2046,7 @@ class TestNthScanPlan:
         assert out["x"] == []
         assert out["y"] == []
 
-    def test_a_scan_takes_the_plan_and_a_resident_frame_the_kernel(self):
+    def test_a_scan_takes_the_plan_and_a_resident_frame_the_expression(self):
         trace = LinePlot(x="ts", y="val", n_points=100, downsample="nth")
         schema = pl.Schema({"ts": pl.Int64, "val": pl.Float64})
 
@@ -2016,10 +2079,12 @@ class TestNthScanPlan:
 
 
 class TestGroupedNthScanPlan:
-    """Grouped ``nth`` on a scan folds over batches and returns the kernel rows.
+    """Grouped ``nth`` runs the same ``gather`` expression on both source kinds.
 
-    The fold carries a per-group offset across batches, so every case here is
-    checked against the kernel on a resident frame over the same data.
+    On a scan the streaming engine falls back to an in-memory ``group_by`` for
+    the gather, so every case here is checked against a resident frame over
+    the same data, written with small row groups so the scan arrives in many
+    morsels.
     """
 
     @staticmethod
@@ -2057,15 +2122,15 @@ class TestGroupedNthScanPlan:
             x="ts", y="val", n_points=n_points, downsample="nth", group_by=group_by
         )
 
-    def test_a_scan_takes_the_plan_and_a_resident_frame_the_kernel(self):
+    def test_both_source_kinds_take_the_expression(self):
         trace = self._trace()
         schema = pl.Schema({"ts": pl.Int64, "val": pl.Float64, "g": pl.String})
 
-        scanned = trace.get_aggregation_spec({}, schema=schema, scan_source=True)
-        assert scanned.plan is not None and scanned.agg_exprs == ()
-
-        resident = trace.get_aggregation_spec({}, schema=schema, scan_source=False)
-        assert resident.plan is None and len(resident.agg_exprs) == 1
+        for scan_source in (True, False):
+            spec = trace.get_aggregation_spec(
+                {}, schema=schema, scan_source=scan_source
+            )
+            assert spec.plan is None and len(spec.agg_exprs) == 1
 
     def test_unfiltered_matches_the_kernel(self, tmp_path):
         resident, scanned = self._both(
@@ -2126,15 +2191,4 @@ class TestGroupedNthScanPlan:
             self._frame(), tmp_path / "nth.parquet", self._trace(group_by=group_by)
         )
         assert len(resident) == (10 if group_by == "gc" else 20)
-        assert resident == scanned
-
-    def test_groups_spread_over_many_batches_match_the_kernel(
-        self, tmp_path, monkeypatch
-    ):
-        # The offset the fold carries between batches: without it a group whose
-        # rows per batch are not a multiple of its stride drifts off the grid.
-        monkeypatch.setattr("flexviz.trace.line._NTH_FOLD_CHUNK_ROWS", 333)
-        resident, scanned = self._both(
-            self._frame(), tmp_path / "nth.parquet", self._trace(n_points=37)
-        )
         assert resident == scanned

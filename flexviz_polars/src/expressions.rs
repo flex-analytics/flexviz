@@ -39,42 +39,6 @@ fn kernel_pool() -> &'static rayon::ThreadPool {
 }
 
 // ---------------------------------------------------------------------------
-// every_nth
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct EveryNthKwargs {
-    n_points: usize,
-}
-
-fn every_nth_output(inputs: &[Field]) -> PolarsResult<Field> {
-    Ok(inputs[0].clone())
-}
-
-#[polars_expr(output_type_func = every_nth_output)]
-fn every_nth(inputs: &[Series], kwargs: EveryNthKwargs) -> PolarsResult<Series> {
-    polars_ensure!(
-        kwargs.n_points > 0,
-        InvalidOperation: "n_points must be greater than 0"
-    );
-
-    let s = &inputs[0];
-    if s.is_empty() {
-        return Ok(s.clone());
-    }
-
-    let len = s.len();
-    let stride = (len / kwargs.n_points).max(1);
-
-    // Compute ceil(len / stride) but cap at n_points to guarantee at most n_points output.
-    let n_out = len.div_ceil(stride).min(kwargs.n_points);
-
-    let indices: Vec<u32> = (0..n_out).map(|i| (i * stride) as u32).collect();
-    let idx_ca = UInt32Chunked::from_iter_values("".into(), indices.into_iter());
-    s.take(&idx_ca)
-}
-
-// ---------------------------------------------------------------------------
 // minmax_pairs_line
 // ---------------------------------------------------------------------------
 
