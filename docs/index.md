@@ -1,6 +1,6 @@
 # FlexViz
 
-**Interactive cross-filter dashboards on 100M+ rows, in pure Python.**
+**FlexViz is the open-source engine for interactive data exploration at scale, agent-native.**
 
 FlexViz keeps charts interactive (zoom, brush, cross-filter) on datasets far
 too big for conventional Python dashboarding tools. Every interaction is
@@ -32,6 +32,39 @@ other platform builds them from source and needs a Rust toolchain.
 
 ## Quickstart
 
+Run this after `pip install flexviz` or `uv add flexviz`. 
+It generates 10 million rows and opens two linked figures.
+
+```python
+import numpy as np
+import polars as pl
+
+from flexviz import Dashboard
+
+n = 10_000_000
+value = np.sin(np.arange(n) / 5e4) + np.random.default_rng(0).standard_normal(n) * 0.05
+value[6_000_000:6_050_000] += 3.0  # a 0.5% burst
+ts = pl.datetime(2024, 1, 1) + pl.duration(milliseconds=pl.int_range(n) * 10)
+df = pl.select(timestamp=ts, value=pl.Series(value))
+
+dash = Dashboard(df, cache=True)
+dash.add_figure(title="value").add_line(x="timestamp", y="value", n_points=2000)
+dash.add_figure(title="distribution").add_histogram(x="value", bins=60)
+dash.show()
+```
+
+Try:
+
+- Zoom the line near 16:40 on Jan 1 to see the shape of the burst.
+- Brush the histogram above value 2. Only the burst remains in the line.
+
+See [Cross-filtering](guides/cross-filtering.md) and
+[Sharing views](guides/sharing.md) for more on these interactions.
+
+The same script lives at `examples/quickstart_10m.py`.
+
+### Your own data
+
 ```python
 import polars as pl
 from flexviz import Dashboard
@@ -44,14 +77,10 @@ dash.add_figure().add_histogram(x="value", bins=50)
 dash.show()
 ```
 
-`show()` starts a local FastAPI server in a background thread and opens the
-dashboard in your browser. From there:
+The `LazyFrame` stays lazy. FlexViz loads nothing until a chart needs it.
 
-- **Zoom** the line chart and it re-downsamples to the new viewport.
-- **Brush** a range on either chart and the other re-aggregates against the
-  selection. See [Cross-filtering](guides/cross-filtering.md).
-- **Share** the exact view (viewport, selections, layout) as a URL from the
-  toolbar. See [Sharing views](guides/sharing.md).
+Outside a notebook, `show()` blocks until Ctrl-C. Pass `block=False` to
+return at once.
 
 A single standalone figure works the same way, with multiple traces on one
 canvas:

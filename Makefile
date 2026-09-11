@@ -1,7 +1,7 @@
 
 # Every Python source tree in the repo. `flexviz_polars` covers both the plugin's
 # namespace module and its tests, which `make test` already runs.
-PY_SOURCES := flexviz tests flexviz_polars
+PY_SOURCES := flexviz tests examples flexviz_polars
 
 .PHONY: format
 format:

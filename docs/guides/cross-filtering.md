@@ -2,8 +2,8 @@
 
 Figures that share a data source cross-filter each other: select something in
 one figure and every other figure re-aggregates against the matching rows.
-This is automatic for all figures in a `Dashboard` and for traces within one
-`Figure`. No wiring code is needed.
+This is automatic for all figures in a `Dashboard`. Traces inside one `Figure`
+do not filter each other. No wiring code is needed.
 
 ```python
 import polars as pl
