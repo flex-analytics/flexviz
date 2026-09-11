@@ -1127,7 +1127,7 @@ class TestHistogramScanPlanEquivalence:
 
     def test_fold_merges_across_batches(self, monkeypatch):
         """A frame larger than one chunk must fold to the single-batch counts."""
-        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS", 7)
+        monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS_1D", 7)
         seen: list[tuple[int, int]] = []
         original = pl.LazyFrame.collect_batches
 

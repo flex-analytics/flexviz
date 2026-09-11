@@ -22,8 +22,18 @@ from .bin_grid import Edges, hist2d_count_expr, hist2d_reduce_expr
 #: Measured on a 60M-row scan, 10 threads: a 4M chunk peaks at 359 MB
 #: (hist2d) and 467 MB (hist2d mean); 1M peaks at 129 and 196 MB.
 #: 500k gains nothing more.
-#: The impact on the runtime is very small < 3%.
+#: The impact on the runtime is very small < 3% -- for the 2-D fold, whose
+#: per-batch kernel is heavy enough to dominate the per-batch dispatch cost.
 _FOLD_CHUNK_ROWS = 1_000_000
+
+#: The 1-D count kernel is cheap, so the per-batch dispatch cost (one kernel
+#: call + Arrow->NumPy + accumulate per batch) dominates instead, and a 1M
+#: chunk -- ~4x more batches -- made the scan histogram ~1.3x slower at scale
+#: than the 4M it used to run. A single f64 column's fold peak is set by the
+#: reader's row-group prefetch, not this chunk (measured ~470 MB at 1M/4M/16M),
+#: so a larger chunk here buys the speed back at no memory cost. Kept separate
+#: from the 2-D constant, which stays 1M for its real memory win.
+_FOLD_CHUNK_ROWS_1D = 4_000_000
 
 
 def _fold_result_frame(uid: str, z_flat: pl.Series, bounds: Edges) -> pl.DataFrame:
@@ -83,7 +93,7 @@ def hist1d_fold_plan(
         src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
         acc = np.zeros(bins, dtype=np.int64)
         for batch in src.select(value_expr.alias("v")).collect_batches(
-            chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
+            chunk_size=_FOLD_CHUNK_ROWS_1D, maintain_order=False, engine="streaming"
         ):
             counts = batch.select(hist_expr.alias("h"))["h"].struct.field("count")
             acc += counts.to_numpy()
