@@ -350,6 +350,7 @@ class PlotlyAdapter(AbstractAdapter):
         server_url: str = "http://127.0.0.1:8000",
         notebook: bool | None = None,
         height: int = 500,
+        block: bool = True,
         **kwargs: Any,
     ) -> None:
         """Render a dashboard as a self-contained Plotly.js HTML page.
@@ -367,6 +368,9 @@ class PlotlyAdapter(AbstractAdapter):
             running (Jupyter / VS Code notebook), browser otherwise.
         height:
             IFrame height in pixels (notebook mode only).
+        block:
+            Browser mode only: wait for Ctrl-C after opening the page so the
+            server stays alive.  Pass ``False`` to return at once.
         """
         if notebook is None:
             notebook = _in_async_context()
@@ -377,7 +381,7 @@ class PlotlyAdapter(AbstractAdapter):
             html = self._build_dashboard_html(spec, server_url=server_url)
             self._deliver_notebook(html, height)
         else:
-            self._deliver_browser_shared(spec, server_url, "plotly")
+            self._deliver_browser_shared(spec, server_url, "plotly", block)
 
     def _build_dashboard_html(
         self,
