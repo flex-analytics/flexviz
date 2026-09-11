@@ -867,6 +867,7 @@ class Figure:
         port: int | str = 8000,
         cache: bool | None = None,
         live_brush: Literal["auto", "off"] | None = None,
+        block: bool = True,
         **kwargs: Any,
     ) -> None:
         """Start the FastAPI backend and render through the chosen adapter.
@@ -895,6 +896,9 @@ class Figure:
             ``cache=True`` (cubes are only built for cacheable sources), so when
             caching is off this is forced to ``"off"`` — silently for the
             default, with a warning if ``"auto"`` was passed explicitly.
+        block:
+            Outside a notebook, ``show()`` blocks until Ctrl-C.  Pass
+            ``block=False`` to return at once.  Ignored in a notebook.
         **kwargs:
             Forwarded to the adapter's ``show_dashboard()`` method.
         """
@@ -915,7 +919,9 @@ class Figure:
         dash_spec.client_state.live_brush = _effective_live_brush(
             live_brush, effective_cache
         )
-        _render_dashboard(renderer, dash_spec, f"http://{host}:{port}", **kwargs)
+        _render_dashboard(
+            renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
+        )
 
 
 def _registered_sources() -> list[str]:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import threading
 import time
 import warnings
 from abc import ABC, abstractmethod
@@ -434,9 +435,13 @@ class AbstractAdapter(ABC):
 
     @staticmethod
     def _deliver_browser_shared(
-        spec: DashboardSpec, server_url: str, renderer: str
+        spec: DashboardSpec, server_url: str, renderer: str, block: bool = True
     ) -> None:
-        """POST *spec* to ``/share`` and open the returned URL in the browser."""
+        """POST *spec* to ``/share`` and open the returned URL in the browser.
+
+        With *block*, wait for Ctrl-C afterwards.  The server runs in a daemon
+        thread, so a script that returns from ``show()`` would kill it.
+        """
         import webbrowser
 
         import requests
@@ -450,6 +455,12 @@ class AbstractAdapter(ABC):
         url = resp.json()["url"]
         url += f"&renderer={renderer}"
         webbrowser.open(url)
+
+        if block:
+            try:
+                threading.Event().wait()
+            except KeyboardInterrupt:
+                print("FlexViz server stopped.")
 
     # ------------------------------------------------------------------
     # Server polling

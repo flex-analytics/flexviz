@@ -252,6 +252,7 @@ Figure
 ├── from_spec(spec, backend_lf)  [classmethod]
 └── show(renderer, port, notebook)
       registers source, starts FastAPI thread, renders via adapter
+      outside a notebook it blocks until Ctrl-C (`block=False` returns at once)
 ```
 
 `to_spec()` auto-derives layout labels when the user has not set them explicitly:

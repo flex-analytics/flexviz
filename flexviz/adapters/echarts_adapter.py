@@ -268,6 +268,7 @@ class EChartsAdapter(AbstractAdapter):
         server_url: str = "http://127.0.0.1:8000",
         notebook: bool | None = None,
         height: int = 400,
+        block: bool = True,
         **kwargs: Any,
     ) -> None:
         """Render a dashboard as a self-contained ECharts HTML page.
@@ -285,6 +286,9 @@ class EChartsAdapter(AbstractAdapter):
         height:
             Per-figure chart height in pixels.  IFrame height =
             ``height * n_figures + 80``.
+        block:
+            Browser mode only: wait for Ctrl-C after opening the page so the
+            server stays alive.  Pass ``False`` to return at once.
         """
         if notebook is None:
             notebook = _in_async_context()
@@ -298,7 +302,7 @@ class EChartsAdapter(AbstractAdapter):
             )
             self._deliver_notebook(html, height * n_figs + 80)
         else:
-            self._deliver_browser_shared(spec, server_url, "echarts")
+            self._deliver_browser_shared(spec, server_url, "echarts", block)
 
     # ------------------------------------------------------------------
     # _build_initial_option

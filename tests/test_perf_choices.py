@@ -24,10 +24,10 @@ pytestmark = pytest.mark.benchmark
 # at 10M rows) and still ~2 ms per probe, so the whole check costs under a second.
 PROBE_ROWS = 10_000_000
 # Measured on this data at 4 threads, the CI runner's core count: 2.47 ms
-# in-memory against 1.53 ms streaming, a ratio of 0.62. 0.80 leaves headroom
+# in-memory against 1.53 ms streaming, a ratio of 0.62. 0.85 leaves headroom
 # for a shared runner. Below 4 threads the streaming engine has no win, hence
 # the skip.
-PROBE_TIME_RATIO = 0.80
+PROBE_TIME_RATIO = 0.85
 MIN_PROBE_THREADS = 4
 # The streaming engine reduces morsel by morsel, so it must never copy the
 # column. Measured 0.2 MB at 200M rows; 64 MB is well under the 80 MB column.

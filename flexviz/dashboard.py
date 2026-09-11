@@ -285,6 +285,7 @@ class Dashboard:
         port: int = 8000,
         cache: bool | None = None,
         live_brush: Literal["auto", "off"] | None = None,
+        block: bool = True,
         **kwargs: Any,
     ) -> None:
         """Start the FastAPI backend and render all figures as a dashboard.
@@ -321,6 +322,9 @@ class Dashboard:
             ``cache=True`` (cubes are only built for cacheable sources), so when
             caching is off this is forced to ``"off"`` — silently for the
             default, with a warning if ``"auto"`` was passed explicitly.
+        block:
+            Outside a notebook, ``show()`` blocks until Ctrl-C.  Pass
+            ``block=False`` to return at once.  Ignored in a notebook.
         **kwargs:
             Forwarded to the adapter's ``show_dashboard()`` method.
         """
@@ -335,4 +339,6 @@ class Dashboard:
         spec = self._finalized_spec(
             source_name, rows, cols, draggable, effective_cache, live_brush
         )
-        _render_dashboard(renderer, spec, f"http://{host}:{port}", **kwargs)
+        _render_dashboard(
+            renderer, spec, f"http://{host}:{port}", block=block, **kwargs
+        )

@@ -746,3 +746,71 @@ class TestFigureSelectDirection:
     def test_default_none_selection_returns_none(self):
         ts = TraceSpec(uid="l", trace_type="line", axes=("x", "y"))
         assert self._sd([ts]) is None
+
+
+class TestShowBlock:
+    """``show()`` waits for Ctrl-C outside a notebook (``block=True``)."""
+
+    @staticmethod
+    def _patch_browser(monkeypatch):
+        import threading
+        import webbrowser
+
+        import requests
+
+        class _Resp:
+            @staticmethod
+            def raise_for_status() -> None:
+                pass
+
+            @staticmethod
+            def json() -> dict[str, str]:
+                return {"url": "http://127.0.0.1:9999/view?spec=x"}
+
+        opened: list[str] = []
+        waited: list[bool] = []
+
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: _Resp())
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+
+        def _wait(self, timeout=None):
+            waited.append(True)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(threading.Event, "wait", _wait)
+        return opened, waited
+
+    @staticmethod
+    def _adapter(monkeypatch):
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        adapter = PlotlyAdapter()
+        monkeypatch.setattr(adapter, "_wait_for_server", lambda _server_url: None)
+        return adapter
+
+    def test_block_true_returns_after_keyboard_interrupt(self, monkeypatch, capsys):
+        opened, waited = self._patch_browser(monkeypatch)
+        adapter = self._adapter(monkeypatch)
+
+        adapter.show_dashboard(
+            DashboardSpec(figures=[FigureSpec(uid="f1")]),
+            server_url="http://127.0.0.1:9999",
+            notebook=False,
+            block=True,
+        )
+
+        assert opened and waited == [True]
+        assert "FlexViz server stopped." in capsys.readouterr().out
+
+    def test_block_false_returns_at_once(self, monkeypatch):
+        opened, waited = self._patch_browser(monkeypatch)
+        adapter = self._adapter(monkeypatch)
+
+        adapter.show_dashboard(
+            DashboardSpec(figures=[FigureSpec(uid="f1")]),
+            server_url="http://127.0.0.1:9999",
+            notebook=False,
+            block=False,
+        )
+
+        assert opened and waited == []
