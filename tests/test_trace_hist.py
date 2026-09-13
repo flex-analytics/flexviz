@@ -1125,6 +1125,31 @@ class TestHistogramScanPlanEquivalence:
         resident, scanned = self._both_updates(pl.DataFrame([series]))
         assert resident == scanned
 
+    def test_fold_scan_plan_is_a_bare_projection(self, monkeypatch):
+        """The plan handed to ``collect_batches`` projects the column as stored;
+        the physical cast of a temporal column runs per batch. An expression
+        node between the scan and the batch sink would let Polars buffer row
+        groups per thread ahead of the fold."""
+        import datetime
+
+        seen: list[pl.Schema] = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(ldf, *args, **kwargs):
+            seen.append(ldf.collect_schema())
+            return original(ldf, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+        series = pl.datetime_range(
+            datetime.datetime(2020, 1, 1),
+            datetime.datetime(2020, 1, 9),
+            interval="1d",
+            eager=True,
+        ).rename("v")
+        resident, scanned = self._both_updates(pl.DataFrame([series]))
+        assert resident == scanned
+        assert seen == [pl.Schema({"v": pl.Datetime("us")})], seen
+
     def test_fold_merges_across_batches(self, monkeypatch):
         """A frame larger than one chunk must fold to the single-batch counts."""
         monkeypatch.setattr(batch_fold_mod, "_FOLD_CHUNK_ROWS_1D", 7)

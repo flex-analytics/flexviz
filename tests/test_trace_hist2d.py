@@ -875,6 +875,21 @@ class TestHist2DScanFoldEquivalence:
         resident, scanned = _hist2d_updates(_xyz_df(), z=z_col, histfunc="sum")
         _assert_grids_match(resident, scanned, exact=False)
 
+    def test_fold_projects_columns_in_source_order(self, monkeypatch):
+        seen = []
+        original = pl.LazyFrame.collect_batches
+
+        def spy(ldf, *args, **kwargs):
+            seen.append(ldf.collect_schema().names())
+            return original(ldf, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect_batches", spy)
+        _hist2d_updates(
+            _xyz_df().select("z", "x", "y"), x="y", y="z", z="x", histfunc="sum"
+        )
+
+        assert seen == [["z", "x", "y"]]
+
     @pytest.mark.parametrize("histfunc", ["sum", "mean", "min", "max"])
     def test_reducer_matches_kernel_in_a_viewport(self, histfunc):
         resident, scanned = _hist2d_updates(

@@ -1,4 +1,4 @@
-"""Out-of-core memory matrix: peak anonymous memory must stay flat as rows grow.
+"""Out-of-core memory matrix: peak live memory must stay flat as rows grow.
 
 One subprocess per (trace, size) via ``ooc_child.py`` isolates each
 measurement and lets each run start from a clean heap. Run with
@@ -29,14 +29,15 @@ pytestmark = [
 SMALL = 4_000_000
 LARGE = 16_000_000
 
-# Peak(LARGE) must stay within this multiple of peak(SMALL) plus SLACK_MB.
-RATIO = 1.5
-# Sampler jitter (10 ms polling) is proportionally largest at the small size,
-# where the true peak can be just a few MB; SLACK_MB absorbs that noise.
-SLACK_MB = 32
+# A 4M-row Float64 fold batch is 32 MB; allow two batches for the streaming
+# pipeline and sampler jitter without permitting row-proportional growth.
+SLACK_MB = 64
 # A flat-but-huge baseline (e.g. a full eager collect at both sizes) would
-# still pass the ratio check, so cap the large-size peak outright.
+# still pass the row-growth check, so cap the large-size peak outright.
 CAP_MB = 512
+# Polars streams one pipeline per thread, so the working set scales with this;
+# the child reports its pool size and the test refuses any other value.
+THREADS = 4
 
 _CHILD = Path(__file__).parent / "ooc_child.py"
 
@@ -85,8 +86,12 @@ def ooc_fixtures(tmp_path_factory: pytest.TempPathFactory) -> tuple[str, str]:
 
 def _run(path: str, name: str) -> float:
     env = dict(os.environ)
-    # The reader's row-group prefetch buffers ahead of the algorithm, which
-    # would mask an out-of-core violation behind extra buffered memory.
+    # Hold thread count and reader prefetch fixed, and make jemalloc return
+    # freed pages promptly so RssAnon approximates the algorithm's live memory.
+    # The four-thread pin intentionally favors deterministic CI over a
+    # many-core RSS canary.
+    env["_RJEM_MALLOC_CONF"] = "dirty_decay_ms:0,muzzy_decay_ms:0"
+    env["POLARS_MAX_THREADS"] = str(THREADS)
     env["POLARS_ROW_GROUP_PREFETCH_SIZE"] = "1"
     result = subprocess.run(
         [sys.executable, str(_CHILD), path, name],
@@ -97,8 +102,9 @@ def _run(path: str, name: str) -> float:
     assert (
         result.returncode == 0
     ), f"{name} child failed (exit {result.returncode}):\n{result.stderr}"
-    last_line = result.stdout.strip().splitlines()[-1]
-    return json.loads(last_line)["peak_mb"]
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+    assert out["threads"] == THREADS, f"{name}: child ran on {out['threads']} threads"
+    return out["peak_mb"]
 
 
 @pytest.mark.parametrize("name", _PARAMS)
@@ -106,7 +112,8 @@ def test_peak_memory_is_flat(name: str, ooc_fixtures: tuple[str, str]) -> None:
     small_path, large_path = ooc_fixtures
     small = _run(small_path, name)
     large = _run(large_path, name)
-    assert large <= RATIO * small + SLACK_MB and large <= CAP_MB, (
+    assert large <= small + SLACK_MB, (
         f"{name}: peak grew from {small:.1f} MB (SMALL) to {large:.1f} MB (LARGE), "
-        f"exceeding {RATIO} x + {SLACK_MB} MB slack or the {CAP_MB} MB cap"
+        f"exceeding {SLACK_MB} MB additive slack"
     )
+    assert large <= CAP_MB, f"{name}: {large:.1f} MB exceeds the {CAP_MB} MB cap"

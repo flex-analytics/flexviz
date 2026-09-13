@@ -193,7 +193,15 @@ def main() -> None:
         engine.process(event, [info])
         seconds = time.perf_counter() - t0
 
-    print(json.dumps({"peak_mb": sampler.peak_mb, "seconds": seconds}))
+    print(
+        json.dumps(
+            {
+                "peak_mb": sampler.peak_mb,
+                "seconds": seconds,
+                "threads": pl.thread_pool_size(),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
