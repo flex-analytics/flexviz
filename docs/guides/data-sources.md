@@ -37,8 +37,21 @@ Two things still grow with the data, on both source kinds:
 - A grouped trace keeps state per group.
 - A dense 2-D histogram keeps a grid proportional to its cell count (issue #19).
 
-For a Parquet fold, peak memory is the row-group prefetch window of the
-reader. Set `POLARS_ROW_GROUP_PREFETCH_SIZE` to bound it.
+One scan path is not out of core: a grouped line with `downsample="nth"`
+gathers its columns in memory on the unzoomed view, about 100 bytes per row.
+Zoomed, it reads only the visible window.
+
+For a Parquet fold, peak live memory tracks the batch size, thread count,
+output, and any per-group state rather than the file's row count.
+`POLARS_ROW_GROUP_PREFETCH_SIZE` influences reader prefetch but is not a hard
+bound on the whole pipeline.
+
+In measurements with Polars 1.44.1, its bundled jemalloc retained roughly
+5–15 MB of freed pages per thread for seconds during CPU-saturated work; on a
+32-thread Linux host, process RSS reached 2–3× the live working set. A
+memory-constrained deployment can set
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0` before startup to return
+pages promptly, at some throughput cost.
 
 A multi-file, hive-partitioned, or cloud scan runs the same plans. Its memory
 use is not characterized here.

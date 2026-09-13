@@ -17,11 +17,10 @@ import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 from .base import _dtype_for_col
 from .bin_grid import Edges, hist2d_count_expr, hist2d_reduce_expr
 
-#: Rows per streamed batch. The streaming engine keeps about one batch per
-#: thread in flight, so peak memory is near threads x chunk x row bytes.
-#: Measured on a 60M-row scan, 10 threads: a 4M chunk peaks at 359 MB
-#: (hist2d) and 467 MB (hist2d mean); 1M peaks at 129 and 196 MB.
-#: 500k gains nothing more.
+#: Rows per streamed batch. With a consumer that keeps up, peak live memory is
+#: one to two batches plus the output grid (measured 19 / 25 / 48 MB at
+#: 250k / 1M / 4M rows of one Float64 column, 32 threads), so the chunk sets the
+#: working set without hard-bounding Polars' streaming pipeline.
 #: The impact on the runtime is very small < 3% -- for the 2-D fold, whose
 #: per-batch kernel is heavy enough to dominate the per-batch dispatch cost.
 _FOLD_CHUNK_ROWS = 1_000_000
@@ -29,10 +28,9 @@ _FOLD_CHUNK_ROWS = 1_000_000
 #: The 1-D count kernel is cheap, so the per-batch dispatch cost (one kernel
 #: call + Arrow->NumPy + accumulate per batch) dominates instead, and a 1M
 #: chunk -- ~4x more batches -- made the scan histogram ~1.3x slower at scale
-#: than the 4M it used to run. A single f64 column's fold peak is set by the
-#: reader's row-group prefetch, not this chunk (measured ~470 MB at 1M/4M/16M),
-#: so a larger chunk here buys the speed back at no memory cost. Kept separate
-#: from the 2-D constant, which stays 1M for its real memory win.
+#: than the 4M it used to run. The larger fixed chunk buys the speed back while
+#: keeping memory bounded independently of source row count. Kept separate from
+#: the 2-D constant, which stays 1M for its smaller working set.
 _FOLD_CHUNK_ROWS_1D = 4_000_000
 
 
@@ -77,22 +75,29 @@ def hist1d_fold_plan(
 
     The 2-D fold one dimension down. The kernel needs its whole input as one
     Series, so a scan runs it on one batch at a time and sums the counts in
-    NumPy. Peak memory is then one batch plus the bin grid, bounded by the
-    reader's row-group prefetch window (``POLARS_ROW_GROUP_PREFETCH_SIZE``)
-    instead of by the file. A streaming ``group_by`` on the bin index is the
-    obvious alternative, but it is slower and its memory grows with the number
-    of bin keys. Counts add exactly, so the grid equals the kernel's.
+    NumPy. Peak live memory is the current batch, bin grid, and Polars streaming
+    pipeline, bounded independently of the file's row count. A streaming
+    ``group_by`` on the bin index is the obvious alternative, but it is slower
+    and its memory grows with the number of bin keys. Counts add exactly, so
+    the grid equals the kernel's.
 
     The frame is filtered before the batches, so the scan itself rejects the
     rows outside the viewport. Only the counts are emitted: the trace derives
     its bin centers from the bounds it binned with.
+
+    The plan handed to ``collect_batches`` projects the source column as stored
+    and nothing else; ``value_expr`` (a temporal column's physical cast) runs
+    on each batch. An alias or cast between the scan and the batch sink puts
+    Polars on a buffered path that holds row groups per thread ahead of a
+    consumer that falls behind (see Architecture.md, Execution decisions).
     """
-    hist_expr = pl.col("v").flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
+    hist_expr = value_expr.flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=bins)
+    cols = value_expr.meta.root_names()
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
         src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
         acc = np.zeros(bins, dtype=np.int64)
-        for batch in src.select(value_expr.alias("v")).collect_batches(
+        for batch in src.select(cols).collect_batches(
             chunk_size=_FOLD_CHUNK_ROWS_1D, maintain_order=False, engine="streaming"
         ):
             counts = batch.select(hist_expr.alias("h"))["h"].struct.field("count")
@@ -172,10 +177,16 @@ def hist2d_fold_plan(
 
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
         src = filtered_ldf if mask is None else filtered_ldf.filter(mask)
+        # Keep the batch projection in source order. Polars 1.44 routes a pure
+        # reorder through a buffered stage (~7 row groups per thread), while
+        # the kernels address columns by name and do not care about order.
+        # ``collect_schema()`` is a metadata-only fallback when none was given.
+        source_schema = schema or filtered_ldf.collect_schema()
+        batch_cols = [col for col in source_schema if col in cols]
         acc = np.zeros(n_cells, dtype=np.int64 if z_col is None else np.float64)
         seen = np.zeros(n_cells, dtype=bool)
         cnt = np.zeros(n_cells, dtype=np.int64)
-        for batch in src.select(cols).collect_batches(
+        for batch in src.select(batch_cols).collect_batches(
             chunk_size=_FOLD_CHUNK_ROWS, maintain_order=False, engine="streaming"
         ):
             out = batch.select(exprs)
