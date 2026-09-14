@@ -894,3 +894,10 @@ class TestShowKwargValidation:
 
         with pytest.raises(TypeError, match="draggable"):
             PlotlyAdapter().show_dashboard(DashboardSpec(), draggable=False)
+
+    def test_unknown_show_kwarg_raises_on_echarts(self):
+        from flexviz.adapters.echarts_adapter import EChartsAdapter
+        from flexviz.spec import DashboardSpec
+
+        with pytest.raises(TypeError, match="draggable"):
+            EChartsAdapter().show_dashboard(DashboardSpec(), draggable=False)
