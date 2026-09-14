@@ -99,43 +99,51 @@ disappears.
 Three separate fields decide how rearranging works. Each answers a different
 question.
 
-| Field | Question it answers | Changes while the page runs |
+| Field | Question it answers | Fixed when the page renders |
 |---|---|---|
-| `LayoutSpec.draggable` | Which layout engine renders the page: Gridstack, or a static CSS grid | No |
-| `LayoutSpec.grid_editable` | Whether panels can be moved and resized right now | Yes |
-| `ToolbarConfig.show_grid` | Whether the toolbar offers the built-in lock and unlock button | No |
+| `LayoutSpec.draggable` | Which layout engine renders the page: GridStack, or a static CSS grid | Yes |
+| `LayoutSpec.grid_editable` | Whether panels can be moved and resized right now | No, this is live state |
+| `ToolbarConfig.show_grid` | Whether the toolbar offers the built-in lock and unlock button | Yes |
 
 `draggable` is a rendering choice, `grid_editable` is live state, and
 `show_grid` is an affordance. They combine into five results.
 
 | `draggable` | `grid_editable` | `show_grid` | Result |
 |---|---|---|---|
-| `False` | ignored | ignored | Static grid, no Gridstack assets. The layout button is hidden either way. |
-| `True` | `False` | `True` | Gridstack, locked. The button reads **Layout: Locked** and unlocks. |
-| `True` | `True` | `True` | Gridstack, editable. The button reads **Layout: Edit** and locks. |
-| `True` | `False` | `False` | Gridstack, locked, no built-in control. |
-| `True` | `True` | `False` | Gridstack, editable, no built-in control to lock it. |
+| `False` | ignored | ignored | Static grid, no GridStack assets. The layout button is hidden either way. |
+| `True` | `False` | `True` | GridStack, locked. The button reads **Layout: Locked** and unlocks. |
+| `True` | `True` | `True` | GridStack, editable. The button reads **Layout: Edit** and locks. |
+| `True` | `False` | `False` | GridStack, locked, with no built-in layout button. |
+| `True` | `True` | `False` | GridStack, editable, with no built-in layout button to lock it. |
 
 Read the last two rows carefully. `show_grid=False` hides the built-in
 control. It does not remove the capability: a layout that starts editable
-stays editable, importing a spec can set `grid_editable` again, and your own
-JavaScript can call `fvSetGridEditable`. Hide the button when you supply your
-own controls. Use `draggable=False` when the layout must not move at all.
+stays editable, and your own JavaScript can call `fvSetGridEditable`. With
+`show_import=True`, an imported spec can also set `grid_editable` again. Set
+both `show_grid=False` and `show_import=False` to remove the built-in routes
+to that state. Use `draggable=False` when the layout must not move at all.
 
-!!! note "Gridstack is a CDN dependency"
-    `draggable=True` loads Gridstack's stylesheet and script from a CDN.
+!!! note "GridStack is a CDN dependency"
+    `draggable=True` loads GridStack's stylesheet and script from a CDN.
     `draggable=False` loads neither. Prefer it for a locked embed, and in any
     page that must not reach a CDN.
 
-`grid_editable` keeps its value when `draggable=False`. It stops doing
-anything, but it is not cleared, so specs round-trip unchanged.
+`grid_editable` keeps its value when `draggable=False`. It is inactive, but it
+is not cleared, so specs round-trip unchanged.
 
 ### Exact panel positions
 
-`GridItem` places one figure on the 12-column grid. One row unit is 80 px, and
-a panel spanning `h` rows also spans the `h - 1` gaps between them. On a locked
-grid the panel is `h * 80 + (h - 1) * gap` pixels tall, so the default `h=5`
-with the default 8 px gap gives 432 px.
+`GridItem` places one figure on the 12-column grid. One row unit is 80 px, so
+`h` rows are `h * 80` pixels. The two layout engines then treat the gap
+differently.
+
+| `draggable` | Panel height | Default `h=5` |
+|---|---|---|
+| `True` (GridStack) | `h * 80` | 400 px |
+| `False` (static grid) | `h * 80 + (h - 1) * gap` | 432 px at gap 8 |
+
+The static grid stretches a panel across the gaps it spans. GridStack does
+not. Size against the engine you actually render with.
 
 ```python
 from flexviz.spec import GridItem, LayoutSpec
@@ -144,6 +152,7 @@ uids = [f.uid for f in dash.to_spec().figures]
 dash.show(
     layout=LayoutSpec(
         gap="16px",
+        draggable=False,
         grid_items=[
             GridItem(fig_uid=uids[0], x=0, y=0, w=12, h=4),   # full width, 368 px at gap 16
             GridItem(fig_uid=uids[1], x=0, y=4, w=6, h=8),    # half width, 752 px at gap 16
@@ -175,9 +184,10 @@ The fields are `show_reset`, `show_deselect`, `show_cfmode`, `show_hover`,
 `show_import`. An empty button group disappears with its divider.
 
 Most of these hide a button whose state you can reach another way.
-`show_grid` is different: it hides the only built-in control for
-`grid_editable`. See [Lock the layout](#lock-the-layout) for what that does
-and does not change.
+`show_grid` is different: it hides the only built-in button for changing
+`grid_editable`. `show_import` is a separate route for restoring that state.
+See [Lock the layout](#lock-the-layout) for what these flags do and do not
+change.
 
 ### Toolbar versus panel controls
 
@@ -196,7 +206,7 @@ convenience overrides that apply on top of it.
 
 | You pass | Result |
 |---|---|
-| nothing | Two columns, default `h=5` panels, drag enabled |
+| nothing | Two columns, default `h=5` panels, GridStack locked initially |
 | `cols=1` | One full-width column |
 | `layout.grid_items` | Your positions, untouched |
 | `layout.grid_items` and `cols` | `ValueError` |

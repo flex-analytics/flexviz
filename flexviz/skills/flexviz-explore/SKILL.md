@@ -132,9 +132,9 @@ docstrings in `flexviz/figure.py` are the source of truth:
 Dashboard(data, cache=False)     # data: pl.LazyFrame/DataFrame, pandas, pyarrow
                                  # cache=True enables cross-filter cubes (live brushing)
 dash.add_figure(title=...)       # -> Figure; chainable builders below
-dash.share_url(server_url, source_name, rows=None, cols=None, cache=None,
-               draggable=None,   # False = read-only: no drag/resize, no layout button
-               layout=None)      # LayoutSpec: gap, toolbar, exact grid_items
+dash.share_url(server_url, source_name, rows=None, cols=None,
+               draggable=None,   # GridStack, locked initially; False = static/read-only
+               cache=None, live_brush=None, layout=None)  # LayoutSpec: gap, toolbar, exact grid_items
 
 fig.add_line(x, y, name=None, color=None, n_points=1000,
              downsample="minmax",          # or "lttb" | "fpcs" | "nth"

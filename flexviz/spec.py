@@ -335,19 +335,19 @@ class VisualizationSpec(BaseModel):
 
 
 _GRIDSTACK_CELL_HEIGHT_PX: int = 80
-"""Pixels per Gridstack row unit.  h=5 → 400 px (matches the adapter default)."""
+"""Pixels per grid row unit.  h=5 → 400 px, before the static grid adds gaps."""
 
 
 class GridItem(BaseModel):
-    """Gridstack position and size for one figure in a draggable layout.
+    """Position and size for one figure in a dashboard layout.
 
-    Coordinates use the Gridstack 12-column grid system.
+    Coordinates use the 12-column grid system shared by GridStack and CSS grid.
     ``fig_uid`` must match a ``FigureSpec.uid`` in the same ``DashboardSpec``.
     """
 
     fig_uid: str
     x: int = 0  # column (0–11)
-    y: int = 0  # row (0-based Gridstack row units)
+    y: int = 0  # row (0-based row units)
     w: int = 6  # width in columns (1–12)
     h: int = 5  # height in row units (h × _GRIDSTACK_CELL_HEIGHT_PX = pixel height)
 
@@ -417,9 +417,10 @@ class ToolbarConfig(BaseModel):
     Empty button groups are omitted automatically.
 
     ``show_grid`` is the one field that hides more than a button: it is the
-    only built-in control for ``LayoutSpec.grid_editable``. Hiding it leaves
-    the current mode in place rather than locking the layout. Use
-    ``LayoutSpec.draggable=False`` for a layout that cannot move.
+    only built-in button that toggles ``LayoutSpec.grid_editable``. Hiding it
+    leaves the current mode in place rather than locking the layout. Use
+    ``LayoutSpec.draggable=False`` for a layout that cannot move. ``show_import``
+    can still restore ``grid_editable`` from an imported spec.
     """
 
     show_reset: bool = True
@@ -440,21 +441,23 @@ class LayoutSpec(BaseModel):
         CSS gap between figures (default ``"8px"``).
 
     ``draggable``
-        Selects the layout implementation, and never changes at runtime.
-        ``True`` renders with Gridstack.js and loads its CDN stylesheet and
-        script; ``False`` renders a static CSS grid and loads neither.
+        Selects the layout implementation for the rendered page. It is not a
+        runtime edit-mode switch. ``True`` renders with GridStack.js and loads
+        its CDN stylesheet and script; ``False`` renders a static CSS grid and
+        loads neither.
         Position changes update ``grid_items`` in client-side state only —
         no backend request is fired.
 
     ``grid_editable``
-        Whether panels can currently be moved and resized.  This is live
-        state: the toolbar button, an imported spec, and ``fvSetGridEditable``
-        all update it client-side.  It has no effect while ``draggable`` is
-        ``False``, but keeps its value so specs round-trip unchanged.
+        When ``draggable=True``, whether panels can currently be moved and
+        resized. This is live client-side state: the layout button, an
+        imported spec, and custom JavaScript can update it. It has no effect
+        while ``draggable`` is ``False``, but keeps its value so specs
+        round-trip unchanged.
 
     ``grid_items``
-        Per-figure Gridstack positions.  ``None`` causes positions to be
-        auto-generated at render time.
+        Per-figure positions in the 12-column grid.  ``None`` causes positions
+        to be auto-generated at render time.
         Updated in-place by the frontend after each drag/resize.
 
     ``toolbar``

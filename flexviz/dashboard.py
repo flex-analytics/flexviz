@@ -325,9 +325,11 @@ class Dashboard:
             Mutually exclusive with ``rows`` and with explicit
             ``layout.grid_items``.
         draggable:
-            Enable or disable Gridstack drag/resize interactions.  ``False``
-            also hides the toolbar's layout button.  ``None`` (default) keeps
-            whatever ``layout`` says, which is enabled.
+            Enable or disable the GridStack layout. ``False`` renders a static
+            layout with no drag/resize capability and hides the toolbar's
+            layout button. ``True`` enables GridStack; it starts locked unless
+            ``layout.grid_editable=True``. ``None`` (default) keeps whatever
+            ``layout`` says.
         host:
             Server bind address.
         port:

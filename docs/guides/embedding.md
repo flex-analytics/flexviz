@@ -59,12 +59,13 @@ prefix.
 
 A `/view` URL is a complete page, so any web app can embed it in an iframe.
 Build the URL with `share_url()` against a server that already serves the
-source.
+source. The `server_url` must be reachable from the browser; `127.0.0.1` only
+works when the browser and Python server run on the same machine.
 
 ```python
 import polars as pl
 import uvicorn
-from flexviz import Dashboard, register_source
+from flexviz import Dashboard, app, register_source
 from flexviz.spec import LayoutSpec, ToolbarConfig
 
 lf = pl.scan_parquet("readings.parquet")
@@ -97,10 +98,11 @@ The parent page owns the iframe box. FlexViz owns what is inside it.
 
 - **Width is responsive.** Panels are a 12-column grid at `width: 100%`, and
   the charts resize with their container. `cols=1` gives one full-width panel.
-- **Height is fixed.** A panel spans `GridItem.h` grid rows of 80 px, plus the
-  `h - 1` gaps between them: `h * 80 + (h - 1) * 8` pixels with the default
-  gap. The page is as tall as its panels plus the toolbar. It does not stretch
-  to fill the iframe.
+- **Height is fixed.** A panel spans `GridItem.h` grid rows of 80 px. On the
+  static grid (`draggable=False`, what you want for an embed) it also spans
+  the `h - 1` gaps between them, so it is `h * 80 + (h - 1) * gap` pixels.
+  The page is as tall as its panels plus the toolbar. It does not stretch to
+  fill the iframe.
 
 To approach a given iframe height, set `GridItem.h` yourself:
 
