@@ -1,0 +1,82 @@
+# Two jobs on trial: simulation counts instructions on a normal runner, walltime
+# measures time on the macro runner. Compare both, then keep one.
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - docs/**
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # public repo: the upload authenticates with OIDC, not a token
+
+# Same grouping as ci.yml: cancel superseded PR runs, never cancel a main run.
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  benchmarks:
+    name: benchmarks (${{ matrix.mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {mode: simulation, runs-on: ubuntu-latest}
+          - {mode: walltime, runs-on: codspeed-macro-arm64-graviton-ubuntu-22-04}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 45
+    env:
+      # Pin the thread count, for the same reason as tests/test_ooc.py: a
+      # measurement that scales with the runner's core count is not comparable.
+      POLARS_MAX_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      # The macro runner image does not document its tooling, so install rustup
+      # when it is missing. rustup then picks the toolchain from rust-toolchain.toml.
+      - name: Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: flexviz_polars
+
+      - name: Install build tooling
+        run: uv sync --locked --no-install-package flexviz-polars
+
+      # Release, unlike ci.yml: the debug kernel is several times slower, so its
+      # numbers say nothing about the shipped wheel.
+      - name: Build the release plugin wheel
+        run: uv run --no-sync maturin build --release --features nightly -m flexviz_polars/Cargo.toml -o dist
+
+      - name: Install the built plugin wheel
+        run: VIRTUAL_ENV=.venv uv pip install dist/*.whl
+
+      # The size check catches a debug wheel: the debug .so is ~28 MB, the
+      # release one is stripped and far smaller.
+      - name: Verify the release plugin is importable
+        run: uv run --no-sync python -c "import os; from flexviz_polars import _internal; size = os.path.getsize(_internal.__file__); print(_internal.__file__, size); assert size < 20_000_000, 'debug build'"
+
+      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        with:
+          mode: ${{ matrix.mode }}
+          run: uv run --no-sync pytest benchmarks --codspeed -p no:randomly
