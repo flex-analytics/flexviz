@@ -438,7 +438,9 @@ class LayoutSpec(BaseModel):
     """HTML/CSS layout hints for a multi-figure dashboard.
 
     ``gap``
-        CSS gap between figures (default ``"8px"``).
+        CSS space between figures on the static grid (default ``"8px"``). With
+        ``draggable=True`` GridStack keeps its own panel margin, so ``gap``
+        only pads the outer edge of the grid.
 
     ``draggable``
         Selects the layout implementation for the rendered page. It is not a

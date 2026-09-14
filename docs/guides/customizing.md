@@ -145,8 +145,10 @@ is not cleared, so specs round-trip unchanged.
 `GridItem` places one figure on the 12-column grid. One row unit is 80 px, so
 a panel of `h` rows is `h * 80` pixels tall. The default `h=5` is 400 px.
 
-Both layout engines give the same height. `gap` changes the space between
-panels, not the height of one, because the gap sits inside the panel box.
+Both layout engines give the same height, because the space between panels sits
+inside the `h * 80` box. On the static grid (`draggable=False`) that space is
+`gap`. GridStack keeps its own panel margin, so there `gap` only pads the outer
+edge of the grid.
 
 ```python
 from flexviz import GridItem, LayoutSpec

@@ -297,7 +297,7 @@ class AbstractAdapter(ABC):
         # grid ``gap`` would make h taller here than the h * cell-height
         # GridStack renders. Keep the tracks flush and carry the gutter inside
         # the item, the way GridStack carries it in the item margin.
-        gutter = ("0" if layout_gap == "normal" else layout_gap).split()
+        gutter = ("0px" if layout_gap == "normal" else layout_gap).split()
         row_gutter, col_gutter = gutter[0], gutter[-1]
         return _DashboardMarkup(
             container_html=container_html,
