@@ -1,0 +1,57 @@
+name: CodSpeed
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Lets CodSpeed trigger a backtest run to generate the initial baseline.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OpenID Connect authentication with CodSpeed
+
+# Same grouping rationale as ci.yml: a new push to a PR supersedes the old run,
+# pushes to main never collide because they group by SHA.
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: flexviz_polars
+
+      # Unlike ci.yml this syncs the plugin too: maturin's PEP 517 backend
+      # builds it optimized, and every benchmark below goes through the Rust
+      # kernels, so a debug build would measure the wrong thing.
+      - name: Install the project and build the Rust kernels
+        run: uv sync --locked
+
+      # Same guard as ci.yml: without it a failed build leaves the crate
+      # directory on sys.path as an empty namespace package, and the failure
+      # surfaces much later as a confusing AttributeError.
+      - name: Verify the real plugin is importable
+        run: uv run --no-sync python -c "from flexviz_polars import _internal; print(_internal.__file__)"
+
+      # pytest-randomly is disabled so benchmark order is identical between
+      # runs, which keeps the comparison against the base run apples-to-apples.
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        with:
+          mode: simulation
+          run: uv run --no-sync pytest benchmarks --codspeed -p no:randomly

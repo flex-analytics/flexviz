@@ -1,7 +1,7 @@
 
 # Every Python source tree in the repo. `flexviz_polars` covers both the plugin's
 # namespace module and its tests, which `make test` already runs.
-PY_SOURCES := flexviz tests examples flexviz_polars
+PY_SOURCES := flexviz tests examples flexviz_polars benchmarks
 
 .PHONY: format
 format:
@@ -23,6 +23,16 @@ test-ooc:
 .PHONY: test-perf
 test-perf:
 	uv run pytest -m benchmark --override-ini="addopts=" -v tests/test_perf_choices.py
+
+.PHONY: bench
+bench:
+	uv run pytest benchmarks --codspeed -p no:randomly
+
+# The same suite under CPU simulation, which is what CI measures. Needs the
+# CodSpeed CLI: https://codspeed.io/docs/cli
+.PHONY: bench-simulation
+bench-simulation:
+	codspeed run --mode simulation -- uv run pytest benchmarks --codspeed -p no:randomly
 
 .PHONY: docs
 docs:

@@ -14,6 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/flex-analytics/flexviz/actions/workflows/ci.yml"><img src="https://github.com/flex-analytics/flexviz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://app.codspeed.io/flex-analytics/flexviz?utm_source=badge"><img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" alt="CodSpeed"/></a>
   <a href="https://pypi.org/project/flexviz/"><img src="https://img.shields.io/pypi/v/flexviz" alt="PyPI version"></a>
   <a href="https://pypi.org/project/flexviz/"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue" alt="Supported Python versions"></a>
   <!-- <a href="https://pypi.org/project/flexviz/"><img src="https://img.shields.io/pypi/dm/flexviz" alt="PyPI downloads per month"></a> -->

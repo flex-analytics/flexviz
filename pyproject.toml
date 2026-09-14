@@ -58,6 +58,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "maturin>=1.12.6",
     "pytest-benchmark>=5.2.3",
+    "pytest-codspeed>=5.0.3",
     "pytest-randomly>=4.0.1",
 ]
 # Standalone group: docs builds run without the project installed (mkdocstrings

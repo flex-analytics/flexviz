@@ -1,5 +1,6 @@
 .vscode/
 .benchmarks/
+.codspeed/
 .playwright-mcp/
 .playwright-cli/
 .agents/skills/
