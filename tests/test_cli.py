@@ -242,3 +242,64 @@ def test_skill_install_defaults_to_cwd(monkeypatch, tmp_path):
 def test_skill_install_scope_flags_are_exclusive():
     with pytest.raises(SystemExit):
         main(["skill", "install", "--user", "--dir", "."])
+
+
+# ---------------------------------------------------------------------------
+# History: numbered share URLs, recorded under .flexviz/history.jsonl
+# ---------------------------------------------------------------------------
+
+
+def test_history_add_numbers_sequentially(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+
+    main(["history", "add", url, "--note", "first"])
+    assert capsys.readouterr().out.strip() == "1"
+    main(["history", "add", url, "--note", "second"])
+    assert capsys.readouterr().out.strip() == "2"
+
+    lines = (tmp_path / ".flexviz" / "history.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+
+
+def test_history_list_never_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url, "--note", "brushed the tail"])
+    capsys.readouterr()
+
+    main(["history", "list"])
+    out = capsys.readouterr().out
+    assert "brushed the tail" in out
+    assert "/view?spec=" not in out
+
+
+def test_history_show_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    main(["history", "add", url])
+    capsys.readouterr()
+
+    main(["history", "show", "2"])
+    assert capsys.readouterr().out.strip() == url
+
+
+def test_history_show_state_prints_only_the_compact_triple(
+    capsys, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    main(["history", "add", url])
+    capsys.readouterr()
+
+    main(["history", "show", "2", "--state"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+
+
+def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["history", "show", "9"])

@@ -6,6 +6,8 @@
 script or agent can read the viewport and selections a person left behind.
 ``flexviz decode --state-only`` prints only ``{version, state, client_state}``,
 the tenth of the spec that changes as someone interacts.
+``flexviz history`` records share URLs under a small local number, so an
+agent can say ``fv:3`` instead of repeating a URL.
 ``flexviz skill install`` copies the packaged agent skill into a project.
 """
 
@@ -198,6 +200,49 @@ def _cmd_decode(args: argparse.Namespace) -> None:
         print(spec.model_dump_json(indent=2))
 
 
+def _history_entry(n: int) -> dict:
+    """Look up one history entry by its number, or fail with a clear message."""
+    from flexviz import history
+
+    for entry in history.entries():
+        if entry["n"] == n:
+            return entry
+    raise SystemExit(f"no history entry {n}")
+
+
+def _cmd_history(args: argparse.Namespace) -> None:
+    import json
+
+    from flexviz import history
+    from flexviz.spec import decode_spec
+
+    if args.action == "add":
+        if not args.target:
+            raise SystemExit("history add requires a URL")
+        print(history.add(args.target, note=args.note, actor=args.actor))
+        return
+
+    if args.action == "list":
+        for entry in history.entries():
+            print(f"{entry['n']}\t{entry['ts']}\t{entry['actor']}\t{entry['note']}")
+        return
+
+    # show
+    try:
+        n = int(args.target)
+    except (TypeError, ValueError):
+        raise SystemExit(f"history show requires a number, got {args.target!r}")
+    url = _history_entry(n)["url"]
+    if args.state:
+        try:
+            spec = decode_spec(_encoded_from(url))
+        except Exception as exc:
+            raise SystemExit(f"invalid spec: {exc}") from exc
+        print(json.dumps(_state_only(spec), indent=2))
+    else:
+        print(url)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="flexviz")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -237,6 +282,25 @@ def main(argv: list[str] | None = None) -> None:
         help="print only {version, state, client_state}, not the full spec",
     )
     decode.set_defaults(func=_cmd_decode)
+
+    history = sub.add_parser("history", help="record and look up numbered share URLs")
+    history.add_argument("action", choices=["add", "list", "show"])
+    history.add_argument(
+        "target", nargs="?", help="URL for 'add'; entry number for 'show'"
+    )
+    history.add_argument("--note", default="", help="free-text note for 'add'")
+    history.add_argument(
+        "--actor",
+        choices=["human", "agent"],
+        default="agent",
+        help="who this entry records (default: agent)",
+    )
+    history.add_argument(
+        "--state",
+        action="store_true",
+        help="with 'show', print {version, state, client_state} instead of the URL",
+    )
+    history.set_defaults(func=_cmd_history)
 
     skill = sub.add_parser("skill", help="manage the flexviz-explore agent skill")
     skill.add_argument("action", choices=["install"])
