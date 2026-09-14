@@ -1,7 +1,7 @@
 
 # Every Python source tree in the repo. `flexviz_polars` covers both the plugin's
 # namespace module and its tests, which `make test` already runs.
-PY_SOURCES := flexviz tests examples flexviz_polars
+PY_SOURCES := flexviz tests examples flexviz_polars benchmarks
 
 .PHONY: format
 format:
@@ -23,6 +23,11 @@ test-ooc:
 .PHONY: test-perf
 test-perf:
 	uv run pytest -m benchmark --override-ini="addopts=" -v tests/test_perf_choices.py
+
+.PHONY: bench
+# --no-sync: a sync would replace the release plugin from build-plugin-release.
+bench:
+	POLARS_MAX_THREADS=4 uv run --no-sync pytest benchmarks --codspeed -p no:randomly
 
 .PHONY: docs
 docs:
