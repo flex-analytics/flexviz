@@ -854,3 +854,13 @@ class TestPlotlyLayoutOverrides:
         layout = self._layout(fig)
         assert layout["showlegend"] is True
         assert layout["legend"]["orientation"] == "h"
+
+
+class TestShowKwargValidation:
+    def test_unknown_show_kwarg_raises(self):
+        """`**kwargs` used to swallow these, so typos were silent no-ops."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+        from flexviz.spec import DashboardSpec
+
+        with pytest.raises(TypeError, match="draggable"):
+            PlotlyAdapter().show_dashboard(DashboardSpec(), draggable=False)

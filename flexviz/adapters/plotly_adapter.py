@@ -351,7 +351,6 @@ class PlotlyAdapter(AbstractAdapter):
         notebook: bool | None = None,
         height: int = 500,
         block: bool = True,
-        **kwargs: Any,
     ) -> None:
         """Render a dashboard as a self-contained Plotly.js HTML page.
 

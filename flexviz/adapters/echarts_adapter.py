@@ -269,7 +269,6 @@ class EChartsAdapter(AbstractAdapter):
         notebook: bool | None = None,
         height: int = 400,
         block: bool = True,
-        **kwargs: Any,
     ) -> None:
         """Render a dashboard as a self-contained ECharts HTML page.
 
