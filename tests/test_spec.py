@@ -1188,3 +1188,97 @@ class TestSelectionState:
         )
         restored = SelectionState.model_validate_json(s.model_dump_json())
         assert restored == s
+
+
+# ---- Dashboard layout precedence -------------------------------------------
+
+
+class TestDashboardLayoutPrecedence:
+    """`layout=` owns what it sets; rows/cols/draggable override on top."""
+
+    def _dash(self, n: int = 2):
+        from flexviz.dashboard import Dashboard
+
+        dash = Dashboard(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
+        for _ in range(n):
+            dash.add_figure().add_line(x="a", y="b")
+        return dash
+
+    def _uids(self, dash) -> list[str]:
+        return [f.uid for f in dash.to_spec().figures]
+
+    def test_toolbar_config_reaches_the_rendered_page(self):
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+        from flexviz.spec import ToolbarConfig
+
+        dash = self._dash(1)
+        spec = dash._finalized_spec(
+            "data",
+            None,
+            None,
+            None,
+            False,
+            None,
+            LayoutSpec(toolbar=ToolbarConfig(show_export=False)),
+        )
+        html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
+        assert 'id="fv-btn-export"' not in html
+        assert 'id="fv-btn-share"' in html
+
+    def test_explicit_grid_items_are_not_overwritten(self):
+        dash = self._dash(1)
+        item = GridItem(fig_uid=self._uids(dash)[0], x=0, y=0, w=12, h=10)
+        spec = dash._finalized_spec(
+            "data", None, None, None, False, None, LayoutSpec(grid_items=[item])
+        )
+        assert spec.layout.grid_items == [item]
+
+    def test_rows_cols_rejected_with_explicit_grid_items(self):
+        dash = self._dash(1)
+        layout = LayoutSpec(
+            grid_items=[GridItem(fig_uid=self._uids(dash)[0], x=0, y=0, w=12, h=10)]
+        )
+        with pytest.raises(ValueError, match="grid_items"):
+            dash._finalized_spec("data", None, 1, None, False, None, layout)
+
+    def test_draggable_false_drops_gridstack(self):
+        """The toolbar button itself is hidden client-side; see the browser test."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        dash = self._dash(1)
+        spec = dash._finalized_spec("data", None, None, False, False, None, None)
+        assert spec.layout.draggable is False
+        html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
+        assert "gs-id=" not in html
+
+    def test_draggable_none_keeps_the_layout_value(self):
+        dash = self._dash(1)
+        spec = dash._finalized_spec(
+            "data", None, None, None, False, None, LayoutSpec(draggable=False)
+        )
+        assert spec.layout.draggable is False
+
+    def test_share_url_preserves_the_layout(self):
+        from flexviz.spec import ToolbarConfig, decode_spec
+
+        dash = self._dash(1)
+        item = GridItem(fig_uid=self._uids(dash)[0], x=0, y=0, w=12, h=10)
+        url = dash.share_url(
+            source_name="data",
+            draggable=False,
+            layout=LayoutSpec(
+                gap="24px",
+                toolbar=ToolbarConfig(show_export=False),
+                grid_items=[item],
+            ),
+        )
+        restored = decode_spec(url.split("?spec=")[1])
+        assert restored.layout.gap == "24px"
+        assert restored.layout.toolbar.show_export is False
+        assert restored.layout.draggable is False
+        assert restored.layout.grid_items[0].h == 10
+
+    def test_caller_layout_is_not_mutated(self):
+        layout = LayoutSpec()
+        self._dash(1)._finalized_spec("data", None, None, None, False, None, layout)
+        assert layout.grid_items is None

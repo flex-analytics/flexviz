@@ -162,7 +162,9 @@ class Dashboard:
         return DashboardSpec(
             figures=figure_specs,
             state=InteractionState(),
-            layout=layout or LayoutSpec(),
+            # Copy so rendering never stamps grid_items onto a caller's
+            # LayoutSpec, which would leak into the next dashboard reusing it.
+            layout=(layout or LayoutSpec()).model_copy(deep=True),
         )
 
     def save_spec(
@@ -215,18 +217,32 @@ class Dashboard:
         source_name: str | None,
         rows: int | None,
         cols: int | None,
-        draggable: bool,
+        draggable: bool | None,
         effective_cache: bool,
         live_brush: Literal["auto", "off"] | None,
+        layout: LayoutSpec | None,
     ) -> DashboardSpec:
-        """Build the spec with the client state a renderer needs."""
-        spec = self.to_spec(source_name=source_name)
+        """Build the spec with the client state a renderer needs.
+
+        Precedence: ``layout`` owns every field it sets.  ``rows``, ``cols``
+        and ``draggable`` are convenience overrides that apply on top of it,
+        so positions are auto-generated only when ``layout`` carries none.
+        """
+        if (rows is not None or cols is not None) and (
+            layout is not None and layout.grid_items is not None
+        ):
+            raise ValueError("rows/cols cannot be combined with layout.grid_items")
+
+        spec = self.to_spec(source_name=source_name, layout=layout)
         spec.client_state.live_brush = _effective_live_brush(
             live_brush, effective_cache
         )
-        spec.layout.draggable = draggable
-        # TODO allow user to specify / pass layout
-        spec.layout.grid_items = _auto_grid_items(spec.figures, rows=rows, cols=cols)
+        if draggable is not None:
+            spec.layout.draggable = draggable
+        if spec.layout.grid_items is None:
+            spec.layout.grid_items = _auto_grid_items(
+                spec.figures, rows=rows, cols=cols
+            )
         return spec
 
     def share_url(
@@ -235,9 +251,10 @@ class Dashboard:
         source_name: str = "data",
         rows: int | None = None,
         cols: int | None = None,
-        draggable: bool = True,
+        draggable: bool | None = None,
         cache: bool | None = None,
         live_brush: Literal["auto", "off"] | None = None,
+        layout: LayoutSpec | None = None,
     ) -> str:
         """Encode this dashboard as a ``/view`` URL for a running server.
 
@@ -255,7 +272,7 @@ class Dashboard:
         source_name:
             Source name as registered on that server (``flexviz serve``
             registers each file under its stem).
-        rows, cols, draggable, live_brush:
+        rows, cols, draggable, layout, live_brush:
             Same meaning as in :meth:`show`.
         cache:
             Resolves ``live_brush`` exactly as in :meth:`show`; pass the
@@ -270,7 +287,7 @@ class Dashboard:
         """
         effective_cache = self._cache_enabled if cache is None else cache
         spec = self._finalized_spec(
-            source_name, rows, cols, draggable, effective_cache, live_brush
+            source_name, rows, cols, draggable, effective_cache, live_brush, layout
         )
         return f"{server_url.rstrip('/')}/view?spec={encode_spec(spec)}"
 
@@ -280,12 +297,13 @@ class Dashboard:
         source_name: str | None = None,
         rows: int | None = None,
         cols: int | None = None,
-        draggable: bool = True,
+        draggable: bool | None = None,
         host: str = "127.0.0.1",
         port: int = 8000,
         cache: bool | None = None,
         live_brush: Literal["auto", "off"] | None = None,
         block: bool = True,
+        layout: LayoutSpec | None = None,
         **kwargs: Any,
     ) -> None:
         """Start the FastAPI backend and render all figures as a dashboard.
@@ -300,12 +318,16 @@ class Dashboard:
             dashboard's uid so multiple ``show()`` calls never collide.
         rows:
             Optional row count used to seed initial ``layout.grid_items``.
-            Mutually exclusive with ``cols``.
+            Mutually exclusive with ``cols`` and with explicit
+            ``layout.grid_items``.
         cols:
             Optional column count used to seed initial ``layout.grid_items``.
-            Mutually exclusive with ``rows``.
+            Mutually exclusive with ``rows`` and with explicit
+            ``layout.grid_items``.
         draggable:
-            Enable or disable Gridstack drag/resize interactions.
+            Enable or disable Gridstack drag/resize interactions.  ``False``
+            also hides the toolbar's layout button.  ``None`` (default) keeps
+            whatever ``layout`` says, which is enabled.
         host:
             Server bind address.
         port:
@@ -325,6 +347,9 @@ class Dashboard:
         block:
             Outside a notebook, ``show()`` blocks until Ctrl-C.  Pass
             ``block=False`` to return at once.  Ignored in a notebook.
+        layout:
+            Optional ``LayoutSpec`` owning ``gap``, ``toolbar`` and explicit
+            ``grid_items``.  ``rows``, ``cols`` and ``draggable`` override it.
         **kwargs:
             Forwarded to the adapter's ``show_dashboard()`` method.
         """
@@ -337,7 +362,7 @@ class Dashboard:
         _register_source_if_needed(source_name, self._backend_lf, cache=effective_cache)
         _start_server_thread(host, port)
         spec = self._finalized_spec(
-            source_name, rows, cols, draggable, effective_cache, live_brush
+            source_name, rows, cols, draggable, effective_cache, live_brush, layout
         )
         _render_dashboard(
             renderer, spec, f"http://{host}:{port}", block=block, **kwargs
