@@ -229,9 +229,10 @@ class Dashboard:
         and ``draggable`` are convenience overrides that apply on top of it,
         so positions are auto-generated only when ``layout`` carries none.
         """
-        if (rows is not None or cols is not None) and (
-            layout is not None and layout.grid_items is not None
-        ):
+        # An empty list carries no positions, so it means "generate them",
+        # matching how the adapters read the field.
+        has_positions = layout is not None and bool(layout.grid_items)
+        if has_positions and (rows is not None or cols is not None):
             raise ValueError("rows/cols cannot be combined with layout.grid_items")
 
         spec = self.to_spec(source_name=source_name, layout=layout)
@@ -240,7 +241,7 @@ class Dashboard:
         )
         if draggable is not None:
             spec.layout.draggable = draggable
-        if spec.layout.grid_items is None:
+        if not spec.layout.grid_items:
             spec.layout.grid_items = _auto_grid_items(
                 spec.figures, rows=rows, cols=cols
             )

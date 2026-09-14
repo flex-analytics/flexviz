@@ -1273,6 +1273,33 @@ class TestDashboardLayoutPrecedence:
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
         assert "gs-id=" not in html
 
+    def test_empty_grid_items_are_generated(self):
+        """The adapters read `grid_items` as falsy, so the spec must match."""
+        dash = self._dash(2)
+        spec = dash._finalized_spec(
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(grid_items=[]),
+        )
+        assert [gi.w for gi in spec.layout.grid_items] == [6, 6]
+
+    def test_empty_grid_items_do_not_block_cols(self):
+        dash = self._dash(1)
+        spec = dash._finalized_spec(
+            "data",
+            rows=None,
+            cols=1,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(grid_items=[]),
+        )
+        assert spec.layout.grid_items[0].w == 12
+
     def test_draggable_none_keeps_the_layout_value(self):
         dash = self._dash(1)
         spec = dash._finalized_spec(
