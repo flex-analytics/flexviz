@@ -3780,6 +3780,68 @@ class TestAgentReadback:
         assert page.evaluate("DASHBOARD_SPEC.figures[0].uid") == original_uid
         assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
 
+    def test_compact_state_keys_and_revision_bump(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").click()
+        page.wait_for_timeout(300)
+
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.2, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        compact = page.evaluate("window.flexvizState({compact: true})")
+        assert set(compact) == {"version", "state", "client_state", "revision"}
+        assert len(compact["state"]["selections"]) == 1, compact["state"]
+
+        # Unchanged state reads back at the same revision.
+        again = page.evaluate("window.flexvizState({compact: true})")
+        assert again["revision"] == compact["revision"]
+
+        # flexvizApply resolves with the compact state of the applied spec.
+        applied = page.evaluate("window.flexvizApply({state: {selections: []}})")
+        assert applied["state"]["selections"] == []
+        assert applied["revision"] > compact["revision"]
+
+    def test_apply_clears_selection_and_leaves_figures_untouched(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        total = "divs[1].data[0].y.reduce((a, b) => a + b, 0)"
+        page.wait_for_function(f"() => ({total}) > 0")
+        unfiltered = page.evaluate(f"() => {total}")
+
+        page.evaluate("""() => {
+            const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: figUids[0],
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+            }];
+            return postDashboardUpdate({
+                type: 'selection', axis_ranges: {},
+                selections: DASHBOARD_SPEC.state.selections,
+                force_update: true, figure_uid: figUids[0],
+            });
+        }""")
+        page.wait_for_function(f"() => ({total}) < {unfiltered}")
+        figures_before = page.evaluate("window.flexvizState().figures")
+
+        page.evaluate("window.flexvizApply({state: {selections: []}})")
+        page.wait_for_function(f"() => ({total}) === {unfiltered}")
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+        assert page.evaluate("window.flexvizState().figures") == figures_before
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)
