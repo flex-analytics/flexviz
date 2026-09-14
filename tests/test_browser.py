@@ -3842,6 +3842,31 @@ class TestAgentReadback:
         assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
         assert page.evaluate("window.flexvizState().figures") == figures_before
 
+    def test_apply_partial_state_keeps_viewport(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        # Default mode is zoom: this drag stores a viewport range.
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.7, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+        zoomed = page.evaluate("window.flexvizState().state.viewport")
+        assert any("/x" in key for key in zoomed), zoomed
+
+        # A patch that carries only `selections` must keep the sibling state keys.
+        page.evaluate("window.flexvizApply({state: {selections: []}})")
+        after = page.evaluate("window.flexvizState().state")
+        assert after["viewport"] == zoomed, after
+        assert after["group_domains"] == {}, after
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)

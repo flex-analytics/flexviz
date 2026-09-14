@@ -8,20 +8,29 @@
 // transient hover/cursor visuals) so callers cannot mutate the authoritative
 // client state through it. `flexvizState({compact: true})` returns only the
 // interaction state plus a revision, which is what a polling agent needs.
-// `flexvizApply(obj)` merges per top-level spec key, re-renders, and resolves
-// with the compact state once the re-request has completed.
+// `flexvizApply(obj)` merges per top-level spec key (`state` and `client_state`
+// one level deeper), re-renders, and resolves with the compact state once the
+// re-request has completed.
 window.flexvizState = (opts) =>
   opts && opts.compact ? _fvCompactState() : structuredClone(DASHBOARD_SPEC);
 
 window.flexvizApply = async function(obj) {
-  Object.assign(DASHBOARD_SPEC, obj);
-  window.fvRebuildHoverLookups?.();
-  window.fvRefreshSelectionSummary?.();
+  // Clone so the caller keeps no live reference into the authoritative spec,
+  // mirroring the detached snapshot the read half returns.
+  const patch = structuredClone(obj);
+  // `state` and `client_state` merge one level deep: a patch that carries only
+  // `selections` must keep `viewport` and `group_domains`, which several readers
+  // dereference without a guard (delta.js ensureGroupColor, plotly relayout).
+  Object.assign(DASHBOARD_SPEC, patch, {
+    state: { ...DASHBOARD_SPEC.state, ...patch.state },
+    client_state: { ...DASHBOARD_SPEC.client_state, ...patch.client_state },
+  });
+  // Grid layout first: the panels must be sized before the re-render.
   window._fvRestoreGridLayout?.();
   window.fvSetGridEditable?.((DASHBOARD_SPEC.layout && DASHBOARD_SPEC.layout.grid_editable) === true);
-  window.fvResetRuntimeCache?.();
-  window.fvUpdateCfModeButton?.();
   window.fvUpdateGridButton?.();
+  // fvRestoreFromSpec owns the rest: runtime cache, hover lookups, cross-filter
+  // button and selection summary, all before it re-requests.
   await window.fvRestoreFromSpec();
   return _fvCompactState();
 };
