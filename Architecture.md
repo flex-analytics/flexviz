@@ -299,9 +299,17 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   which returns the live `DashboardSpec` (persistent serialized state only,
   no transient hover visuals). An agent with browser tooling opens a share
   URL, lets the human explore, and reads viewport and selections through
-  this accessor at any time. Without browser tooling, the human clicks
-  **Share** and the agent decodes the copied URL. The address bar does not
-  track interactions.
+  this accessor at any time. `window.flexvizState({compact: true})` returns
+  only `{version, state, client_state, revision}`, which is what a polling
+  agent needs; `revision` increases whenever the state differs from the
+  previous read. Without browser tooling, the human clicks **Share** and the
+  agent decodes the copied URL. The address bar does not track interactions.
+- **Apply contract**: `window.flexvizApply(obj)` is the write half. It merges
+  `obj` into the live spec per top-level key, re-renders through
+  `fvRestoreFromSpec`, and resolves with the compact state once the
+  re-request has completed. The Import button is a thin wrapper around it.
+  Structure changes (adding or removing a figure) still need a new share URL,
+  because panels are built server-side.
 
 Watch-along stays client-side by design: the server keeps no interaction
 state, so "what is the human looking at" lives only in the browser tab.
