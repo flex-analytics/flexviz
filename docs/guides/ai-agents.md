@@ -116,6 +116,38 @@ without the URLs, and `flexviz history show N` (or `show N --state`) prints
 one back when the agent needs it. Add `.flexviz/` to your `.gitignore`:
 the file holds full share URLs, which include column names and selections.
 
+## Reports: findings with live dashboards
+
+`flexviz report findings.md` turns a plain markdown file into an HTML
+report. Any line that is exactly `fv:N` becomes a live, zoomable dashboard,
+embedded as an iframe at the URL that history entry `N` recorded. A line
+that is exactly a share URL embeds the same way, so a markdown file already
+expanded by `--md` (below) still renders when it is expanded again.
+
+```markdown
+# Sensor drift, week 36
+
+Sensor 12 drifts high after the maintenance window on Tuesday.
+
+fv:3
+
+The histogram shows a second mode that was not there last week.
+
+fv:5
+```
+
+```bash
+flexviz report findings.md -o findings.html --md findings.expanded.md
+```
+
+`findings.html` is the report to open: each `fv:N` line is a real dashboard,
+not a picture of one. `--md` writes a second copy with bare URLs instead of
+iframes, for pasting into GitHub or chat, where it degrades to plain links.
+
+A report's dashboards render only while the `flexviz serve` (or notebook
+`show()`) instance behind their URLs is still running. Close that server and
+the embeds go blank; the markdown itself still holds every finding.
+
 ## Safety notes
 
 - The server binds loopback by default. Its endpoints are unauthenticated,
