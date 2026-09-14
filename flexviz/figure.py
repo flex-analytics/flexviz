@@ -734,7 +734,7 @@ class Figure:
     # ------------------------------------------------------------------
 
     def title(self, text: str) -> Figure:
-        """Set a renderer-agnostic figure title (Plotly ``title.text``)."""
+        """Set the figure title (Plotly ``title.text``)."""
         self._layout["title"] = text
         return self
 
@@ -755,7 +755,7 @@ class Figure:
         :meth:`update_layout`.  The two write separate layout keys, so either
         call order works and a ``legend`` dict survives ``legend(False)``.
         Passing a ``legend`` dict without calling this also implies a visible
-        legend.  ECharts reads visibility only.
+        legend.
         """
         self._layout["showlegend"] = show
         return self
