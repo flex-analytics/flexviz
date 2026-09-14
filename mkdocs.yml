@@ -71,6 +71,7 @@ plugins:
 nav:
   - Home: index.md
   - Guides:
+      - Customizing: guides/customizing.md
       - Cross-filtering: guides/cross-filtering.md
       - Grouping: guides/grouping.md
       - Line downsampling: guides/line-downsampling.md
@@ -82,4 +83,5 @@ nav:
   - API reference:
       - Figure: api/figure.md
       - Dashboard: api/dashboard.md
+      - Layout: api/layout.md
       - Server: api/server.md

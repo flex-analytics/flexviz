@@ -11,7 +11,7 @@ parse_event(raw_event)
     ``relayoutData``) into an ``InteractionEvent`` that the backend
     understands.  Return ``None`` if the event should be ignored.
 
-show_dashboard(spec, server_url, **kwargs)
+show_dashboard(spec, server_url, **adapter_options)
     High-level convenience: build the dashboard HTML, deliver it to the
     user (notebook IFrame or browser), and start an interactive session.
 
@@ -132,9 +132,12 @@ class AbstractAdapter(ABC):
         self,
         spec: DashboardSpec,
         server_url: str = "http://127.0.0.1:8000",
-        **kwargs: Any,
     ) -> None:
         """Build and display a dashboard for *spec*.
+
+        Adapters declare their own rendering options (``notebook``, ``height``,
+        ``block``) as explicit keyword parameters.  None of them accept
+        ``**kwargs``, so a misspelled option raises instead of being ignored.
 
         Parameters
         ----------
@@ -142,8 +145,6 @@ class AbstractAdapter(ABC):
             Full ``DashboardSpec`` (N figures + shared interaction state).
         server_url:
             Base URL of the running flexviz FastAPI server.
-        **kwargs:
-            Adapter-specific keyword arguments.
         """
 
     # ------------------------------------------------------------------
@@ -395,12 +396,12 @@ class AbstractAdapter(ABC):
         return toolbar_css()
 
     # ------------------------------------------------------------------
-    # Gridstack.js helpers (draggable layout)
+    # GridStack.js helpers (draggable layout)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _gridstack_css() -> str:
-        """Return the Gridstack CDN ``<link>`` tag plus minimal override CSS."""
+        """Return the GridStack CDN ``<link>`` tag plus minimal override CSS."""
         return (
             '<link rel="stylesheet"'
             ' href="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack.min.css">\n'
@@ -412,7 +413,7 @@ class AbstractAdapter(ABC):
 
     @staticmethod
     def _gridstack_script_tag() -> str:
-        """Return the Gridstack CDN ``<script>`` tag."""
+        """Return the GridStack CDN ``<script>`` tag."""
         return (
             '<script src="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack-all.js">'
             "</script>"

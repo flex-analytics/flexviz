@@ -269,7 +269,6 @@ class EChartsAdapter(AbstractAdapter):
         notebook: bool | None = None,
         height: int = 400,
         block: bool = True,
-        **kwargs: Any,
     ) -> None:
         """Render a dashboard as a self-contained ECharts HTML page.
 
@@ -471,7 +470,7 @@ class EChartsAdapter(AbstractAdapter):
         fv_title = fig_spec.layout.get("title") or ""
         fv_xlabel = fig_spec.layout.get("xlabel")
         fv_ylabel = fig_spec.layout.get("ylabel")
-        fv_legend = fig_spec.layout.get("legend")
+        fv_showlegend = fig_spec.layout.get("showlegend")
         if fv_xlabel:
             x_axis["name"] = fv_xlabel
         if fv_ylabel:
@@ -482,7 +481,8 @@ class EChartsAdapter(AbstractAdapter):
                 "trigger": "item" if all_non_cartesian else "axis",
                 "axisPointer": {"type": "line"},
             },
-            "legend": {"show": fv_legend if fv_legend is not None else True},
+            # ECharts reads visibility only; Plotly legend dicts do not apply.
+            "legend": {"show": fv_showlegend if fv_showlegend is not None else True},
             "toolbox": {"show": False},
             "series": series,
             "animation": False,

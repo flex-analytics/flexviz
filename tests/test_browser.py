@@ -6294,3 +6294,51 @@ class TestDraggableGridBrowser:
             f"Grid item did not move after unlocking: before={initial_pos}, "
             f"after={(unlocked_state['x'], unlocked_state['y'])}"
         )
+
+
+@pytest.mark.parametrize("renderer", ["plotly"])
+class TestLockedLayoutBrowser:
+    """A read-only embed: no layout button, and panel height honours GridItem.h."""
+
+    def _url(self, port: int, renderer: str, h: int) -> str:
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import GridItem, LayoutSpec, encode_spec
+
+        df = pl.DataFrame(
+            {"ts": list(range(200)), "val": [float(i) for i in range(200)]}
+        )
+        register_source("_browser_locked_test", df)
+
+        dash = Dashboard(df)
+        dash.add_figure(title="Fig0").add_line(x="ts", y="val", n_points=100)
+        uid = dash.to_spec().figures[0].uid
+        spec = dash._finalized_spec(
+            "_browser_locked_test",
+            rows=None,
+            cols=None,
+            draggable=False,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
+        )
+        return (
+            f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"
+        )
+
+    def test_layout_button_is_hidden(self, page: Page, server_port: int, renderer: str):
+        page.goto(self._url(server_port, renderer, 7))
+        page.wait_for_selector("#fv-btn-reset", timeout=10_000)
+        _wait_for_chart(page, renderer)
+        btn = page.query_selector("#fv-btn-grid")
+        assert btn is None or not btn.is_visible(), "Layout button should be hidden"
+
+    def test_grid_item_height_drives_the_panel(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        page.goto(self._url(server_port, renderer, 7))
+        _wait_for_chart(page, renderer)
+        page.wait_for_timeout(1_000)
+        box = page.query_selector(".fv-dashboard-item").bounding_box()
+        # Spanning h rows also spans h-1 gaps: 7*80 + 6*8.
+        assert box["height"] == 608, box["height"]

@@ -814,3 +814,98 @@ class TestShowBlock:
         )
 
         assert opened and waited == []
+
+
+class TestPlotlyLayoutOverrides:
+    """update_layout() refines the derived layout instead of replacing it."""
+
+    def _layout(self, fig) -> dict:
+        import json
+        import re
+
+        import polars as pl
+
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+        from flexviz.dashboard import Dashboard
+
+        dash = Dashboard(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
+        dash._figures.append(fig)
+        spec = dash._finalized_spec(
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=None,
+        )
+        html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
+        return json.loads(re.search(r"const layoutArr_0 = (\{.*?\});\n", html).group(1))
+
+    def _figure(self):
+        import polars as pl
+
+        from flexviz.figure import Figure
+
+        fig = Figure(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
+        fig.add_line(x="a", y="b")
+        return fig
+
+    def test_axis_override_keeps_the_axis_title(self):
+        fig = self._figure().ylabel("Y label").update_layout(yaxis={"type": "log"})
+        yaxis = self._layout(fig)["yaxis"]
+        assert yaxis["type"] == "log"
+        assert yaxis["title"]["text"] == "Y label"
+
+    def test_nested_axis_override_keeps_the_axis_title(self):
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": {"font": {"size": 20}}})
+        title = self._layout(fig)["xaxis"]["title"]
+        assert title["text"] == "X label"
+        assert title["font"] == {"size": 20}
+
+    def test_explicit_axis_title_wins_over_xlabel(self):
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": {"text": "Explicit"}})
+        assert self._layout(fig)["xaxis"]["title"]["text"] == "Explicit"
+
+    def test_string_axis_title_is_left_alone(self):
+        """Plotly accepts a bare string title; do not index into it."""
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": "Explicit"})
+        assert self._layout(fig)["xaxis"]["title"] == "Explicit"
+
+    def test_legend_dict_shows_the_legend(self):
+        fig = self._figure().legend(True).update_layout(legend={"orientation": "h"})
+        layout = self._layout(fig)
+        assert layout["showlegend"] is True
+        assert layout["legend"]["orientation"] == "h"
+
+    def test_legend_config_survives_either_call_order(self):
+        fig = self._figure().update_layout(legend={"orientation": "h"}).legend(True)
+        layout = self._layout(fig)
+        assert layout["showlegend"] is True
+        assert layout["legend"]["orientation"] == "h"
+
+    def test_hiding_the_legend_keeps_its_placement(self):
+        fig = self._figure().update_layout(legend={"orientation": "h"}).legend(False)
+        layout = self._layout(fig)
+        assert layout["showlegend"] is False
+        assert layout["legend"]["orientation"] == "h"
+
+
+class TestShowKwargValidation:
+    def test_unknown_show_kwarg_raises(self):
+        """`**kwargs` used to swallow these, so typos were silent no-ops."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+        from flexviz.spec import DashboardSpec
+
+        with pytest.raises(TypeError, match="draggable"):
+            PlotlyAdapter().show_dashboard(DashboardSpec(), draggable=False)
+
+    def test_unknown_show_kwarg_raises_on_echarts(self):
+        from flexviz.adapters.echarts_adapter import EChartsAdapter
+        from flexviz.spec import DashboardSpec
+
+        with pytest.raises(TypeError, match="draggable"):
+            EChartsAdapter().show_dashboard(DashboardSpec(), draggable=False)
