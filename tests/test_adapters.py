@@ -848,3 +848,9 @@ class TestPlotlyLayoutOverrides:
         yaxis = self._layout(fig)["yaxis"]
         assert yaxis["type"] == "log"
         assert yaxis["title"]["text"] == "Y label"
+
+    def test_legend_dict_shows_the_legend(self):
+        fig = self._figure().legend(True).update_layout(legend={"orientation": "h"})
+        layout = self._layout(fig)
+        assert layout["showlegend"] is True
+        assert layout["legend"]["orientation"] == "h"

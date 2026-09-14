@@ -482,7 +482,8 @@ class EChartsAdapter(AbstractAdapter):
                 "trigger": "item" if all_non_cartesian else "axis",
                 "axisPointer": {"type": "line"},
             },
-            "legend": {"show": fv_legend if fv_legend is not None else True},
+            # Plotly legend dicts reach here too; ECharts only reads visibility.
+            "legend": {"show": fv_legend if isinstance(fv_legend, bool) else True},
             "toolbox": {"show": False},
             "series": series,
             "animation": False,

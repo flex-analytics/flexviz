@@ -482,11 +482,15 @@ class PlotlyAdapter(AbstractAdapter):
                 layout_obj.setdefault("yaxis", {}).setdefault("title", {})[
                     "text"
                 ] = fv_ylabel
-            layout_obj["showlegend"] = (
-                fv_legend
-                if isinstance(fv_legend, bool)
-                else _auto_show_legend(fig_spec.traces)
-            )
+            # A legend dict configures a legend, so it implies a visible one.
+            # Without this, `legend(True).update_layout(legend={...})` loses the
+            # flag, because both write the same layout key.
+            if isinstance(fv_legend, bool):
+                layout_obj["showlegend"] = fv_legend
+            elif isinstance(fv_legend, dict):
+                layout_obj["showlegend"] = True
+            else:
+                layout_obj["showlegend"] = _auto_show_legend(fig_spec.traces)
             # Merge one level deep so an override like ``yaxis={"type": "log"}``
             # refines the axis instead of replacing the title set above.
             for key, value in raw_layout.items():
