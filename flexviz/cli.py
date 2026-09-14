@@ -180,8 +180,15 @@ def _state_only(spec) -> dict:
     Mirrors ``flexvizState({compact: true})`` in the browser, minus
     ``revision`` (that field only means something across repeated polls of a
     live page, not a one-off decode).
+
+    A single-figure ``VisualizationSpec`` has no ``client_state`` field, so
+    the triple keeps its shape with a default one: that is exactly the client
+    state ``/view`` gives the page it builds from such a spec.
     """
+    from flexviz.spec import ClientState
+
     dumped = spec.model_dump(mode="json")
+    dumped.setdefault("client_state", ClientState().model_dump(mode="json"))
     return {key: dumped[key] for key in ("version", "state", "client_state")}
 
 

@@ -24,10 +24,15 @@ def entries() -> list[dict]:
     if not PATH.exists():
         return []
     out = []
-    for line in PATH.read_text(encoding="utf-8").splitlines():
+    for i, line in enumerate(PATH.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if line:
-            out.append(json.loads(line))
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                # A half-written or hand-edited line cannot be skipped: every
+                # later number comes from the entry count, so it would shift.
+                raise SystemExit(f"{PATH}: line {i} is not valid JSON") from exc
     return out
 
 

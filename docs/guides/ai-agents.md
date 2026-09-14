@@ -113,7 +113,8 @@ A share URL can run to several kilobytes, too long to retype in every
 prompt. `flexviz history add "<url>" --note "..."` records it under a
 number in `.flexviz/history.jsonl`; `flexviz history list` shows the notes
 without the URLs, and `flexviz history show N` (or `show N --state`) prints
-one back when the agent needs it.
+one back when the agent needs it. Add `.flexviz/` to your `.gitignore`:
+the file holds full share URLs, which include column names and selections.
 
 ## Safety notes
 

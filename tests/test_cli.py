@@ -6,9 +6,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from flexviz import Dashboard
+from flexviz import Dashboard, Figure
 from flexviz.cli import _register_files, main
-from flexviz.spec import DashboardSpec, decode_spec
+from flexviz.spec import AxisRange, DashboardSpec, decode_spec, encode_spec
 
 
 def _demo_dashboard(**dash_kw) -> Dashboard:
@@ -51,11 +51,27 @@ def test_decode_command_rejects_url_without_spec():
         main(["decode", "http://127.0.0.1:8000/view?other=1"])
 
 
-def test_decode_state_only_prints_subset(capsys):
-    url = _demo_dashboard().share_url(source_name="demo")
-    main(["decode", url, "--state-only"])
+def test_decode_state_only_keeps_the_interaction_values(capsys):
+    spec = decode_spec(
+        _demo_dashboard().share_url(source_name="demo").split("spec=", 1)[1]
+    )
+    key = f"{spec.figures[0].uid}/x"
+    spec.state.viewport[key] = AxisRange(min=1.0, max=2.0)
+
+    main(["decode", encode_spec(spec), "--state-only"])
     payload = json.loads(capsys.readouterr().out)
     assert set(payload) == {"version", "state", "client_state"}
+    assert payload["state"]["viewport"][key] == {"min": 1.0, "max": 2.0}
+    assert payload["client_state"]["live_brush"] == "off"
+
+
+def test_decode_state_only_defaults_client_state_of_a_single_figure(capsys):
+    # A VisualizationSpec has no client_state; /view runs it with a default one.
+    fig = Figure(pl.LazyFrame({"t": [1, 2], "v": [1.0, 2.0]})).add_line(x="t", y="v")
+    main(["decode", encode_spec(fig.to_spec("demo")), "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["client_state"]["live_brush"] == "auto"
 
 
 def test_register_files_names_by_stem(tmp_path):
@@ -303,3 +319,12 @@ def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):
         main(["history", "show", "9"])
+
+
+def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"n": 1, "url": "http://x"\n')
+    with pytest.raises(SystemExit):
+        main(["history", "list"])
