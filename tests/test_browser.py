@@ -6300,7 +6300,7 @@ class TestDraggableGridBrowser:
 class TestLockedLayoutBrowser:
     """A read-only embed: no layout button, and panel height honours GridItem.h."""
 
-    def _url(self, port: int, renderer: str, h: int) -> str:
+    def _url(self, port: int, renderer: str, h: int, draggable: bool = False) -> str:
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import GridItem, LayoutSpec, encode_spec
@@ -6317,10 +6317,13 @@ class TestLockedLayoutBrowser:
             "_browser_locked_test",
             rows=None,
             cols=None,
-            draggable=False,
+            draggable=draggable,
             effective_cache=False,
             live_brush=None,
-            layout=LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
+            layout=LayoutSpec(
+                draggable=draggable,
+                grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)],
+            ),
         )
         return (
             f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"
@@ -6336,9 +6339,16 @@ class TestLockedLayoutBrowser:
     def test_grid_item_height_drives_the_panel(
         self, page: Page, server_port: int, renderer: str
     ):
-        page.goto(self._url(server_port, renderer, 7))
-        _wait_for_chart(page, renderer)
-        page.wait_for_timeout(1_000)
-        box = page.query_selector(".fv-dashboard-item").bounding_box()
-        # Spanning h rows also spans h-1 gaps: 7*80 + 6*8.
-        assert box["height"] == 608, box["height"]
+        """h is h * 80 px on both layout paths (issue #51)."""
+        for h in (4, 7):
+            heights = {}
+            for draggable in (True, False):
+                page.goto(self._url(server_port, renderer, h, draggable))
+                _wait_for_chart(page, renderer)
+                page.wait_for_timeout(1_000)
+                sel = ".grid-stack-item" if draggable else ".fv-dashboard-item"
+                item = page.query_selector(sel)
+                assert item is not None, f"{sel} not found for draggable={draggable}"
+                heights[draggable] = item.bounding_box()["height"]
+            assert abs(heights[True] - h * 80) <= 1, heights
+            assert abs(heights[False] - h * 80) <= 1, heights
