@@ -771,6 +771,10 @@ class Figure:
         ``height`` and ``width`` size the chart itself.  Panel size in a
         dashboard comes from ``GridItem`` instead.
 
+        Plotly lists every key it accepts at
+        https://plotly.com/python/reference/layout/, and its legend guide at
+        https://plotly.com/python/legend/ covers the placement patterns.
+
         Examples
         --------
         Put the legend below the chart::

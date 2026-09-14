@@ -51,6 +51,12 @@ margin, or the legend overlaps the x-axis labels.
 Passing a `legend` dict also makes the legend visible, so `legend(True)` is
 optional here.
 
+Plotly owns both dicts. Its
+[legend guide](https://plotly.com/python/legend/) shows the positioning
+patterns, and the reference lists every key of
+[`layout.legend`](https://plotly.com/python/reference/layout/#layout-legend)
+and [`layout.margin`](https://plotly.com/python/reference/layout/#layout-margin).
+
 ### Other renderer options
 
 ```python
@@ -63,6 +69,9 @@ fig.ylabel("Power").update_layout(
 
 Dict values merge one level deep. The example keeps the y-axis label and adds
 a log scale. A replacing merge would erase the label.
+
+Every key comes from the
+[Plotly layout reference](https://plotly.com/python/reference/layout/).
 
 !!! warning "Plotly only"
     ECharts is deprecated and reads `title`, `xlabel`, `ylabel` and legend
