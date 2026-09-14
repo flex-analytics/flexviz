@@ -40,10 +40,10 @@ jobs:
 
       # Keep in step with PY_SOURCES in the Makefile.
       - name: black
-        run: uv run --no-sync black --check flexviz tests flexviz_polars
+        run: uv run --no-sync black --check flexviz tests flexviz_polars benchmarks
 
       - name: ruff
-        run: uv run --no-sync ruff check flexviz tests flexviz_polars
+        run: uv run --no-sync ruff check flexviz tests flexviz_polars benchmarks
 
       # rustfmt.toml uses group_imports/imports_granularity, which are
       # nightly-only. rustup auto-installs the toolchain pinned in
