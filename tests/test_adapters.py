@@ -814,3 +814,37 @@ class TestShowBlock:
         )
 
         assert opened and waited == []
+
+
+class TestPlotlyLayoutOverrides:
+    """update_layout() refines the derived layout instead of replacing it."""
+
+    def _layout(self, fig) -> dict:
+        import json
+        import re
+
+        import polars as pl
+
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+        from flexviz.dashboard import Dashboard
+
+        dash = Dashboard(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
+        dash._figures.append(fig)
+        spec = dash._finalized_spec("data", None, None, None, False, None, None)
+        html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
+        return json.loads(re.search(r"const layoutArr_0 = (\{.*?\});\n", html).group(1))
+
+    def _figure(self):
+        import polars as pl
+
+        from flexviz.figure import Figure
+
+        fig = Figure(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
+        fig.add_line(x="a", y="b")
+        return fig
+
+    def test_axis_override_keeps_the_axis_title(self):
+        fig = self._figure().ylabel("Y label").update_layout(yaxis={"type": "log"})
+        yaxis = self._layout(fig)["yaxis"]
+        assert yaxis["type"] == "log"
+        assert yaxis["title"]["text"] == "Y label"

@@ -487,7 +487,14 @@ class PlotlyAdapter(AbstractAdapter):
                 if isinstance(fv_legend, bool)
                 else _auto_show_legend(fig_spec.traces)
             )
-            layout_obj.update(raw_layout)
+            # Merge one level deep so an override like ``yaxis={"type": "log"}``
+            # refines the axis instead of replacing the title set above.
+            for key, value in raw_layout.items():
+                existing = layout_obj.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    layout_obj[key] = {**existing, **value}
+                else:
+                    layout_obj[key] = value
             traces_js_lines.append(
                 f"const tracesArr_{i} = {_json_for_inline_script(traces_arr)};"
             )
