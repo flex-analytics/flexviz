@@ -167,6 +167,18 @@ def _figure_lockable_axis_families(fig_spec: FigureSpec) -> list[str]:
     return [axis for axis in ("x", "y") if axis in families]
 
 
+def _fill_title_text(container: dict, key: str, text: str) -> None:
+    """Fill ``container[key]["text"]`` only where it is still unset.
+
+    An explicit renderer option wins: ``update_layout(xaxis={"title": ...})``
+    must survive ``xlabel()``.  A bare string title is left untouched, because
+    Plotly accepts that form too.
+    """
+    title = container.setdefault(key, {})
+    if isinstance(title, dict):
+        title.setdefault("text", text)
+
+
 def _auto_show_legend(traces: list) -> bool:
     if len(traces) > 1:
         return True
@@ -471,16 +483,6 @@ class PlotlyAdapter(AbstractAdapter):
             fv_legend = raw_layout.pop("legend", None)
             if isinstance(fv_legend, dict):
                 layout_obj["legend"] = fv_legend
-            if fv_title is not None:
-                layout_obj.setdefault("title", {})["text"] = fv_title
-            if fv_xlabel is not None:
-                layout_obj.setdefault("xaxis", {}).setdefault("title", {})[
-                    "text"
-                ] = fv_xlabel
-            if fv_ylabel is not None:
-                layout_obj.setdefault("yaxis", {}).setdefault("title", {})[
-                    "text"
-                ] = fv_ylabel
             # A legend dict configures a legend, so it implies a visible one.
             # Without this, `legend(True).update_layout(legend={...})` loses the
             # flag, because both write the same layout key.
@@ -490,14 +492,22 @@ class PlotlyAdapter(AbstractAdapter):
                 layout_obj["showlegend"] = True
             else:
                 layout_obj["showlegend"] = _auto_show_legend(fig_spec.traces)
-            # Merge one level deep so an override like ``yaxis={"type": "log"}``
-            # refines the axis instead of replacing the title set above.
+            # Renderer options merge one level deep over the derived layout, so
+            # `yaxis={"type": "log"}` refines the axis instead of replacing it.
             for key, value in raw_layout.items():
                 existing = layout_obj.get(key)
                 if isinstance(existing, dict) and isinstance(value, dict):
                     layout_obj[key] = {**existing, **value}
                 else:
                     layout_obj[key] = value
+            # Titles land last and only where the options left them unset, so a
+            # nested override keeps the label and an explicit title still wins.
+            if fv_title is not None:
+                _fill_title_text(layout_obj, "title", fv_title)
+            if fv_xlabel is not None:
+                _fill_title_text(layout_obj.setdefault("xaxis", {}), "title", fv_xlabel)
+            if fv_ylabel is not None:
+                _fill_title_text(layout_obj.setdefault("yaxis", {}), "title", fv_ylabel)
             traces_js_lines.append(
                 f"const tracesArr_{i} = {_json_for_inline_script(traces_arr)};"
             )

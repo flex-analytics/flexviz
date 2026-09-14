@@ -849,6 +849,24 @@ class TestPlotlyLayoutOverrides:
         assert yaxis["type"] == "log"
         assert yaxis["title"]["text"] == "Y label"
 
+    def test_nested_axis_override_keeps_the_axis_title(self):
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": {"font": {"size": 20}}})
+        title = self._layout(fig)["xaxis"]["title"]
+        assert title["text"] == "X label"
+        assert title["font"] == {"size": 20}
+
+    def test_explicit_axis_title_wins_over_xlabel(self):
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": {"text": "Explicit"}})
+        assert self._layout(fig)["xaxis"]["title"]["text"] == "Explicit"
+
+    def test_string_axis_title_is_left_alone(self):
+        """Plotly accepts a bare string title; do not index into it."""
+        fig = self._figure().xlabel("X label")
+        fig.update_layout(xaxis={"title": "Explicit"})
+        assert self._layout(fig)["xaxis"]["title"] == "Explicit"
+
     def test_legend_dict_shows_the_legend(self):
         fig = self._figure().legend(True).update_layout(legend={"orientation": "h"})
         layout = self._layout(fig)
