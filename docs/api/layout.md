@@ -6,10 +6,10 @@ and which toolbar buttons appear. See
 [Customizing](../guides/customizing.md) and
 [Embedding](../guides/embedding.md) for worked examples.
 
-These models live in `flexviz.spec`:
+These models are exported from the package root:
 
 ```python
-from flexviz.spec import GridItem, LayoutSpec, ToolbarConfig
+from flexviz import GridItem, LayoutSpec, ToolbarConfig
 ```
 
 ::: flexviz.spec.LayoutSpec

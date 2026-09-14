@@ -65,8 +65,7 @@ works when the browser and Python server run on the same machine.
 ```python
 import polars as pl
 import uvicorn
-from flexviz import Dashboard, app, register_source
-from flexviz.spec import LayoutSpec, ToolbarConfig
+from flexviz import Dashboard, LayoutSpec, ToolbarConfig, app, register_source
 
 lf = pl.scan_parquet("readings.parquet")
 register_source("readings", lf, cache=True)
@@ -107,7 +106,7 @@ The parent page owns the iframe box. FlexViz owns what is inside it.
 To approach a given iframe height, set `GridItem.h` yourself:
 
 ```python
-from flexviz.spec import GridItem, LayoutSpec
+from flexviz import GridItem, LayoutSpec
 
 uid = dash.to_spec().figures[0].uid
 url = dash.share_url(

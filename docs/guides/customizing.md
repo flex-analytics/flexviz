@@ -146,7 +146,7 @@ The static grid stretches a panel across the gaps it spans. GridStack does
 not. Size against the engine you actually render with.
 
 ```python
-from flexviz.spec import GridItem, LayoutSpec
+from flexviz import GridItem, LayoutSpec
 
 uids = [f.uid for f in dash.to_spec().figures]
 dash.show(
@@ -171,7 +171,7 @@ dash.show(
 default.
 
 ```python
-from flexviz.spec import LayoutSpec, ToolbarConfig
+from flexviz import LayoutSpec, ToolbarConfig
 
 dash.show(
     draggable=False,
