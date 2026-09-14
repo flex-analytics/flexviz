@@ -101,8 +101,10 @@ layout must stay fixed.
 
 ### Exact panel positions
 
-`GridItem` places one figure on the 12-column grid. One row unit is 80 px, so
-`h=5` is the 400 px default.
+`GridItem` places one figure on the 12-column grid. One row unit is 80 px, and
+a panel spanning `h` rows also spans the `h - 1` gaps between them. On a locked
+grid the panel is `h * 80 + (h - 1) * gap` pixels tall, so the default `h=5`
+with the default 8 px gap gives 432 px.
 
 ```python
 from flexviz.spec import GridItem, LayoutSpec
@@ -112,8 +114,8 @@ dash.show(
     layout=LayoutSpec(
         gap="16px",
         grid_items=[
-            GridItem(fig_uid=uids[0], x=0, y=0, w=12, h=4),   # full width, 320 px
-            GridItem(fig_uid=uids[1], x=0, y=4, w=6, h=8),    # half width, 640 px
+            GridItem(fig_uid=uids[0], x=0, y=0, w=12, h=4),   # full width, 368 px at gap 16
+            GridItem(fig_uid=uids[1], x=0, y=4, w=6, h=8),    # half width, 752 px at gap 16
             GridItem(fig_uid=uids[2], x=6, y=4, w=6, h=8),
         ],
     )
@@ -158,7 +160,7 @@ convenience overrides that apply on top of it.
 
 | You pass | Result |
 |---|---|
-| nothing | Two columns, 400 px panels, drag enabled |
+| nothing | Two columns, default `h=5` panels, drag enabled |
 | `cols=1` | One full-width column |
 | `layout.grid_items` | Your positions, untouched |
 | `layout.grid_items` and `cols` | `ValueError` |

@@ -97,9 +97,10 @@ The parent page owns the iframe box. FlexViz owns what is inside it.
 
 - **Width is responsive.** Panels are a 12-column grid at `width: 100%`, and
   the charts resize with their container. `cols=1` gives one full-width panel.
-- **Height is fixed.** A panel is `GridItem.h` grid rows, and one row is
-  80 px. The page is as tall as its panels plus the toolbar. It does not
-  stretch to fill the iframe.
+- **Height is fixed.** A panel spans `GridItem.h` grid rows of 80 px, plus the
+  `h - 1` gaps between them: `h * 80 + (h - 1) * 8` pixels with the default
+  gap. The page is as tall as its panels plus the toolbar. It does not stretch
+  to fill the iframe.
 
 To approach a given iframe height, set `GridItem.h` yourself:
 
@@ -115,7 +116,7 @@ url = dash.share_url(
 )
 ```
 
-`h=7` is 560 px of panel. Leave room for the toolbar above it, or let the
+`h=7` is 608 px of panel. Leave room for the toolbar above it, or let the
 iframe scroll. There is no mode that makes the dashboard fill its parent.
 
 !!! warning "`height=` is notebook-only"
