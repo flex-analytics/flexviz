@@ -132,7 +132,9 @@ docstrings in `flexviz/figure.py` are the source of truth:
 Dashboard(data, cache=False)     # data: pl.LazyFrame/DataFrame, pandas, pyarrow
                                  # cache=True enables cross-filter cubes (live brushing)
 dash.add_figure(title=...)       # -> Figure; chainable builders below
-dash.share_url(server_url, source_name, rows=None, cols=None, cache=None)
+dash.share_url(server_url, source_name, rows=None, cols=None, cache=None,
+               draggable=None,   # False = read-only: no drag/resize, no layout button
+               layout=None)      # LayoutSpec: gap, toolbar, exact grid_items
 
 fig.add_line(x, y, name=None, color=None, n_points=1000,
              downsample="minmax",          # or "lttb" | "fpcs" | "nth"
@@ -161,7 +163,20 @@ fig.add_geo_histogram2d(lat, lon, lat_bins=64, lon_bins=64,
 fig.add_geo_line(lat, lon, n_points=1000)
 
 fig.title(text); fig.xlabel(text); fig.ylabel(text); fig.legend(show=True)
+fig.update_layout(**plotly_layout)   # any Plotly layout key passes through;
+                                     #   dicts merge one level deep
 ```
+
+Legend placement, margins, log axes and fonts are renderer options, so they go
+through `update_layout`. A legend below the chart needs a bottom margin too:
+
+```python
+fig.update_layout(legend={"orientation": "h", "y": -0.25, "yanchor": "top"},
+                  margin={"b": 80})
+```
+
+Panel size is dashboard layout, not figure layout: one grid row is 80 px, and
+`cols=1` gives a full-width panel. See docs.flexviz.tech/guides/customizing/.
 
 Every builder returns the `Figure`, so calls chain. `group_by="col"`
 splits a trace into one child per group value with stable colors.
