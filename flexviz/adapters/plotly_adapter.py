@@ -480,15 +480,12 @@ class PlotlyAdapter(AbstractAdapter):
             fv_title = raw_layout.pop("title", None)
             fv_xlabel = raw_layout.pop("xlabel", None)
             fv_ylabel = raw_layout.pop("ylabel", None)
-            fv_legend = raw_layout.pop("legend", None)
-            if isinstance(fv_legend, dict):
-                layout_obj["legend"] = fv_legend
-            # A legend dict configures a legend, so it implies a visible one.
-            # Without this, `legend(True).update_layout(legend={...})` loses the
-            # flag, because both write the same layout key.
-            if isinstance(fv_legend, bool):
-                layout_obj["showlegend"] = fv_legend
-            elif isinstance(fv_legend, dict):
+            fv_showlegend = raw_layout.pop("showlegend", None)
+            # An explicit legend() wins.  Otherwise a legend dict configures a
+            # legend, so it implies a visible one.
+            if isinstance(fv_showlegend, bool):
+                layout_obj["showlegend"] = fv_showlegend
+            elif isinstance(raw_layout.get("legend"), dict):
                 layout_obj["showlegend"] = True
             else:
                 layout_obj["showlegend"] = _auto_show_legend(fig_spec.traces)

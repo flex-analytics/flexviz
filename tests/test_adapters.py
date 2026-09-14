@@ -873,6 +873,18 @@ class TestPlotlyLayoutOverrides:
         assert layout["showlegend"] is True
         assert layout["legend"]["orientation"] == "h"
 
+    def test_legend_config_survives_either_call_order(self):
+        fig = self._figure().update_layout(legend={"orientation": "h"}).legend(True)
+        layout = self._layout(fig)
+        assert layout["showlegend"] is True
+        assert layout["legend"]["orientation"] == "h"
+
+    def test_hiding_the_legend_keeps_its_placement(self):
+        fig = self._figure().update_layout(legend={"orientation": "h"}).legend(False)
+        layout = self._layout(fig)
+        assert layout["showlegend"] is False
+        assert layout["legend"]["orientation"] == "h"
+
 
 class TestShowKwargValidation:
     def test_unknown_show_kwarg_raises(self):

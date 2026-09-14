@@ -20,6 +20,14 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Changed
+
+- Spec version 0.6. `Figure.legend()` now writes `layout.showlegend` instead
+  of `layout.legend`, so legend visibility and legend placement no longer
+  share one key. `legend()` and `update_layout(legend={...})` now work in
+  either order, and a placement dict survives `legend(False)`. Specs encoded
+  at version 0.5 carry the old key and do not round-trip.
+
 ## [0.1.0b3] - 2026-09-09
 
 ### Added

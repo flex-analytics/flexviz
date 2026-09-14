@@ -470,7 +470,7 @@ class EChartsAdapter(AbstractAdapter):
         fv_title = fig_spec.layout.get("title") or ""
         fv_xlabel = fig_spec.layout.get("xlabel")
         fv_ylabel = fig_spec.layout.get("ylabel")
-        fv_legend = fig_spec.layout.get("legend")
+        fv_showlegend = fig_spec.layout.get("showlegend")
         if fv_xlabel:
             x_axis["name"] = fv_xlabel
         if fv_ylabel:
@@ -481,8 +481,8 @@ class EChartsAdapter(AbstractAdapter):
                 "trigger": "item" if all_non_cartesian else "axis",
                 "axisPointer": {"type": "line"},
             },
-            # Plotly legend dicts reach here too; ECharts only reads visibility.
-            "legend": {"show": fv_legend if isinstance(fv_legend, bool) else True},
+            # ECharts reads visibility only; Plotly legend dicts do not apply.
+            "legend": {"show": fv_showlegend if fv_showlegend is not None else True},
             "toolbox": {"show": False},
             "series": series,
             "animation": False,

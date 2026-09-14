@@ -752,10 +752,12 @@ class Figure:
         """Show or hide the legend (Plotly ``showlegend``).
 
         Placement is renderer-specific, so it goes through
-        :meth:`update_layout`.  Passing a ``legend`` dict there also implies a
-        visible legend, and ECharts reads visibility only.
+        :meth:`update_layout`.  The two write separate layout keys, so either
+        call order works and a ``legend`` dict survives ``legend(False)``.
+        Passing a ``legend`` dict without calling this also implies a visible
+        legend.  ECharts reads visibility only.
         """
-        self._layout["legend"] = show
+        self._layout["showlegend"] = show
         return self
 
     def update_layout(self, **kwargs: Any) -> Figure:

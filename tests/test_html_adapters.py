@@ -668,7 +668,7 @@ class TestPlotlyLegend:
 
     def test_explicit_legend_true_overrides_single_trace(self):
         traces = [TraceSpec(uid="t1", trace_type="line", axes=("x", "y"))]
-        html = self._build_html(traces, layout={"legend": True})
+        html = self._build_html(traces, layout={"showlegend": True})
         assert '"showlegend": true' in html
 
     def test_explicit_legend_false_overrides_multiple_traces(self):
@@ -676,7 +676,7 @@ class TestPlotlyLegend:
             TraceSpec(uid="t1", trace_type="line", axes=("x", "y")),
             TraceSpec(uid="t2", trace_type="line", axes=("x", "y")),
         ]
-        html = self._build_html(traces, layout={"legend": False})
+        html = self._build_html(traces, layout={"showlegend": False})
         assert '"showlegend": false' in html
 
     def test_legend_layout_keeps_auto_visibility(self):
@@ -1085,7 +1085,7 @@ class TestFigureMetadataPlotly:
                 "title": "My Title",
                 "xlabel": "Time",
                 "ylabel": "Value",
-                "legend": False,
+                "showlegend": False,
             },
             traces=[t],
         )
@@ -1117,7 +1117,7 @@ class TestFigureMetadataECharts:
                 "title": "My Title",
                 "xlabel": "Time",
                 "ylabel": "Value",
-                "legend": False,
+                "showlegend": False,
             },
             traces=[t],
         )
