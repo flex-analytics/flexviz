@@ -24,6 +24,11 @@ test-ooc:
 test-perf:
 	uv run pytest -m benchmark --override-ini="addopts=" -v tests/test_perf_choices.py
 
+.PHONY: bench
+# --no-sync: a sync would replace the release plugin from build-plugin-release.
+bench:
+	POLARS_MAX_THREADS=4 uv run --no-sync pytest benchmarks --codspeed -p no:randomly
+
 .PHONY: docs
 docs:
 	uv run --group docs mkdocs serve
