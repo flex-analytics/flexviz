@@ -1214,12 +1214,12 @@ class TestDashboardLayoutPrecedence:
         dash = self._dash(1)
         spec = dash._finalized_spec(
             "data",
-            None,
-            None,
-            None,
-            False,
-            None,
-            LayoutSpec(toolbar=ToolbarConfig(show_export=False)),
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(toolbar=ToolbarConfig(show_export=False)),
         )
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
         assert 'id="fv-btn-export"' not in html
@@ -1229,7 +1229,13 @@ class TestDashboardLayoutPrecedence:
         dash = self._dash(1)
         item = GridItem(fig_uid=self._uids(dash)[0], x=0, y=0, w=12, h=10)
         spec = dash._finalized_spec(
-            "data", None, None, None, False, None, LayoutSpec(grid_items=[item])
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(grid_items=[item]),
         )
         assert spec.layout.grid_items == [item]
 
@@ -1239,14 +1245,30 @@ class TestDashboardLayoutPrecedence:
             grid_items=[GridItem(fig_uid=self._uids(dash)[0], x=0, y=0, w=12, h=10)]
         )
         with pytest.raises(ValueError, match="grid_items"):
-            dash._finalized_spec("data", None, 1, None, False, None, layout)
+            dash._finalized_spec(
+                "data",
+                rows=None,
+                cols=1,
+                draggable=None,
+                effective_cache=False,
+                live_brush=None,
+                layout=layout,
+            )
 
     def test_draggable_false_drops_gridstack(self):
         """The toolbar button itself is hidden client-side; see the browser test."""
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 
         dash = self._dash(1)
-        spec = dash._finalized_spec("data", None, None, False, False, None, None)
+        spec = dash._finalized_spec(
+            "data",
+            rows=None,
+            cols=None,
+            draggable=False,
+            effective_cache=False,
+            live_brush=None,
+            layout=None,
+        )
         assert spec.layout.draggable is False
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
         assert "gs-id=" not in html
@@ -1254,7 +1276,13 @@ class TestDashboardLayoutPrecedence:
     def test_draggable_none_keeps_the_layout_value(self):
         dash = self._dash(1)
         spec = dash._finalized_spec(
-            "data", None, None, None, False, None, LayoutSpec(draggable=False)
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(draggable=False),
         )
         assert spec.layout.draggable is False
 
@@ -1280,5 +1308,13 @@ class TestDashboardLayoutPrecedence:
 
     def test_caller_layout_is_not_mutated(self):
         layout = LayoutSpec()
-        self._dash(1)._finalized_spec("data", None, None, None, False, None, layout)
+        self._dash(1)._finalized_spec(
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=layout,
+        )
         assert layout.grid_items is None

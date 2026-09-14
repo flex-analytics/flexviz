@@ -830,7 +830,15 @@ class TestPlotlyLayoutOverrides:
 
         dash = Dashboard(pl.LazyFrame({"a": [1.0, 2.0], "b": [1.0, 2.0]}))
         dash._figures.append(fig)
-        spec = dash._finalized_spec("data", None, None, None, False, None, None)
+        spec = dash._finalized_spec(
+            "data",
+            rows=None,
+            cols=None,
+            draggable=None,
+            effective_cache=False,
+            live_brush=None,
+            layout=None,
+        )
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url=".")
         return json.loads(re.search(r"const layoutArr_0 = (\{.*?\});\n", html).group(1))
 

@@ -6315,12 +6315,12 @@ class TestLockedLayoutBrowser:
         uid = dash.to_spec().figures[0].uid
         spec = dash._finalized_spec(
             "_browser_locked_test",
-            None,
-            None,
-            False,
-            False,
-            None,
-            LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
+            rows=None,
+            cols=None,
+            draggable=False,
+            effective_cache=False,
+            live_brush=None,
+            layout=LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
         )
         return (
             f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"

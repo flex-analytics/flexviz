@@ -215,6 +215,7 @@ class Dashboard:
     def _finalized_spec(
         self,
         source_name: str | None,
+        *,
         rows: int | None,
         cols: int | None,
         draggable: bool | None,
@@ -287,7 +288,13 @@ class Dashboard:
         """
         effective_cache = self._cache_enabled if cache is None else cache
         spec = self._finalized_spec(
-            source_name, rows, cols, draggable, effective_cache, live_brush, layout
+            source_name,
+            rows=rows,
+            cols=cols,
+            draggable=draggable,
+            effective_cache=effective_cache,
+            live_brush=live_brush,
+            layout=layout,
         )
         return f"{server_url.rstrip('/')}/view?spec={encode_spec(spec)}"
 
@@ -364,7 +371,13 @@ class Dashboard:
         _register_source_if_needed(source_name, self._backend_lf, cache=effective_cache)
         _start_server_thread(host, port)
         spec = self._finalized_spec(
-            source_name, rows, cols, draggable, effective_cache, live_brush, layout
+            source_name,
+            rows=rows,
+            cols=cols,
+            draggable=draggable,
+            effective_cache=effective_cache,
+            live_brush=live_brush,
+            layout=layout,
         )
         _render_dashboard(
             renderer, spec, f"http://{host}:{port}", block=block, **kwargs
