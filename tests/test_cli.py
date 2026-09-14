@@ -51,6 +51,13 @@ def test_decode_command_rejects_url_without_spec():
         main(["decode", "http://127.0.0.1:8000/view?other=1"])
 
 
+def test_decode_state_only_prints_subset(capsys):
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["decode", url, "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+
+
 def test_register_files_names_by_stem(tmp_path):
     path = tmp_path / "readings.parquet"
     pl.DataFrame({"x": [1, 2]}).write_parquet(path)
