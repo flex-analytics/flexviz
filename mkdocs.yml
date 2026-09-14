@@ -82,4 +82,5 @@ nav:
   - API reference:
       - Figure: api/figure.md
       - Dashboard: api/dashboard.md
+      - Layout: api/layout.md
       - Server: api/server.md

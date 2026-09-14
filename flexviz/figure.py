@@ -364,7 +364,28 @@ class Figure:
         axes: tuple[str, ...] = ("x", "y"),
         group_by: str | Sequence[str] | None = None,
     ) -> Figure:
-        """Add a box plot trace backed by the figure's shared LazyFrame."""
+        """Add a box plot trace backed by the figure's shared LazyFrame.
+
+        Quantiles are exact, so unlike the other traces this one materialises
+        the column in memory.  Do not use it on a source larger than RAM.
+
+        Parameters
+        ----------
+        x, y:
+            Column to summarise.  Give ``y`` for vertical boxes, ``x`` for
+            horizontal ones.
+        name:
+            Legend label.  Defaults to the column name.
+        color:
+            Fixed color for an ungrouped box.
+        color_map:
+            Group value to color, for a grouped box plot.
+        axes:
+            Axis anchor pair used by the engine to route viewport events.
+        group_by:
+            Column, or list of columns, that splits the box into one per
+            distinct value.
+        """
         return self._add_trace(
             BoxPlot(
                 x=x,
@@ -713,27 +734,54 @@ class Figure:
     # ------------------------------------------------------------------
 
     def title(self, text: str) -> Figure:
-        """Set a renderer-agnostic figure title."""
+        """Set a renderer-agnostic figure title (Plotly ``title.text``)."""
         self._layout["title"] = text
         return self
 
     def xlabel(self, text: str) -> Figure:
-        """Set a renderer-agnostic x-axis label."""
+        """Set the x-axis label (Plotly ``xaxis.title.text``)."""
         self._layout["xlabel"] = text
         return self
 
     def ylabel(self, text: str) -> Figure:
-        """Set a renderer-agnostic y-axis label."""
+        """Set the y-axis label (Plotly ``yaxis.title.text``)."""
         self._layout["ylabel"] = text
         return self
 
     def legend(self, show: bool = True) -> Figure:
-        """Toggle legend visibility."""
+        """Show or hide the legend (Plotly ``showlegend``).
+
+        Placement is renderer-specific, so it goes through
+        :meth:`update_layout`.  Passing a ``legend`` dict there also implies a
+        visible legend, and ECharts reads visibility only.
+        """
         self._layout["legend"] = show
         return self
 
     def update_layout(self, **kwargs: Any) -> Figure:
-        """Merge layout hints (title, width, height, …)."""
+        """Merge renderer layout options into the figure layout.
+
+        Every key that is not ``title``, ``xlabel``, ``ylabel`` or ``legend``
+        passes through to the renderer layout unchanged, so any Plotly layout
+        option works.  Dict values merge one level deep, which is what lets an
+        axis override keep the label set by :meth:`xlabel` or :meth:`ylabel`.
+
+        ``height`` and ``width`` size the chart itself.  Panel size in a
+        dashboard comes from ``GridItem`` instead.
+
+        Examples
+        --------
+        Put the legend below the chart::
+
+            fig.legend(True).update_layout(
+                legend={"orientation": "h", "y": -0.25, "yanchor": "top"},
+                margin={"t": 40, "b": 80},
+            )
+
+        Use a log y-axis and keep the label::
+
+            fig.ylabel("Power").update_layout(yaxis={"type": "log"})
+        """
         self._layout.update(kwargs)
         return self
 
