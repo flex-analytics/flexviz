@@ -93,11 +93,42 @@ dash.show(rows=2)   # two rows, columns derived from the figure count
 dash.show(draggable=False)
 ```
 
-This disables drag and resize, and hides the toolbar's layout button.
+This renders a static CSS grid. Panels cannot move, and the layout button
+disappears.
 
-`LayoutSpec.grid_editable` is not a lock. It sets the starting mode only, and
-the toolbar button can still turn editing on. Use `draggable=False` when the
-layout must stay fixed.
+Three separate fields decide how rearranging works. Each answers a different
+question.
+
+| Field | Question it answers | Changes while the page runs |
+|---|---|---|
+| `LayoutSpec.draggable` | Which layout engine renders the page: Gridstack, or a static CSS grid | No |
+| `LayoutSpec.grid_editable` | Whether panels can be moved and resized right now | Yes |
+| `ToolbarConfig.show_grid` | Whether the toolbar offers the built-in lock and unlock button | No |
+
+`draggable` is a rendering choice, `grid_editable` is live state, and
+`show_grid` is an affordance. They combine into five results.
+
+| `draggable` | `grid_editable` | `show_grid` | Result |
+|---|---|---|---|
+| `False` | ignored | ignored | Static grid, no Gridstack assets. The layout button is hidden either way. |
+| `True` | `False` | `True` | Gridstack, locked. The button reads **Layout: Locked** and unlocks. |
+| `True` | `True` | `True` | Gridstack, editable. The button reads **Layout: Edit** and locks. |
+| `True` | `False` | `False` | Gridstack, locked, no built-in control. |
+| `True` | `True` | `False` | Gridstack, editable, no built-in control to lock it. |
+
+Read the last two rows carefully. `show_grid=False` hides the built-in
+control. It does not remove the capability: a layout that starts editable
+stays editable, importing a spec can set `grid_editable` again, and your own
+JavaScript can call `fvSetGridEditable`. Hide the button when you supply your
+own controls. Use `draggable=False` when the layout must not move at all.
+
+!!! note "Gridstack is a CDN dependency"
+    `draggable=True` loads Gridstack's stylesheet and script from a CDN.
+    `draggable=False` loads neither. Prefer it for a locked embed, and in any
+    page that must not reach a CDN.
+
+`grid_editable` keeps its value when `draggable=False`. It stops doing
+anything, but it is not cleared, so specs round-trip unchanged.
 
 ### Exact panel positions
 
@@ -142,6 +173,11 @@ dash.show(
 The fields are `show_reset`, `show_deselect`, `show_cfmode`, `show_hover`,
 `show_lock_all_axes`, `show_grid`, `show_share`, `show_export` and
 `show_import`. An empty button group disappears with its divider.
+
+Most of these hide a button whose state you can reach another way.
+`show_grid` is different: it hides the only built-in control for
+`grid_editable`. See [Lock the layout](#lock-the-layout) for what that does
+and does not change.
 
 ### Toolbar versus panel controls
 

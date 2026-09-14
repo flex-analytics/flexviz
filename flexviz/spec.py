@@ -415,6 +415,11 @@ class ToolbarConfig(BaseModel):
 
     All buttons are shown by default. Set a field to ``False`` to hide it.
     Empty button groups are omitted automatically.
+
+    ``show_grid`` is the one field that hides more than a button: it is the
+    only built-in control for ``LayoutSpec.grid_editable``. Hiding it leaves
+    the current mode in place rather than locking the layout. Use
+    ``LayoutSpec.draggable=False`` for a layout that cannot move.
     """
 
     show_reset: bool = True
@@ -435,15 +440,17 @@ class LayoutSpec(BaseModel):
         CSS gap between figures (default ``"8px"``).
 
     ``draggable``
-        When ``True``, the dashboard renders using Gridstack.js.
-        Drag/resize interactions are enabled by ``grid_editable``.
+        Selects the layout implementation, and never changes at runtime.
+        ``True`` renders with Gridstack.js and loads its CDN stylesheet and
+        script; ``False`` renders a static CSS grid and loads neither.
         Position changes update ``grid_items`` in client-side state only —
         no backend request is fired.
 
     ``grid_editable``
-        Initial Gridstack edit mode when ``draggable=True``.
-        ``True`` enables drag/resize handles; ``False`` locks the layout.
-        The toolbar lock button updates this value client-side.
+        Whether panels can currently be moved and resized.  This is live
+        state: the toolbar button, an imported spec, and ``fvSetGridEditable``
+        all update it client-side.  It has no effect while ``draggable`` is
+        ``False``, but keeps its value so specs round-trip unchanged.
 
     ``grid_items``
         Per-figure Gridstack positions.  ``None`` causes positions to be
