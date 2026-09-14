@@ -12,17 +12,27 @@ from __future__ import annotations
 import re
 
 from . import history
-from .adapters.base import _json_for_inline_script
-from .cli import _encoded_from
-from .spec import _GRIDSTACK_CELL_HEIGHT_PX, _auto_grid_items, decode_spec
+from .adapters.base import _html_attr, _json_for_inline_script
+from .spec import (
+    _GRIDSTACK_CELL_HEIGHT_PX,
+    DashboardSpec,
+    VisualizationSpec,
+    _auto_grid_items,
+    decode_spec,
+    encoded_spec_from_url,
+)
 
-# flexviz/adapters/js/theme.css --fv-toolbar-height
-_TOOLBAR_HEIGHT_PX = 44
-# grid container's top + bottom padding (flexviz/adapters/base.py _dashboard_markup)
-_GRID_PADDING_PX = 16
+# flexviz/adapters/js/theme.css --fv-toolbar-height (44px), plus the 1px
+# border-bottom on #fv-header in flexviz/adapters/js/toolbar.css.
+_HEADER_HEIGHT_PX = 45
+# #fv-dashboard's own top + bottom padding on the static grid
+# (flexviz/adapters/base.py _dashboard_markup). GridStack needs no such term:
+# it sets .grid-stack to rows * cell height, its padding inside that box.
+_STATIC_GRID_PADDING_PX = 16
 
-# Pinned the way Gridstack is pinned in flexviz/adapters/base.py.
-_MARKED_VERSION = "12.0.2"
+# Pinned the way Gridstack is pinned in flexviz/adapters/base.py. The UMD
+# build is the one that defines the global ``marked``.
+_MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.min.js"
 
 _FV_LINE_RE = re.compile(r"fv:(\d+)")
 
@@ -44,28 +54,23 @@ def _embed_url(line: str, entries: list[dict]) -> str | None:
     return None
 
 
-def _gap_px(gap: str) -> int:
-    """Parse a plain CSS px gap like "8px"; non-px gaps fall back to the spec default."""
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)px", gap.strip())
-    return round(float(match.group(1))) if match else 8
-
-
 def _iframe_height(url: str) -> int:
     """Return the pixel height that fits a dashboard's grid with no scrollbar.
 
-    Mirrors the two layout formulas in docs/guides/customizing.md
-    "Exact panel positions": GridStack (``draggable=True``) sizes a panel at
-    ``h * 80``; the static grid (``draggable=False``) stretches a panel
-    across the row gaps it spans (issue #51), so its rows also add
-    ``(rows - 1) * gap``.
+    Both layout paths render a panel at ``h * _GRIDSTACK_CELL_HEIGHT_PX`` and
+    neither adds ``LayoutSpec.gap`` to the page height: GridStack carries the
+    gutter in the panel margin and the static grid in the item padding. Only
+    the grid container's own padding differs. Measured against real ``/view``
+    pages by ``TestLockedLayoutBrowser`` in tests/test_browser.py.
     """
-    spec = decode_spec(_encoded_from(url))
+    spec = decode_spec(encoded_spec_from_url(url))
+    if isinstance(spec, VisualizationSpec):
+        # /view wraps a single-figure spec in a default 1-figure dashboard.
+        spec = DashboardSpec(figures=[spec.figure])
     grid_items = spec.layout.grid_items or _auto_grid_items(spec.figures)
-    rows = max(item.y + item.h for item in grid_items)
-    grid_height = rows * _GRIDSTACK_CELL_HEIGHT_PX
-    if not spec.layout.draggable:
-        grid_height += (rows - 1) * _gap_px(spec.layout.gap)
-    return grid_height + _TOOLBAR_HEIGHT_PX + _GRID_PADDING_PX
+    rows = max((item.y + item.h for item in grid_items), default=0)
+    height = rows * _GRIDSTACK_CELL_HEIGHT_PX + _HEADER_HEIGHT_PX
+    return height if spec.layout.draggable else height + _STATIC_GRID_PADDING_PX
 
 
 def expand(md: str, *, as_html: bool) -> str:
@@ -75,18 +80,24 @@ def expand(md: str, *, as_html: bool) -> str:
     plain link on GitHub or in chat. ``as_html=True`` swaps in an iframe
     wrapped in blank lines, so a markdown renderer passes the HTML block
     through untouched instead of trying to parse it as prose.
+
+    Lines inside a fenced code block are left alone: a report that documents
+    the ``fv:N`` syntax writes it in a fence.
     """
     entries = history.entries()
     out = []
+    in_fence = False
     for line in md.splitlines():
-        url = _embed_url(line, entries)
+        if line.startswith("```"):
+            in_fence = not in_fence
+        url = None if in_fence else _embed_url(line, entries)
         if url is None:
             out.append(line)
         elif as_html:
             height = _iframe_height(url)
             out.append("")
             out.append(
-                f'<iframe loading="lazy" src="{url}" '
+                f'<iframe loading="lazy" src="{_html_attr(url)}" '
                 f'style="width:100%;height:{height}px;border:0"></iframe>'
             )
             out.append("")
@@ -96,7 +107,11 @@ def expand(md: str, *, as_html: bool) -> str:
 
 
 def to_html(md: str) -> str:
-    """Wrap expanded markdown in a minimal, self-contained report page."""
+    """Wrap expanded markdown in a minimal report page.
+
+    The page needs the network: it loads ``marked`` from a CDN, and its
+    embedded dashboards only render while the servers they point at run.
+    """
     expanded = expand(md, as_html=True)
     # ponytail: the report is generated locally and read by its own author,
     # so marked's default HTML pass-through (needed for the embedded
@@ -106,7 +121,7 @@ def to_html(md: str) -> str:
 <head>
   <meta charset="utf-8">
   <title>FlexViz report</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked@{_MARKED_VERSION}/marked.min.js"></script>
+  <script src="{_MARKED_URL}"></script>
   <style>
     body {{
       max-width: 900px; margin: 2rem auto; padding: 0 1rem;

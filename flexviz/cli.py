@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import polars as pl
 
@@ -162,20 +161,6 @@ def _cmd_skill(args: argparse.Namespace) -> None:
         )
 
 
-def _encoded_from(url: str) -> str:
-    """Pull the ``spec=`` query value out of a share URL.
-
-    A bare encoded spec (no ``://`` or ``?``) is returned unchanged, so the
-    same helper accepts both a full URL and the raw value.
-    """
-    if "://" in url or "?" in url:
-        values = parse_qs(urlsplit(url).query).get("spec")
-        if not values:
-            raise SystemExit("no spec= query parameter in URL")
-        return values[0]
-    return url
-
-
 def _state_only(spec) -> dict:
     """Reduce a decoded spec to its compact, interaction-only triple.
 
@@ -197,10 +182,10 @@ def _state_only(spec) -> dict:
 def _cmd_decode(args: argparse.Namespace) -> None:
     import json
 
-    from flexviz.spec import decode_spec
+    from flexviz.spec import decode_spec, encoded_spec_from_url
 
     try:
-        spec = decode_spec(_encoded_from(args.url))
+        spec = decode_spec(encoded_spec_from_url(args.url))
     except Exception as exc:
         raise SystemExit(f"invalid spec: {exc}") from exc
     if args.state_only:
@@ -223,11 +208,11 @@ def _cmd_history(args: argparse.Namespace) -> None:
     import json
 
     from flexviz import history
-    from flexviz.spec import decode_spec
+    from flexviz.spec import decode_spec, encoded_spec_from_url
 
     if args.action == "add":
-        if not args.target:
-            raise SystemExit("history add requires a URL")
+        if not args.target or "/view?spec=" not in args.target:
+            raise SystemExit("history add requires a /view?spec= share URL")
         print(history.add(args.target, note=args.note, actor=args.actor))
         return
 
@@ -244,7 +229,7 @@ def _cmd_history(args: argparse.Namespace) -> None:
     url = _history_entry(n)["url"]
     if args.state:
         try:
-            spec = decode_spec(_encoded_from(url))
+            spec = decode_spec(encoded_spec_from_url(url))
         except Exception as exc:
             raise SystemExit(f"invalid spec: {exc}") from exc
         print(json.dumps(_state_only(spec), indent=2))

@@ -3,8 +3,9 @@
 import polars as pl
 import pytest
 
-from flexviz import Dashboard, history
+from flexviz import Dashboard, Figure, history
 from flexviz.report import _iframe_height, expand, to_html
+from flexviz.spec import LayoutSpec, encode_spec
 
 
 def _demo_dashboard(**dash_kw) -> Dashboard:
@@ -60,18 +61,63 @@ def test_md_output_has_url_and_no_iframe(monkeypatch, tmp_path):
     assert "<iframe" not in out
 
 
-def test_iframe_height_two_rows_of_five(monkeypatch, tmp_path):
+def test_iframe_height_is_in_the_embed_users_get(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     # cols=1 stacks the two figures vertically: rows = 2 * h(5) = 10 row units.
     url = _demo_dashboard().share_url(source_name="demo", cols=1)
-    assert _iframe_height(url) == 10 * 80 + 60
+    history.add(url)
+
+    iframe = [ln for ln in expand("fv:1", as_html=True).splitlines() if "<iframe" in ln]
+    assert f"height:{10 * 80 + 45}px" in iframe[0]
 
 
-def test_iframe_height_static_grid_adds_row_gaps(monkeypatch, tmp_path):
+def test_iframe_height_adds_the_static_grid_padding(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    # draggable=False stretches a panel across the row gaps it spans (issue #51).
-    url = _demo_dashboard().share_url(source_name="demo", cols=1, draggable=False)
-    assert _iframe_height(url) == 10 * 80 + 9 * 8 + 60
+    # The static grid pads its container by 8px; GridStack keeps that padding
+    # inside the height it sets. Neither path adds gap to the page height.
+    for gap in ("8px", "24px"):
+        url = _demo_dashboard().share_url(
+            source_name="demo", cols=1, draggable=False, layout=LayoutSpec(gap=gap)
+        )
+        assert _iframe_height(url) == 10 * 80 + 45 + 16
+
+
+def test_iframe_height_of_a_single_figure_spec(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    # /view accepts a VisualizationSpec too, wrapping it in a 1-figure
+    # dashboard: one auto grid item of h=5, draggable by default.
+    lf = pl.LazyFrame({"t": [1, 2, 3], "v": [1.0, 2.0, 3.0]})
+    spec = Figure(lf).add_line(x="t", y="v").to_spec()
+    url = f"http://127.0.0.1:8000/view?spec={encode_spec(spec)}"
+    assert _iframe_height(url) == 5 * 80 + 45
+
+
+def test_iframe_height_of_a_dashboard_without_figures(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    lf = pl.LazyFrame({"t": [1, 2, 3], "v": [1.0, 2.0, 3.0]})
+    url = Dashboard(lf).share_url(source_name="demo")
+    assert _iframe_height(url) == 45
+
+
+def test_fv_line_inside_a_code_fence_stays_text(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    history.add(_demo_dashboard().share_url(source_name="demo"))
+
+    md = "```markdown\nfv:1\n```\n\nfv:1\n"
+    out = expand(md, as_html=True)
+    assert out.count("<iframe") == 1
+    assert "```markdown\nfv:1\n```" in out
+
+
+def test_quote_in_a_url_cannot_break_out_of_the_src_attribute(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    # Only the spec= value is read back; the rest of the URL reaches the src
+    # attribute verbatim, so a quote anywhere in it would end the attribute.
+    url = _demo_dashboard().share_url(source_name="demo") + '&note="onload="x'
+
+    iframe = [ln for ln in expand(url, as_html=True).splitlines() if "<iframe" in ln]
+    assert '"onload' not in iframe[0]
+    assert "&quot;onload=&quot;x" in iframe[0]
 
 
 def test_to_html_escapes_prose_and_has_no_stray_closing_script(monkeypatch, tmp_path):

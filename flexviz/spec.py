@@ -16,6 +16,7 @@ import base64
 import gzip
 import json as _json
 from typing import Any, Literal, TypeAlias, TypedDict
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from pydantic import (
@@ -559,3 +560,17 @@ def decode_spec(encoded: str) -> VisualizationSpec | DashboardSpec:
     if "figures" in data:
         return DashboardSpec.model_validate(data)
     return VisualizationSpec.model_validate(data)
+
+
+def encoded_spec_from_url(url: str) -> str:
+    """Pull the ``spec=`` query value out of a share URL.
+
+    A bare encoded spec (no ``://`` or ``?``) is returned unchanged, so the
+    same helper accepts both a full URL and the raw value.
+    """
+    if "://" in url or "?" in url:
+        values = parse_qs(urlsplit(url).query).get("spec")
+        if not values:
+            raise SystemExit("no spec= query parameter in URL")
+        return values[0]
+    return url
