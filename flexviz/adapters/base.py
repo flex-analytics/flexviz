@@ -395,12 +395,12 @@ class AbstractAdapter(ABC):
         return toolbar_css()
 
     # ------------------------------------------------------------------
-    # Gridstack.js helpers (draggable layout)
+    # GridStack.js helpers (draggable layout)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _gridstack_css() -> str:
-        """Return the Gridstack CDN ``<link>`` tag plus minimal override CSS."""
+        """Return the GridStack CDN ``<link>`` tag plus minimal override CSS."""
         return (
             '<link rel="stylesheet"'
             ' href="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack.min.css">\n'
@@ -412,7 +412,7 @@ class AbstractAdapter(ABC):
 
     @staticmethod
     def _gridstack_script_tag() -> str:
-        """Return the Gridstack CDN ``<script>`` tag."""
+        """Return the GridStack CDN ``<script>`` tag."""
         return (
             '<script src="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack-all.js">'
             "</script>"

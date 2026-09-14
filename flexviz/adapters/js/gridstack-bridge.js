@@ -25,7 +25,7 @@
   };
   window.fvSetGridEditable(DASHBOARD_SPEC.layout.grid_editable === true);
   window.fvUpdateGridButton?.();
-  // Sync initial Gridstack positions into DASHBOARD_SPEC immediately after init.
+  // Sync initial GridStack positions into DASHBOARD_SPEC immediately after init.
   DASHBOARD_SPEC.layout.grid_items = _fvGrid.save(false).map(function(item) {
     return { fig_uid: item.id, x: item.x, y: item.y, w: item.w, h: item.h };
   });
