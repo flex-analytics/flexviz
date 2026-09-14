@@ -172,6 +172,8 @@ and `add_geo_line`. See the [Figure API](api/figure.md) for every parameter.
 
 ## Where next
 
+- [Customizing](guides/customizing.md): titles, legends, colors, panel
+  sizes, and toolbar buttons.
 - [Cross-filtering](guides/cross-filtering.md): how selections filter linked
   figures, and the update vs. overlay modes.
 - [Grouping](guides/grouping.md): split traces by a category column.
