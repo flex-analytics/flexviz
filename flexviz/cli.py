@@ -8,6 +8,8 @@ script or agent can read the viewport and selections a person left behind.
 the tenth of the spec that changes as someone interacts.
 ``flexviz history`` records share URLs under a small local number, so an
 agent can say ``fv:3`` instead of repeating a URL.
+``flexviz report`` renders a markdown findings file to HTML, embedding each
+``fv:N`` line as a live dashboard iframe.
 ``flexviz skill install`` copies the packaged agent skill into a project.
 """
 
@@ -250,6 +252,21 @@ def _cmd_history(args: argparse.Namespace) -> None:
         print(url)
 
 
+def _cmd_report(args: argparse.Namespace) -> None:
+    from flexviz import report
+
+    md = Path(args.source).read_text(encoding="utf-8")
+    output = (
+        Path(args.output) if args.output else Path(args.source).with_suffix(".html")
+    )
+    output.write_text(report.to_html(md), encoding="utf-8")
+    print(output)
+    if args.md:
+        md_path = Path(args.md)
+        md_path.write_text(report.expand(md, as_html=False), encoding="utf-8")
+        print(md_path)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="flexviz")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -308,6 +325,21 @@ def main(argv: list[str] | None = None) -> None:
         help="with 'show', print {version, state, client_state} instead of the URL",
     )
     history.set_defaults(func=_cmd_history)
+
+    report = sub.add_parser(
+        "report", help="render a markdown findings file with live dashboard embeds"
+    )
+    report.add_argument("source", help="markdown file with fv:N or share-URL lines")
+    report.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="output HTML path (default: source with a .html suffix)",
+    )
+    report.add_argument(
+        "--md", default=None, help="also write an expanded markdown copy at this path"
+    )
+    report.set_defaults(func=_cmd_report)
 
     skill = sub.add_parser("skill", help="manage the flexviz-explore agent skill")
     skill.add_argument("action", choices=["install"])
