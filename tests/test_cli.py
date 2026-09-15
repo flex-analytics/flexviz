@@ -150,6 +150,24 @@ def test_skill_install_force_replaces(capsys, tmp_path):
     assert modified.read_text().startswith("---\nname: flexviz-explore")
 
 
+def test_skill_names_the_api_it_teaches(tmp_path):
+    """A rename must not leave the packaged skill teaching a dead API.
+
+    The skill is the only copy of the loop an agent reads, and nothing else
+    links its prose to these names.
+    """
+    main(["skill", "install", "--dir", str(tmp_path)])
+    skill = _skill_paths(tmp_path)[0].read_text()
+    for name in (
+        "flexvizApply",
+        "flexvizState({compact: true})",
+        "history.add",
+        "/h/",
+        "flexviz report",
+    ):
+        assert name in skill, name
+
+
 def test_csv_dates_are_parsed(capsys, tmp_path):
     path = tmp_path / "events.csv"
     path.write_text("ts,val\n2026-01-01 10:00:00,1.5\n2026-01-01 10:00:02,2.5\n")
