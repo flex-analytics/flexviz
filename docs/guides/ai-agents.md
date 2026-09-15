@@ -116,6 +116,11 @@ without the URLs, and `flexviz history show N` (or `show N --state`) prints
 one back when the agent needs it. Add `.flexviz/` to your `.gitignore`:
 the file holds full share URLs, which include column names and selections.
 
+A running server also renders entry `N` at `http://HOST:PORT/h/N`. Open
+that short address in a Playwright tab instead of the full share URL: the
+page keeps the same short address, so a browser tool's snapshot never
+echoes the long URL back into the agent's context.
+
 ## Reports: findings with live dashboards
 
 `flexviz report findings.md` turns a plain markdown file into an HTML
@@ -157,3 +162,5 @@ the embeds go blank; the markdown itself still holds every finding.
   agent takes, and the ranges or categories you select do.
 - A share URL embeds the full spec, including column names and selections.
   Treat it as sensitive as the filters it contains.
+- `/h/N` serves only the history file in the server's working directory. Do
+  not serve a public dashboard from a directory that holds one.

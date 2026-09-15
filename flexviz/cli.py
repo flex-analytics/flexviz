@@ -198,10 +198,10 @@ def _history_entry(n: int) -> dict:
     """Look up one history entry by its number, or fail with a clear message."""
     from flexviz import history
 
-    for entry in history.entries():
-        if entry["n"] == n:
-            return entry
-    raise SystemExit(f"no history entry {n}")
+    try:
+        return history.entry(n)
+    except KeyError:
+        raise SystemExit(f"no history entry {n}")
 
 
 def _cmd_history(args: argparse.Namespace) -> None:
@@ -347,7 +347,13 @@ def main(argv: list[str] | None = None) -> None:
     skill.set_defaults(func=_cmd_skill)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except ValueError as exc:
+        # Domain errors (unreadable history line, share URL without a spec=)
+        # carry the message the user needs; the server maps the same ones to
+        # HTTP 400 instead of exiting.
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

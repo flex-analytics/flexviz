@@ -1188,6 +1188,110 @@ class TestShareAndView:
 
 
 # ===========================================================================
+# GET /h/{n}
+# ===========================================================================
+
+
+class TestHistoryView:
+    """/h/N re-renders a `flexviz history` entry so an agent can hand a
+    browser tool a short, stable page URL instead of a several-kilobyte
+    share URL that gets echoed back in every snapshot."""
+
+    def test_h_route_renders_same_page_as_view(
+        self, client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import re
+
+        monkeypatch.chdir(tmp_path)
+        from flexviz import history
+
+        encoded = encode_spec(VisualizationSpec())
+        history.add(f"http://testserver/view?spec={encoded}")
+
+        resp_h = client.get("/h/1")
+        resp_view = client.get(f"/view?spec={encoded}")
+        assert resp_h.status_code == 200
+        assert resp_view.status_code == 200
+
+        # "/h/1" sits one path segment deeper than "/view", so it embeds a
+        # different page-relative SERVER_URL ("..") to reach the same API
+        # routes; everything else in the rendered page is identical.
+        pattern = re.compile(r'const SERVER_URL\s*=\s*"[^"]*";')
+        m_h = pattern.search(resp_h.text)
+        m_view = pattern.search(resp_view.text)
+        assert m_h is not None and m_view is not None
+        assert m_h.group() == 'const SERVER_URL     = "..";'
+        assert m_view.group() == 'const SERVER_URL     = ".";'
+        assert pattern.sub("<SERVER_URL>", resp_h.text) == pattern.sub(
+            "<SERVER_URL>", resp_view.text
+        )
+
+    def test_h_route_unknown_entry_404s(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        resp = client.get("/h/9")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "no history entry 9"
+
+    def test_h_route_keeps_the_renderer_the_recorded_url_names(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        """show() appends its renderer to the URL it opens, so a recorded
+        echarts URL must not reopen as plotly."""
+        monkeypatch.chdir(tmp_path)
+        from flexviz import history
+
+        encoded = encode_spec(VisualizationSpec())
+        history.add(f"http://testserver/view?spec={encoded}&renderer=echarts")
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 200
+        assert "echarts" in resp.text.lower()
+        # An explicit query parameter still wins.
+        override = client.get("/h/1?renderer=plotly")
+        assert override.status_code == 200
+        assert "echarts" not in override.text.lower()
+
+    def test_h_route_400s_on_an_unreadable_history_file(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        """A half-written line must not reach the ASGI layer as SystemExit,
+        which is a BaseException and escapes the request."""
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".flexviz" / "history.jsonl"
+        path.parent.mkdir()
+        path.write_text('{"n": 1, "url": "http://x"\n')
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 400
+        assert "line 1 is not valid JSON" in resp.json()["detail"]
+
+    def test_h_route_ignores_the_minting_session_port(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        """The recorded URL carries the host/port of whatever session
+        minted it. /h/N must talk to the server that is serving it now, not
+        that original host/port."""
+        import re
+
+        monkeypatch.chdir(tmp_path)
+        from flexviz import history
+
+        encoded = encode_spec(VisualizationSpec())
+        history.add(f"http://otherhost:54321/view?spec={encoded}")
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 200
+        assert "otherhost" not in resp.text
+        assert "54321" not in resp.text
+
+        m = re.search(r'const SERVER_URL\s*=\s*("[^"]*")', resp.text)
+        assert m is not None, "SERVER_URL constant missing from /h/1 HTML"
+        assert m.group(1) == '".."'
+
+
+# ===========================================================================
 # Share/restore state preservation
 # ===========================================================================
 
