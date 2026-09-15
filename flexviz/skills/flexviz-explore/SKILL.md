@@ -151,7 +151,7 @@ flexviz history add "<paste it here>" --actor human --note "what I was looking a
 ```
 
 They tell you only the number it prints; you read it with `flexviz history show
-N --state`. If they will not run a command, let them paste the URL and run it
+N`. If they will not run a command, let them paste the URL and run it
 yourself. That is the one place a URL enters your context, and it enters once.
 The address bar does NOT track interactions; only Share captures them.
 
@@ -268,8 +268,11 @@ Token discipline:
 
 - Never print or restate a share URL. Refer to entries as `fv:N`. A handover
   can bring one URL in; nothing may take it out again.
-- Run `flexviz history show N` (no `--state`) only when a human explicitly
-  asks for the link.
+- Run `flexviz history show N --url` only when a human explicitly asks for
+  the link.
+- Never read `.flexviz/history.jsonl` or `findings*.html` directly: both hold
+  full share URLs. Use `flexviz history list` and `show N` instead. If
+  `flexviz` is not on PATH, use the venv form from step 1, not the raw files.
 - Poll `flexvizState({compact: true})`, never the full accessor. The full one
   repeats every figure and trace, which you already know.
 - Do not screenshot the dashboard to "see" it. The state is exact, pixels are

@@ -332,7 +332,7 @@ def test_history_list_never_prints_the_url(capsys, monkeypatch, tmp_path):
     assert "/view?spec=" not in out
 
 
-def test_history_show_prints_the_url(capsys, monkeypatch, tmp_path):
+def test_history_show_prints_only_the_compact_triple(capsys, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     url = _demo_dashboard().share_url(source_name="demo")
     main(["history", "add", url])
@@ -340,21 +340,19 @@ def test_history_show_prints_the_url(capsys, monkeypatch, tmp_path):
     capsys.readouterr()
 
     main(["history", "show", "2"])
-    assert capsys.readouterr().out.strip() == url
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
 
 
-def test_history_show_state_prints_only_the_compact_triple(
-    capsys, monkeypatch, tmp_path
-):
+def test_history_show_url_prints_the_url(capsys, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     url = _demo_dashboard().share_url(source_name="demo")
     main(["history", "add", url])
     main(["history", "add", url])
     capsys.readouterr()
 
-    main(["history", "show", "2", "--state"])
-    payload = json.loads(capsys.readouterr().out)
-    assert set(payload) == {"version", "state", "client_state"}
+    main(["history", "show", "2", "--url"])
+    assert capsys.readouterr().out.strip() == url
 
 
 def test_record_state_keeps_the_recorded_host(monkeypatch, tmp_path):

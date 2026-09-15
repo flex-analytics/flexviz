@@ -33,6 +33,11 @@ This writes the same two directories under your home directory. Agents read
 personal skills in all projects, so you do not repeat the install. An
 existing file with different content is kept unless you add `--force`.
 
+A user-level copy in `~/.agents/skills` or `~/.claude/skills` shadows the
+project copy for some agents, so refresh it with
+`flexviz skill install --user --force` after you upgrade flexviz, or remove
+it.
+
 ## Install as a plugin
 
 Claude Code and Codex both read the FlexViz plugin marketplace. A plugin
@@ -125,7 +130,7 @@ flexviz history add "<paste it here>" --actor human --note "what I was looking a
 ```
 
 Tell the agent only the number it prints. The agent reads it back with
-`flexviz history show N --state`, and no URL passes through its context. If
+`flexviz history show N`, and no URL passes through its context. If
 you would rather not run a command, paste the URL to the agent and it runs the
 same two commands.
 
@@ -153,9 +158,9 @@ records a new entry, and hands you the new `/h/N`.
 
 `flexviz history add "<url>" --note "..."` records a URL under a number in
 `.flexviz/history.jsonl`. `flexviz history list` shows the notes without the
-URLs, and `flexviz history show N` (or `show N --state`) prints one back when
-it is really needed. Add `.flexviz/` to your `.gitignore`: the file holds full
-share URLs, which include column names and selections.
+URLs, and `flexviz history show N` prints the state back; add `--url` when
+the URL itself is really needed. Add `.flexviz/` to your `.gitignore`: the
+file holds full share URLs, which include column names and selections.
 
 A page cannot write that file, so an agent that reads your state back records
 it with `history.record_state(n, state, client_state)`. That reuses the figures

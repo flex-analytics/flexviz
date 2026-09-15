@@ -7,7 +7,9 @@ script or agent can read the viewport and selections a person left behind.
 ``flexviz decode --state-only`` prints only ``{version, state, client_state}``,
 the tenth of the spec that changes as someone interacts.
 ``flexviz history`` records share URLs under a small local number, so an
-agent can say ``fv:3`` instead of repeating a URL.
+agent can say ``fv:3`` instead of repeating a URL. ``flexviz history show N``
+prints ``{version, state, client_state}``; add ``--url`` to print the share
+URL instead.
 ``flexviz report`` renders a markdown findings file to HTML, embedding each
 ``fv:N`` line as a live dashboard iframe.
 ``flexviz skill install`` copies the packaged agent skill into a project.
@@ -227,14 +229,14 @@ def _cmd_history(args: argparse.Namespace) -> None:
     except (TypeError, ValueError):
         raise SystemExit(f"history show requires a number, got {args.target!r}")
     url = _history_entry(n)["url"]
-    if args.state:
+    if args.url:
+        print(url)
+    else:
         try:
             spec = decode_spec(encoded_spec_from_url(url))
         except Exception as exc:
             raise SystemExit(f"invalid spec: {exc}") from exc
         print(json.dumps(_state_only(spec), indent=2))
-    else:
-        print(url)
 
 
 def _cmd_report(args: argparse.Namespace) -> None:
@@ -305,9 +307,9 @@ def main(argv: list[str] | None = None) -> None:
         help="who this entry records (default: agent)",
     )
     history.add_argument(
-        "--state",
+        "--url",
         action="store_true",
-        help="with 'show', print {version, state, client_state} instead of the URL",
+        help="with 'show', print the share URL instead of {version, state, client_state}",
     )
     history.set_defaults(func=_cmd_history)
 
