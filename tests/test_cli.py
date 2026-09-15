@@ -188,6 +188,11 @@ def test_skill_compact_state_example_matches_the_models(tmp_path):
     assert match, "no <!-- compact-state --> json block found in the skill"
     payload = json.loads(match.group(1))
     assert set(payload) == {"version", "revision", "state", "client_state"}
+    assert payload["version"] == DashboardSpec().version
+    # model_validate ignores unknown keys, so compare the key sets too: a stale
+    # field in the example must fail, not pass silently.
+    assert set(payload["state"]) == set(InteractionState.model_fields)
+    assert set(payload["client_state"]) == set(ClientState.model_fields)
     InteractionState.model_validate(payload["state"])
     ClientState.model_validate(payload["client_state"])
 

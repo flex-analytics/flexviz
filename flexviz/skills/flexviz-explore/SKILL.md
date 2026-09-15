@@ -122,8 +122,8 @@ attached to the human's own browser. One tab holds the state, so you read it:
 window.flexvizState({compact: true})   // via your browser evaluate tool
 ```
 
-It returns `{version, state, client_state, revision}`. A rising `revision`
-means the human moved. Example, `fig1` zoomed on x with one brush selection on `value`:
+It returns `{version, state, client_state, revision}`. `revision` increases when the
+serialized state differs from the previous read; it does not say who changed it. Example:
 
 <!-- compact-state -->
 ```json
@@ -136,7 +136,7 @@ means the human moved. Example, `fig1` zoomed on x with one brush selection on `
   "axis_locks": {}, "axis_lock_ranges": {}}}
 ```
 
-- `version`/`revision`: the spec version, and a counter that bumps on any change.
+- `version`/`revision`: the spec version, and a counter that increases when the serialized state differs from the previous read.
 - `state`: server-visible — viewport (`fig_uid/axis`), selections, group_domains, cross_filter_mode.
 - `client_state`: client-only display state; the server ignores it.
 
