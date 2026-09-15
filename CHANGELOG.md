@@ -20,6 +20,34 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Added
+
+- `flexviz history` records share URLs under a number in
+  `.flexviz/history.jsonl`, with `add`, `list` and `show`. `history show N`
+  prints the compact state, `--url` prints the share URL. An agent then works
+  with the number instead of a 4 KB URL.
+  `history.record_state(n, state, client_state)` records the dashboard of
+  entry `n` with a state read back from the browser, rewriting only the
+  `spec=` value of that entry's URL.
+- `GET /h/{n}` renders a recorded history entry at a short page address, so a
+  browser tool's snapshot never echoes a share URL. The server re-reads the
+  history file per request and stores nothing.
+- `flexviz report findings.md` renders a markdown findings file to HTML and
+  embeds every `fv:N` line as a live dashboard. `--md` writes a second copy
+  with bare links, for GitHub or chat.
+- `window.flexvizApply(obj)` applies a state patch to a live dashboard, and
+  `window.flexvizState({compact: true})` returns only
+  `{version, state, client_state, revision}`.
+- `flexviz decode --state-only` prints `{version, state, client_state}`
+  instead of the full spec.
+
+### Fixed
+
+- `GridItem.h` now renders at `h * 80` pixels on both layout paths. The static
+  grid (`draggable=False`) carried `gap` between its rows, which made a panel
+  of `h` rows `h * 80 + (h - 1) * gap` pixels tall. The gap now sits inside the
+  panel box, the way GridStack keeps it.
+
 ### Changed
 
 - Spec version 0.6. `Figure.legend()` now writes `layout.showlegend` instead

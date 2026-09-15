@@ -297,11 +297,24 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   a project's `.agents/skills/` and `.claude/skills/`.
 - **Readback contract**: the shared runtime exposes `window.flexvizState()`,
   which returns the live `DashboardSpec` (persistent serialized state only,
-  no transient hover visuals). An agent with browser tooling opens a share
-  URL, lets the human explore, and reads viewport and selections through
-  this accessor at any time. Without browser tooling, the human clicks
-  **Share** and the agent decodes the copied URL. The address bar does not
-  track interactions.
+  no transient hover visuals). Interaction state belongs to one browser tab,
+  so the accessor reads only the tab the caller drives: an agent polls the
+  human's viewport and selections only when both share that tab (a headed
+  browser session on the same machine, or an extension attached to the
+  human's browser). Otherwise the human clicks **Share** and the agent reads
+  the recorded state back. The address bar does not track interactions.
+  `window.flexvizState({compact: true})` returns only
+  `{version, state, client_state, revision}`, which is what a polling agent
+  needs; `revision` increases whenever the state differs from the previous
+  read.
+- **Apply contract**: `window.flexvizApply(obj)` is the write half. It merges
+  `obj` into the live spec per top-level key, with `state` and `client_state`
+  merged one level deeper so a partial patch keeps the sibling keys. It then
+  re-renders through `fvRestoreFromSpec` and resolves with the compact state
+  once the re-request has completed. It changes only the tab the caller
+  drives. The Import button is a thin wrapper around it. Structure changes
+  (adding or removing a figure) still need a new share URL, because panels
+  are built server-side.
 
 Watch-along stays client-side by design: the server keeps no interaction
 state, so "what is the human looking at" lives only in the browser tab.
@@ -309,6 +322,21 @@ Server-side snapshot mailboxes and agent-side listeners were considered and
 rejected. A hosted watch broker and MCP Apps `updateModelContext`
 publication are possible future phases; neither changes the aggregation
 server's statelessness.
+
+An encoded spec is about 4 KB, and browser tools echo a tab's page URL in
+every snapshot, so a share URL must never reach an agent's context.
+`flexviz/history.py` numbers share URLs in `.flexviz/history.jsonl`, a plain
+append-only file in the agent's working directory: the page cannot write
+files and the server must stay stateless, so neither can own that mapping.
+`GET /h/{n}` re-reads that file per request, decodes the recorded URL, and
+renders it like `/view`, which keeps the page address short and stores
+nothing server-side. `history.record_state` closes the loop the other way:
+it patches a read-back state onto the spec of an existing entry and rewrites
+only that URL's `spec=` value, so the recorded host and port survive.
+Together with the compact readback and the apply
+contract above, an agent drives a dashboard by number alone, and `fv:N` lines
+in a findings file (`flexviz/report.py`) embed the same entries as live
+iframes.
 
 ---
 
@@ -922,6 +950,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly\|echarts`)  |
+| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's) |
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
