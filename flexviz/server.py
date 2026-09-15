@@ -47,6 +47,7 @@ import threading
 import warnings
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -659,23 +660,23 @@ async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
 
 
 @app.get("/h/{n}", response_class=HTMLResponse)
-async def history_view(n: int, renderer: str = "plotly") -> HTMLResponse:
+async def history_view(n: int, renderer: str | None = None) -> HTMLResponse:
     """Render history entry ``n`` at a short, stable page URL.
 
-    A share URL runs to several kilobytes. An agent must never hold one in
-    its own context, because browser tools echo a tab's page URL back in
-    every snapshot. ``flexviz history`` already numbers share URLs on disk;
-    opening ``/h/N`` instead of the URL itself keeps that number, not the
-    URL, in the agent's context and in every later snapshot. The server
-    re-reads the agent-owned history file for this request and stores
-    nothing.
+    Browser tools echo a tab's page URL in every snapshot, so an agent opens
+    ``/h/N`` instead of the several-kilobyte share URL it stands for. The
+    route reads the history file in the server's working directory for this
+    request and stores nothing, so it exposes whatever share URLs that one
+    file holds: do not serve a public dashboard from a directory that has
+    one.
 
     Parameters
     ----------
     n:
         1-based entry number, as recorded by ``flexviz history add``.
     renderer:
-        ``"plotly"`` (default) or ``"echarts"``.
+        ``"plotly"`` or ``"echarts"``; defaults to the renderer in the
+        recorded URL, else ``"plotly"``.
     """
     from flexviz import history
     from flexviz.spec import encoded_spec_from_url
@@ -684,8 +685,18 @@ async def history_view(n: int, renderer: str = "plotly") -> HTMLResponse:
         record = history.entry(n)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"no history entry {n}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    encoded = encoded_spec_from_url(record["url"])
+    url = record.get("url", "")
+    try:
+        encoded = encoded_spec_from_url(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # show() appends the session's renderer to the URL it opens, so a
+    # recorded URL can name one; an explicit query parameter still wins.
+    if renderer is None:
+        renderer = parse_qs(urlsplit(url).query).get("renderer", ["plotly"])[0]
     # "/h/N" sits one path segment deeper than "/view", so the page-relative
     # base used there (".") would resolve API calls under "/h/" instead of
     # the server root. One more ".." undoes that, keeping the same

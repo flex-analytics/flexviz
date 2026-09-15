@@ -347,7 +347,13 @@ def main(argv: list[str] | None = None) -> None:
     skill.set_defaults(func=_cmd_skill)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except ValueError as exc:
+        # Domain errors (unreadable history line, share URL without a spec=)
+        # carry the message the user needs; the server maps the same ones to
+        # HTTP 400 instead of exiting.
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

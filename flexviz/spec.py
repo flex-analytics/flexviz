@@ -566,11 +566,12 @@ def encoded_spec_from_url(url: str) -> str:
     """Pull the ``spec=`` query value out of a share URL.
 
     A bare encoded spec (no ``://`` or ``?``) is returned unchanged, so the
-    same helper accepts both a full URL and the raw value.
+    same helper accepts both a full URL and the raw value. Raises
+    ``ValueError`` when a URL carries no ``spec=`` value.
     """
     if "://" in url or "?" in url:
         values = parse_qs(urlsplit(url).query).get("spec")
         if not values:
-            raise SystemExit("no spec= query parameter in URL")
+            raise ValueError("no spec= query parameter in URL")
         return values[0]
     return url

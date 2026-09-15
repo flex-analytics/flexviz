@@ -20,6 +20,8 @@ def entries() -> list[dict]:
     """Return every recorded entry, oldest first.
 
     A missing file is not an error: it means nothing has been recorded yet.
+    Raises ``ValueError`` on a line that is not JSON: the CLI turns that into
+    a message, the server into a 400.
     """
     if not PATH.exists():
         return []
@@ -32,7 +34,7 @@ def entries() -> list[dict]:
             except json.JSONDecodeError as exc:
                 # A half-written or hand-edited line cannot be skipped: every
                 # later number comes from the entry count, so it would shift.
-                raise SystemExit(f"{PATH}: line {i} is not valid JSON") from exc
+                raise ValueError(f"{PATH}: line {i} is not valid JSON") from exc
     return out
 
 

@@ -931,7 +931,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly\|echarts`)  |
-| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (same params as `/view`) |
+| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's) |
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
