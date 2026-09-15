@@ -19,10 +19,10 @@ data stays server-side; the browser gets bounded aggregates and small samples of
 real values. Parquet larger than RAM streams, so peak memory stays flat as rows
 grow (box plots excepted).
 
-Every dashboard view is a URL that carries the complete spec: about 4 KB, near
-1.3k tokens, and a browser tool echoes the page URL in every snapshot. So you
-never hold one. Record each URL under a number with `flexviz history`, open it
-at `/h/N`, and call it `fv:N`.
+Every dashboard view is a URL that carries the complete spec: 1 to 4 KB, and a
+browser tool echoes the page URL in every snapshot. So you never hold one.
+Record each URL under a number with `flexviz history`, open it at `/h/N`, and
+call it `fv:N`.
 
 Privacy: rows stay in the lazy engine unless you collect them. The schema, your
 samples, and the ranges the human selects do enter your context. A share URL
@@ -122,10 +122,23 @@ attached to the human's own browser. One tab holds the state, so you read it:
 window.flexvizState({compact: true})   // via your browser evaluate tool
 ```
 
-It returns `{version, state, client_state, revision}`: the brushed ranges in
-`state.selections`, the zoom in `state.viewport`, and a `revision` that goes up
-whenever the state differs from your previous read. Poll it and compare
-`revision` to see whether the human moved.
+It returns `{version, state, client_state, revision}`. A rising `revision`
+means the human moved. Example, `fig1` zoomed on x with one brush selection on `value`:
+
+<!-- compact-state -->
+```json
+{"version": "0.6", "revision": 3, "state": {
+  "viewport": {"fig1/x": {"min": 100, "max": 300}},
+  "selections": [{"source_figure_uid": "fig1",
+    "predicates": [{"clauses": [{"column": "value", "range": [10.0, 25.0]}]}]}],
+  "group_domains": {}, "cross_filter_mode": "update"},
+ "client_state": {"hover_mode": "off", "live_brush": "auto",
+  "axis_locks": {}, "axis_lock_ranges": {}}}
+```
+
+- `version`/`revision`: the spec version, and a counter that bumps on any change.
+- `state`: server-visible — viewport (`fig_uid/axis`), selections, group_domains, cross_filter_mode.
+- `client_state`: client-only display state; the server ignores it.
 
 **Separate browsers.** A headless session, or a human at another machine. Your
 tab and their tab hold independent state, so polling yours tells you nothing
@@ -162,10 +175,12 @@ change anything: this entry is what the report cites later.
 ### 7. Change the dashboard
 
 A state change (viewport, selections, hover mode, axis locks) goes through the
-write half, in the tab you control:
+write half, in the tab you control. Smallest payloads, figure `F` (a datetime axis
+stores the date string Plotly reports, e.g. `"2024-01-01 00:00:00"`, not ISO-8601):
 
 ```js
-await window.flexvizApply({state: {selections: [...]}})   // via browser evaluate
+await window.flexvizApply({state: {viewport: {"F/x": {min: a, max: b}}}})
+await window.flexvizApply({state: {selections: []}})   // clear all selections
 ```
 
 Top-level keys replace. `state` and `client_state` merge one level deep, so a

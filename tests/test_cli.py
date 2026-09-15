@@ -1,6 +1,7 @@
 """CLI and share_url tests: URL round-trip, file registration, error paths."""
 
 import json
+import re
 from pathlib import Path
 
 import polars as pl
@@ -10,7 +11,9 @@ from flexviz import Dashboard, Figure, history
 from flexviz.cli import _register_files, main
 from flexviz.spec import (
     AxisRange,
+    ClientState,
     DashboardSpec,
+    InteractionState,
     decode_spec,
     encode_spec,
     encoded_spec_from_url,
@@ -173,6 +176,20 @@ def test_skill_names_the_api_it_teaches(tmp_path):
         "flexviz report",
     ):
         assert name in skill, name
+
+
+def test_skill_compact_state_example_matches_the_models(tmp_path):
+    """The compact-readback example must not drift from the InteractionState
+    and ClientState models it documents.
+    """
+    main(["skill", "install", "--dir", str(tmp_path)])
+    skill = _skill_paths(tmp_path)[0].read_text()
+    match = re.search(r"<!-- compact-state -->\s*```json\n(.*?)```", skill, re.DOTALL)
+    assert match, "no <!-- compact-state --> json block found in the skill"
+    payload = json.loads(match.group(1))
+    assert set(payload) == {"version", "revision", "state", "client_state"}
+    InteractionState.model_validate(payload["state"])
+    ClientState.model_validate(payload["client_state"])
 
 
 def test_csv_dates_are_parsed(capsys, tmp_path):

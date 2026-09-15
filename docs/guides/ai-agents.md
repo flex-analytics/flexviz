@@ -58,11 +58,10 @@ package when a task needs it.
 
 ## The loop
 
-A share URL carries the complete spec, so it runs to several kilobytes. That
-is a real cost for an agent: one URL is near 1.3k tokens, and browser tools
-echo the page URL in every snapshot. The loop below keeps URLs out of the
-agent's context. The agent records each one under a number and works with the
-number.
+A share URL carries the complete spec, so it runs to 1 to 4 KB. That is a real
+cost for an agent, and browser tools echo the page URL in every snapshot. The
+loop below keeps URLs out of the agent's context. The agent records each one
+under a number and works with the number.
 
 ```bash
 flexviz schema readings.parquet      # columns and dtypes, as JSON
@@ -91,7 +90,7 @@ print(history.add(url, note="line + histogram, initial view", actor="agent"))
 ```
 
 Entry `N` opens at `http://127.0.0.1:8077/h/N`. That is the address the agent
-gives you, and the address it opens in its own browser tab. No 4 KB URL
+gives you, and the address it opens in its own browser tab. No 1 to 4 KB URL
 changes hands.
 
 ## Readback: the agent sees what you see
