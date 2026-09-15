@@ -56,7 +56,7 @@ Codex used no browser: it drove the loop from the CLI and checked `/h/N` with
 | history entries (actors) | 2 (agent) | 3 (agent) | 2 (agent) |
 | opened `/h/N` | no | curl `/h/1`, `/h/2` | curl `/h/1` |
 | `flexvizApply` / `flexvizState` | no | no | no |
-| `record_state` | no | yes (3x) | no |
+| `record_state` | no | yes (2x) | no |
 | `findings.md` with `fv:N` | fv:1, fv:2 | fv:3 | fv:1, fv:2 |
 | `flexviz report` | yes (no `--md`) | yes | yes |
 | input tokens (cached) | 750,411 (701,952) | 447,889 (409,088) | 315,967 (299,520) |
@@ -96,7 +96,9 @@ intended reads. `history list` prints number, timestamp, actor, note.
 `history show 1 --state` (Claude run 2) printed state only. Navigating `/h/1`
 echoed `http://127.0.0.1:8077/h/1`, never the spec. Two reads do leak:
 `history show N` without `--state`, and any raw read of
-`.flexviz/history.jsonl`.
+`.flexviz/history.jsonl`. All of this was measured before `3bcf1cb`, which
+removed `--state` and made bare `history show N` print the state; `--url` is now
+the only flag that prints a URL.
 
 **(c) Where did a URL enter?** Three places, none of them a human handoff, so
 none allowed:
@@ -135,6 +137,7 @@ this, confirmed by a trivial exec with no hook output.
 3. **Fix the user-scope install.** A stale `~/.agents` copy silently wins over
    a fresh project install (Codex run 1).
 4. **Make `history show N` (no `--state`) harder to reach.** Its whole job is
-   to print a URL, and an agent called it unprompted.
+   to print a URL, and an agent called it unprompted. Done in `3bcf1cb`: the
+   bare form prints the state and only `--url` prints the URL.
 5. **Give Codex a reason to use the browser half.** No Codex run used
    `flexvizApply` or `flexvizState`.
