@@ -103,7 +103,18 @@ flexviz decode "<url>"
 ```
 
 The address bar does not track your interactions. Only the Share button
-captures the current state.
+captures the current state. Add `--state-only` to print just
+`{version, state, client_state}`, the part that changes as you interact,
+instead of the full spec.
+
+## History: numbered URLs instead of pasted ones
+
+A share URL can run to several kilobytes, too long to retype in every
+prompt. `flexviz history add "<url>" --note "..."` records it under a
+number in `.flexviz/history.jsonl`; `flexviz history list` shows the notes
+without the URLs, and `flexviz history show N` (or `show N --state`) prints
+one back when the agent needs it. Add `.flexviz/` to your `.gitignore`:
+the file holds full share URLs, which include column names and selections.
 
 ## Safety notes
 

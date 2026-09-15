@@ -6,9 +6,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from flexviz import Dashboard
+from flexviz import Dashboard, Figure
 from flexviz.cli import _register_files, main
-from flexviz.spec import DashboardSpec, decode_spec
+from flexviz.spec import AxisRange, DashboardSpec, decode_spec, encode_spec
 
 
 def _demo_dashboard(**dash_kw) -> Dashboard:
@@ -49,6 +49,29 @@ def test_decode_command_accepts_full_url(capsys):
 def test_decode_command_rejects_url_without_spec():
     with pytest.raises(SystemExit):
         main(["decode", "http://127.0.0.1:8000/view?other=1"])
+
+
+def test_decode_state_only_keeps_the_interaction_values(capsys):
+    spec = decode_spec(
+        _demo_dashboard().share_url(source_name="demo").split("spec=", 1)[1]
+    )
+    key = f"{spec.figures[0].uid}/x"
+    spec.state.viewport[key] = AxisRange(min=1.0, max=2.0)
+
+    main(["decode", encode_spec(spec), "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["state"]["viewport"][key] == {"min": 1.0, "max": 2.0}
+    assert payload["client_state"]["live_brush"] == "off"
+
+
+def test_decode_state_only_defaults_client_state_of_a_single_figure(capsys):
+    # A VisualizationSpec has no client_state; /view runs it with a default one.
+    fig = Figure(pl.LazyFrame({"t": [1, 2], "v": [1.0, 2.0]})).add_line(x="t", y="v")
+    main(["decode", encode_spec(fig.to_spec("demo")), "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["client_state"]["live_brush"] == "auto"
 
 
 def test_register_files_names_by_stem(tmp_path):
@@ -235,3 +258,73 @@ def test_skill_install_defaults_to_cwd(monkeypatch, tmp_path):
 def test_skill_install_scope_flags_are_exclusive():
     with pytest.raises(SystemExit):
         main(["skill", "install", "--user", "--dir", "."])
+
+
+# ---------------------------------------------------------------------------
+# History: numbered share URLs, recorded under .flexviz/history.jsonl
+# ---------------------------------------------------------------------------
+
+
+def test_history_add_numbers_sequentially(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+
+    main(["history", "add", url, "--note", "first"])
+    assert capsys.readouterr().out.strip() == "1"
+    main(["history", "add", url, "--note", "second"])
+    assert capsys.readouterr().out.strip() == "2"
+
+    lines = (tmp_path / ".flexviz" / "history.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+
+
+def test_history_list_never_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url, "--note", "brushed the tail"])
+    capsys.readouterr()
+
+    main(["history", "list"])
+    out = capsys.readouterr().out
+    assert "brushed the tail" in out
+    assert "/view?spec=" not in out
+
+
+def test_history_show_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    main(["history", "add", url])
+    capsys.readouterr()
+
+    main(["history", "show", "2"])
+    assert capsys.readouterr().out.strip() == url
+
+
+def test_history_show_state_prints_only_the_compact_triple(
+    capsys, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    main(["history", "add", url])
+    capsys.readouterr()
+
+    main(["history", "show", "2", "--state"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+
+
+def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["history", "show", "9"])
+
+
+def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"n": 1, "url": "http://x"\n')
+    with pytest.raises(SystemExit):
+        main(["history", "list"])

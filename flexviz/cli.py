@@ -4,6 +4,10 @@
 ``flexviz schema`` prints file schemas as JSON so an agent can pick columns.
 ``flexviz decode`` turns a ``/view`` share URL back into its JSON spec, so a
 script or agent can read the viewport and selections a person left behind.
+``flexviz decode --state-only`` prints only ``{version, state, client_state}``,
+the tenth of the spec that changes as someone interacts.
+``flexviz history`` records share URLs under a small local number, so an
+agent can say ``fv:3`` instead of repeating a URL.
 ``flexviz skill install`` copies the packaged agent skill into a project.
 """
 
@@ -156,20 +160,94 @@ def _cmd_skill(args: argparse.Namespace) -> None:
         )
 
 
-def _cmd_decode(args: argparse.Namespace) -> None:
-    from flexviz.spec import decode_spec
+def _encoded_from(url: str) -> str:
+    """Pull the ``spec=`` query value out of a share URL.
 
-    encoded = args.url
-    if "://" in encoded or "?" in encoded:
-        values = parse_qs(urlsplit(encoded).query).get("spec")
+    A bare encoded spec (no ``://`` or ``?``) is returned unchanged, so the
+    same helper accepts both a full URL and the raw value.
+    """
+    if "://" in url or "?" in url:
+        values = parse_qs(urlsplit(url).query).get("spec")
         if not values:
             raise SystemExit("no spec= query parameter in URL")
-        encoded = values[0]
+        return values[0]
+    return url
+
+
+def _state_only(spec) -> dict:
+    """Reduce a decoded spec to its compact, interaction-only triple.
+
+    Mirrors ``flexvizState({compact: true})`` in the browser, minus
+    ``revision`` (that field only means something across repeated polls of a
+    live page, not a one-off decode).
+
+    A single-figure ``VisualizationSpec`` has no ``client_state`` field, so
+    the triple keeps its shape with a default one: that is exactly the client
+    state ``/view`` gives the page it builds from such a spec.
+    """
+    from flexviz.spec import ClientState
+
+    dumped = spec.model_dump(mode="json")
+    dumped.setdefault("client_state", ClientState().model_dump(mode="json"))
+    return {key: dumped[key] for key in ("version", "state", "client_state")}
+
+
+def _cmd_decode(args: argparse.Namespace) -> None:
+    import json
+
+    from flexviz.spec import decode_spec
+
     try:
-        spec = decode_spec(encoded)
+        spec = decode_spec(_encoded_from(args.url))
     except Exception as exc:
         raise SystemExit(f"invalid spec: {exc}") from exc
-    print(spec.model_dump_json(indent=2))
+    if args.state_only:
+        print(json.dumps(_state_only(spec), indent=2))
+    else:
+        print(spec.model_dump_json(indent=2))
+
+
+def _history_entry(n: int) -> dict:
+    """Look up one history entry by its number, or fail with a clear message."""
+    from flexviz import history
+
+    for entry in history.entries():
+        if entry["n"] == n:
+            return entry
+    raise SystemExit(f"no history entry {n}")
+
+
+def _cmd_history(args: argparse.Namespace) -> None:
+    import json
+
+    from flexviz import history
+    from flexviz.spec import decode_spec
+
+    if args.action == "add":
+        if not args.target:
+            raise SystemExit("history add requires a URL")
+        print(history.add(args.target, note=args.note, actor=args.actor))
+        return
+
+    if args.action == "list":
+        for entry in history.entries():
+            print(f"{entry['n']}\t{entry['ts']}\t{entry['actor']}\t{entry['note']}")
+        return
+
+    # show
+    try:
+        n = int(args.target)
+    except (TypeError, ValueError):
+        raise SystemExit(f"history show requires a number, got {args.target!r}")
+    url = _history_entry(n)["url"]
+    if args.state:
+        try:
+            spec = decode_spec(_encoded_from(url))
+        except Exception as exc:
+            raise SystemExit(f"invalid spec: {exc}") from exc
+        print(json.dumps(_state_only(spec), indent=2))
+    else:
+        print(url)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -205,7 +283,31 @@ def main(argv: list[str] | None = None) -> None:
         "decode", help="decode a /view share URL (or raw spec string) to JSON"
     )
     decode.add_argument("url", help="share URL, or the bare encoded spec value")
+    decode.add_argument(
+        "--state-only",
+        action="store_true",
+        help="print only {version, state, client_state}, not the full spec",
+    )
     decode.set_defaults(func=_cmd_decode)
+
+    history = sub.add_parser("history", help="record and look up numbered share URLs")
+    history.add_argument("action", choices=["add", "list", "show"])
+    history.add_argument(
+        "target", nargs="?", help="URL for 'add'; entry number for 'show'"
+    )
+    history.add_argument("--note", default="", help="free-text note for 'add'")
+    history.add_argument(
+        "--actor",
+        choices=["human", "agent"],
+        default="agent",
+        help="who this entry records (default: agent)",
+    )
+    history.add_argument(
+        "--state",
+        action="store_true",
+        help="with 'show', print {version, state, client_state} instead of the URL",
+    )
+    history.set_defaults(func=_cmd_history)
 
     skill = sub.add_parser("skill", help="manage the flexviz-explore agent skill")
     skill.add_argument("action", choices=["install"])
