@@ -430,25 +430,7 @@ window.fvOnImport = function(file) {
   const reader = new FileReader();
   reader.onload = async function(e) {
     try {
-      const loaded = JSON.parse(e.target.result);
-      Object.assign(DASHBOARD_SPEC, loaded);
-      window.fvRebuildHoverLookups?.();
-      window.fvRefreshSelectionSummary?.();
-      window._fvRestoreGridLayout?.();
-      window.fvSetGridEditable?.((DASHBOARD_SPEC.layout && DASHBOARD_SPEC.layout.grid_editable) === true);
-      window.fvResetRuntimeCache?.();
-      window.fvUpdateCfModeButton?.();
-      window.fvUpdateGridButton?.();
-      if (window.fvRestoreFromSpec) {
-        await window.fvRestoreFromSpec();
-      } else {
-        await postDashboardUpdate({
-          type: 'init',
-          axis_ranges: {},
-          selections: (DASHBOARD_SPEC.state && DASHBOARD_SPEC.state.selections) || [],
-          force_update: true,
-        });
-      }
+      await window.flexvizApply(JSON.parse(e.target.result));
     } catch (err) {
       console.warn('flexviz import failed', err);
     }

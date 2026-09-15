@@ -1,12 +1,60 @@
 // === FlexViz shared runtime — state initialisation ===
 // Requires: DASHBOARD_SPEC (set by Python init block)
 
-// Agent-readback contract: external automation (Playwright, browser
-// extensions) reads the live spec through this stable accessor rather than
-// the raw DASHBOARD_SPEC binding. Returns a detached snapshot (persistent
-// serialized state only; no transient hover/cursor visuals) so callers
-// cannot mutate the authoritative client state through it.
-window.flexvizState = () => structuredClone(DASHBOARD_SPEC);
+// Agent contract: external automation (Playwright, browser extensions) reads
+// the live spec through `flexvizState` and writes it back through
+// `flexvizApply`, never through the raw DASHBOARD_SPEC binding.
+// Reads return a detached snapshot (persistent serialized state only; no
+// transient hover/cursor visuals) so callers cannot mutate the authoritative
+// client state through it. `flexvizState({compact: true})` returns only the
+// interaction state plus a revision, which is what a polling agent needs.
+// `flexvizApply(obj)` merges per top-level spec key (`state` and `client_state`
+// one level deeper), re-renders, and resolves with the compact state once the
+// re-request has completed.
+window.flexvizState = (opts) =>
+  opts && opts.compact ? _fvCompactState() : structuredClone(DASHBOARD_SPEC);
+
+window.flexvizApply = async function(obj) {
+  // Clone so the caller keeps no live reference into the authoritative spec,
+  // mirroring the detached snapshot the read half returns.
+  const patch = structuredClone(obj);
+  // `state` and `client_state` merge one level deep: a patch that carries only
+  // `selections` must keep `viewport` and `group_domains`, which several readers
+  // dereference without a guard (delta.js ensureGroupColor, plotly relayout).
+  Object.assign(DASHBOARD_SPEC, patch, {
+    state: { ...DASHBOARD_SPEC.state, ...patch.state },
+    client_state: { ...DASHBOARD_SPEC.client_state, ...patch.client_state },
+  });
+  // Grid layout first: the panels must be sized before the re-render.
+  window._fvRestoreGridLayout?.();
+  window.fvSetGridEditable?.((DASHBOARD_SPEC.layout && DASHBOARD_SPEC.layout.grid_editable) === true);
+  window.fvUpdateGridButton?.();
+  // fvRestoreFromSpec owns the rest: runtime cache, hover lookups, cross-filter
+  // button and selection summary, all before it re-requests.
+  await window.fvRestoreFromSpec();
+  return _fvCompactState();
+};
+
+let _fvRevision = 0;
+let _fvRevisionKey = null;
+// ponytail: the revision is diffed here at read time instead of bumped at each
+// of the nine mutation sites. Ceiling: several mutations between two reads
+// count as one bump. Per-mutation counting needs every site to call in.
+function _fvCompactState() {
+  const state = DASHBOARD_SPEC.state || {};
+  const client_state = DASHBOARD_SPEC.client_state || {};
+  const key = JSON.stringify({ state, client_state });
+  if (key !== _fvRevisionKey) {
+    _fvRevisionKey = key;
+    _fvRevision++;
+  }
+  return {
+    version: DASHBOARD_SPEC.version,
+    state: structuredClone(state),
+    client_state: structuredClone(client_state),
+    revision: _fvRevision,
+  };
+}
 
 const _fvPalette = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
 let _resetTreemapLevel = false;

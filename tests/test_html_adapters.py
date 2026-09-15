@@ -175,6 +175,9 @@ class TestPlotlyHtml:
         assert (
             "window.flexvizState" in html
         ), "shared runtime must expose the flexvizState() agent-readback accessor"
+        assert (
+            "window.flexvizApply" in html
+        ), "shared runtime must expose the flexvizApply() agent write accessor"
 
     def test_panel_bar_buttons_have_accessible_labels(self, html):
         for label in (
