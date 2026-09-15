@@ -20,6 +20,13 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Fixed
+
+- `GridItem.h` now renders at `h * 80` pixels on both layout paths. The static
+  grid (`draggable=False`) carried `gap` between its rows, which made a panel
+  of `h` rows `h * 80 + (h - 1) * gap` pixels tall. The gap now sits inside the
+  panel box, the way GridStack keeps it.
+
 ### Changed
 
 - Spec version 0.6. `Figure.legend()` now writes `layout.showlegend` instead

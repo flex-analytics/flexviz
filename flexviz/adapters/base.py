@@ -293,14 +293,21 @@ class AbstractAdapter(ABC):
                 f"  </div>"
             )
         container_html = '<div id="fv-dashboard">\n' + "\n".join(items) + "\n</div>"
+        # An item spanning h tracks also spans the h-1 gaps between them, so a
+        # grid ``gap`` would make h taller here than the h * cell-height
+        # GridStack renders. Keep the tracks flush and carry the gutter inside
+        # the item, the way GridStack carries it in the item margin.
+        gutter = ("0px" if layout_gap == "normal" else layout_gap).split()
+        row_gutter, col_gutter = gutter[0], gutter[-1]
         return _DashboardMarkup(
             container_html=container_html,
             css=(
                 f"#fv-dashboard {{ width: 100%; display:grid; "
                 f"grid-template-columns:repeat(12, minmax(0, 1fr)); "
-                f"grid-auto-rows:{_GRIDSTACK_CELL_HEIGHT_PX}px; gap:{layout_gap}; "
+                f"grid-auto-rows:{_GRIDSTACK_CELL_HEIGHT_PX}px; "
                 f"padding: 8px; box-sizing: border-box; }}\n"
-                "#fv-dashboard .fv-dashboard-item { min-width: 0; min-height: 0; }"
+                f"#fv-dashboard .fv-dashboard-item {{ min-width: 0; min-height: 0; "
+                f"padding: calc({row_gutter} / 2) calc({col_gutter} / 2); }}"
             ),
             head_html="",
         )

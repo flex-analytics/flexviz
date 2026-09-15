@@ -335,7 +335,7 @@ class VisualizationSpec(BaseModel):
 
 
 _GRIDSTACK_CELL_HEIGHT_PX: int = 80
-"""Pixels per grid row unit.  h=5 → 400 px, before the static grid adds gaps."""
+"""Pixels per grid row unit.  h=5 → 400 px on either layout path."""
 
 
 class GridItem(BaseModel):
@@ -438,7 +438,9 @@ class LayoutSpec(BaseModel):
     """HTML/CSS layout hints for a multi-figure dashboard.
 
     ``gap``
-        CSS gap between figures (default ``"8px"``).
+        CSS space between figures on the static grid (default ``"8px"``). With
+        ``draggable=True`` GridStack keeps its own panel margin, so ``gap``
+        only pads the outer edge of the grid.
 
     ``draggable``
         Selects the layout implementation for the rendered page. It is not a

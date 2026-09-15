@@ -6300,7 +6300,14 @@ class TestDraggableGridBrowser:
 class TestLockedLayoutBrowser:
     """A read-only embed: no layout button, and panel height honours GridItem.h."""
 
-    def _url(self, port: int, renderer: str, h: int) -> str:
+    def _url(
+        self,
+        port: int,
+        renderer: str,
+        h: int,
+        draggable: bool = False,
+        gap: str = "8px",
+    ) -> str:
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import GridItem, LayoutSpec, encode_spec
@@ -6312,15 +6319,23 @@ class TestLockedLayoutBrowser:
 
         dash = Dashboard(df)
         dash.add_figure(title="Fig0").add_line(x="ts", y="val", n_points=100)
-        uid = dash.to_spec().figures[0].uid
+        dash.add_figure(title="Fig1").add_line(x="ts", y="val", n_points=100)
+        uids = [fig.uid for fig in dash.to_spec().figures]
         spec = dash._finalized_spec(
             "_browser_locked_test",
             rows=None,
             cols=None,
-            draggable=False,
+            draggable=draggable,
             effective_cache=False,
             live_brush=None,
-            layout=LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
+            layout=LayoutSpec(
+                gap=gap,
+                draggable=draggable,
+                grid_items=[
+                    GridItem(fig_uid=uids[0], x=0, y=0, w=12, h=h),
+                    GridItem(fig_uid=uids[1], x=0, y=h, w=12, h=h),
+                ],
+            ),
         )
         return (
             f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"
@@ -6336,9 +6351,24 @@ class TestLockedLayoutBrowser:
     def test_grid_item_height_drives_the_panel(
         self, page: Page, server_port: int, renderer: str
     ):
-        page.goto(self._url(server_port, renderer, 7))
-        _wait_for_chart(page, renderer)
-        page.wait_for_timeout(1_000)
-        box = page.query_selector(".fv-dashboard-item").bounding_box()
-        # Spanning h rows also spans h-1 gaps: 7*80 + 6*8.
-        assert box["height"] == 608, box["height"]
+        """h is h * 80 px on both layout paths, gap included."""
+        for h in (4, 7):
+            for draggable in (True, False):
+                page.goto(self._url(server_port, renderer, h, draggable, gap="24px"))
+                _wait_for_chart(page, renderer)
+                page.wait_for_timeout(1_000)
+                sel = ".grid-stack-item" if draggable else ".fv-dashboard-item"
+                items = page.query_selector_all(sel)
+                assert len(items) == 2, f"{sel} count for draggable={draggable}"
+                for item in items:
+                    height = item.bounding_box()["height"]
+                    assert abs(height - h * 80) <= 1, (h, draggable, height)
+                if not draggable:
+                    # The static grid carries the gutter as item padding, so it
+                    # must still show between the panels.
+                    panels = sorted(
+                        (p.bounding_box() for p in page.query_selector_all("fv-panel")),
+                        key=lambda box: box["y"],
+                    )
+                    visible_gap = panels[1]["y"] - panels[0]["y"] - panels[0]["height"]
+                    assert abs(visible_gap - 24) <= 1, visible_gap
