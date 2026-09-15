@@ -319,6 +319,18 @@ rejected. A hosted watch broker and MCP Apps `updateModelContext`
 publication are possible future phases; neither changes the aggregation
 server's statelessness.
 
+An encoded spec is about 4 KB, and browser tools echo a tab's page URL in
+every snapshot, so a share URL must never reach an agent's context.
+`flexviz/history.py` numbers share URLs in `.flexviz/history.jsonl`, a plain
+append-only file in the agent's working directory: the page cannot write
+files and the server must stay stateless, so neither can own that mapping.
+`GET /h/{n}` re-reads that file per request, decodes the recorded URL, and
+renders it like `/view`, which keeps the page address short and stores
+nothing server-side. Together with the compact readback and the apply
+contract above, an agent drives a dashboard by number alone, and `fv:N` lines
+in a findings file (`flexviz/report.py`) embed the same entries as live
+iframes.
+
 ---
 
 ## Trace Layer

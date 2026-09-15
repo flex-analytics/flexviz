@@ -56,7 +56,13 @@ Both read the same `SKILL.md` that the wheel ships, so the three install
 paths give the same skill. The skill then asks to install the `flexviz`
 package when a task needs it.
 
-## What the agent does
+## The loop
+
+A share URL carries the complete spec, so it runs to several kilobytes. That
+is a real cost for an agent: one URL is near 1.3k tokens, and browser tools
+echo the page URL in every snapshot. The loop below keeps URLs out of the
+agent's context. The agent records each one under a number and works with the
+number.
 
 ```bash
 flexviz schema readings.parquet      # columns and dtypes, as JSON
@@ -68,58 +74,86 @@ cubes and live brushing for files that do not change while serving. The
 server is ready when `GET /sources` names your source. A bare "it answered"
 check is not enough, because another server can already own the port.
 
-The agent then builds a dashboard spec and mints a URL without opening a
-browser:
+The agent runs the server from the project directory, because the history
+file and the `/h/N` route below both resolve against a working directory.
+
+It then builds a dashboard spec, records the URL, and prints only the number:
 
 ```python
 import polars as pl
-from flexviz import Dashboard
+from flexviz import Dashboard, history
 
 dash = Dashboard(pl.scan_parquet("readings.parquet"), cache=True)
 dash.add_figure().add_line(x="timestamp", y="value", group_by="sensor_id")
 dash.add_figure().add_histogram(x="value", bins=50)
 url = dash.share_url(server_url="http://127.0.0.1:8077", source_name="readings")
+print(history.add(url, note="line + histogram, initial view", actor="agent"))
 ```
+
+Entry `N` opens at `http://127.0.0.1:8077/h/N`. That is the address the agent
+gives you, and the address it opens in its own browser tab. No 4 KB URL
+changes hands.
 
 ## Readback: the agent sees what you see
 
 Every dashboard exposes a stable accessor:
 
 ```js
-window.flexvizState()   // the complete current spec
+window.flexvizState({compact: true})   // {version, state, client_state, revision}
 ```
 
 An agent with browser tooling (for example Playwright MCP or a Chrome
-extension) opens the URL, you explore in that window, and the agent reads
-your current viewport and selections whenever it needs them. Brush a range,
-ask "what's going on in the part I selected?", and the agent continues the
-analysis from exactly that state.
+extension) opens `/h/N`, you explore, and the agent polls the compact state
+whenever it needs to know where you are. `revision` goes up when the state
+changed, so the agent can tell a new view from a repeated read. Brush a
+range, ask "what's going on in the part I selected?", and the agent continues
+the analysis from exactly that state. `flexvizState()` without options
+returns the full spec, which is a poll the agent does not need.
 
-Without browser tooling, click **Share** in the toolbar. It copies a URL
-that captures the current view; paste it to the agent, which runs:
+The agent's tab is its own browser profile, not the window you sit in front
+of. Open the same `/h/N` address yourself. Both tabs show the same dashboard
+and keep their own state.
+
+Without browser tooling, click **Share** in the toolbar. It copies a URL that
+captures the current view. Paste it to the agent, which records it once and
+then reads it back by number:
 
 ```bash
-flexviz decode "<url>"
+flexviz history add "<url>" --actor human --note "what you were looking at"
+flexviz history show N --state
 ```
 
 The address bar does not track your interactions. Only the Share button
-captures the current state. Add `--state-only` to print just
-`{version, state, client_state}`, the part that changes as you interact,
-instead of the full spec.
+captures the current state. `flexviz decode "<url>"` prints the whole spec of
+any share URL, and `flexviz decode --state-only` prints just
+`{version, state, client_state}`, the part that changes as you interact.
+
+## Writeback: the agent changes the view
+
+```js
+await window.flexvizApply({state: {viewport: {...}}})   // via browser evaluate
+```
+
+`flexvizApply` is the write half of the readback accessor. Top-level keys
+replace; `state` and `client_state` merge one level deep, so a patch that
+carries only `selections` keeps your viewport and colors. The page re-renders
+and resolves with the compact state. Adding or removing a figure is a
+structure change, not a state change: the agent rebuilds the spec in Python,
+records a new entry, and hands you the new `/h/N`.
 
 ## History: numbered URLs instead of pasted ones
 
-A share URL can run to several kilobytes, too long to retype in every
-prompt. `flexviz history add "<url>" --note "..."` records it under a
-number in `.flexviz/history.jsonl`; `flexviz history list` shows the notes
-without the URLs, and `flexviz history show N` (or `show N --state`) prints
-one back when the agent needs it. Add `.flexviz/` to your `.gitignore`:
-the file holds full share URLs, which include column names and selections.
+`flexviz history add "<url>" --note "..."` records a URL under a number in
+`.flexviz/history.jsonl`. `flexviz history list` shows the notes without the
+URLs, and `flexviz history show N` (or `show N --state`) prints one back when
+it is really needed. Add `.flexviz/` to your `.gitignore`: the file holds full
+share URLs, which include column names and selections.
 
-A running server also renders entry `N` at `http://HOST:PORT/h/N`. Open
-that short address in a Playwright tab instead of the full share URL: the
-page keeps the same short address, so a browser tool's snapshot never
-echoes the long URL back into the agent's context.
+The file belongs to one working directory and grows across sessions, so
+numbers never restart and an old entry still opens at `/h/N` after a server
+restart, as long as the same file is served under the same source name. Two
+agents working in one directory at the same time can take the same number, so
+give each agent session its own directory.
 
 ## Reports: findings with live dashboards
 
