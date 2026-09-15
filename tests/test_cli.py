@@ -328,3 +328,28 @@ def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
     path.write_text('{"n": 1, "url": "http://x"\n')
     with pytest.raises(SystemExit):
         main(["history", "list"])
+
+
+def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["history", "add", "yesterday's parquet run"])
+
+
+def test_report_command_writes_html_and_expanded_markdown(
+    capsys, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    src = tmp_path / "findings.md"
+    src.write_text("# Drift\n\nfv:1\n")
+    capsys.readouterr()
+
+    main(["report", str(src), "-o", "out.html", "--md", "out.md"])
+
+    html = (tmp_path / "out.html").read_text()
+    # The page carries its markdown JSON-escaped in an inline script.
+    assert "\\u003ciframe" in html
+    assert url in html
+    assert (tmp_path / "out.md").read_text().splitlines()[2] == url

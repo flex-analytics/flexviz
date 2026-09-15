@@ -6372,3 +6372,20 @@ class TestLockedLayoutBrowser:
                     )
                     visible_gap = panels[1]["y"] - panels[0]["y"] - panels[0]["height"]
                     assert abs(visible_gap - 24) <= 1, visible_gap
+
+    def test_report_embed_height_matches_the_page(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        """A report iframe is tall enough that the embedded page never scrolls."""
+        from flexviz.report import _iframe_height
+
+        # Shorter than every dashboard below, so scrollHeight reports the
+        # content height instead of the viewport's.
+        page.set_viewport_size({"width": 1280, "height": 300})
+        for draggable in (True, False):
+            url = self._url(server_port, renderer, 4, draggable, gap="24px")
+            page.goto(url)
+            _wait_for_chart(page, renderer)
+            page.wait_for_timeout(1_000)
+            measured = page.evaluate("() => document.documentElement.scrollHeight")
+            assert abs(_iframe_height(url) - measured) <= 1, (draggable, measured)
