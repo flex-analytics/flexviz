@@ -102,26 +102,33 @@ Every dashboard exposes a stable accessor:
 window.flexvizState({compact: true})   // {version, state, client_state, revision}
 ```
 
-An agent with browser tooling (for example Playwright MCP or a Chrome
-extension) opens `/h/N`, you explore, and the agent polls the compact state
-whenever it needs to know where you are. `revision` goes up when the state
-changed, so the agent can tell a new view from a repeated read. Brush a
-range, ask "what's going on in the part I selected?", and the agent continues
-the analysis from exactly that state. `flexvizState()` without options
-returns the full spec, which is a poll the agent does not need.
+All interaction state lives in one browser tab, so which tab you use decides
+what the agent can read. There are two modes, and the agent should ask you
+which one applies.
 
-The agent's tab is its own browser profile, not the window you sit in front
-of. Open the same `/h/N` address yourself. Both tabs show the same dashboard
-and keep their own state.
+**Shared tab.** The agent's browser tool drives a window on this machine that
+you can also use: a headed Playwright session (not `--headless`), or an
+extension attached to your own browser. One tab holds the state, so the agent
+polls the compact accessor whenever it needs to know where you are.
+`revision` goes up when the state changed, so a new view is easy to tell from
+a repeated read. Brush a range, ask "what's going on in the part I selected?",
+and the agent continues from exactly that state. `flexvizState()` without
+options returns the full spec, a poll the agent does not need.
 
-Without browser tooling, click **Share** in the toolbar. It copies a URL that
-captures the current view. Paste it to the agent, which records it once and
-then reads it back by number:
+**Separate browsers.** A headless agent session, or an agent on another
+machine. Its tab and your tab hold independent state, so polling its own tab
+tells the agent nothing about your zooms and selections. Hand the state over
+instead: click **Share** in the toolbar, which copies a URL that captures your
+current view, then record it yourself in the project directory:
 
 ```bash
-flexviz history add "<url>" --actor human --note "what you were looking at"
-flexviz history show N --state
+flexviz history add "<paste it here>" --actor human --note "what I was looking at"
 ```
+
+Tell the agent only the number it prints. The agent reads it back with
+`flexviz history show N --state`, and no URL passes through its context. If
+you would rather not run a command, paste the URL to the agent and it runs the
+same two commands.
 
 The address bar does not track your interactions. Only the Share button
 captures the current state. `flexviz decode "<url>"` prints the whole spec of
@@ -137,7 +144,9 @@ await window.flexvizApply({state: {viewport: {...}}})   // via browser evaluate
 `flexvizApply` is the write half of the readback accessor. Top-level keys
 replace; `state` and `client_state` merge one level deep, so a patch that
 carries only `selections` keeps your viewport and colors. The page re-renders
-and resolves with the compact state. Adding or removing a figure is a
+and resolves with the compact state. It changes only the tab the agent drives,
+so with separate browsers the agent records the new state and hands you the new
+`/h/N` instead. Adding or removing a figure is a
 structure change, not a state change: the agent rebuilds the spec in Python,
 records a new entry, and hands you the new `/h/N`.
 
@@ -148,6 +157,11 @@ records a new entry, and hands you the new `/h/N`.
 URLs, and `flexviz history show N` (or `show N --state`) prints one back when
 it is really needed. Add `.flexviz/` to your `.gitignore`: the file holds full
 share URLs, which include column names and selections.
+
+A page cannot write that file, so an agent that reads your state back records
+it with `history.record_state(n, state, client_state)`. That reuses the figures
+of entry `n` and rewrites only the `spec=` value of its URL, so the host and
+port stay the ones the entry was served from.
 
 The file belongs to one working directory and grows across sessions, so
 numbers never restart and an old entry still opens at `/h/N` after a server

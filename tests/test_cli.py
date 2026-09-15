@@ -6,9 +6,15 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from flexviz import Dashboard, Figure
+from flexviz import Dashboard, Figure, history
 from flexviz.cli import _register_files, main
-from flexviz.spec import AxisRange, DashboardSpec, decode_spec, encode_spec
+from flexviz.spec import (
+    AxisRange,
+    DashboardSpec,
+    decode_spec,
+    encode_spec,
+    encoded_spec_from_url,
+)
 
 
 def _demo_dashboard(**dash_kw) -> Dashboard:
@@ -162,6 +168,7 @@ def test_skill_names_the_api_it_teaches(tmp_path):
         "flexvizApply",
         "flexvizState({compact: true})",
         "history.add",
+        "history.record_state",
         "/h/",
         "flexviz report",
     ):
@@ -331,6 +338,35 @@ def test_history_show_state_prints_only_the_compact_triple(
     main(["history", "show", "2", "--state"])
     payload = json.loads(capsys.readouterr().out)
     assert set(payload) == {"version", "state", "client_state"}
+
+
+def test_record_state_keeps_the_recorded_host(monkeypatch, tmp_path):
+    """The rebuilt entry must reach the server the first one was served from.
+
+    A hard-coded ``127.0.0.1:8077`` in the caller silently breaks every entry
+    recorded against another port or host.
+    """
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(
+        server_url="http://box.local:9999", source_name="demo"
+    )
+    first = history.add(url)
+
+    n = history.record_state(
+        first,
+        {"cross_filter_mode": "overlay"},
+        {"hover_mode": "on"},
+        note="human brushed",
+    )
+
+    rebuilt = history.entry(n)
+    assert rebuilt["url"].startswith("http://box.local:9999/view?spec=")
+    assert rebuilt["actor"] == "human"
+    spec = decode_spec(encoded_spec_from_url(rebuilt["url"]))
+    assert spec.state.cross_filter_mode == "overlay"
+    assert spec.client_state.hover_mode == "on"
+    # The figures come from the recorded entry, not from a rebuilt dashboard.
+    assert [f.source for f in spec.figures] == ["demo", "demo"]
 
 
 def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):

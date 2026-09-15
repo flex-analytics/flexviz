@@ -12,6 +12,15 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+
+from flexviz.spec import (
+    ClientState,
+    InteractionState,
+    decode_spec,
+    encode_spec,
+    encoded_spec_from_url,
+)
 
 PATH = Path(".flexviz/history.jsonl")
 
@@ -63,3 +72,30 @@ def add(url: str, note: str = "", actor: str = "agent") -> int:
     with PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return n
+
+
+def record_state(
+    n: int,
+    state: dict,
+    client_state: dict | None = None,
+    *,
+    note: str = "",
+    actor: str = "human",
+) -> int:
+    """Record the dashboard of entry ``n`` with a different interaction state.
+
+    A browser page cannot write this file, so an agent that reads the live
+    state back has to record it. Entry ``n`` supplies the figures; only the
+    ``spec=`` value of its URL is rewritten, so the host and port stay the
+    ones that entry was served from. Returns the new entry number.
+    """
+    url = entry(n)["url"]
+    spec = decode_spec(encoded_spec_from_url(url))
+    spec.state = InteractionState.model_validate(state)
+    if client_state is not None:
+        spec.client_state = ClientState.model_validate(client_state)
+    parts = urlsplit(url)
+    query = parse_qs(parts.query)
+    query["spec"] = [encode_spec(spec)]
+    new_url = urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
+    return add(new_url, note=note, actor=actor)

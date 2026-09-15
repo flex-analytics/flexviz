@@ -25,7 +25,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `flexviz history` records share URLs under a number in
   `.flexviz/history.jsonl`, with `add`, `list` and `show` (`--state` prints
   only the interaction state). An agent then works with the number instead of
-  a 4 KB URL.
+  a 4 KB URL. `history.record_state(n, state, client_state)` records the
+  dashboard of entry `n` with a state read back from the browser, rewriting
+  only the `spec=` value of that entry's URL.
 - `GET /h/{n}` renders a recorded history entry at a short page address, so a
   browser tool's snapshot never echoes a share URL. The server re-reads the
   history file per request and stores nothing.

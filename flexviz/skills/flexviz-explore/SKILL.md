@@ -14,15 +14,15 @@ description: >
 
 # Explore large data with FlexViz
 
-FlexViz serves interactive cross-filter dashboards from lazy Polars queries.
-The full dataset stays server-side. The browser receives bounded aggregates and
-small samples of real values. Parquet sources larger than RAM stream through
-Polars, so peak memory stays flat as rows grow (box plots are the exception).
+FlexViz serves interactive cross-filter dashboards from lazy Polars queries. The
+data stays server-side; the browser gets bounded aggregates and small samples of
+real values. Parquet larger than RAM streams, so peak memory stays flat as rows
+grow (box plots excepted).
 
-Every dashboard view is a URL that carries the complete spec. That URL is about
-4 KB, near 1.3k tokens, and a browser tool echoes the page URL in every
-snapshot. So you never hold one. You record each URL under a number with
-`flexviz history`, open it at `/h/N`, and refer to it as `fv:N`.
+Every dashboard view is a URL that carries the complete spec: about 4 KB, near
+1.3k tokens, and a browser tool echoes the page URL in every snapshot. So you
+never hold one. Record each URL under a number with `flexviz history`, open it
+at `/h/N`, and call it `fv:N`.
 
 Privacy: rows stay in the lazy engine unless you collect them. The schema, your
 samples, and the ranges the human selects do enter your context. A share URL
@@ -36,13 +36,12 @@ embeds column names and filters, so add `.flexviz/` to `.gitignore`.
 flexviz schema data.parquet
 ```
 
-If `flexviz` is not on PATH, look for a project venv. Run `.venv/bin/flexviz`
-or `uv run flexviz`, and keep that form in every command that follows. If the
-package is absent, ask the human before you install it.
+Not on PATH? Use the project venv (`.venv/bin/flexviz` or `uv run flexviz`) and
+keep that form below. If the package is absent, ask the human before installing.
 
 The output names the file, the source, and every column with its dtype. Pick an
 x column (usually time) and the columns worth plotting. A `.head(5).collect()`
-peek in Polars is fine. Never collect the full frame.
+peek is fine. Never collect the full frame.
 
 ### 2. Serve the file (background process)
 
@@ -50,31 +49,27 @@ peek in Polars is fine. Never collect the full frame.
 flexviz serve data.parquet --cache --port 8077
 ```
 
-Run the server from the project directory, and run every Python and CLI command
-below from that same directory. The history file (`.flexviz/history.jsonl`) and
-the `/h/N` route each resolve it against their own working directory.
+Run the server, and every command below, from the project directory: the history
+file (`.flexviz/history.jsonl`) and `/h/N` both resolve against a working
+directory.
 
 - Each file becomes a source named by its stem (`data.parquet` -> `"data"`).
 - `--cache` enables cross-filter cubes and live brushing. Use it whenever
   the file will not change while serving.
 - Wait for readiness: poll until the answer names YOUR source, for example
   `until curl -s http://127.0.0.1:8077/sources | grep -q '"data"'; do sleep 1; done`.
-  A bare "it answered" check is not enough. Another server can already own
+  A bare "it answered" check is not enough, because another server can own
   the port and answer with its own source list. On a busy port, `flexviz
   serve` exits with `cannot bind ...`. Read the serve log, then retry.
-- Keep the process running while the human explores. Tell them the port and
-  the PID, and stop the server when the session ends. A one-shot run
-  otherwise leaves an orphan server that holds the port.
+- Keep the process running while the human explores, tell them the port and
+  PID, and stop it at the end. An orphan server otherwise holds the port.
 - To add files later, restart with the FULL file list (old + new), same port.
-  Entries stay openable only while a server at the same address serves the
-  same source names.
 - Serve on loopback. Another interface exposes unauthenticated endpoints, so
   only do it if the human explicitly accepts that.
 
 `flexviz serve` scans the file as stored and cannot cast a column, so a
-timestamp held as `String` gives a string x axis and nothing warns you. If the
-dtypes from step 1 need a cast, register the source yourself and build step 3
-on the same cast LazyFrame:
+timestamp held as `String` gives a string x axis with no warning. If a dtype
+needs a cast, register the source yourself and build step 3 on that LazyFrame:
 
 ```python
 import polars as pl, uvicorn
@@ -100,29 +95,28 @@ url = dash.share_url(server_url="http://127.0.0.1:8077", source_name="data")
 print(history.add(url, note="line + histogram, initial view", actor="agent"))
 ```
 
-- This script only builds a spec. It is cheap, lazy, and exits at once. The
-  serve process answers all interactions.
-- `source_name` must match the served stem. `cache=True` must match `--cache`.
-  The number `history.add` returns is what you and the human exchange.
-- No categorical column to `group_by`? Split related metrics across figures
-  instead (one figure per metric family), and consider `add_corr_heatmap` or
-  `add_histogram2d` to relate the numeric columns.
+- This script only builds a spec: cheap, lazy, and it exits at once. The serve
+  process answers every interaction.
+- `source_name` must match the served stem, and `cache=True` must match
+  `--cache`.
+- No categorical column to `group_by`? Split metrics across figures instead,
+  and use `add_corr_heatmap` or `add_histogram2d` to relate numeric columns.
 
 ### 4. Open the entry
 
-Open `http://127.0.0.1:8077/h/N` for the number step 3 printed. The page
-address stays that short, so later browser snapshots never echo a 4 KB URL.
-
-If you have browser tooling (Playwright MCP, a Chrome extension), that tab lives
-in YOUR browser profile. It is not the human's window, and the human never sits
-in front of it. Use it for your own checks and readbacks, and give the human the
-same `/h/N` address for their own browser. Both tabs show the same dashboard,
-each with its own state.
-
-Tell the human: drag on one chart to cross-filter the others, zoom to
-re-aggregate at higher detail, double-click to reset.
+Open `http://127.0.0.1:8077/h/N` for the number step 3 printed, and give the
+human the same address. Tell them: drag on one chart to cross-filter the
+others, zoom to re-aggregate at higher detail, double-click to reset.
 
 ### 5. Read the state back
+
+All interaction state lives in ONE browser tab, so which tab the human uses
+decides what you can read. Ask once: "do you use the window I open, or your own
+browser?" Assume separate browsers until they confirm otherwise.
+
+**Shared tab.** Your browser tool drives a window on this machine that the human
+can also use: a headed Playwright session (never `--headless`), or an extension
+attached to the human's own browser. One tab holds the state, so you read it:
 
 ```js
 window.flexvizState({compact: true})   // via your browser evaluate tool
@@ -131,43 +125,39 @@ window.flexvizState({compact: true})   // via your browser evaluate tool
 It returns `{version, state, client_state, revision}`: the brushed ranges in
 `state.selections`, the zoom in `state.viewport`, and a `revision` that goes up
 whenever the state differs from your previous read. Poll it and compare
-`revision` to see whether the human moved. Never read the full
-`flexvizState()`. It repeats every figure and trace, which you already know.
+`revision` to see whether the human moved.
 
-Without browser tooling, the human clicks **Share** in the toolbar (it copies
-the current-state URL) and pastes it to you. Then:
+**Separate browsers.** A headless session, or a human at another machine. Your
+tab and their tab hold independent state, so polling yours tells you nothing
+about their zooms and selections. They hand the state over: ask them to click
+**Share** in the toolbar (it copies a URL that captures their current view) and
+to run this in the project directory:
 
 ```bash
-flexviz history add "<url>" --actor human --note "what they were looking at"
-flexviz history show N --state
+flexviz history add "<paste it here>" --actor human --note "what I was looking at"
 ```
 
-This is the only step where a URL enters your context, and it enters once. Work
-from the number afterwards. The address bar does NOT track interactions; only
-the Share button captures them.
+They tell you only the number it prints; you read it with `flexviz history show
+N --state`. If they will not run a command, let them paste the URL and run it
+yourself. That is the one place a URL enters your context, and it enters once.
+The address bar does NOT track interactions; only Share captures them.
 
 ### 6. Record the human's state before you act
 
-The page cannot write the history file, so you record the state you read. Take
-the entry the human opened, replace its state with the compact read, and add
-the result under `actor="human"`:
+With separate browsers the human's `history add` already made this entry, so
+skip the step. In the shared tab the page cannot write the history file, so you
+record what you read. `record_state` takes the figures from the entry they
+opened and the state you just read:
 
 ```python
 from flexviz import history
-from flexviz.spec import (ClientState, InteractionState, decode_spec,
-                          encode_spec, encoded_spec_from_url)
-
-compact = {...}      # paste the state and client_state you just read
-spec = decode_spec(encoded_spec_from_url(history.entry(3)["url"]))  # entry they opened
-spec.state = InteractionState.model_validate(compact["state"])
-spec.client_state = ClientState.model_validate(compact["client_state"])
-url = f"http://127.0.0.1:8077/view?spec={encode_spec(spec)}"
-print(history.add(url, note="human brushed 09:00-11:00 on sensor 12", actor="human"))
+print(history.record_state(3, compact["state"], compact["client_state"],
+                           note="human brushed 09:00-11:00 on sensor 12"))
 ```
 
-This reuses the recorded figures, so you never rebuild the builder and the URL
-never reaches your context. Do it before you change anything: this entry is
-what the report cites later.
+It rewrites only the `spec=` value of the recorded URL, so the host and port
+come from the entry and the URL never reaches your context. Do it before you
+change anything: this entry is what the report cites later.
 
 ### 7. Change the dashboard
 
@@ -180,17 +170,19 @@ await window.flexvizApply({state: {selections: [...]}})   // via browser evaluat
 
 Top-level keys replace. `state` and `client_state` merge one level deep, so a
 partial `state` keeps its sibling keys (`viewport`, `group_domains`,
-`cross_filter_mode`). It re-renders and resolves with the compact state.
+`cross_filter_mode`). It re-renders and resolves with the compact state. With
+separate browsers the human does not see it, so record the state with
+`record_state` and give them the new `/h/N` instead.
 
 A structure change (add or remove a figure, change traces, change layout) needs
 a new spec, because panels are built server-side. Rebuild in Python as in step
-3, `history.add(...)`, then navigate to the new `/h/N`. Give your own entries a
-note, so the history reads as a sequence of who did what.
+3, `history.add(...)`, then open the new `/h/N`. Note your own entries too, so
+the history reads as a sequence of who did what.
 
 ### 8. Report the findings
 
 Write plain markdown. A line that holds nothing but `fv:5` becomes the live
-dashboard of entry 5. Put the prose around such lines, then run:
+dashboard of entry 5. Put your prose around such lines, then run:
 
 ```bash
 flexviz report findings.md -o findings.html --md findings.expanded.md
@@ -198,15 +190,13 @@ flexviz report findings.md -o findings.html --md findings.expanded.md
 
 `findings.html` embeds each entry as a real, zoomable dashboard, for as long as
 the server runs. `findings.expanded.md` holds bare links instead, for GitHub or
-chat. Filter the LazyFrame to the brushed range to put numbers next to each
-figure.
+chat. Filter the LazyFrame to the brushed range to put numbers next to a figure.
 
 ## API cheat-sheet
 
-Defaults shown. Full reference: https://docs.flexviz.tech. The `#` notes mark
-the arguments whose meaning you cannot read off the signature: those are where a
-call runs cleanly and charts the wrong thing. For anything not here, the
-docstrings in `flexviz/figure.py` are the source of truth.
+Defaults shown. The `#` notes mark the arguments whose meaning the signature
+does not give: those are where a call runs cleanly and charts the wrong thing.
+For the rest, read `flexviz/figure.py` or https://docs.flexviz.tech.
 
 ```python
 Dashboard(data, cache=False)     # data: pl.LazyFrame/DataFrame, pandas, pyarrow
@@ -236,9 +226,9 @@ fig.add_pie(labels, values=None, agg="sum", hole=0.0)  # values=None counts rows
 fig.add_treemap(path=[...], values=None, agg="sum")   # path: hierarchy columns;
                                                       #   values=None counts rows
 fig.add_histogram2d(x, y, x_bins=20, y_bins=20,
-                    z=None, histfunc=None)   # z and histfunc are a pair: pass
-                                             #   both or neither; either alone
-                                             #   raises. No z counts rows.
+                    z=None, histfunc=None)   # z + histfunc are a pair: both or
+                                             #   neither, either alone raises;
+                                             #   no z counts rows.
 fig.add_corr_heatmap(columns=None, method="pearson", triangular=False)
 fig.add_geo_histogram2d(lat, lon, lat_bins=64, lon_bins=64,
                         z=None, histfunc=None)  # same pair rule as above
@@ -253,19 +243,20 @@ fig.update_layout(**plotly_layout)   # any Plotly layout key passes through;
 
 Legend placement, margins, log axes and fonts are renderer options, so they go
 through `update_layout`. A legend below the chart needs `margin={"b": 80}` too.
-Panel size is dashboard layout, not figure layout: `cols=1` gives a full-width
-panel, and `GridItem.h` sets the height. Every builder returns the `Figure`, so
-calls chain. `group_by="col"` splits a trace into one child per group value
-with stable colors.
+Panel size is dashboard layout: `cols=1` gives a full-width panel and
+`GridItem.h` sets the height. `group_by="col"` splits a trace into one child
+per group value, with stable colors.
 
 ## Rules
 
 Token discipline:
 
-- Never print, paste, or restate a share URL. Refer to entries as `fv:N`.
+- Never print or restate a share URL. Refer to entries as `fv:N`. A handover
+  can bring one URL in; nothing may take it out again.
 - Run `flexviz history show N` (no `--state`) only when a human explicitly
   asks for the link.
-- Poll `flexvizState({compact: true})`, never the full accessor.
+- Poll `flexvizState({compact: true})`, never the full accessor. The full one
+  repeats every figure and trace, which you already know.
 - Do not screenshot the dashboard to "see" it. The state is exact, pixels are
   not, and a full-page screenshot costs more than the state it replaces.
 
@@ -273,10 +264,9 @@ Other rules:
 
 - Never collect the full dataset into your context. The data stays in the
   lazy engine.
-- One serve process per port. Pick an uncommon port (8077 for example) and make
-  sure it is free. Your own earlier sessions are the likeliest occupant.
+- One serve process per port. Pick an uncommon free one (8077 for example).
+  Your own earlier sessions are the likeliest occupant of a busy port.
 - The history file belongs to one working directory and grows across sessions.
-  Numbers never restart, and old entries stay openable at `/h/N` after a server
-  restart, as long as the same file is served under the same source name.
-- Two agents in the same directory at the same time can take the same number.
-  Use one working directory per agent session.
+  Numbers never restart, and an old entry still opens at `/h/N` after a server
+  restart, if the same file is served under the same source name. Two agents in
+  one directory can take the same number, so give each session its own.
