@@ -36,6 +36,17 @@ def entries() -> list[dict]:
     return out
 
 
+def entry(n: int) -> dict:
+    """Return the recorded entry numbered ``n``.
+
+    Raises ``KeyError`` if no entry has that number.
+    """
+    for e in entries():
+        if e["n"] == n:
+            return e
+    raise KeyError(n)
+
+
 def add(url: str, note: str = "", actor: str = "agent") -> int:
     """Append one entry and return its 1-based number."""
     n = len(entries()) + 1

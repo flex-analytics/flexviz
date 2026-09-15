@@ -198,10 +198,10 @@ def _history_entry(n: int) -> dict:
     """Look up one history entry by its number, or fail with a clear message."""
     from flexviz import history
 
-    for entry in history.entries():
-        if entry["n"] == n:
-            return entry
-    raise SystemExit(f"no history entry {n}")
+    try:
+        return history.entry(n)
+    except KeyError:
+        raise SystemExit(f"no history entry {n}")
 
 
 def _cmd_history(args: argparse.Namespace) -> None:
