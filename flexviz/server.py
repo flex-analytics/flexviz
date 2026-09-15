@@ -604,20 +604,12 @@ async def share(req: ShareRequest) -> dict[str, str]:
     return {"url": url}
 
 
-@app.get("/view", response_class=HTMLResponse)
-async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
-    """Render a spec encoded as a ``spec`` query parameter.
+def _render_spec_html(spec: str, renderer: str, server_url: str) -> HTMLResponse:
+    """Decode ``spec`` and render it with the chosen adapter.
 
-    Decodes the ``spec`` string (produced by ``POST /share``), detects
-    whether it is a ``VisualizationSpec`` or a ``DashboardSpec``, and
-    returns a self-contained HTML page rendered by the chosen adapter.
-
-    Parameters
-    ----------
-    spec:
-        URL-safe base64-encoded gzip-compressed JSON spec string.
-    renderer:
-        ``"plotly"`` (default) or ``"echarts"``.
+    Shared by ``/view`` and ``/h/{n}``, which differ only in where the
+    encoded spec comes from and what page-relative ``server_url`` the
+    rendered page needs to reach its API routes.
     """
     from flexviz.spec import DashboardSpec as _DashboardSpec
     from flexviz.spec import decode_spec
@@ -627,11 +619,6 @@ async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
 
-    # Page-relative base: every API endpoint is a sibling of /view, so "."
-    # resolves correctly in the browser behind any reverse proxy — including
-    # ones that strip a path prefix, where request.base_url would lose the
-    # external prefix and scheme (e.g. nginx stripping a /dashboard prefix).
-    server_url = "."
     if isinstance(decoded, _DashboardSpec):
         dash_spec = decoded
     else:
@@ -647,6 +634,63 @@ async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
     adapter = build_adapter(renderer_name)
     html = adapter._build_dashboard_html(dash_spec, server_url=server_url)
     return HTMLResponse(content=html)
+
+
+@app.get("/view", response_class=HTMLResponse)
+async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
+    """Render a spec encoded as a ``spec`` query parameter.
+
+    Decodes the ``spec`` string (produced by ``POST /share``), detects
+    whether it is a ``VisualizationSpec`` or a ``DashboardSpec``, and
+    returns a self-contained HTML page rendered by the chosen adapter.
+
+    Parameters
+    ----------
+    spec:
+        URL-safe base64-encoded gzip-compressed JSON spec string.
+    renderer:
+        ``"plotly"`` (default) or ``"echarts"``.
+    """
+    # Page-relative base: every API endpoint is a sibling of /view, so "."
+    # resolves correctly in the browser behind any reverse proxy — including
+    # ones that strip a path prefix, where request.base_url would lose the
+    # external prefix and scheme (e.g. nginx stripping a /dashboard prefix).
+    return _render_spec_html(spec, renderer, server_url=".")
+
+
+@app.get("/h/{n}", response_class=HTMLResponse)
+async def history_view(n: int, renderer: str = "plotly") -> HTMLResponse:
+    """Render history entry ``n`` at a short, stable page URL.
+
+    A share URL runs to several kilobytes. An agent must never hold one in
+    its own context, because browser tools echo a tab's page URL back in
+    every snapshot. ``flexviz history`` already numbers share URLs on disk;
+    opening ``/h/N`` instead of the URL itself keeps that number, not the
+    URL, in the agent's context and in every later snapshot. The server
+    re-reads the agent-owned history file for this request and stores
+    nothing.
+
+    Parameters
+    ----------
+    n:
+        1-based entry number, as recorded by ``flexviz history add``.
+    renderer:
+        ``"plotly"`` (default) or ``"echarts"``.
+    """
+    from flexviz import history
+    from flexviz.spec import encoded_spec_from_url
+
+    try:
+        record = history.entry(n)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no history entry {n}")
+
+    encoded = encoded_spec_from_url(record["url"])
+    # "/h/N" sits one path segment deeper than "/view", so the page-relative
+    # base used there (".") would resolve API calls under "/h/" instead of
+    # the server root. One more ".." undoes that, keeping the same
+    # reverse-proxy-safe, page-relative design as /view.
+    return _render_spec_html(encoded, renderer, server_url="..")
 
 
 @app.post(
