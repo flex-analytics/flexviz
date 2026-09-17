@@ -67,9 +67,12 @@ directory.
 - Serve on loopback. Another interface exposes unauthenticated endpoints, so
   only do it if the human explicitly accepts that.
 
-`flexviz serve` scans the file as stored and cannot cast a column, so a
-timestamp held as `String` gives a string x axis with no warning. If a dtype
-needs a cast, register the source yourself and build step 3 on that LazyFrame:
+`flexviz serve` scans the file as stored: it cannot cast a column, and it has
+no column the file does not have. A timestamp held as `String` gives a string
+x axis with no warning, and a figure on a derived column (hour of day, weekday,
+a ratio) opens fine and then fails every update with a 500 and
+`ColumnNotFoundError` in the serve log, so its panels stay blank. In both
+cases register the source yourself and build step 3 on that same LazyFrame:
 
 ```python
 import polars as pl, uvicorn
@@ -107,6 +110,9 @@ print(history.add(url, note="line + histogram, initial view", actor="agent"))
 Open `http://127.0.0.1:8077/h/N` for the number step 3 printed, and give the
 human the same address. Tell them: drag on one chart to cross-filter the
 others, zoom to re-aggregate at higher detail, double-click to reset.
+
+A page that opens is not a page that drew: check the serve log for a
+traceback after the first open of every new spec.
 
 ### 5. Read the state back
 
@@ -159,35 +165,56 @@ The address bar does NOT track interactions; only Share captures them.
 
 With separate browsers the human's `history add` already made this entry, so
 skip the step. In the shared tab the page cannot write the history file, so you
-record what you read. `record_state` takes the figures from the entry they
-opened and the state you just read:
+record what you read.
+
+Your browser tool returns the `flexvizState` readback as JSON text, not a Python
+object, and some tools encode it twice. Save it, then load it tolerantly:
 
 ```python
+import json
 from flexviz import history
+raw = json.load(open("state.json"))          # whatever your browser tool wrote
+compact = json.loads(raw) if isinstance(raw, str) else raw
 print(history.record_state(3, compact["state"], compact["client_state"],
                            note="human brushed 09:00-11:00 on sensor 12"))
 ```
 
-It rewrites only the `spec=` value of the recorded URL, so the host and port
-come from the entry and the URL never reaches your context. Do it before you
-change anything: this entry is what the report cites later.
+`record_state` appends a NEW numbered entry: it reuses entry 3's dashboard, swaps
+in the state you read, and returns the new number (host and port come from
+entry 3, so no URL reaches your context). Do it before you change anything: the
+new entry is what the report cites later.
 
 ### 7. Change the dashboard
 
 A state change (viewport, selections, hover mode, axis locks) goes through the
-write half, in the tab you control. Smallest payloads, figure `F` (a datetime axis
-stores the date string Plotly reports, e.g. `"2024-01-01 00:00:00"`, not ISO-8601):
+write half, in the tab you control. Smallest payloads. `F` below is a figure UID,
+the one you read as a viewport key in step 5 (`"<uid>/x"`), never the panel's DOM
+id or its index. A datetime axis stores the date string Plotly reports, e.g.
+`"2024-01-01 00:00:00"`, not ISO-8601:
 
 ```js
 await window.flexvizApply({state: {viewport: {"F/x": {min: a, max: b}}}})
 await window.flexvizApply({state: {selections: []}})   // clear all selections
 ```
 
+To author a cross-filter, `source_figure_uid` must be a figure that brushes the
+predicate's column: filter `value` from the figure whose axis is `value`, not
+from a time-series line. A mismatch is coerced silently to that figure's own
+axis, not rejected:
+
+```js
+await window.flexvizApply({state: {selections: [
+  {source_figure_uid: "<uid of the value figure>",
+   predicates: [{clauses: [{column: "value", range: [2.5, 6.0]}]}]}
+]}})
+```
+
 Top-level keys replace. `state` and `client_state` merge one level deep, so a
 partial `state` keeps its sibling keys (`viewport`, `group_domains`,
 `cross_filter_mode`). It re-renders and resolves with the compact state. With
 separate browsers the human does not see it, so record the state with
-`record_state` and give them the new `/h/N` instead.
+`record_state(..., actor="agent")` and give them the new `/h/N` instead;
+the default actor is `"human"`, because step 6 is its first use.
 
 A structure change (add or remove a figure, change traces, change layout) needs
 a new spec, because panels are built server-side. Rebuild in Python as in step
