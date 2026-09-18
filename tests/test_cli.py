@@ -410,6 +410,20 @@ def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
         main(["history", "list"])
 
 
+def test_history_rejects_a_line_that_is_not_an_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+
+    path.write_text("[]\n")
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
+
+    path.write_text('{"n": 1, "note": "no url"}\n')
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
+
+
 def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):

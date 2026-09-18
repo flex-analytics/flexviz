@@ -29,8 +29,8 @@ def entries() -> list[dict]:
     """Return every recorded entry, oldest first.
 
     A missing file is not an error: it means nothing has been recorded yet.
-    Raises ``ValueError`` on a line that is not JSON: the CLI turns that into
-    a message, the server into a 400.
+    Raises ``ValueError`` on a line that is not JSON, or that is JSON of the
+    wrong shape: the CLI turns that into a message, the server into a 400.
     """
     if not PATH.exists():
         return []
@@ -39,11 +39,14 @@ def entries() -> list[dict]:
         line = line.strip()
         if line:
             try:
-                out.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError as exc:
                 # A half-written or hand-edited line cannot be skipped: every
                 # later number comes from the entry count, so it would shift.
                 raise ValueError(f"{PATH}: line {i} is not valid JSON") from exc
+            if not isinstance(record, dict) or "n" not in record or "url" not in record:
+                raise ValueError(f"{PATH}: line {i} is not a history entry")
+            out.append(record)
     return out
 
 
