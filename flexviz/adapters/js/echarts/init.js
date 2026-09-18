@@ -387,7 +387,9 @@ window.fvOnDeselect = async function() {
     updateModeIndicator(figUid);
   }
 
-  await restoreDashboardFromSpec();
+  if (!(await restoreDashboardFromSpec())) {
+    console.error('flexviz: initial load failed, panels are empty');
+  }
 
   for (const figUid of FIG_UIDS) {
     updateModeIndicator(figUid);

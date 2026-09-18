@@ -394,7 +394,8 @@ class TestPlotlyHtml:
     def test_plotly_requests_init_before_any_plot(self, html):
         # No stub render blocks the init request; Plotly.react plots the div.
         body = _js_function_body(html, "(async function _fvInitPlotly()")
-        assert body.lstrip("{").strip().startswith("await restoreDashboardFromSpec();")
+        start = body.lstrip("{").strip()
+        assert start.startswith("if (!(await restoreDashboardFromSpec()))")
         assert "bindFigure(figUid);" in html
 
     # Linked hover infrastructure

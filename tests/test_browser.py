@@ -3878,6 +3878,23 @@ class TestAgentReadback:
                 .then(() => null, err => err.message)""")
         assert message == "flexviz: dashboard update failed"
 
+    def test_failed_first_load_logs_an_error(self, page: Page, server_port: int):
+        """The first page carries empty stubs only, so a failed init must say so."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        errors: list[str] = []
+        page.on(
+            "console",
+            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+        )
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        page.goto(url)
+        page.wait_for_selector(".js-plotly-plot", timeout=15_000)
+        page.wait_for_timeout(2_000)
+
+        assert [e for e in errors if "initial load failed" in e] == [
+            "flexviz: initial load failed, panels are empty"
+        ], errors
+
     def test_import_failure_labels_the_button(self, page: Page, server_port: int):
         url = _dashboard_url_selection_duplicate_repro(server_port)
         page.goto(url)
