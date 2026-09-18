@@ -5,6 +5,9 @@ neither can hold the mapping from a short number to a share URL. This module
 keeps that mapping in the working directory instead. Once a URL is recorded
 here, an agent can say ``fv:3`` in a prompt or a report instead of repeating
 a several-kilobyte URL every time.
+
+The file assumes one writer at a time. Concurrent ``add`` calls on one file
+can give two entries the same number, or skip a number (#64).
 """
 
 from __future__ import annotations
