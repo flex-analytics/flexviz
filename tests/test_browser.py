@@ -838,9 +838,9 @@ class TestPlotlyBrowser:
         _wait_for_init(page, "plotly")
 
         renders = page.evaluate("() => window.__renders")
-        assert (
-            len(renders) == 2
-        ), f"expected one data render per figure, got {len(renders)}: {renders}"
+        assert len(renders) == 2, (
+            f"expected one data render per figure, got {len(renders)}: {renders}"
+        )
 
     def test_open_draws_once_per_figure_after_the_request(
         self, page: Page, server_port: int
@@ -1003,9 +1003,9 @@ class TestPlotlyBrowser:
         # Click Reset — should trigger another /dashboard/update.
         page.click("#fv-btn-reset")
         page.wait_for_timeout(1_000)
-        assert (
-            len(update_requests) > initial_count
-        ), "Clicking Reset must fire at least one /dashboard/update request"
+        assert len(update_requests) > initial_count, (
+            "Clicking Reset must fire at least one /dashboard/update request"
+        )
 
     def test_deselect_button_fires_dashboard_update(self, page: Page, server_port: int):
         url = _dashboard_url(server_port, "plotly")
@@ -1024,9 +1024,9 @@ class TestPlotlyBrowser:
 
         page.click("#fv-btn-deselect")
         page.wait_for_timeout(1_000)
-        assert (
-            len(update_requests) > initial_count
-        ), "Clicking Deselect must fire at least one /dashboard/update request"
+        assert len(update_requests) > initial_count, (
+            "Clicking Deselect must fire at least one /dashboard/update request"
+        )
 
     def test_cached_source_reset_issues_no_dashboard_update(
         self, page: Page, server_port: int
@@ -1132,9 +1132,9 @@ class TestPlotlyBrowser:
         # Figure 0's viewport is cleared (back to full autorange).
         fig0 = page.evaluate("DASHBOARD_SPEC.figures[0].uid")
         viewport = page.evaluate("DASHBOARD_SPEC.state.viewport") or {}
-        assert not any(
-            k.startswith(fig0 + "/") for k in viewport
-        ), "Per-figure reset must clear the figure's viewport"
+        assert not any(k.startswith(fig0 + "/") for k in viewport), (
+            "Per-figure reset must clear the figure's viewport"
+        )
 
     def test_panel_reset_clean_figure_is_noop(self, page: Page, server_port: int):
         """Case 3c: a per-figure reset of a figure that is not zoomed, sources no
@@ -1196,15 +1196,15 @@ class TestPlotlyBrowser:
         # Reset the unzoomed target figure 0 — no-op.
         page.evaluate("() => window.fvOnResetPanel(DASHBOARD_SPEC.figures[0].uid)")
         page.wait_for_timeout(1_000)
-        assert (
-            len(update_requests) == before
-        ), "Reset of an unzoomed cross-filter target must be a no-op"
+        assert len(update_requests) == before, (
+            "Reset of an unzoomed cross-filter target must be a no-op"
+        )
         # The incoming selection (sourced by figure 1) survives.
         fig1 = page.evaluate("DASHBOARD_SPEC.figures[1].uid")
         selections = page.evaluate("DASHBOARD_SPEC.state.selections") or []
-        assert any(
-            s.get("source_figure_uid") == fig1 for s in selections
-        ), "A no-op target reset must preserve the incoming cross-filter"
+        assert any(s.get("source_figure_uid") == fig1 for s in selections), (
+            "A no-op target reset must preserve the incoming cross-filter"
+        )
 
     def test_cached_source_locked_figure_reset_served_from_cache(
         self, page: Page, server_port: int
@@ -1249,9 +1249,9 @@ class TestPlotlyBrowser:
             "() => DASHBOARD_SPEC.client_state.axis_lock_ranges["
             "DASHBOARD_SPEC.figures[0].uid + '/x']"
         )
-        assert (
-            lock_after == locked_x
-        ), "The x lock range must survive a cache-served reset"
+        assert lock_after == locked_x, (
+            "The x lock range must survive a cache-served reset"
+        )
         # Figure 0's viewport (the y zoom) is cleared.
         viewport = page.evaluate("DASHBOARD_SPEC.state.viewport") or {}
         assert not any(k.startswith(figA + "/") for k in viewport)
@@ -1277,9 +1277,9 @@ class TestPlotlyBrowser:
             " {'yaxis.range[0]': 10, 'yaxis.range[1]': 100})"
         )
         page.wait_for_timeout(800)
-        assert (
-            len(update_requests) == before
-        ), "y-only zoom on an x-bound line must not issue a /dashboard/update"
+        assert len(update_requests) == before, (
+            "y-only zoom on an x-bound line must not issue a /dashboard/update"
+        )
         # Viewport persisted anyway: a "/y" key was recorded in client state.
         has_y_viewport = page.evaluate(
             "() => Object.keys(DASHBOARD_SPEC.state.viewport || {})"
@@ -1306,9 +1306,9 @@ class TestPlotlyBrowser:
             " {'xaxis.range[0]': 50, 'xaxis.range[1]': 150})"
         )
         page.wait_for_timeout(800)
-        assert (
-            len(update_requests) > before
-        ), "x zoom on a line must issue a viewport update"
+        assert len(update_requests) > before, (
+            "x zoom on a line must issue a viewport update"
+        )
 
     def test_line_y_autorange_does_not_post(self, page: Page, server_port: int):
         """Double-click autorange on the non-binding y-axis must not round-trip."""
@@ -1329,9 +1329,9 @@ class TestPlotlyBrowser:
             " {'yaxis.autorange': true})"
         )
         page.wait_for_timeout(800)
-        assert (
-            len(update_requests) == before
-        ), "autoranging the non-binding y-axis of a line must not round-trip"
+        assert len(update_requests) == before, (
+            "autoranging the non-binding y-axis of a line must not round-trip"
+        )
 
     def test_filter_summary_strip_shows_global_chip_and_source_panel_echo(
         self, page: Page, server_port: int
@@ -2184,9 +2184,9 @@ class TestEChartsBrowser:
 
         page.click("#fv-btn-reset")
         page.wait_for_timeout(1_000)
-        assert (
-            len(update_requests) > initial_count
-        ), "Clicking Reset must fire at least one /dashboard/update request"
+        assert len(update_requests) > initial_count, (
+            "Clicking Reset must fire at least one /dashboard/update request"
+        )
 
     def test_share_url_roundtrip(self, page: Page, server_port: int):
         """Share button must produce a URL that loads the same dashboard."""
@@ -2533,9 +2533,9 @@ class TestCrossFilterBrowser:
         ]
         assert len(deselect_events) >= 1, "Deselect button must fire a deselect event"
         last = deselect_events[-1]
-        assert (
-            last["event"].get("selections", []) == []
-        ), "Deselect must clear selections"
+        assert last["event"].get("selections", []) == [], (
+            "Deselect must clear selections"
+        )
 
     def test_panel_reset_clears_sourced_selection(
         self, page: Page, server_port: int, renderer: str
@@ -2582,17 +2582,17 @@ class TestCrossFilterBrowser:
             "Panel reset must fire a deselect/selection event when it sourced a filter, "
             f"got event types: {event_types}"
         )
-        assert (
-            "viewport" not in event_types
-        ), "Panel reset must not send a viewport event when it also clears a selection"
+        assert "viewport" not in event_types, (
+            "Panel reset must not send a viewport event when it also clears a selection"
+        )
 
         # The JS selection state must have dropped the figure-0 selection.
         fig0_uid = page.evaluate("DASHBOARD_SPEC.figures[0].uid")
         selections = page.evaluate("DASHBOARD_SPEC.state.selections") or []
         sourced = [s for s in selections if s.get("source_figure_uid") == fig0_uid]
-        assert (
-            sourced == []
-        ), "Panel reset must remove the selection sourced from that figure"
+        assert sourced == [], (
+            "Panel reset must remove the selection sourced from that figure"
+        )
 
     def test_panel_reset_of_target_figure_keeps_incoming_filter(
         self, page: Page, server_port: int, renderer: str
@@ -2646,17 +2646,17 @@ class TestCrossFilterBrowser:
             "Resetting a target-only figure must emit a viewport event, "
             f"got: {event_types}"
         )
-        assert (
-            "deselect" not in event_types
-        ), "Resetting a target-only figure must not clear the incoming filter"
+        assert "deselect" not in event_types, (
+            "Resetting a target-only figure must not clear the incoming filter"
+        )
 
         # The incoming selection (sourced by figure 0) is preserved...
         fig0_uid = page.evaluate("DASHBOARD_SPEC.figures[0].uid")
         fig1_uid = page.evaluate("DASHBOARD_SPEC.figures[1].uid")
         selections = page.evaluate("DASHBOARD_SPEC.state.selections") or []
-        assert any(
-            s.get("source_figure_uid") == fig0_uid for s in selections
-        ), "Incoming cross-filter from the source figure must survive a target reset"
+        assert any(s.get("source_figure_uid") == fig0_uid for s in selections), (
+            "Incoming cross-filter from the source figure must survive a target reset"
+        )
         # ...and the reset was scoped to figure 1.
         viewport_events = [
             b for b in post if b.get("event", {}).get("type") == "viewport"
@@ -2859,20 +2859,20 @@ class TestOverlayBrowser:
             for t in result["scales"]
             if _trace_layer(t.get("uid")) == "fg" and t.get("showscale")
         ]
-        assert (
-            bg_scales == []
-        ), "Background heatmap must not show a colorbar in overlay mode"
+        assert bg_scales == [], (
+            "Background heatmap must not show a colorbar in overlay mode"
+        )
         assert len(fg_scales) == 1, "Foreground heatmap must keep the colorbar"
-        assert (
-            result["colorbarCount"] == 1
-        ), f"Expected one Plotly colorbar, found {result['colorbarCount']}"
-        assert (
-            result["bgCells"] > 0
-        ), "Background heatmap must still render cached full data"
+        assert result["colorbarCount"] == 1, (
+            f"Expected one Plotly colorbar, found {result['colorbarCount']}"
+        )
+        assert result["bgCells"] > 0, (
+            "Background heatmap must still render cached full data"
+        )
         assert result["fgZmin"] is not None and result["fgZmax"] is not None
-        assert (
-            result["fgZmax"] >= result["fgZmin"]
-        ), "Foreground colorbar must use filtered z range"
+        assert result["fgZmax"] >= result["fgZmin"], (
+            "Foreground colorbar must use filtered z range"
+        )
 
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int, renderer: str
@@ -2991,14 +2991,14 @@ class TestOverlayBrowser:
         )
 
         fg_traces = _layer_traces(rendered, "fg")
-        assert (
-            fg_traces == []
-        ), f"No fg-layer traces must remain after reset, but found: {fg_traces}"
+        assert fg_traces == [], (
+            f"No fg-layer traces must remain after reset, but found: {fg_traces}"
+        )
         bg_traces = _layer_traces(rendered, "bg")
         for t in bg_traces:
-            assert (
-                abs(t["opacity"] - 1.0) < 1e-9
-            ), f"bg-layer trace {t['id']} must be at full opacity after reset, got {t['opacity']}"
+            assert abs(t["opacity"] - 1.0) < 1e-9, (
+                f"bg-layer trace {t['id']} must be at full opacity after reset, got {t['opacity']}"
+            )
 
     def test_overlay_reset_then_new_selection_shows_correct_overlay(
         self, page: Page, server_port: int, renderer: str
@@ -3060,18 +3060,18 @@ class TestOverlayBrowser:
 
         bg = next((t for t in rendered if _trace_layer(t.get("id")) == "bg"), None)
         fg = next((t for t in rendered if _trace_layer(t.get("id")) == "fg"), None)
-        assert (
-            bg is not None
-        ), f"Expected a bg-layer trace after reset+new selection, got: {rendered}"
-        assert (
-            fg is not None
-        ), f"Expected an fg-layer trace after reset+new selection, got: {rendered}"
-        assert (
-            abs(bg["opacity"] - 0.16) < 1e-9
-        ), f"bg-layer trace must be at 0.16 opacity, got {bg['opacity']}"
-        assert (
-            abs(fg["opacity"] - 1.0) < 1e-9
-        ), f"fg-layer trace must be at 1.0 opacity, got {fg['opacity']}"
+        assert bg is not None, (
+            f"Expected a bg-layer trace after reset+new selection, got: {rendered}"
+        )
+        assert fg is not None, (
+            f"Expected an fg-layer trace after reset+new selection, got: {rendered}"
+        )
+        assert abs(bg["opacity"] - 0.16) < 1e-9, (
+            f"bg-layer trace must be at 0.16 opacity, got {bg['opacity']}"
+        )
+        assert abs(fg["opacity"] - 1.0) < 1e-9, (
+            f"fg-layer trace must be at 1.0 opacity, got {fg['opacity']}"
+        )
 
 
 class TestOverlayBrowserPlotlySafeLayerIds:
@@ -3150,9 +3150,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             const fig = document.querySelectorAll('.js-plotly-plot')[1];
             return (fig && fig.layout && fig.layout.barmode) || null;
         }""")
-        assert (
-            barmode == "group"
-        ), f"Expected barmode='group' for multi-histogram figure, got {barmode!r}"
+        assert barmode == "group", (
+            f"Expected barmode='group' for multi-histogram figure, got {barmode!r}"
+        )
 
     def test_hist_target_reset_and_deselect_clear_fg_without_selector_errors(
         self, page: Page, server_port: int
@@ -3350,9 +3350,9 @@ class TestShareUrlState:
         restored_vp = page.evaluate("DASHBOARD_SPEC.state.viewport")
         assert restored_vp, "Viewport state must be restored from shared URL"
         vp_keys = list(restored_vp.keys())
-        assert any(
-            "/x" in k for k in vp_keys
-        ), f"Expected a viewport key like 'figUid/x', got {vp_keys}"
+        assert any("/x" in k for k in vp_keys), (
+            f"Expected a viewport key like 'figUid/x', got {vp_keys}"
+        )
 
     def test_share_preserves_cross_filter(
         self, page: Page, server_port: int, renderer: str
@@ -3591,9 +3591,9 @@ class TestShareUrlState:
             {"renderer": renderer},
         )
 
-        assert (
-            has_box
-        ), "Shared URL must restore a visible selection box on the source figure"
+        assert has_box, (
+            "Shared URL must restore a visible selection box on the source figure"
+        )
 
     def test_share_preserves_zoomed_aggregation_and_cross_filter(
         self, page: Page, server_port: int, renderer: str
@@ -4120,15 +4120,15 @@ class TestLinkedHoverBrowser:
 
         btn = page.query_selector("#fv-hover-btn")
         assert btn is not None, "Hover dropdown button must be present"
-        assert "Off" in (
-            btn.text_content() or ""
-        ), "Hover button must default to 'Hover: Off'"
+        assert "Off" in (btn.text_content() or ""), (
+            "Hover button must default to 'Hover: Off'"
+        )
         mode = page.evaluate(
             "DASHBOARD_SPEC.client_state && DASHBOARD_SPEC.client_state.hover_mode"
         )
-        assert (
-            mode == "off"
-        ), f"client_state.hover_mode must default to 'off', got {mode!r}"
+        assert mode == "off", (
+            f"client_state.hover_mode must default to 'off', got {mode!r}"
+        )
 
     def test_hover_toggle_turns_on(self, page: Page, server_port: int, renderer: str):
         url = _dashboard_url_hover(server_port, renderer)
@@ -4141,12 +4141,12 @@ class TestLinkedHoverBrowser:
 
         mode = page.evaluate("DASHBOARD_SPEC.client_state.hover_mode")
         btn = page.query_selector("#fv-hover-btn")
-        assert (
-            mode == "on"
-        ), f"client_state.hover_mode must be 'on' after toggle, got {mode!r}"
-        assert "On" in (
-            btn.text_content() or ""
-        ), "Button must show 'Hover: On' after toggling on"
+        assert mode == "on", (
+            f"client_state.hover_mode must be 'on' after toggle, got {mode!r}"
+        )
+        assert "On" in (btn.text_content() or ""), (
+            "Button must show 'Hover: On' after toggling on"
+        )
         assert btn.get_attribute("aria-pressed") == "true"
 
     def test_hover_toggle_turns_off(self, page: Page, server_port: int, renderer: str):
@@ -4208,9 +4208,9 @@ class TestLinkedHoverBrowser:
                 .length;
         }""")
 
-        assert (
-            guides_after >= 1
-        ), "Axis mode hover on fig0 must add at least one guide to fig1"
+        assert guides_after >= 1, (
+            "Axis mode hover on fig0 must add at least one guide to fig1"
+        )
 
     def test_plotly_unhover_clears_crosshairs(
         self, page: Page, server_port: int, renderer: str
@@ -4262,9 +4262,9 @@ class TestLinkedHoverBrowser:
             return { count: linked.length, axes: linked.map(g => g.axis).sort() };
         }""")
 
-        assert (
-            linked_shape["count"] == 2
-        ), "Axis hover on shared x+y axes must render a crosshair (two guides)"
+        assert linked_shape["count"] == 2, (
+            "Axis hover on shared x+y axes must render a crosshair (two guides)"
+        )
         assert linked_shape["axes"] == ["x", "y"], (
             "Crosshair must have one x-guide and one y-guide, "
             f"got {linked_shape['axes']}"
@@ -4377,9 +4377,9 @@ class TestLinkedHoverBrowser:
             result["fig1Idx"],
         )
 
-        assert (
-            after["calls"] >= 1
-        ), "Hover should trigger without requiring exact y-point hit"
+        assert after["calls"] >= 1, (
+            "Hover should trigger without requiring exact y-point hit"
+        )
         assert after["guides"] >= 1, "Linked figure should receive crosshair from hover"
 
     def test_hover_mode_persists_through_share(
@@ -4414,9 +4414,9 @@ class TestLinkedHoverBrowser:
             "DASHBOARD_SPEC.client_state && DASHBOARD_SPEC.client_state.hover_mode"
         )
         btn = page.query_selector("#fv-hover-btn")
-        assert (
-            mode == "on"
-        ), f"client_state.hover_mode must persist as 'on' through share, got {mode!r}"
+        assert mode == "on", (
+            f"client_state.hover_mode must persist as 'on' through share, got {mode!r}"
+        )
         assert "On" in (btn.text_content() or ""), "Button must show 'On' after restore"
 
     def test_hover_dropdown_hidden_for_single_figure_dashboard(
@@ -4445,9 +4445,9 @@ class TestLinkedHoverBrowser:
         wrapper = page.query_selector("#fv-hover-dropdown")
         if wrapper:
             style = wrapper.get_attribute("style") or ""
-            assert (
-                "display: none" in style or "display:none" in style
-            ), "Hover dropdown must be hidden for single-figure dashboard"
+            assert "display: none" in style or "display:none" in style, (
+                "Hover dropdown must be hidden for single-figure dashboard"
+            )
 
     def test_hover_toggle_aria_pressed_state(
         self, page: Page, server_port: int, renderer: str
@@ -4461,19 +4461,19 @@ class TestLinkedHoverBrowser:
         if btn is None:
             pytest.skip("Hover toggle not visible for this dashboard")
 
-        assert (
-            btn.get_attribute("aria-pressed") == "false"
-        ), "aria-pressed must be false before turning hover on"
+        assert btn.get_attribute("aria-pressed") == "false", (
+            "aria-pressed must be false before turning hover on"
+        )
         btn.click()
         page.wait_for_timeout(100)
-        assert (
-            btn.get_attribute("aria-pressed") == "true"
-        ), "aria-pressed must be true after turning hover on"
+        assert btn.get_attribute("aria-pressed") == "true", (
+            "aria-pressed must be true after turning hover on"
+        )
         btn.click()
         page.wait_for_timeout(100)
-        assert (
-            btn.get_attribute("aria-pressed") == "false"
-        ), "aria-pressed must be false after turning hover off"
+        assert btn.get_attribute("aria-pressed") == "false", (
+            "aria-pressed must be false after turning hover off"
+        )
 
 
 class TestCellHoverBrowser:
@@ -4516,9 +4516,9 @@ class TestCellHoverBrowser:
         assert btn is not None, "Hover toggle must be present"
         wrapper = page.query_selector("#fv-hover-dropdown")
         style = (wrapper.get_attribute("style") or "") if wrapper else ""
-        assert (
-            "display: none" not in style and "display:none" not in style
-        ), "Hover toggle must be visible when a histogram shares a column with a line"
+        assert "display: none" not in style and "display:none" not in style, (
+            "Hover toggle must be visible when a histogram shares a column with a line"
+        )
 
     @pytest.mark.browser
     @pytest.mark.parametrize("renderer", ["plotly"])
@@ -4578,9 +4578,9 @@ class TestCellHoverBrowser:
             return fig0Visuals.map(v => v.type);
         }""")
 
-        assert (
-            "x_band" in guides
-        ), f"Cell hover on histogram must emit x_band to line figure, got: {guides}"
+        assert "x_band" in guides, (
+            f"Cell hover on histogram must emit x_band to line figure, got: {guides}"
+        )
 
     @pytest.mark.browser
     @pytest.mark.parametrize("renderer", ["plotly"])
@@ -4726,9 +4726,9 @@ class TestCellHoverBrowser:
         wrapper = page.query_selector("#fv-hover-dropdown")
         if wrapper:
             style = wrapper.get_attribute("style") or ""
-            assert (
-                "display: none" in style or "display:none" in style
-            ), "Hover toggle must be hidden when only geo_histogram2d can source hover"
+            assert "display: none" in style or "display:none" in style, (
+                "Hover toggle must be hidden when only geo_histogram2d can source hover"
+            )
 
     @pytest.mark.browser
     @pytest.mark.parametrize("renderer", ["plotly"])
@@ -4789,12 +4789,12 @@ class TestCellHoverBrowser:
             return (visuals.get(targetFigUid) || []).map(v => v.type);
         }""")
 
-        assert (
-            "x_band" in emitted
-        ), f"Target x-mapped trace must receive x_band, got {emitted}"
-        assert (
-            "y_band" not in emitted
-        ), f"Target x-mapped trace must not receive y_band, got {emitted}"
+        assert "x_band" in emitted, (
+            f"Target x-mapped trace must receive x_band, got {emitted}"
+        )
+        assert "y_band" not in emitted, (
+            f"Target x-mapped trace must not receive y_band, got {emitted}"
+        )
 
     @pytest.mark.browser
     @pytest.mark.parametrize("renderer", ["plotly"])
@@ -5014,7 +5014,7 @@ class TestCellHoverBrowser:
         }""")
 
         assert "rect" not in types, (
-            "A 1D histogram source must not highlight a single 2D cell, got " f"{types}"
+            f"A 1D histogram source must not highlight a single 2D cell, got {types}"
         )
         assert "y_band" in types, (
             "A 1D histogram source must highlight the bin strip (y_band) on the "
@@ -5092,9 +5092,9 @@ class TestBinEdgeTripleBrowser:
             probe_val,
         )
 
-        assert (
-            band is not None
-        ), "axis-mode hover must resolve the probe value to a bin band"
+        assert band is not None, (
+            "axis-mode hover must resolve the probe value to a bin band"
+        )
         assert band["x0"] == pytest.approx(lo + target_bin * step)
         assert band["x1"] == pytest.approx(lo + (target_bin + 1) * step)
 
@@ -5182,9 +5182,9 @@ class TestBinEdgeTripleBrowser:
             {"probeX": probe_x, "probeY": probe_y},
         )
 
-        assert (
-            rect is not None
-        ), "cell-mode hover must resolve the probe point to a target cell"
+        assert rect is not None, (
+            "cell-mode hover must resolve the probe point to a target cell"
+        )
         assert rect["x0"] == pytest.approx(xLo + target_col * xStep)
         assert rect["x1"] == pytest.approx(xLo + (target_col + 1) * xStep)
         assert rect["y0"] == pytest.approx(yLo + target_row * yStep)
@@ -5234,17 +5234,17 @@ class TestBinEdgeTripleBrowser:
             == result["locationCount"]
             == result["zCount"]
         ), "features/locations/z must all cover exactly the non-null cells"
-        assert (
-            result["featureCount"] == result["nbLat"] * result["nbLon"]
-        ), "the deterministic geo fixture fills every cell"
+        assert result["featureCount"] == result["nbLat"] * result["nbLon"], (
+            "the deterministic geo fixture fills every cell"
+        )
 
         lat_lo, lat_step = result["latLo"], result["latStep"]
         lon_lo, lon_step = result["lonLo"], result["lonStep"]
         for cell in result["cells"]:
             assert cell["ringLen"] == 5, "a rectangle ring must have 5 points (closed)"
-            assert (
-                cell["i"] is not None and cell["j"] is not None
-            ), f"feature id must match r{{i}}_c{{j}}, got {cell['id']!r}"
+            assert cell["i"] is not None and cell["j"] is not None, (
+                f"feature id must match r{{i}}_c{{j}}, got {cell['id']!r}"
+            )
             i, j = cell["i"], cell["j"]
             assert cell["bl"][0] == pytest.approx(lon_lo + j * lon_step)
             assert cell["bl"][1] == pytest.approx(lat_lo + i * lat_step)
@@ -5396,12 +5396,12 @@ class TestResetCleanupBrowser:
         # The server must have received a 'viewport' event (not 'reset').
         new_events = update_bodies[count_before_home:]
         event_types = [b.get("event", {}).get("type") for b in new_events]
-        assert (
-            "reset" not in event_types
-        ), f"Modebar home sent a 'reset' event — should send 'viewport'. Got: {event_types}"
-        assert (
-            "viewport" in event_types
-        ), f"Expected a 'viewport' event from modebar home. Got: {event_types}"
+        assert "reset" not in event_types, (
+            f"Modebar home sent a 'reset' event — should send 'viewport'. Got: {event_types}"
+        )
+        assert "viewport" in event_types, (
+            f"Expected a 'viewport' event from modebar home. Got: {event_types}"
+        )
 
     def test_panel_reset_clears_sourced_selection_and_scopes_viewport(
         self, page: Page, server_port: int
@@ -5455,24 +5455,24 @@ class TestResetCleanupBrowser:
             for s in (state_after["selections"] or [])
             if s.get("source_figure_uid") == state_after["figA"]
         ]
-        assert (
-            sourced == []
-        ), "Panel reset must clear the selection sourced from that figure"
+        assert sourced == [], (
+            "Panel reset must clear the selection sourced from that figure"
+        )
 
         # Fig A viewport cleared; fig B viewport untouched.
-        assert (
-            f"{state_after['figA']}/x" not in state_after["viewport"]
-        ), "Panel reset must clear viewport for target figure"
-        assert (
-            f"{state_after['figB']}/x" in state_after["viewport"]
-        ), "Panel reset must not clear viewport for other figures"
+        assert f"{state_after['figA']}/x" not in state_after["viewport"], (
+            "Panel reset must clear viewport for target figure"
+        )
+        assert f"{state_after['figB']}/x" in state_after["viewport"], (
+            "Panel reset must not clear viewport for other figures"
+        )
 
         # The event must be deselect (no remaining selections), not viewport.
         new_events = update_bodies[count_before:]
         event_types = {b.get("event", {}).get("type") for b in new_events}
-        assert (
-            "deselect" in event_types or "selection" in event_types
-        ), "Panel reset must send a deselect/selection event when it sourced a filter"
+        assert "deselect" in event_types or "selection" in event_types, (
+            "Panel reset must send a deselect/selection event when it sourced a filter"
+        )
 
     def test_axis_lock_toggle_captures_range_and_panel_reset_preserves_it(
         self, page: Page, server_port: int
@@ -5536,9 +5536,9 @@ class TestResetCleanupBrowser:
         # The reset of an unzoomed, non-sourcing, locked figure changes nothing:
         # no /dashboard/update is issued (the lock is view-only and already
         # holding).
-        assert (
-            len(update_bodies) == count_before
-        ), "Reset of a clean locked figure must be a no-op (no /dashboard/update)"
+        assert len(update_bodies) == count_before, (
+            "Reset of a clean locked figure must be a no-op (no /dashboard/update)"
+        )
 
     def test_axis_lock_before_zoom_uses_autorange_after_data_update(
         self, page: Page, server_port: int
@@ -6291,9 +6291,9 @@ class TestDraggableGridBrowser:
                 Array.from(document.querySelectorAll('.js-plotly-plot'))
                      .map(el => (el.data || []).filter(t => t.x && t.x.length > 0).length)
             """)
-            assert all(
-                c > 0 for c in trace_counts
-            ), f"Some Plotly charts have no rendered data: {trace_counts}"
+            assert all(c > 0 for c in trace_counts), (
+                f"Some Plotly charts have no rendered data: {trace_counts}"
+            )
         else:
             # Each ECharts instance should have at least one series with data.
             series_counts = page.evaluate("""() =>
@@ -6305,9 +6305,9 @@ class TestDraggableGridBrowser:
                        return series.filter(s => s.data && s.data.length > 0).length;
                      })
             """)
-            assert all(
-                c > 0 for c in series_counts
-            ), f"Some ECharts instances have no rendered data: {series_counts}"
+            assert all(c > 0 for c in series_counts), (
+                f"Some ECharts instances have no rendered data: {series_counts}"
+            )
 
     def test_drag_does_not_trigger_backend_request(
         self, page: Page, server_port: int, renderer: str
@@ -6329,9 +6329,9 @@ class TestDraggableGridBrowser:
 
         # Drag the first Gridstack item to a new position.
         item = page.query_selector(".grid-stack-item")
-        assert (
-            item is not None
-        ), ".grid-stack-item not found — is draggable=True active?"
+        assert item is not None, (
+            ".grid-stack-item not found — is draggable=True active?"
+        )
         box = item.bounding_box()
         assert box is not None
         # Drag the item's header area ~200px to the right.
@@ -6344,9 +6344,9 @@ class TestDraggableGridBrowser:
         page.wait_for_timeout(500)
 
         new_calls = len(backend_calls) - calls_before
-        assert (
-            new_calls == 0
-        ), f"Dragging a grid item fired {new_calls} backend request(s) — should be 0"
+        assert new_calls == 0, (
+            f"Dragging a grid item fired {new_calls} backend request(s) — should be 0"
+        )
 
     def test_drag_updates_spec_layout(
         self, page: Page, server_port: int, renderer: str
@@ -6361,12 +6361,12 @@ class TestDraggableGridBrowser:
         grid_items = page.evaluate(
             "() => JSON.parse(JSON.stringify(DASHBOARD_SPEC.layout.grid_items || null))"
         )
-        assert (
-            grid_items is not None
-        ), "DASHBOARD_SPEC.layout.grid_items was not initialised"
-        assert (
-            len(grid_items) == 2
-        ), f"Expected 2 grid_items (one per figure), got {len(grid_items)}: {grid_items}"
+        assert grid_items is not None, (
+            "DASHBOARD_SPEC.layout.grid_items was not initialised"
+        )
+        assert len(grid_items) == 2, (
+            f"Expected 2 grid_items (one per figure), got {len(grid_items)}: {grid_items}"
+        )
         for gi in grid_items:
             assert gi.get("fig_uid"), f"grid_item missing fig_uid: {gi}"
             assert gi.get("w", 0) > 0, f"grid_item has zero width: {gi}"
@@ -6387,9 +6387,9 @@ class TestDraggableGridBrowser:
         updated_items = page.evaluate(
             "() => JSON.parse(JSON.stringify(DASHBOARD_SPEC.layout.grid_items || null))"
         )
-        assert (
-            updated_items is not None and len(updated_items) == 2
-        ), f"grid_items is wrong after drag: {updated_items}"
+        assert updated_items is not None and len(updated_items) == 2, (
+            f"grid_items is wrong after drag: {updated_items}"
+        )
         # The dragged item's position must have changed (proving the drag synced
         # back into DASHBOARD_SPEC.layout.grid_items).
         new_item = next(

@@ -117,24 +117,24 @@ class TestPlotlyHtml:
     # After postDashboardUpdate resolves, fvOnReset must set autorange=true
     # on all layoutsByFig entries so Plotly.react resets the visible zoom.
     def test_reset_sets_autorange_true(self, html):
-        assert (
-            "autorange" in html
-        ), "fvOnReset must set autorange:true on layoutsByFig after postDashboardUpdate"
+        assert "autorange" in html, (
+            "fvOnReset must set autorange:true on layoutsByFig after postDashboardUpdate"
+        )
 
     def test_reset_deletes_axis_range(self, html):
         # The reset handler must explicitly clear the saved range property
         # so Plotly does not re-render at the old zoom level.
-        assert (
-            "_programmaticOp" in html
-        ), "fvOnReset must use _programmaticOp guard (same as deselect guard)"
+        assert "_programmaticOp" in html, (
+            "fvOnReset must use _programmaticOp guard (same as deselect guard)"
+        )
 
     def test_reset_calls_fv_reset_runtime_cache(self, html):
         # fvOnReset must call fvResetRuntimeCache to clear stale fg layer data
         # and bgYExtentByFig before posting the reset event so that overlay mode
         # renders a clean state after the server response arrives.
-        assert (
-            "window.fvResetRuntimeCache?.()" in html
-        ), "fvOnReset must call window.fvResetRuntimeCache?.() to clear overlay cache"
+        assert "window.fvResetRuntimeCache?.()" in html, (
+            "fvOnReset must call window.fvResetRuntimeCache?.() to clear overlay cache"
+        )
 
     def test_shared_panel_wrapper_present(self, html):
         assert "<fv-panel" in html
@@ -172,12 +172,12 @@ class TestPlotlyHtml:
         assert "_fvFormatSummaryIsoDatetime" in html
 
     def test_agent_readback_accessor_present(self, html):
-        assert (
-            "window.flexvizState" in html
-        ), "shared runtime must expose the flexvizState() agent-readback accessor"
-        assert (
-            "window.flexvizApply" in html
-        ), "shared runtime must expose the flexvizApply() agent write accessor"
+        assert "window.flexvizState" in html, (
+            "shared runtime must expose the flexvizState() agent-readback accessor"
+        )
+        assert "window.flexvizApply" in html, (
+            "shared runtime must expose the flexvizApply() agent write accessor"
+        )
 
     def test_panel_bar_buttons_have_accessible_labels(self, html):
         for label in (
@@ -218,9 +218,9 @@ class TestPlotlyHtml:
     # plotly_deselect event fires programmatically after Plotly.react clears
     # selection boxes.  A guard flag prevents the double-fire.
     def test_deselect_has_programmatic_guard(self, html):
-        assert (
-            "_programmaticOp" in html
-        ), "handleDeselect must check _programmaticOp to prevent double backend calls"
+        assert "_programmaticOp" in html, (
+            "handleDeselect must check _programmaticOp to prevent double backend calls"
+        )
 
     def test_grouped_parent_not_bootstrapped_as_trace(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
@@ -733,12 +733,12 @@ class TestEChartsHtml:
         # After setting series data for a viewport update, the chart must
         # reset dataZoom to start:0 / end:100 so the downsampled data fills
         # the visible window.
-        assert (
-            "start: 0" in html or '"start": 0' in html or "start:0" in html
-        ), "applyDeltasToFig must reset dataZoom start to 0 after applying new data"
-        assert (
-            "end: 100" in html or '"end": 100' in html or "end:100" in html
-        ), "applyDeltasToFig must reset dataZoom end to 100 after applying new data"
+        assert "start: 0" in html or '"start": 0' in html or "start:0" in html, (
+            "applyDeltasToFig must reset dataZoom start to 0 after applying new data"
+        )
+        assert "end: 100" in html or '"end": 100' in html or "end:100" in html, (
+            "applyDeltasToFig must reset dataZoom end to 100 after applying new data"
+        )
 
     # Bug 8: Selection must use brushEnd event for complete coordinates.
     def test_brush_uses_brushend_event(self, html):
@@ -792,9 +792,9 @@ class TestEChartsHtml:
     # Bug 9c: Lasso select must be absent.
     def test_no_lasso_select(self, initial_option):
         option_json = json.dumps(initial_option).lower()
-        assert (
-            "lasso" not in option_json
-        ), "initial option must not include lasso brush type"
+        assert "lasso" not in option_json, (
+            "initial option must not include lasso brush type"
+        )
 
     # Scroll zoom fix: _applyingDeltas guard prevents datazoom feedback loop.
     def test_applying_deltas_guard_present(self, html):
@@ -804,9 +804,9 @@ class TestEChartsHtml:
         )
 
     def test_datazoom_handler_checks_guard(self, html):
-        assert (
-            "if (_applyingDeltas) return;" in html
-        ), "datazoom handler must bail out when _applyingDeltas is true"
+        assert "if (_applyingDeltas) return;" in html, (
+            "datazoom handler must bail out when _applyingDeltas is true"
+        )
 
     def test_runtime_restores_brush_areas_from_state(self, html):
         assert "syncBrushAreasForFigure" in html
@@ -901,9 +901,9 @@ class TestEChartsHtml:
     def test_reset_calls_fv_reset_runtime_cache(self, html):
         # fvOnReset must call fvResetRuntimeCache to clear stale fg layer data
         # and bgYExtentByFig before posting the reset event.
-        assert (
-            "window.fvResetRuntimeCache?.()" in html
-        ), "fvOnReset must call window.fvResetRuntimeCache?.() to clear overlay cache"
+        assert "window.fvResetRuntimeCache?.()" in html, (
+            "fvOnReset must call window.fvResetRuntimeCache?.() to clear overlay cache"
+        )
 
     def test_overlay_runtime_uses_muted_background_opacity(self, html):
         assert "const OVERLAY_BG_OPACITY = 0.16" in html

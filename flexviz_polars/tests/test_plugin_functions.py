@@ -1553,9 +1553,9 @@ class TestKernelThreadPool:
             f"POLARS_MAX_THREADS=2 gave {limited} threads, "
             f"unlimited gave {unlimited} — the kernel pool ignored the limit"
         )
-        assert (
-            limited < cores
-        ), f"{limited} threads under POLARS_MAX_THREADS=2 on a {cores}-core box"
+        assert limited < cores, (
+            f"{limited} threads under POLARS_MAX_THREADS=2 on a {cores}-core box"
+        )
 
 
 # ---------------------------------------------------------------------------

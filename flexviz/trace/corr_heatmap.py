@@ -156,7 +156,7 @@ class CorrHeatmap(FlexTrace):
             cols = [c for c, dt in schema.items() if dt.is_numeric()]
         if not cols or len(cols) < 2:
             raise ValueError(
-                "CorrHeatmap requires at least 2 numeric columns; " f"got {cols!r}"
+                f"CorrHeatmap requires at least 2 numeric columns; got {cols!r}"
             )
         expr = _corr_expr(cols, self.method, self.absolute, self.uid)
         return AggregationSpec(expr=expr, uid=self.uid)

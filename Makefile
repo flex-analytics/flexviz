@@ -5,7 +5,7 @@ PY_SOURCES := flexviz tests examples flexviz_polars benchmarks
 
 .PHONY: format
 format:
-	uv run black $(PY_SOURCES)
+	uv run ruff format $(PY_SOURCES)
 	uv run ruff check $(PY_SOURCES)
 
 .PHONY: test

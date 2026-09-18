@@ -63,7 +63,8 @@ def _measure_spec(agg: str, value_col: str | None = "val", p: int = 64) -> CubeS
         free=FreeAxisSpec(column="active", p=p, domain=(0.0, 100.0)),
         target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
         measure=MeasureSpec(
-            agg=agg, value_col=None if agg == "count" else value_col  # type: ignore[arg-type]
+            agg=agg,
+            value_col=None if agg == "count" else value_col,  # type: ignore[arg-type]
         ),
     )
 

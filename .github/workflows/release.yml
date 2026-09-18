@@ -45,7 +45,7 @@ jobs:
 
       - name: Lint
         run: |
-          uv run --no-sync black --check flexviz tests flexviz_polars
+          uv run --no-sync ruff format --check flexviz tests flexviz_polars
           uv run --no-sync ruff check flexviz tests flexviz_polars
 
       - name: Tests

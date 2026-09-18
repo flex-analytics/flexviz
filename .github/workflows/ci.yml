@@ -34,13 +34,13 @@ jobs:
           enable-cache: true
 
       # Skipping the plugin keeps this job off the Rust critical path: it needs
-      # black/ruff, not a compiled kernel.
+      # ruff, not a compiled kernel.
       - name: Install Python tooling
         run: uv sync --locked --no-install-package flexviz-polars
 
       # Keep in step with PY_SOURCES in the Makefile.
-      - name: black
-        run: uv run --no-sync black --check flexviz tests flexviz_polars benchmarks
+      - name: ruff format
+        run: uv run --no-sync ruff format --check flexviz tests flexviz_polars benchmarks
 
       - name: ruff
         run: uv run --no-sync ruff check flexviz tests flexviz_polars benchmarks

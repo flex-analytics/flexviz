@@ -1898,18 +1898,18 @@ class TestDatetimeCrossFiltering:
 
         # This request should succeed (not fail with float_parsing error)
         sel_resp = datetime_client.post("/dashboard/update", json=selection_payload)
-        assert (
-            sel_resp.status_code == 200
-        ), f"Expected 200, got {sel_resp.status_code}. Response: {sel_resp.text}"
+        assert sel_resp.status_code == 200, (
+            f"Expected 200, got {sel_resp.status_code}. Response: {sel_resp.text}"
+        )
 
         body = sel_resp.json()
 
         # Figure A should return no deltas (it's the source of the selection)
         assert len(body["figure_deltas"].get(fig_a_uid, [])) == 0
         fig_a_deltas = body["figure_deltas"].get(fig_a_uid, None)
-        assert (
-            fig_a_deltas is None or len(fig_a_deltas) == 0
-        ), f"Expected no deltas for Figure A, got {len(fig_a_deltas)}"
+        assert fig_a_deltas is None or len(fig_a_deltas) == 0, (
+            f"Expected no deltas for Figure A, got {len(fig_a_deltas)}"
+        )
 
         # Figure B should be cross-filtered and have fewer points than the full dataset
         fig_b_deltas = body["figure_deltas"].get(fig_b_uid, [])
@@ -1973,17 +1973,17 @@ class TestDatetimeCrossFiltering:
         }
 
         zoom_resp = datetime_client.post("/dashboard/update", json=zoom_payload)
-        assert (
-            zoom_resp.status_code == 200
-        ), f"Expected 200, got {zoom_resp.status_code}. Response: {zoom_resp.text}"
+        assert zoom_resp.status_code == 200, (
+            f"Expected 200, got {zoom_resp.status_code}. Response: {zoom_resp.text}"
+        )
 
         zoom_deltas = zoom_resp.json()["figure_deltas"].get(fig_uid, [])
         assert len(zoom_deltas) > 0, "Expected viewport update for target figure"
 
         x_vals = zoom_deltas[0]["updates"]["x"]
-        assert (
-            len(x_vals) < init_count
-        ), f"Expected zoomed data to have fewer points ({len(x_vals)} >= {init_count})"
+        assert len(x_vals) < init_count, (
+            f"Expected zoomed data to have fewer points ({len(x_vals)} >= {init_count})"
+        )
 
         start_normalized = start_time.replace(" ", "T")
         end_normalized = end_time.replace(" ", "T")
@@ -2424,15 +2424,15 @@ class TestCrossFilterEdgeCases:
         # counts.  ts=[1000,2000] selects 1001 rows where val==ts, so total count
         # must equal 1001 and bins outside that val range must have zero counts.
         assert len(bin_centers) == 20
-        assert (
-            sum(bin_counts) == 1001
-        ), f"Expected 1001 total counts, got {sum(bin_counts)}"
+        assert sum(bin_counts) == 1001, (
+            f"Expected 1001 total counts, got {sum(bin_counts)}"
+        )
         # Bins with centers well below or well above [1000,2000] must be empty.
         for center, count in zip(bin_centers, bin_counts):
             if center < 800 or center > 2400:
-                assert (
-                    count == 0
-                ), f"Expected zero count far outside selection at center {center}"
+                assert count == 0, (
+                    f"Expected zero count far outside selection at center {center}"
+                )
 
 
 # ===========================================================================
@@ -2635,9 +2635,9 @@ class TestEventSequences:
 
         orig_y = original_result[line_spec.figure.uid][0]["updates"]["y"]
         rest_y = restored_result[line_spec.figure.uid][0]["updates"]["y"]
-        assert (
-            orig_y == rest_y
-        ), "Restored spec must produce identical cross-filter output"
+        assert orig_y == rest_y, (
+            "Restored spec must produce identical cross-filter output"
+        )
 
 
 # ===========================================================================
