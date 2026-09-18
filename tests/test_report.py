@@ -109,6 +109,19 @@ def test_fv_line_inside_a_code_fence_stays_text(monkeypatch, tmp_path):
     assert "```markdown\nfv:1\n```" in out
 
 
+def test_tilde_and_indented_fences_also_hide_fv_lines(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    # Entry 99 does not exist, so an fv:N line read as prose would raise.
+    md = "~~~\nfv:99\n~~~\n\n   ```\n   fv:99\n   ```"
+    assert expand(md, as_html=True) == md
+
+
+def test_a_tilde_line_does_not_close_a_backtick_fence(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    md = "```\n~~~\nfv:99\n```"
+    assert expand(md, as_html=True) == md
+
+
 def test_quote_in_a_url_cannot_break_out_of_the_src_attribute(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     # Only the spec= value is read back; the rest of the URL reaches the src

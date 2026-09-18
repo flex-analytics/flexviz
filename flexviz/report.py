@@ -36,6 +36,8 @@ _MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.min.js
 _DOMPURIFY_URL = "https://cdn.jsdelivr.net/npm/dompurify@3.4.15/dist/purify.min.js"
 
 _FV_LINE_RE = re.compile(r"fv:(\d+)")
+# A fence opener: up to 3 spaces of indent, then 3 or more backticks or tildes.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _embed_url(line: str, entries: list[dict]) -> str | None:
@@ -87,11 +89,14 @@ def expand(md: str, *, as_html: bool) -> str:
     """
     entries = history.entries()
     out = []
-    in_fence = False
+    fence_char = ""
     for line in md.splitlines():
-        if line.startswith("```"):
-            in_fence = not in_fence
-        url = None if in_fence else _embed_url(line, entries)
+        fence = _FENCE_RE.match(line)
+        # A fence closes only on its own character, so a ``~~~`` line inside a
+        # backtick fence stays content.
+        if fence and fence_char in ("", fence.group(1)[0]):
+            fence_char = "" if fence_char else fence.group(1)[0]
+        url = None if fence_char else _embed_url(line, entries)
         if url is None:
             out.append(line)
         elif as_html:
