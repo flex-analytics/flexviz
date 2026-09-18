@@ -2847,9 +2847,10 @@ def _hist2d_target_df() -> pl.DataFrame:
     """A 2-D dataset with values landing exactly on the (lo, hi, n) bin edges
     of BOTH axes, plus a `free` column over [0, 1] and a numeric `z` column.
 
-    The on-edge points exercise the ``fixed_hist2d`` ``+1e-10`` span epsilon —
-    if the cube used the 1-D ``fixed_hist`` scale (no span eps) some of these
-    points would land in the previous bin and the z-matrices would diverge.
+    The on-edge points test top-bin handling. A value exactly at ``hi`` must
+    land in the top bin through the kernel's top clamp. The cube
+    ``_fixed_hist_bin_expr`` must assign the same bin, or the z-matrices
+    diverge.
     """
     x_lo, x_hi = 0.0, 80.0
     y_lo, y_hi = -30.0, 30.0
@@ -2992,23 +2993,22 @@ class TestHist2dTargetBinningParity:
         want = _hist2d_to_update_z(df, histfunc=histfunc, z_col=z_col, histnorm=None)
         assert got == want
 
-    def test_bin_variant_reproduces_span_eps(self):
-        # A 1-D fixed_hist scale (no span eps) would push the value exactly at
-        # the domain max into bin n (clamped to n-1), but the on-edge interior
-        # points reveal the off-by-one. Compare hist2d-variant binning vs the
-        # fixed_hist2d kernel directly on a single axis.
-        from flexviz.cube import _fixed_hist2d_bin_expr
+    def test_bin_variant_matches_kernel_on_edges(self):
+        # The cube hist2d bin expr must bin bit-equal to the fixed_hist2d
+        # kernel, including a value exactly at the domain max, which the top
+        # clamp folds into the top bin. Compare on a single axis.
+        from flexviz.cube import _fixed_hist_bin_expr
 
         lo, hi, n = 0.0, 80.0, 8
         step = (hi - lo) / n
         values = [lo + k * step for k in range(n + 1)]  # every edge incl. hi
         s = pl.Series("v", values, dtype=pl.Float64)
         cube_bins = (
-            pl.select(_fixed_hist2d_bin_expr(pl.lit(s), lo, hi, n, "b"))
+            pl.select(_fixed_hist_bin_expr(pl.lit(s), lo, hi, n, "b"))
             .to_series()
             .to_list()
         )
-        # The 2-D kernel's per-axis bin: floor((v-lo)*nb/(hi-lo+1e-10)+1e-9)
+        # The 2-D kernel's per-axis bin: floor((v-lo)*nb/(hi-lo)+1e-9)
         # clamped to nb-1. Reproduce via fixed_hist2d on (v, v) with a single y.
         kernel = pl.select(
             pl.lit(s).flexviz.fixed_hist2d(
@@ -3030,6 +3030,36 @@ class TestHist2dTargetBinningParity:
         for b in cube_bins:
             cube_counts[b] += 1
         assert cube_counts == kernel_x_counts
+
+    def test_small_magnitude_spans_bins(self):
+        # A span pad in absolute data units dominates a tiny value span and
+        # collapses every row into bin 0. Strain-scale data (span ~1e-18) must
+        # fill every bin, and the cube bin expr must agree with the kernel.
+        from flexviz.cube import _fixed_hist_bin_expr
+
+        lo, hi, n = -1e-18, 1e-18, 16
+        values = [lo + (hi - lo) * k / 999 for k in range(1000)]
+        s = pl.Series("v", values, dtype=pl.Float64)
+        cube_bins = (
+            pl.select(_fixed_hist_bin_expr(pl.lit(s), lo, hi, n, "b"))
+            .to_series()
+            .to_list()
+        )
+        assert len(set(cube_bins)) == n, "small-magnitude bins collapsed"
+        z_flat = (
+            pl.select(
+                pl.lit(s).flexviz.fixed_hist2d(
+                    pl.lit(s), pl.lit(lo), pl.lit(hi), pl.lit(lo), pl.lit(hi), n, 1
+                )
+            )
+            .to_series()
+            .struct.field("z_flat")
+            .to_list()[0]
+        )
+        cube_counts = [0] * n
+        for b in cube_bins:
+            cube_counts[b] += 1
+        assert cube_counts == list(z_flat)
 
 
 class TestHist2dTargetHistnorm:
@@ -3093,7 +3123,9 @@ class TestHist2dTargetCodec:
 
 
 class TestHist2dTargetContentKey:
-    def test_hist2d_variant_distinct_from_hist1d(self):
+    def test_bin_variant_does_not_change_key(self):
+        # Both variants bin with the same expression, so bin_variant cannot
+        # separate two dims that agree on column, kind, bins and domain.
         df = _hist2d_target_df()
         x_lo, x_hi = float(df["x"].min()), float(df["x"].max())
         y_lo, y_hi = float(df["y"].min()), float(df["y"].max())
@@ -3124,32 +3156,7 @@ class TestHist2dTargetContentKey:
         )
         k2 = cube_content_key(CubeSpec(source_name="s", free=free, target_dims=dims_2d))
         k1 = cube_content_key(CubeSpec(source_name="s", free=free, target_dims=dims_1d))
-        assert k2 != k1
-
-    def test_hist1d_key_is_byte_identical_to_default(self):
-        # Adding bin_variant must NOT change an existing hist1d content key.
-        free = FreeAxisSpec(column="free", kind="continuous", p=64, domain=(0.0, 1.0))
-        default = CubeSpec(
-            source_name="s",
-            free=free,
-            target_dims=(
-                TargetDimSpec(column="t", kind="binned", bins=10, domain=(0.0, 50.0)),
-            ),
-        )
-        explicit = CubeSpec(
-            source_name="s",
-            free=free,
-            target_dims=(
-                TargetDimSpec(
-                    column="t",
-                    kind="binned",
-                    bins=10,
-                    domain=(0.0, 50.0),
-                    bin_variant="hist1d",
-                ),
-            ),
-        )
-        assert cube_content_key(default) == cube_content_key(explicit)
+        assert k2 == k1
 
 
 # ---------------------------------------------------------------------------

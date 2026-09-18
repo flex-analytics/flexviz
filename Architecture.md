@@ -77,6 +77,8 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
 │  POST /share             — encode spec → shareable URL         │
 │  GET  /view              — render shared spec as HTML          │
 │  GET  /sources           — health / introspection              │
+│  GET  /h/{n}             — render flexviz history entry n      │
+│  GET  /cache/stats       — cache hits/misses/entries           │
 │  _sources: name → LFQueryBuilder  (registered once at show())  │
 └─────────────────────┬──────────────────────────────────────────┘
                       │
@@ -297,11 +299,26 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   a project's `.agents/skills/` and `.claude/skills/`.
 - **Readback contract**: the shared runtime exposes `window.flexvizState()`,
   which returns the live `DashboardSpec` (persistent serialized state only,
-  no transient hover visuals). An agent with browser tooling opens a share
-  URL, lets the human explore, and reads viewport and selections through
-  this accessor at any time. Without browser tooling, the human clicks
-  **Share** and the agent decodes the copied URL. The address bar does not
-  track interactions.
+  no transient hover visuals). Interaction state belongs to one browser tab,
+  so the accessor reads only the tab the caller drives: an agent polls the
+  human's viewport and selections only when both share that tab (a headed
+  browser session on the same machine, or an extension attached to the
+  human's browser). Otherwise the human clicks **Share** and the agent reads
+  the recorded state back. The address bar does not track interactions.
+  `window.flexvizState({compact: true})` returns only
+  `{version, state, client_state, revision}`, which is what a polling agent
+  needs; `revision` increases whenever the state differs from the previous
+  read.
+- **Apply contract**: `window.flexvizApply(obj)` is the write half. It applies
+  the `state`, `client_state` and `layout` keys of `obj`, with `state` and
+  `client_state` merged one level deeper so a partial patch keeps the sibling
+  keys. Every other key is ignored with a console warning. It then re-renders
+  through `fvRestoreFromSpec` and resolves with the compact state once the
+  re-request has completed. It rejects when that re-request fails, and the
+  merged state is then ahead of the page. It changes only the tab the caller
+  drives. The Import button is a thin wrapper around it. Structure changes
+  (adding or removing a figure) still need a new share URL, because panels
+  are built server-side.
 
 Watch-along stays client-side by design: the server keeps no interaction
 state, so "what is the human looking at" lives only in the browser tab.
@@ -309,6 +326,21 @@ Server-side snapshot mailboxes and agent-side listeners were considered and
 rejected. A hosted watch broker and MCP Apps `updateModelContext`
 publication are possible future phases; neither changes the aggregation
 server's statelessness.
+
+An encoded spec is about 4 KB, and browser tools echo a tab's page URL in
+every snapshot, so a share URL must never reach an agent's context.
+`flexviz/history.py` numbers share URLs in `.flexviz/history.jsonl`, a plain
+append-only file in the agent's working directory: the page cannot write
+files and the server must stay stateless, so neither can own that mapping.
+`GET /h/{n}` re-reads that file per request, decodes the recorded URL, and
+renders it like `/view`, which keeps the page address short and stores
+nothing server-side. `history.record_state` closes the loop the other way:
+it patches a read-back state onto the spec of an existing entry and rewrites
+only that URL's `spec=` value, so the recorded host and port survive.
+Together with the compact readback and the apply
+contract above, an agent drives a dashboard by number alone, and `fv:N` lines
+in a findings file (`flexviz/report.py`) embed the same entries as live
+iframes.
 
 ---
 
@@ -490,7 +522,7 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
   date axis, like the line trace) and emits the bin-edge triple in epoch-ms.
   Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
   `temporal_unit` (contract G).
-- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The 1-D trace then pads `hi` by `_HIST_BIN_EPSILON`, so it bins on `[lo, hi + 1e-10]` and a value on the upper bound lands in the last bin. The 2-D path passes the raw bounds instead and leaves the kernel's own span epsilon to do it.
+- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The 1-D trace then pads `hi` by `_HIST_BIN_EPSILON`, so it bins on `[lo, hi + 1e-10]` and a value on the upper bound lands in the last bin. The 2-D path passes the raw bounds instead: the kernel's top clamp folds a value on the upper bound into the last bin.
 - A zoomed grid can hold one bin more than configured, so `_to_update` reads the grid the trace stored in `get_aggregation_spec` (`Histogram._bin_edges`) and the cube target dim carries the snapped `(domain, bins)`, not the configured `bins`. The 1-D plans emit `count` only and the kernel's `breakpoint` field is never read, so the grid travels beside the result rather than in it (issue #37). The client derives bar centers from those two, so cube-served bars land on the server's bars.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
@@ -582,7 +614,7 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, which pads its own span, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
+- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale` and `color_range`; trace-owned defaults are `"viridis"` and `"auto"`.
@@ -897,6 +929,8 @@ _sources: Dict[str, LFQueryBuilder]
 
 Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.
 
+`GET /h/{n}` also reads no server state: it re-reads an agent-owned history file from the working directory on every request and stores nothing, see the agent-loop section above.
+
 ### Caching carve-out to the stateless invariant
 
 The "stateless server" invariant forbids *authoritative interaction state* (viewport, selection, overlay, hover, grid) — it does **not** forbid a **content-addressed memoization cache**. `flexviz/cache.py` may hold a reconstructable cache derived solely from `_sources` + request content, provided it is:
@@ -922,6 +956,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly\|echarts`)  |
+| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's) |
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
@@ -1256,7 +1291,7 @@ them.
   | pie | (*label cols as categorical) | same |
   | line | (binned x col @ `n_points/2` buckets, *group cols as categorical) — **minmax-only** | `line_env` over `y` |
   | corr_heatmap | `()` — no grouping dims; the matrix cells are the explicit `columns` pairs; `columns` must be passed explicitly for cube support | `corr` (Pearson only) |
-  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"`, **bit-equal to the `fixed_hist2d` kernel** (the `+1e-10` span eps, not `fixed_hist`); **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
+  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"` (only skips the domain pad; the bin expression is shared with hist1d), **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
   | treemap | (*path cols as categorical) — the **leaf** level; the client finalizes leaf cells then **sums** them up every path level (parents = Σ of child finalized values, mirroring `_to_grouped_update`) | `count`/`sum`/`mean`/`min`/`max` over `values` |
 
   bar ≡ pie descriptor sharing falls out of content-key dedup: same labels + same measure ⇒ one
@@ -1493,7 +1528,8 @@ flexviz/
 │   ├── __init__.py          ← public API: Figure, Dashboard, app,
 │   │                           register_source, mount_into
 │   ├── __main__.py          ← `python -m flexviz` entry; calls cli.main
-│   ├── cli.py               ← serve / schema / decode / skill install
+│   ├── cli.py               ← serve / schema / decode / skill install /
+│   │                           history / report
 │   ├── spec.py              ← VisualizationSpec, DashboardSpec, FigureSpec,
 │   │                           TraceSpec, LayoutSpec, ToolbarConfig,
 │   │                           InteractionState, SelectionState,
@@ -1511,6 +1547,8 @@ flexviz/
 │   ├── server.py            ← FastAPI app, register_source, mount_into
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard
+│   ├── history.py           ← numbers share URLs in .flexviz/history.jsonl
+│   ├── report.py            ← fv:N findings-file entries for GET /h/{n}
 │   ├── skills/
 │   │   └── flexviz-explore/SKILL.md  ← packaged agent skill (flexviz skill install)
 │   ├── trace/

@@ -34,16 +34,15 @@ async function restoreDashboardFromSpec() {
   // One init also restores the viewport. The request carries the complete spec,
   // so the server aggregates within state.viewport; init marks every figure
   // dirty, so each figure's render applies that viewport to its layout.
-  await postDashboardUpdate({
+  let ok = await postDashboardUpdate({
     type: 'init', axis_ranges: {}, selections: savedSelections, force_update: true,
   });
   if (savedSelections.length) {
-    await postDashboardUpdate({
+    ok = await postDashboardUpdate({
       type: 'selection', axis_ranges: {}, selections: savedSelections, force_update: true,
-    });
+    }) && ok;
   }
   window.fvRefreshSelectionSummary?.();
+  return ok;
 }
-window.fvRestoreFromSpec = async function() {
-  await restoreDashboardFromSpec();
-};
+window.fvRestoreFromSpec = restoreDashboardFromSpec;

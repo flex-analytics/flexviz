@@ -3780,6 +3780,157 @@ class TestAgentReadback:
         assert page.evaluate("DASHBOARD_SPEC.figures[0].uid") == original_uid
         assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
 
+    def test_compact_state_keys_and_revision_bump(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").click()
+        page.wait_for_timeout(300)
+
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.2, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        compact = page.evaluate("window.flexvizState({compact: true})")
+        assert set(compact) == {"version", "state", "client_state", "revision"}
+        assert len(compact["state"]["selections"]) == 1, compact["state"]
+
+        # Unchanged state reads back at the same revision.
+        again = page.evaluate("window.flexvizState({compact: true})")
+        assert again["revision"] == compact["revision"]
+
+        # flexvizApply resolves with the compact state of the applied spec.
+        applied = page.evaluate("window.flexvizApply({state: {selections: []}})")
+        assert applied["state"]["selections"] == []
+        assert applied["revision"] > compact["revision"]
+
+    def test_apply_clears_selection_and_leaves_figures_untouched(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        total = "divs[1].data[0].y.reduce((a, b) => a + b, 0)"
+        page.wait_for_function(f"() => ({total}) > 0")
+        unfiltered = page.evaluate(f"() => {total}")
+
+        page.evaluate("""() => {
+            const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: figUids[0],
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+            }];
+            return postDashboardUpdate({
+                type: 'selection', axis_ranges: {},
+                selections: DASHBOARD_SPEC.state.selections,
+                force_update: true, figure_uid: figUids[0],
+            });
+        }""")
+        page.wait_for_function(f"() => ({total}) < {unfiltered}")
+        figures_before = page.evaluate("window.flexvizState().figures")
+
+        page.evaluate("window.flexvizApply({state: {selections: []}})")
+        page.wait_for_function(f"() => ({total}) === {unfiltered}")
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+        assert page.evaluate("window.flexvizState().figures") == figures_before
+
+    def test_apply_partial_state_keeps_viewport(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        # Default mode is zoom: this drag stores a viewport range.
+        drag_layer = page.locator("#fv-plot-0 .nsewdrag")
+        box = drag_layer.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.7, box["y"] + box["height"] * 0.7, steps=20
+        )
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+        zoomed = page.evaluate("window.flexvizState().state.viewport")
+        assert any("/x" in key for key in zoomed), zoomed
+
+        # A patch that carries only `selections` must keep the sibling state keys.
+        page.evaluate("window.flexvizApply({state: {selections: []}})")
+        after = page.evaluate("window.flexvizState().state")
+        assert after["viewport"] == zoomed, after
+        assert after["group_domains"] == {}, after
+
+    def test_apply_rejects_when_the_update_fails(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        # `force_update` bypasses the client cache, so the route is really hit.
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed"
+
+    def test_import_failure_labels_the_button(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        btn = page.locator("#fv-btn-import")
+
+        page.evaluate("""() => window.fvOnImport(
+                new File(['{not json'], 'spec.json', {type: 'application/json'}))""")
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        # The label goes back on its own, so the next case starts clean.
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent === 'Import'"
+        )
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        page.evaluate("""() => window.fvOnImport(new File(
+                [JSON.stringify(window.flexvizState())], 'spec.json',
+                {type: 'application/json'}))""")
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        assert btn.text_content() == "Import failed"
+
+    def test_apply_ignores_the_keys_it_cannot_apply(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        panels = page.locator(".js-plotly-plot").count()
+        assert panels > 1
+
+        bodies: list[dict] = []
+
+        def capture(req: PWRequest) -> None:
+            if req.method == "POST" and req.url.endswith("/dashboard/update"):
+                bodies.append(json.loads(req.post_data or "{}"))
+
+        page.on("request", capture)
+        page.evaluate("""() => window.flexvizApply({
+                figures: [window.flexvizState().figures[0]],
+                bogus: 42,
+                state: {selections: []},
+            })""")
+
+        assert page.locator(".js-plotly-plot").count() == panels
+        assert bodies, "apply must re-request the deltas"
+        spec = bodies[-1]["spec"]
+        assert "bogus" not in spec, spec.keys()
+        assert len(spec["figures"]) == panels
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)
@@ -6300,7 +6451,14 @@ class TestDraggableGridBrowser:
 class TestLockedLayoutBrowser:
     """A read-only embed: no layout button, and panel height honours GridItem.h."""
 
-    def _url(self, port: int, renderer: str, h: int) -> str:
+    def _url(
+        self,
+        port: int,
+        renderer: str,
+        h: int,
+        draggable: bool = False,
+        gap: str = "8px",
+    ) -> str:
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
         from flexviz.spec import GridItem, LayoutSpec, encode_spec
@@ -6312,15 +6470,23 @@ class TestLockedLayoutBrowser:
 
         dash = Dashboard(df)
         dash.add_figure(title="Fig0").add_line(x="ts", y="val", n_points=100)
-        uid = dash.to_spec().figures[0].uid
+        dash.add_figure(title="Fig1").add_line(x="ts", y="val", n_points=100)
+        uids = [fig.uid for fig in dash.to_spec().figures]
         spec = dash._finalized_spec(
             "_browser_locked_test",
             rows=None,
             cols=None,
-            draggable=False,
+            draggable=draggable,
             effective_cache=False,
             live_brush=None,
-            layout=LayoutSpec(grid_items=[GridItem(fig_uid=uid, x=0, y=0, w=12, h=h)]),
+            layout=LayoutSpec(
+                gap=gap,
+                draggable=draggable,
+                grid_items=[
+                    GridItem(fig_uid=uids[0], x=0, y=0, w=12, h=h),
+                    GridItem(fig_uid=uids[1], x=0, y=h, w=12, h=h),
+                ],
+            ),
         )
         return (
             f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"
@@ -6336,9 +6502,61 @@ class TestLockedLayoutBrowser:
     def test_grid_item_height_drives_the_panel(
         self, page: Page, server_port: int, renderer: str
     ):
-        page.goto(self._url(server_port, renderer, 7))
-        _wait_for_chart(page, renderer)
-        page.wait_for_timeout(1_000)
-        box = page.query_selector(".fv-dashboard-item").bounding_box()
-        # Spanning h rows also spans h-1 gaps: 7*80 + 6*8.
-        assert box["height"] == 608, box["height"]
+        """h is h * 80 px on both layout paths, gap included."""
+        for h in (4, 7):
+            for draggable in (True, False):
+                page.goto(self._url(server_port, renderer, h, draggable, gap="24px"))
+                _wait_for_chart(page, renderer)
+                page.wait_for_timeout(1_000)
+                sel = ".grid-stack-item" if draggable else ".fv-dashboard-item"
+                items = page.query_selector_all(sel)
+                assert len(items) == 2, f"{sel} count for draggable={draggable}"
+                for item in items:
+                    height = item.bounding_box()["height"]
+                    assert abs(height - h * 80) <= 1, (h, draggable, height)
+                if not draggable:
+                    # The static grid carries the gutter as item padding, so it
+                    # must still show between the panels.
+                    panels = sorted(
+                        (p.bounding_box() for p in page.query_selector_all("fv-panel")),
+                        key=lambda box: box["y"],
+                    )
+                    visible_gap = panels[1]["y"] - panels[0]["y"] - panels[0]["height"]
+                    assert abs(visible_gap - 24) <= 1, visible_gap
+
+    def test_report_embed_height_matches_the_page(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        """A report iframe is tall enough that the embedded page never scrolls."""
+        from flexviz.report import _iframe_height
+
+        # Shorter than every dashboard below, so scrollHeight reports the
+        # content height instead of the viewport's.
+        page.set_viewport_size({"width": 1280, "height": 300})
+        for draggable in (True, False):
+            url = self._url(server_port, renderer, 4, draggable, gap="24px")
+            page.goto(url)
+            _wait_for_chart(page, renderer)
+            page.wait_for_timeout(1_000)
+            measured = page.evaluate("() => document.documentElement.scrollHeight")
+            assert abs(_iframe_height(url) - measured) <= 1, (draggable, measured)
+
+
+def test_report_page_sanitizes_the_markdown_html(
+    page: Page, server_port: int, monkeypatch, tmp_path
+) -> None:
+    """A report renders its fv:N iframe, but not HTML that carries a script."""
+    from flexviz import history
+    from flexviz.report import to_html
+
+    monkeypatch.chdir(tmp_path)
+    history.add(_dashboard_url(server_port, "plotly"))
+    md = "# Findings\n\n<img src=x onerror=\"document.title='pwned'\">\n\nfv:1\n"
+    out = tmp_path / "report.html"
+    out.write_text(to_html(md), encoding="utf-8")
+
+    page.goto(out.as_uri())
+    chart = page.frame_locator("#fv-report iframe").locator(".js-plotly-plot")
+    chart.first.wait_for(timeout=20_000)
+    assert page.title() == "FlexViz report"
+    assert page.evaluate("() => !!document.querySelector('img[onerror]')") is False

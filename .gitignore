@@ -4,6 +4,7 @@
 .playwright-cli/
 .agents/skills/
 .claude/
+.flexviz/
 .DS_Store
 TODO*
 notes/

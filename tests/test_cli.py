@@ -1,14 +1,24 @@
 """CLI and share_url tests: URL round-trip, file registration, error paths."""
 
 import json
+import re
 from pathlib import Path
 
 import polars as pl
 import pytest
 
-from flexviz import Dashboard
+from flexviz import Dashboard, Figure, history
 from flexviz.cli import _register_files, main
-from flexviz.spec import DashboardSpec, decode_spec
+from flexviz.spec import (
+    AxisRange,
+    ClientState,
+    DashboardSpec,
+    InteractionState,
+    VisualizationSpec,
+    decode_spec,
+    encode_spec,
+    encoded_spec_from_url,
+)
 
 
 def _demo_dashboard(**dash_kw) -> Dashboard:
@@ -49,6 +59,29 @@ def test_decode_command_accepts_full_url(capsys):
 def test_decode_command_rejects_url_without_spec():
     with pytest.raises(SystemExit):
         main(["decode", "http://127.0.0.1:8000/view?other=1"])
+
+
+def test_decode_state_only_keeps_the_interaction_values(capsys):
+    spec = decode_spec(
+        _demo_dashboard().share_url(source_name="demo").split("spec=", 1)[1]
+    )
+    key = f"{spec.figures[0].uid}/x"
+    spec.state.viewport[key] = AxisRange(min=1.0, max=2.0)
+
+    main(["decode", encode_spec(spec), "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["state"]["viewport"][key] == {"min": 1.0, "max": 2.0}
+    assert payload["client_state"]["live_brush"] == "off"
+
+
+def test_decode_state_only_defaults_client_state_of_a_single_figure(capsys):
+    # A VisualizationSpec has no client_state; /view runs it with a default one.
+    fig = Figure(pl.LazyFrame({"t": [1, 2], "v": [1.0, 2.0]})).add_line(x="t", y="v")
+    main(["decode", encode_spec(fig.to_spec("demo")), "--state-only"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["client_state"]["live_brush"] == "auto"
 
 
 def test_register_files_names_by_stem(tmp_path):
@@ -125,6 +158,44 @@ def test_skill_install_force_replaces(capsys, tmp_path):
     modified.write_text("my customized skill")
     main(["skill", "install", "--dir", str(tmp_path), "--force"])
     assert modified.read_text().startswith("---\nname: flexviz-explore")
+
+
+def test_skill_names_the_api_it_teaches(tmp_path):
+    """A rename must not leave the packaged skill teaching a dead API.
+
+    The skill is the only copy of the loop an agent reads, and nothing else
+    links its prose to these names.
+    """
+    main(["skill", "install", "--dir", str(tmp_path)])
+    skill = _skill_paths(tmp_path)[0].read_text()
+    for name in (
+        "flexvizApply",
+        "flexvizState({compact: true})",
+        "history.add",
+        "history.record_state",
+        "/h/",
+        "flexviz report",
+    ):
+        assert name in skill, name
+
+
+def test_skill_compact_state_example_matches_the_models(tmp_path):
+    """The compact-readback example must not drift from the InteractionState
+    and ClientState models it documents.
+    """
+    main(["skill", "install", "--dir", str(tmp_path)])
+    skill = _skill_paths(tmp_path)[0].read_text()
+    match = re.search(r"<!-- compact-state -->\s*```json\n(.*?)```", skill, re.DOTALL)
+    assert match, "no <!-- compact-state --> json block found in the skill"
+    payload = json.loads(match.group(1))
+    assert set(payload) == {"version", "revision", "state", "client_state"}
+    assert payload["version"] == DashboardSpec().version
+    # model_validate ignores unknown keys, so compare the key sets too: a stale
+    # field in the example must fail, not pass silently.
+    assert set(payload["state"]) == set(InteractionState.model_fields)
+    assert set(payload["client_state"]) == set(ClientState.model_fields)
+    InteractionState.model_validate(payload["state"])
+    ClientState.model_validate(payload["client_state"])
 
 
 def test_csv_dates_are_parsed(capsys, tmp_path):
@@ -235,3 +306,172 @@ def test_skill_install_defaults_to_cwd(monkeypatch, tmp_path):
 def test_skill_install_scope_flags_are_exclusive():
     with pytest.raises(SystemExit):
         main(["skill", "install", "--user", "--dir", "."])
+
+
+# ---------------------------------------------------------------------------
+# History: numbered share URLs, recorded under .flexviz/history.jsonl
+# ---------------------------------------------------------------------------
+
+
+def test_history_add_numbers_sequentially(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+
+    main(["history", "add", url, "--note", "first"])
+    assert capsys.readouterr().out.strip() == "1"
+    main(["history", "add", url, "--note", "second"])
+    assert capsys.readouterr().out.strip() == "2"
+
+    lines = (tmp_path / ".flexviz" / "history.jsonl").read_text().splitlines()
+    assert len(lines) == 2
+
+
+def test_history_list_never_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url, "--note", "brushed the tail"])
+    capsys.readouterr()
+
+    main(["history", "list"])
+    out = capsys.readouterr().out
+    assert "brushed the tail" in out
+    assert "/view?spec=" not in out
+
+
+def test_history_show_prints_only_the_compact_triple(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    key = f"{decode_spec(encoded_spec_from_url(url)).figures[0].uid}/x"
+    n = history.record_state(
+        history.add(url), {"viewport": {key: {"min": 1.0, "max": 2.0}}}
+    )
+    capsys.readouterr()
+
+    main(["history", "show", str(n)])
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert set(payload) == {"version", "state", "client_state"}
+    assert payload["state"]["viewport"][key] == {"min": 1.0, "max": 2.0}
+    assert "/view?spec=" not in out
+    assert url not in out
+
+
+def test_history_show_url_prints_the_url(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    main(["history", "add", url])
+    capsys.readouterr()
+
+    main(["history", "show", "2", "--url"])
+    assert capsys.readouterr().out.strip() == url
+
+
+def test_record_state_keeps_the_recorded_host(monkeypatch, tmp_path):
+    """The rebuilt entry must reach the server the first one was served from.
+
+    A hard-coded ``127.0.0.1:8077`` in the caller silently breaks every entry
+    recorded against another port or host.
+    """
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(
+        server_url="http://box.local:9999", source_name="demo"
+    )
+    first = history.add(url)
+
+    n = history.record_state(
+        first,
+        {"cross_filter_mode": "overlay"},
+        {"hover_mode": "on"},
+        note="human brushed",
+    )
+
+    rebuilt = history.entry(n)
+    assert rebuilt["url"].startswith("http://box.local:9999/view?spec=")
+    assert rebuilt["actor"] == "human"
+    spec = decode_spec(encoded_spec_from_url(rebuilt["url"]))
+    assert spec.state.cross_filter_mode == "overlay"
+    assert spec.client_state.hover_mode == "on"
+    # The figures come from the recorded entry, not from a rebuilt dashboard.
+    assert [f.source for f in spec.figures] == ["demo", "demo"]
+
+
+def test_record_state_wraps_a_single_figure_entry(monkeypatch, tmp_path):
+    """A recorded ``/view`` URL can hold a single figure, which has no
+    ``client_state`` field to record the live state into."""
+    monkeypatch.chdir(tmp_path)
+    encoded = encode_spec(VisualizationSpec())
+    first = history.add(f"http://127.0.0.1:8000/view?spec={encoded}")
+
+    n = history.record_state(
+        first, {"cross_filter_mode": "overlay"}, {"hover_mode": "on"}
+    )
+
+    assert n == 2
+    spec = decode_spec(encoded_spec_from_url(history.entry(n)["url"]))
+    assert isinstance(spec, DashboardSpec)
+    assert len(spec.figures) == 1
+    assert spec.state.cross_filter_mode == "overlay"
+    assert spec.client_state.hover_mode == "on"
+
+
+def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["history", "show", "9"])
+
+
+def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"n": 1, "url": "http://x"\n')
+    with pytest.raises(SystemExit):
+        main(["history", "list"])
+
+
+def test_history_rejects_a_line_that_is_not_an_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+
+    path.write_text("[]\n")
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
+
+    path.write_text('{"n": 1, "note": "no url"}\n')
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
+
+
+def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["history", "add", "yesterday's parquet run"])
+
+
+def test_report_command_writes_html_and_expanded_markdown(
+    capsys, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    url = _demo_dashboard().share_url(source_name="demo")
+    main(["history", "add", url])
+    src = tmp_path / "findings.md"
+    src.write_text("# Drift\n\nfv:1\n")
+    capsys.readouterr()
+
+    main(["report", str(src), "-o", "out.html", "--md", "out.md"])
+
+    html = (tmp_path / "out.html").read_text()
+    # The page carries its markdown JSON-escaped in an inline script.
+    assert "\\u003ciframe" in html
+    assert url in html
+    assert (tmp_path / "out.md").read_text().splitlines()[2] == url
+
+
+def test_report_command_exits_on_an_unknown_history_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "findings.md"
+    src.write_text("fv:9\n")
+    with pytest.raises(SystemExit, match="no history entry 9"):
+        main(["report", str(src), "-o", "out.html"])

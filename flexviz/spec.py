@@ -16,6 +16,7 @@ import base64
 import gzip
 import json as _json
 from typing import Any, Literal, TypeAlias, TypedDict
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from pydantic import (
@@ -335,7 +336,7 @@ class VisualizationSpec(BaseModel):
 
 
 _GRIDSTACK_CELL_HEIGHT_PX: int = 80
-"""Pixels per grid row unit.  h=5 → 400 px, before the static grid adds gaps."""
+"""Pixels per grid row unit.  h=5 → 400 px on either layout path."""
 
 
 class GridItem(BaseModel):
@@ -438,7 +439,9 @@ class LayoutSpec(BaseModel):
     """HTML/CSS layout hints for a multi-figure dashboard.
 
     ``gap``
-        CSS gap between figures (default ``"8px"``).
+        CSS space between figures on the static grid (default ``"8px"``). With
+        ``draggable=True`` GridStack keeps its own panel margin, so ``gap``
+        only pads the outer edge of the grid.
 
     ``draggable``
         Selects the layout implementation for the rendered page. It is not a
@@ -557,3 +560,18 @@ def decode_spec(encoded: str) -> VisualizationSpec | DashboardSpec:
     if "figures" in data:
         return DashboardSpec.model_validate(data)
     return VisualizationSpec.model_validate(data)
+
+
+def encoded_spec_from_url(url: str) -> str:
+    """Pull the ``spec=`` query value out of a share URL.
+
+    A bare encoded spec (no ``://`` or ``?``) is returned unchanged, so the
+    same helper accepts both a full URL and the raw value. Raises
+    ``ValueError`` when a URL carries no ``spec=`` value.
+    """
+    if "://" in url or "?" in url:
+        values = parse_qs(urlsplit(url).query).get("spec")
+        if not values:
+            raise ValueError("no spec= query parameter in URL")
+        return values[0]
+    return url

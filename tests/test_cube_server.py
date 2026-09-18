@@ -2299,7 +2299,7 @@ _H2_NB_Y = 6
 def hist2d_df() -> pl.DataFrame:
     """A hist-brushable source ``a`` plus a 2-D ``(x, y)`` field and a numeric
     ``z`` to reduce. Values include points exactly on the bin edges of both
-    axes (exercising the ``fixed_hist2d`` ``+1e-10`` span epsilon)."""
+    axes (a value at ``hi`` must land in the top bin)."""
     n = 4_000
     x_lo, x_hi = 0.0, 80.0
     y_lo, y_hi = -30.0, 30.0
@@ -2390,7 +2390,7 @@ class TestHist2dTargetCubeRequest:
         assert header["target_dims"][1]["bins"] == _H2_NB_Y
         assert header["measure"]["agg"] == "count"
         # Both axes resolve to the FULL data domain with NO epsilon padding
-        # (hist2d's own span eps provides the boundary tolerance).
+        # (the kernel's top clamp folds a value at hi into the top bin).
         x_lo, x_hi = hist2d_df["x"].min(), hist2d_df["x"].max()
         y_lo, y_hi = hist2d_df["y"].min(), hist2d_df["y"].max()
         assert header["target_dims"][0]["domain"] == [x_lo, x_hi]
