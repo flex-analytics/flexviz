@@ -218,3 +218,8 @@ the embeds go blank; the markdown itself still holds every finding.
   Treat it as sensitive as the filters it contains.
 - `/h/N` serves only the history file in the server's working directory. Do
   not serve a public dashboard from a directory that holds one.
+- The report and dashboard pages load `marked`, DOMPurify, Plotly, and
+  Gridstack from CDNs at pinned versions, with no `integrity` attribute. The
+  report allows `<iframe>` in its sanitizer so `fv:N` embeds render. As a
+  result, any `<iframe>` in the source markdown also renders. Build a report
+  only from text you wrote.
