@@ -5,6 +5,9 @@ neither can hold the mapping from a short number to a share URL. This module
 keeps that mapping in the working directory instead. Once a URL is recorded
 here, an agent can say ``fv:3`` in a prompt or a report instead of repeating
 a several-kilobyte URL every time.
+
+The file assumes one writer at a time. Concurrent ``add`` calls on one file
+can give two entries the same number, or skip a number (#64).
 """
 
 from __future__ import annotations
@@ -16,7 +19,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from flexviz.spec import (
     ClientState,
+    DashboardSpec,
     InteractionState,
+    VisualizationSpec,
     decode_spec,
     encode_spec,
     encoded_spec_from_url,
@@ -29,8 +34,8 @@ def entries() -> list[dict]:
     """Return every recorded entry, oldest first.
 
     A missing file is not an error: it means nothing has been recorded yet.
-    Raises ``ValueError`` on a line that is not JSON: the CLI turns that into
-    a message, the server into a 400.
+    Raises ``ValueError`` on a line that is not JSON, or that is JSON of the
+    wrong shape: the CLI turns that into a message, the server into a 400.
     """
     if not PATH.exists():
         return []
@@ -39,11 +44,14 @@ def entries() -> list[dict]:
         line = line.strip()
         if line:
             try:
-                out.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError as exc:
                 # A half-written or hand-edited line cannot be skipped: every
                 # later number comes from the entry count, so it would shift.
                 raise ValueError(f"{PATH}: line {i} is not valid JSON") from exc
+            if not isinstance(record, dict) or "n" not in record or "url" not in record:
+                raise ValueError(f"{PATH}: line {i} is not a history entry")
+            out.append(record)
     return out
 
 
@@ -91,6 +99,10 @@ def record_state(
     """
     url = entry(n)["url"]
     spec = decode_spec(encoded_spec_from_url(url))
+    if isinstance(spec, VisualizationSpec):
+        # Only a dashboard holds client_state, and /view renders a single
+        # figure through the same wrap.
+        spec = DashboardSpec(figures=[spec.figure], state=spec.state)
     spec.state = InteractionState.model_validate(state)
     if client_state is not None:
         spec.client_state = ClientState.model_validate(client_state)

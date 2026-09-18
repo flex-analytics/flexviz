@@ -47,6 +47,10 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   grid (`draggable=False`) carried `gap` between its rows, which made a panel
   of `h` rows `h * 80 + (h - 1) * gap` pixels tall. The gap now sits inside the
   panel box, the way GridStack keeps it.
+- 2-D histograms and the cube binned a value on a bin edge one bin too low
+  whenever an axis span was smaller than `bins / 10`, and a span under 1e-10
+  collapsed every row into bin 0. The bin scale now has no absolute pad, and a
+  value at the top edge folds into the top bin.
 
 ### Changed
 

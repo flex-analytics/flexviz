@@ -3867,6 +3867,70 @@ class TestAgentReadback:
         assert after["viewport"] == zoomed, after
         assert after["group_domains"] == {}, after
 
+    def test_apply_rejects_when_the_update_fails(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        # `force_update` bypasses the client cache, so the route is really hit.
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed"
+
+    def test_import_failure_labels_the_button(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        btn = page.locator("#fv-btn-import")
+
+        page.evaluate("""() => window.fvOnImport(
+                new File(['{not json'], 'spec.json', {type: 'application/json'}))""")
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        # The label goes back on its own, so the next case starts clean.
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent === 'Import'"
+        )
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        page.evaluate("""() => window.fvOnImport(new File(
+                [JSON.stringify(window.flexvizState())], 'spec.json',
+                {type: 'application/json'}))""")
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        assert btn.text_content() == "Import failed"
+
+    def test_apply_ignores_the_keys_it_cannot_apply(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        panels = page.locator(".js-plotly-plot").count()
+        assert panels > 1
+
+        bodies: list[dict] = []
+
+        def capture(req: PWRequest) -> None:
+            if req.method == "POST" and req.url.endswith("/dashboard/update"):
+                bodies.append(json.loads(req.post_data or "{}"))
+
+        page.on("request", capture)
+        page.evaluate("""() => window.flexvizApply({
+                figures: [window.flexvizState().figures[0]],
+                bogus: 42,
+                state: {selections: []},
+            })""")
+
+        assert page.locator(".js-plotly-plot").count() == panels
+        assert bodies, "apply must re-request the deltas"
+        spec = bodies[-1]["spec"]
+        assert "bogus" not in spec, spec.keys()
+        assert len(spec["figures"]) == panels
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)
@@ -6476,3 +6540,23 @@ class TestLockedLayoutBrowser:
             page.wait_for_timeout(1_000)
             measured = page.evaluate("() => document.documentElement.scrollHeight")
             assert abs(_iframe_height(url) - measured) <= 1, (draggable, measured)
+
+
+def test_report_page_sanitizes_the_markdown_html(
+    page: Page, server_port: int, monkeypatch, tmp_path
+) -> None:
+    """A report renders its fv:N iframe, but not HTML that carries a script."""
+    from flexviz import history
+    from flexviz.report import to_html
+
+    monkeypatch.chdir(tmp_path)
+    history.add(_dashboard_url(server_port, "plotly"))
+    md = "# Findings\n\n<img src=x onerror=\"document.title='pwned'\">\n\nfv:1\n"
+    out = tmp_path / "report.html"
+    out.write_text(to_html(md), encoding="utf-8")
+
+    page.goto(out.as_uri())
+    chart = page.frame_locator("#fv-report iframe").locator(".js-plotly-plot")
+    chart.first.wait_for(timeout=20_000)
+    assert page.title() == "FlexViz report"
+    assert page.evaluate("() => !!document.querySelector('img[onerror]')") is False

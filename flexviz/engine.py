@@ -719,7 +719,7 @@ class FlexEngine:
         resolved-or-zoomed domain. This mirrors ``_histogram_bounds_exprs``,
         which pads in both the unzoomed and zoomed cases, so cube bins align
         with display bins. A ``hist2d``-variant dim (contract K) gets no pad:
-        the ``fixed_hist2d`` kernel and ``_fixed_hist2d_bin_expr`` both fold a
+        the ``fixed_hist2d`` kernel and ``_fixed_hist_bin_expr`` both fold a
         value at ``hi`` into the top bin through the top clamp. A pad here
         would shift bins and break bit-equality with the server delta.
         Returns ``None`` when a dim's domain cannot be resolved (an all-null

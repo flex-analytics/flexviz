@@ -84,7 +84,8 @@ struct FixedHistKwargs {
 const FIXED_HIST_ROUND_EPS: f64 = 1e-9;
 
 /// Per-axis bin scale for the 2D binners (`fixed_hist2d`, its rayon twin, and
-/// `fixed_hist2d_reduce`): `nb / (hi - lo)`, same as the 1D `fixed_hist`.
+/// `fixed_hist2d_reduce`): `nb / (hi - lo)`, which gives the same bins as the
+/// 1D `fixed_hist` (that kernel takes its `count_degenerate` branch first).
 /// The `.min(max_idx)` clamp at every call site folds a value at `hi` into
 /// the top bin, so the scale needs no span pad. A pad in absolute data units
 /// dominates a small span and collapses all rows into bin 0. A zero span

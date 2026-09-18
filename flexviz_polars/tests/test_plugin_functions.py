@@ -724,6 +724,19 @@ class TestFixedHist2D:
         counts = _fixed_hist2d_counts(x, y, 0.0, 5.0, 0.0, 5.0, 5, 5)
         assert sum(counts) == 4  # one null in x
 
+    def test_degenerate_x_domain(self):
+        """x_lo == x_hi: every row lands in x bin 0, nothing is lost."""
+        # The x values straddle the collapsed domain on purpose: without the
+        # zero-span guard the scale is infinite and a value above lo lands in
+        # the top bin instead.
+        n = 40
+        nb_x, nb_y = 4, 4
+        x = pl.Series("x", [float(i % 8) for i in range(n)], dtype=pl.Float64)
+        y = pl.Series("y", [float(i % nb_y) for i in range(n)], dtype=pl.Float64)
+        counts = _fixed_hist2d_counts(x, y, 3.0, 3.0, 0.0, 4.0, nb_x, nb_y)
+        assert sum(counts) == n
+        assert sum(counts[yi * nb_x] for yi in range(nb_y)) == n
+
     def test_diagonal_data_counts_match_groupby(self):
         """fixed_hist2d must match a polars group_by for f64 uniform data."""
         import random

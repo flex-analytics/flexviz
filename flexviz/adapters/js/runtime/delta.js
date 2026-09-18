@@ -41,11 +41,11 @@ async function postDashboardUpdate(event) {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ spec: DASHBOARD_SPEC, event }),
       });
-      if (!resp.ok) return;
+      if (!resp.ok) return false;
       data = await resp.json();
     } catch (e) {
       console.warn('flexviz /dashboard/update request failed', e);
-      return;
+      return false;
     }
     fvCachePut(event, data.figure_deltas);
   }
@@ -110,7 +110,7 @@ async function postDashboardUpdate(event) {
     }
   } catch (e) {
     console.warn('flexviz /dashboard/update delta apply failed', e);
-    return;
+    return false;
   }
 
   if (['deselect', 'reset', 'init'].includes(event.type)) {
@@ -125,4 +125,6 @@ async function postDashboardUpdate(event) {
   }
   _resetTreemapLevel = false;
   window.fvRefreshSelectionSummary?.();
+  // A render error is not an apply failure: the page state still matches the spec.
+  return true;
 }

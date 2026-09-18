@@ -1267,6 +1267,20 @@ class TestHistoryView:
         assert resp.status_code == 400
         assert "line 1 is not valid JSON" in resp.json()["detail"]
 
+    def test_h_route_400s_on_a_line_that_is_not_an_entry(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        """A JSON line of the wrong shape must not reach the ASGI layer as a
+        TypeError or a KeyError."""
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".flexviz" / "history.jsonl"
+        path.parent.mkdir()
+        path.write_text("[]\n")
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 400
+        assert "line 1 is not a history entry" in resp.json()["detail"]
+
     def test_h_route_ignores_the_minting_session_port(
         self, client: TestClient, tmp_path, monkeypatch
     ):

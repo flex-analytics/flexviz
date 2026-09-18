@@ -46,6 +46,10 @@ _CSS_LENGTH_TOKEN_RE = re.compile(
     r"^(?:0|(?:\d+(?:\.\d+)?|\.\d+)(?:px|em|rem|%|vh|vw|vmin|vmax|ch|ex|cm|mm|in|pt|pc))$"
 )
 
+# #fv-dashboard's own padding on the static grid. flexviz/report.py reads it to
+# size an embed, so the number lives in Python rather than only in the CSS.
+_STATIC_GRID_PADDING_PX = 8
+
 
 def _html_attr(value: Any) -> str:
     """Return ``value`` encoded for a quoted HTML attribute."""
@@ -305,7 +309,7 @@ class AbstractAdapter(ABC):
                 f"#fv-dashboard {{ width: 100%; display:grid; "
                 f"grid-template-columns:repeat(12, minmax(0, 1fr)); "
                 f"grid-auto-rows:{_GRIDSTACK_CELL_HEIGHT_PX}px; "
-                f"padding: 8px; box-sizing: border-box; }}\n"
+                f"padding: {_STATIC_GRID_PADDING_PX}px; box-sizing: border-box; }}\n"
                 f"#fv-dashboard .fv-dashboard-item {{ min-width: 0; min-height: 0; "
                 f"padding: calc({row_gutter} / 2) calc({col_gutter} / 2); }}"
             ),

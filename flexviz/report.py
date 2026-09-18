@@ -12,7 +12,11 @@ from __future__ import annotations
 import re
 
 from . import history
-from .adapters.base import _html_attr, _json_for_inline_script
+from .adapters.base import (
+    _STATIC_GRID_PADDING_PX,
+    _html_attr,
+    _json_for_inline_script,
+)
 from .spec import (
     _GRIDSTACK_CELL_HEIGHT_PX,
     DashboardSpec,
@@ -25,16 +29,15 @@ from .spec import (
 # flexviz/adapters/js/theme.css --fv-toolbar-height (44px), plus the 1px
 # border-bottom on #fv-header in flexviz/adapters/js/toolbar.css.
 _HEADER_HEIGHT_PX = 45
-# #fv-dashboard's own top + bottom padding on the static grid
-# (flexviz/adapters/base.py _dashboard_markup). GridStack needs no such term:
-# it sets .grid-stack to rows * cell height, its padding inside that box.
-_STATIC_GRID_PADDING_PX = 16
 
 # Pinned the way Gridstack is pinned in flexviz/adapters/base.py. The UMD
-# build is the one that defines the global ``marked``.
+# builds are the ones that define the globals ``marked`` and ``DOMPurify``.
 _MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.min.js"
+_DOMPURIFY_URL = "https://cdn.jsdelivr.net/npm/dompurify@3.4.15/dist/purify.min.js"
 
 _FV_LINE_RE = re.compile(r"fv:(\d+)")
+# A fence opener: up to 3 spaces of indent, then 3 or more backticks or tildes.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _embed_url(line: str, entries: list[dict]) -> str | None:
@@ -46,7 +49,7 @@ def _embed_url(line: str, entries: list[dict]) -> str | None:
         for entry in entries:
             if entry["n"] == n:
                 return entry["url"]
-        raise SystemExit(f"no history entry {n}")
+        raise ValueError(f"no history entry {n}")
     # A URL has no spaces; this excludes prose that merely mentions one and,
     # importantly, an already-rendered <iframe ...> line (which does).
     if "/view?spec=" in stripped and " " not in stripped:
@@ -70,7 +73,10 @@ def _iframe_height(url: str) -> int:
     grid_items = spec.layout.grid_items or _auto_grid_items(spec.figures)
     rows = max((item.y + item.h for item in grid_items), default=0)
     height = rows * _GRIDSTACK_CELL_HEIGHT_PX + _HEADER_HEIGHT_PX
-    return height if spec.layout.draggable else height + _STATIC_GRID_PADDING_PX
+    if spec.layout.draggable:
+        return height
+    # Top plus bottom padding of the static grid container.
+    return height + 2 * _STATIC_GRID_PADDING_PX
 
 
 def expand(md: str, *, as_html: bool) -> str:
@@ -86,11 +92,14 @@ def expand(md: str, *, as_html: bool) -> str:
     """
     entries = history.entries()
     out = []
-    in_fence = False
+    fence_char = ""
     for line in md.splitlines():
-        if line.startswith("```"):
-            in_fence = not in_fence
-        url = None if in_fence else _embed_url(line, entries)
+        fence = _FENCE_RE.match(line)
+        # A fence closes only on its own character, so a ``~~~`` line inside a
+        # backtick fence stays content.
+        if fence and fence_char in ("", fence.group(1)[0]):
+            fence_char = "" if fence_char else fence.group(1)[0]
+        url = None if fence_char else _embed_url(line, entries)
         if url is None:
             out.append(line)
         elif as_html:
@@ -109,19 +118,18 @@ def expand(md: str, *, as_html: bool) -> str:
 def to_html(md: str) -> str:
     """Wrap expanded markdown in a minimal report page.
 
-    The page needs the network: it loads ``marked`` from a CDN, and its
-    embedded dashboards only render while the servers they point at run.
+    The page needs the network: it loads ``marked`` and ``DOMPurify`` from a
+    CDN, and its embedded dashboards only render while the servers they point
+    at run.
     """
     expanded = expand(md, as_html=True)
-    # ponytail: the report is generated locally and read by its own author,
-    # so marked's default HTML pass-through (needed for the embedded
-    # iframes) is accepted as-is instead of sanitized.
     return f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>FlexViz report</title>
   <script src="{_MARKED_URL}"></script>
+  <script src="{_DOMPURIFY_URL}"></script>
   <style>
     body {{
       max-width: 900px; margin: 2rem auto; padding: 0 1rem;
@@ -139,8 +147,9 @@ def to_html(md: str) -> str:
   </footer>
   <script id="fv-md" type="text/markdown">{_json_for_inline_script(expanded)}</script>
   <script>
-    document.getElementById("fv-report").innerHTML =
-      marked.parse(JSON.parse(document.getElementById("fv-md").textContent));
+    document.getElementById("fv-report").innerHTML = DOMPurify.sanitize(
+      marked.parse(JSON.parse(document.getElementById("fv-md").textContent)),
+      {{ADD_TAGS: ["iframe"], ADD_ATTR: ["loading"]}});
   </script>
 </body>
 </html>"""

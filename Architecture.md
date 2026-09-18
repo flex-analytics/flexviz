@@ -77,6 +77,8 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
 │  POST /share             — encode spec → shareable URL         │
 │  GET  /view              — render shared spec as HTML          │
 │  GET  /sources           — health / introspection              │
+│  GET  /h/{n}             — render flexviz history entry n      │
+│  GET  /cache/stats       — cache hits/misses/entries           │
 │  _sources: name → LFQueryBuilder  (registered once at show())  │
 └─────────────────────┬──────────────────────────────────────────┘
                       │
@@ -307,11 +309,13 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   `{version, state, client_state, revision}`, which is what a polling agent
   needs; `revision` increases whenever the state differs from the previous
   read.
-- **Apply contract**: `window.flexvizApply(obj)` is the write half. It merges
-  `obj` into the live spec per top-level key, with `state` and `client_state`
-  merged one level deeper so a partial patch keeps the sibling keys. It then
-  re-renders through `fvRestoreFromSpec` and resolves with the compact state
-  once the re-request has completed. It changes only the tab the caller
+- **Apply contract**: `window.flexvizApply(obj)` is the write half. It applies
+  the `state`, `client_state` and `layout` keys of `obj`, with `state` and
+  `client_state` merged one level deeper so a partial patch keeps the sibling
+  keys. Every other key is ignored with a console warning. It then re-renders
+  through `fvRestoreFromSpec` and resolves with the compact state once the
+  re-request has completed. It rejects when that re-request fails, and the
+  merged state is then ahead of the page. It changes only the tab the caller
   drives. The Import button is a thin wrapper around it. Structure changes
   (adding or removing a figure) still need a new share URL, because panels
   are built server-side.
@@ -925,6 +929,8 @@ _sources: Dict[str, LFQueryBuilder]
 
 Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.
 
+`GET /h/{n}` also reads no server state: it re-reads an agent-owned history file from the working directory on every request and stores nothing, see the agent-loop section above.
+
 ### Caching carve-out to the stateless invariant
 
 The "stateless server" invariant forbids *authoritative interaction state* (viewport, selection, overlay, hover, grid) — it does **not** forbid a **content-addressed memoization cache**. `flexviz/cache.py` may hold a reconstructable cache derived solely from `_sources` + request content, provided it is:
@@ -1285,7 +1291,7 @@ them.
   | pie | (*label cols as categorical) | same |
   | line | (binned x col @ `n_points/2` buckets, *group cols as categorical) — **minmax-only** | `line_env` over `y` |
   | corr_heatmap | `()` — no grouping dims; the matrix cells are the explicit `columns` pairs; `columns` must be passed explicitly for cube support | `corr` (Pearson only) |
-  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"`, **bit-equal to the `fixed_hist2d` kernel** (same `n/(hi-lo)` scale as `fixed_hist`, no span pad); **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
+  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"` (only skips the domain pad; the bin expression is shared with hist1d), **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
   | treemap | (*path cols as categorical) — the **leaf** level; the client finalizes leaf cells then **sums** them up every path level (parents = Σ of child finalized values, mirroring `_to_grouped_update`) | `count`/`sum`/`mean`/`min`/`max` over `values` |
 
   bar ≡ pie descriptor sharing falls out of content-key dedup: same labels + same measure ⇒ one
@@ -1522,7 +1528,8 @@ flexviz/
 │   ├── __init__.py          ← public API: Figure, Dashboard, app,
 │   │                           register_source, mount_into
 │   ├── __main__.py          ← `python -m flexviz` entry; calls cli.main
-│   ├── cli.py               ← serve / schema / decode / skill install
+│   ├── cli.py               ← serve / schema / decode / skill install /
+│   │                           history / report
 │   ├── spec.py              ← VisualizationSpec, DashboardSpec, FigureSpec,
 │   │                           TraceSpec, LayoutSpec, ToolbarConfig,
 │   │                           InteractionState, SelectionState,
@@ -1540,6 +1547,8 @@ flexviz/
 │   ├── server.py            ← FastAPI app, register_source, mount_into
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard
+│   ├── history.py           ← numbers share URLs in .flexviz/history.jsonl
+│   ├── report.py            ← fv:N findings-file entries for GET /h/{n}
 │   ├── skills/
 │   │   └── flexviz-explore/SKILL.md  ← packaged agent skill (flexviz skill install)
 │   ├── trace/

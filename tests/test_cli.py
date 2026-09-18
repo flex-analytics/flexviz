@@ -14,6 +14,7 @@ from flexviz.spec import (
     ClientState,
     DashboardSpec,
     InteractionState,
+    VisualizationSpec,
     decode_spec,
     encode_spec,
     encoded_spec_from_url,
@@ -395,6 +396,25 @@ def test_record_state_keeps_the_recorded_host(monkeypatch, tmp_path):
     assert [f.source for f in spec.figures] == ["demo", "demo"]
 
 
+def test_record_state_wraps_a_single_figure_entry(monkeypatch, tmp_path):
+    """A recorded ``/view`` URL can hold a single figure, which has no
+    ``client_state`` field to record the live state into."""
+    monkeypatch.chdir(tmp_path)
+    encoded = encode_spec(VisualizationSpec())
+    first = history.add(f"http://127.0.0.1:8000/view?spec={encoded}")
+
+    n = history.record_state(
+        first, {"cross_filter_mode": "overlay"}, {"hover_mode": "on"}
+    )
+
+    assert n == 2
+    spec = decode_spec(encoded_spec_from_url(history.entry(n)["url"]))
+    assert isinstance(spec, DashboardSpec)
+    assert len(spec.figures) == 1
+    assert spec.state.cross_filter_mode == "overlay"
+    assert spec.client_state.hover_mode == "on"
+
+
 def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):
@@ -408,6 +428,20 @@ def test_history_rejects_a_malformed_line(monkeypatch, tmp_path):
     path.write_text('{"n": 1, "url": "http://x"\n')
     with pytest.raises(SystemExit):
         main(["history", "list"])
+
+
+def test_history_rejects_a_line_that_is_not_an_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".flexviz" / "history.jsonl"
+    path.parent.mkdir()
+
+    path.write_text("[]\n")
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
+
+    path.write_text('{"n": 1, "note": "no url"}\n')
+    with pytest.raises(ValueError, match="line 1 is not a history entry"):
+        history.entry(1)
 
 
 def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_path):
@@ -433,3 +467,11 @@ def test_report_command_writes_html_and_expanded_markdown(
     assert "\\u003ciframe" in html
     assert url in html
     assert (tmp_path / "out.md").read_text().splitlines()[2] == url
+
+
+def test_report_command_exits_on_an_unknown_history_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "findings.md"
+    src.write_text("fv:9\n")
+    with pytest.raises(SystemExit, match="no history entry 9"):
+        main(["report", str(src), "-o", "out.html"])
