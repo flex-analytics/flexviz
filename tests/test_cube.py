@@ -2849,7 +2849,7 @@ def _hist2d_target_df() -> pl.DataFrame:
 
     The on-edge points test top-bin handling. A value exactly at ``hi`` must
     land in the top bin through the kernel's top clamp. The cube
-    ``_fixed_hist2d_bin_expr`` must assign the same bin, or the z-matrices
+    ``_fixed_hist_bin_expr`` must assign the same bin, or the z-matrices
     diverge.
     """
     x_lo, x_hi = 0.0, 80.0
@@ -2997,14 +2997,14 @@ class TestHist2dTargetBinningParity:
         # The cube hist2d bin expr must bin bit-equal to the fixed_hist2d
         # kernel, including a value exactly at the domain max, which the top
         # clamp folds into the top bin. Compare on a single axis.
-        from flexviz.cube import _fixed_hist2d_bin_expr
+        from flexviz.cube import _fixed_hist_bin_expr
 
         lo, hi, n = 0.0, 80.0, 8
         step = (hi - lo) / n
         values = [lo + k * step for k in range(n + 1)]  # every edge incl. hi
         s = pl.Series("v", values, dtype=pl.Float64)
         cube_bins = (
-            pl.select(_fixed_hist2d_bin_expr(pl.lit(s), lo, hi, n, "b"))
+            pl.select(_fixed_hist_bin_expr(pl.lit(s), lo, hi, n, "b"))
             .to_series()
             .to_list()
         )
@@ -3035,13 +3035,13 @@ class TestHist2dTargetBinningParity:
         # A span pad in absolute data units dominates a tiny value span and
         # collapses every row into bin 0. Strain-scale data (span ~1e-18) must
         # fill every bin, and the cube bin expr must agree with the kernel.
-        from flexviz.cube import _fixed_hist2d_bin_expr
+        from flexviz.cube import _fixed_hist_bin_expr
 
         lo, hi, n = -1e-18, 1e-18, 16
         values = [lo + (hi - lo) * k / 999 for k in range(1000)]
         s = pl.Series("v", values, dtype=pl.Float64)
         cube_bins = (
-            pl.select(_fixed_hist2d_bin_expr(pl.lit(s), lo, hi, n, "b"))
+            pl.select(_fixed_hist_bin_expr(pl.lit(s), lo, hi, n, "b"))
             .to_series()
             .to_list()
         )
