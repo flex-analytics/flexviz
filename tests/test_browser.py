@@ -6476,3 +6476,23 @@ class TestLockedLayoutBrowser:
             page.wait_for_timeout(1_000)
             measured = page.evaluate("() => document.documentElement.scrollHeight")
             assert abs(_iframe_height(url) - measured) <= 1, (draggable, measured)
+
+
+def test_report_page_sanitizes_the_markdown_html(
+    page: Page, server_port: int, monkeypatch, tmp_path
+) -> None:
+    """A report renders its fv:N iframe, but not HTML that carries a script."""
+    from flexviz import history
+    from flexviz.report import to_html
+
+    monkeypatch.chdir(tmp_path)
+    history.add(_dashboard_url(server_port, "plotly"))
+    md = "# Findings\n\n<img src=x onerror=\"document.title='pwned'\">\n\nfv:1\n"
+    out = tmp_path / "report.html"
+    out.write_text(to_html(md), encoding="utf-8")
+
+    page.goto(out.as_uri())
+    chart = page.frame_locator("#fv-report iframe").locator(".js-plotly-plot")
+    chart.first.wait_for(timeout=20_000)
+    assert page.title() == "FlexViz report"
+    assert page.evaluate("() => !!document.querySelector('img[onerror]')") is False

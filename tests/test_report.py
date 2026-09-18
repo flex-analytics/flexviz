@@ -124,7 +124,14 @@ def test_to_html_escapes_prose_and_has_no_stray_closing_script(monkeypatch, tmp_
     monkeypatch.chdir(tmp_path)
     md = "Note: a </script> tag appeared in the raw logs."
     page = to_html(md)
-    # Only the template's own three <script> tags close for real; the prose's
+    # Only the template's own four <script> tags close for real; the prose's
     # </script> must come back JSON-escaped instead of breaking out early.
-    assert page.count("</script>") == 3
+    assert page.count("</script>") == 4
     assert "\\u003c/script" in page
+
+
+def test_to_html_sanitizes_what_it_renders(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    page = to_html("# Findings")
+    assert "dompurify@" in page
+    assert "DOMPurify.sanitize(" in page

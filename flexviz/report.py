@@ -31,8 +31,9 @@ _HEADER_HEIGHT_PX = 45
 _STATIC_GRID_PADDING_PX = 16
 
 # Pinned the way Gridstack is pinned in flexviz/adapters/base.py. The UMD
-# build is the one that defines the global ``marked``.
+# builds are the ones that define the globals ``marked`` and ``DOMPurify``.
 _MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.0.13/lib/marked.umd.min.js"
+_DOMPURIFY_URL = "https://cdn.jsdelivr.net/npm/dompurify@3.4.15/dist/purify.min.js"
 
 _FV_LINE_RE = re.compile(r"fv:(\d+)")
 
@@ -109,19 +110,18 @@ def expand(md: str, *, as_html: bool) -> str:
 def to_html(md: str) -> str:
     """Wrap expanded markdown in a minimal report page.
 
-    The page needs the network: it loads ``marked`` from a CDN, and its
-    embedded dashboards only render while the servers they point at run.
+    The page needs the network: it loads ``marked`` and ``DOMPurify`` from a
+    CDN, and its embedded dashboards only render while the servers they point
+    at run.
     """
     expanded = expand(md, as_html=True)
-    # ponytail: the report is generated locally and read by its own author,
-    # so marked's default HTML pass-through (needed for the embedded
-    # iframes) is accepted as-is instead of sanitized.
     return f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>FlexViz report</title>
   <script src="{_MARKED_URL}"></script>
+  <script src="{_DOMPURIFY_URL}"></script>
   <style>
     body {{
       max-width: 900px; margin: 2rem auto; padding: 0 1rem;
@@ -139,8 +139,9 @@ def to_html(md: str) -> str:
   </footer>
   <script id="fv-md" type="text/markdown">{_json_for_inline_script(expanded)}</script>
   <script>
-    document.getElementById("fv-report").innerHTML =
-      marked.parse(JSON.parse(document.getElementById("fv-md").textContent));
+    document.getElementById("fv-report").innerHTML = DOMPurify.sanitize(
+      marked.parse(JSON.parse(document.getElementById("fv-md").textContent)),
+      {{ADD_TAGS: ["iframe"], ADD_ATTR: ["loading"]}});
   </script>
 </body>
 </html>"""
