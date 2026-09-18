@@ -16,7 +16,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from flexviz.spec import (
     ClientState,
+    DashboardSpec,
     InteractionState,
+    VisualizationSpec,
     decode_spec,
     encode_spec,
     encoded_spec_from_url,
@@ -94,6 +96,10 @@ def record_state(
     """
     url = entry(n)["url"]
     spec = decode_spec(encoded_spec_from_url(url))
+    if isinstance(spec, VisualizationSpec):
+        # Only a dashboard holds client_state, and /view renders a single
+        # figure through the same wrap.
+        spec = DashboardSpec(figures=[spec.figure], state=spec.state)
     spec.state = InteractionState.model_validate(state)
     if client_state is not None:
         spec.client_state = ClientState.model_validate(client_state)

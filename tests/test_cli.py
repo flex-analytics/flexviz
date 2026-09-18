@@ -14,6 +14,7 @@ from flexviz.spec import (
     ClientState,
     DashboardSpec,
     InteractionState,
+    VisualizationSpec,
     decode_spec,
     encode_spec,
     encoded_spec_from_url,
@@ -393,6 +394,25 @@ def test_record_state_keeps_the_recorded_host(monkeypatch, tmp_path):
     assert spec.client_state.hover_mode == "on"
     # The figures come from the recorded entry, not from a rebuilt dashboard.
     assert [f.source for f in spec.figures] == ["demo", "demo"]
+
+
+def test_record_state_wraps_a_single_figure_entry(monkeypatch, tmp_path):
+    """A recorded ``/view`` URL can hold a single figure, which has no
+    ``client_state`` field to record the live state into."""
+    monkeypatch.chdir(tmp_path)
+    encoded = encode_spec(VisualizationSpec())
+    first = history.add(f"http://127.0.0.1:8000/view?spec={encoded}")
+
+    n = history.record_state(
+        first, {"cross_filter_mode": "overlay"}, {"hover_mode": "on"}
+    )
+
+    assert n == 2
+    spec = decode_spec(encoded_spec_from_url(history.entry(n)["url"]))
+    assert isinstance(spec, DashboardSpec)
+    assert len(spec.figures) == 1
+    assert spec.state.cross_filter_mode == "overlay"
+    assert spec.client_state.hover_mode == "on"
 
 
 def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
