@@ -311,7 +311,8 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   `obj` into the live spec per top-level key, with `state` and `client_state`
   merged one level deeper so a partial patch keeps the sibling keys. It then
   re-renders through `fvRestoreFromSpec` and resolves with the compact state
-  once the re-request has completed. It changes only the tab the caller
+  once the re-request has completed. It rejects when that re-request fails,
+  and the merged state is then ahead of the page. It changes only the tab the caller
   drives. The Import button is a thin wrapper around it. Structure changes
   (adding or removing a figure) still need a new share URL, because panels
   are built server-side.

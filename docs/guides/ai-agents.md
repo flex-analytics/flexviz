@@ -148,7 +148,8 @@ await window.flexvizApply({state: {viewport: {...}}})   // via browser evaluate
 `flexvizApply` is the write half of the readback accessor. Top-level keys
 replace; `state` and `client_state` merge one level deep, so a patch that
 carries only `selections` keeps your viewport and colors. The page re-renders
-and resolves with the compact state. It changes only the tab the agent drives,
+and resolves with the compact state. It rejects when the re-request to the
+server fails, and the merged state is then ahead of the page. It changes only the tab the agent drives,
 so with separate browsers the agent records the new state and hands you the new
 `/h/N` instead. Adding or removing a figure is a
 structure change, not a state change: the agent rebuilds the spec in Python,

@@ -10,7 +10,8 @@
 // interaction state plus a revision, which is what a polling agent needs.
 // `flexvizApply(obj)` merges per top-level spec key (`state` and `client_state`
 // one level deeper), re-renders, and resolves with the compact state once the
-// re-request has completed.
+// re-request has completed. It rejects when that re-request fails. The merge
+// happens first, so the spec can then be ahead of the page.
 window.flexvizState = (opts) =>
   opts && opts.compact ? _fvCompactState() : structuredClone(DASHBOARD_SPEC);
 
@@ -31,7 +32,9 @@ window.flexvizApply = async function(obj) {
   window.fvUpdateGridButton?.();
   // fvRestoreFromSpec owns the rest: runtime cache, hover lookups, cross-filter
   // button and selection summary, all before it re-requests.
-  await window.fvRestoreFromSpec();
+  if (!(await window.fvRestoreFromSpec())) {
+    throw new Error('flexviz: dashboard update failed');
+  }
   return _fvCompactState();
 };
 

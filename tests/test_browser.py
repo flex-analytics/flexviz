@@ -3867,6 +3867,19 @@ class TestAgentReadback:
         assert after["viewport"] == zoomed, after
         assert after["group_domains"] == {}, after
 
+    def test_apply_rejects_when_the_update_fails(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        # `force_update` bypasses the client cache, so the route is really hit.
+        message = page.evaluate(
+            """() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)"""
+        )
+        assert message == "flexviz: dashboard update failed"
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)

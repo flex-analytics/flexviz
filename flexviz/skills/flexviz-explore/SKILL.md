@@ -216,7 +216,8 @@ await window.flexvizApply({state: {selections: [
 
 Top-level keys replace. `state` and `client_state` merge one level deep, so a
 partial `state` keeps its sibling keys (`viewport`, `group_domains`,
-`cross_filter_mode`). It re-renders and resolves with the compact state. With
+`cross_filter_mode`). It re-renders and resolves with the compact state. It
+rejects when the re-request fails, and the state is then ahead of the page. With
 separate browsers the human does not see it, so record the state with
 `record_state(..., actor="agent")` and give them the new `/h/N` instead;
 the default actor is `"human"`, because step 6 is its first use.
