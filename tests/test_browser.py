@@ -3911,6 +3911,34 @@ class TestAgentReadback:
         )
         assert btn.text_content() == "Import failed"
 
+    def test_apply_ignores_the_keys_it_cannot_apply(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        panels = page.locator(".js-plotly-plot").count()
+        assert panels > 1
+
+        bodies: list[dict] = []
+
+        def capture(req: PWRequest) -> None:
+            if req.method == "POST" and req.url.endswith("/dashboard/update"):
+                bodies.append(json.loads(req.post_data or "{}"))
+
+        page.on("request", capture)
+        page.evaluate(
+            """() => window.flexvizApply({
+                figures: [window.flexvizState().figures[0]],
+                bogus: 42,
+                state: {selections: []},
+            })"""
+        )
+
+        assert page.locator(".js-plotly-plot").count() == panels
+        assert bodies, "apply must re-request the deltas"
+        spec = bodies[-1]["spec"]
+        assert "bogus" not in spec, spec.keys()
+        assert len(spec["figures"]) == panels
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)

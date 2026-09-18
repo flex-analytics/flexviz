@@ -307,12 +307,13 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   `{version, state, client_state, revision}`, which is what a polling agent
   needs; `revision` increases whenever the state differs from the previous
   read.
-- **Apply contract**: `window.flexvizApply(obj)` is the write half. It merges
-  `obj` into the live spec per top-level key, with `state` and `client_state`
-  merged one level deeper so a partial patch keeps the sibling keys. It then
-  re-renders through `fvRestoreFromSpec` and resolves with the compact state
-  once the re-request has completed. It rejects when that re-request fails,
-  and the merged state is then ahead of the page. It changes only the tab the caller
+- **Apply contract**: `window.flexvizApply(obj)` is the write half. It applies
+  the `state`, `client_state` and `layout` keys of `obj`, with `state` and
+  `client_state` merged one level deeper so a partial patch keeps the sibling
+  keys. Every other key is ignored with a console warning. It then re-renders
+  through `fvRestoreFromSpec` and resolves with the compact state once the
+  re-request has completed. It rejects when that re-request fails, and the
+  merged state is then ahead of the page. It changes only the tab the caller
   drives. The Import button is a thin wrapper around it. Structure changes
   (adding or removing a figure) still need a new share URL, because panels
   are built server-side.

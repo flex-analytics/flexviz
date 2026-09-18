@@ -214,7 +214,8 @@ await window.flexvizApply({state: {selections: [
 ]}})
 ```
 
-Top-level keys replace. `state` and `client_state` merge one level deep, so a
+Only `state`, `client_state` and `layout` apply; every other key is ignored
+with a warning. `state` and `client_state` merge one level deep, so a
 partial `state` keeps its sibling keys (`viewport`, `group_domains`,
 `cross_filter_mode`). It re-renders and resolves with the compact state. It
 rejects when the re-request fails, and the state is then ahead of the page. With
@@ -222,7 +223,7 @@ separate browsers the human does not see it, so record the state with
 `record_state(..., actor="agent")` and give them the new `/h/N` instead;
 the default actor is `"human"`, because step 6 is its first use.
 
-A structure change (add or remove a figure, change traces, change layout) needs
+A structure change (add or remove a figure, change traces) needs
 a new spec, because panels are built server-side. Rebuild in Python as in step
 3, `history.add(...)`, then open the new `/h/N`. Note your own entries too, so
 the history reads as a sequence of who did what.

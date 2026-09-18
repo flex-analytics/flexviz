@@ -8,8 +8,9 @@
 // transient hover/cursor visuals) so callers cannot mutate the authoritative
 // client state through it. `flexvizState({compact: true})` returns only the
 // interaction state plus a revision, which is what a polling agent needs.
-// `flexvizApply(obj)` merges per top-level spec key (`state` and `client_state`
-// one level deeper), re-renders, and resolves with the compact state once the
+// `flexvizApply(obj)` merges the `state`, `client_state` and `layout` keys
+// (`state` and `client_state` one level deeper) and ignores every other key with
+// a warning. It re-renders and resolves with the compact state once the
 // re-request has completed. It rejects when that re-request fails. The merge
 // happens first, so the spec can then be ahead of the page.
 window.flexvizState = (opts) =>
@@ -19,6 +20,14 @@ window.flexvizApply = async function(obj) {
   // Clone so the caller keeps no live reference into the authoritative spec,
   // mirroring the detached snapshot the read half returns.
   const patch = structuredClone(obj);
+  // `figures` would half-apply: figSpecByUid is built once at load and the panels
+  // are server-rendered, so a structure change needs a new share URL.
+  const known = ['state', 'client_state', 'layout'];
+  for (const key of Object.keys(patch)) {
+    if (known.includes(key)) continue;
+    console.warn(`flexviz: flexvizApply ignores the key '${key}'`);
+    delete patch[key];
+  }
   // `state` and `client_state` merge one level deep: a patch that carries only
   // `selections` must keep `viewport` and `group_domains`, which several readers
   // dereference without a guard (delta.js ensureGroupColor, plotly relayout).
