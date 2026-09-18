@@ -95,15 +95,20 @@ dash = Dashboard(pl.scan_parquet("data.parquet"), cache=True)
 dash.add_figure().add_line(x="timestamp", y="value", group_by="sensor_id")
 dash.add_figure().add_histogram(x="value", bins=50)
 url = dash.share_url(server_url="http://127.0.0.1:8077", source_name="data")
-print(history.add(url, note="line + histogram, initial view", actor="agent"))
+print(history.add(url, note="data.parquet: line + histogram, initial view", actor="agent"))
 ```
 
+- Start small: at most 4 figures in the first dashboard. Pick the few columns
+  that matter and add more only when the human asks. A wall of panels is harder
+  to read than a focused view.
 - This script only builds a spec: cheap, lazy, and it exits at once. The serve
   process answers every interaction.
 - `source_name` must match the served stem, and `cache=True` must match
   `--cache`.
 - No categorical column to `group_by`? Split metrics across figures instead,
-  and use `add_corr_heatmap` or `add_histogram2d` to relate numeric columns.
+  and use `add_histogram2d` to relate numeric columns. Add at most one
+  `add_corr_heatmap` for the whole dashboard, and only when many numeric columns
+  make one worthwhile. It is an overview, not a per-figure default.
 
 ### 4. Open the entry
 
