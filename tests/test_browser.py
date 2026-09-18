@@ -3874,10 +3874,8 @@ class TestAgentReadback:
 
         page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
         # `force_update` bypasses the client cache, so the route is really hit.
-        message = page.evaluate(
-            """() => window.flexvizApply({state: {selections: []}})
-                .then(() => null, err => err.message)"""
-        )
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)""")
         assert message == "flexviz: dashboard update failed"
 
     def test_import_failure_labels_the_button(self, page: Page, server_port: int):
@@ -3886,10 +3884,8 @@ class TestAgentReadback:
         _wait_for_init(page, "plotly")
         btn = page.locator("#fv-btn-import")
 
-        page.evaluate(
-            """() => window.fvOnImport(
-                new File(['{not json'], 'spec.json', {type: 'application/json'}))"""
-        )
+        page.evaluate("""() => window.fvOnImport(
+                new File(['{not json'], 'spec.json', {type: 'application/json'}))""")
         page.wait_for_function(
             "() => document.getElementById('fv-btn-import').textContent"
             " === 'Import failed'"
@@ -3900,11 +3896,9 @@ class TestAgentReadback:
         )
 
         page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
-        page.evaluate(
-            """() => window.fvOnImport(new File(
+        page.evaluate("""() => window.fvOnImport(new File(
                 [JSON.stringify(window.flexvizState())], 'spec.json',
-                {type: 'application/json'}))"""
-        )
+                {type: 'application/json'}))""")
         page.wait_for_function(
             "() => document.getElementById('fv-btn-import').textContent"
             " === 'Import failed'"
@@ -3925,13 +3919,11 @@ class TestAgentReadback:
                 bodies.append(json.loads(req.post_data or "{}"))
 
         page.on("request", capture)
-        page.evaluate(
-            """() => window.flexvizApply({
+        page.evaluate("""() => window.flexvizApply({
                 figures: [window.flexvizState().figures[0]],
                 bogus: 42,
                 state: {selections: []},
-            })"""
-        )
+            })""")
 
         assert page.locator(".js-plotly-plot").count() == panels
         assert bodies, "apply must re-request the deltas"
