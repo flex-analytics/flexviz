@@ -1714,9 +1714,6 @@ def cube_content_key(spec: CubeSpec) -> str:
                 "k": d.kind,
                 "b": d.bins,
                 "d": list(d.domain) if d.domain else None,
-                # Only present for non-default bin variants — keeps existing
-                # (line/bar/pie/corr/hist1d) keys byte-identical.
-                **({"bv": d.bin_variant} if d.bin_variant != "hist1d" else {}),
             }
             for d in spec.target_dims
         ],
