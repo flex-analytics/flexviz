@@ -427,12 +427,16 @@ window.fvOnExport = function() {
 };
 window.fvOnImport = function(file) {
   if (!file) return;
+  const btn = document.getElementById('fv-btn-import');
+  const label = btn.textContent;
   const reader = new FileReader();
   reader.onload = async function(e) {
     try {
       await window.flexvizApply(JSON.parse(e.target.result));
     } catch (err) {
       console.warn('flexviz import failed', err);
+      btn.textContent = 'Import failed';
+      setTimeout(() => { btn.textContent = label; }, 2000);
     }
   };
   reader.readAsText(file);

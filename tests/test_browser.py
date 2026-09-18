@@ -3880,6 +3880,37 @@ class TestAgentReadback:
         )
         assert message == "flexviz: dashboard update failed"
 
+    def test_import_failure_labels_the_button(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        btn = page.locator("#fv-btn-import")
+
+        page.evaluate(
+            """() => window.fvOnImport(
+                new File(['{not json'], 'spec.json', {type: 'application/json'}))"""
+        )
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        # The label goes back on its own, so the next case starts clean.
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent === 'Import'"
+        )
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        page.evaluate(
+            """() => window.fvOnImport(new File(
+                [JSON.stringify(window.flexvizState())], 'spec.json',
+                {type: 'application/json'}))"""
+        )
+        page.wait_for_function(
+            "() => document.getElementById('fv-btn-import').textContent"
+            " === 'Import failed'"
+        )
+        assert btn.text_content() == "Import failed"
+
 
 # ---------------------------------------------------------------------------
 # Share behind a prefix-stripping reverse proxy (demo deployment topology)
