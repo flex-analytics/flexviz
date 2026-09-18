@@ -12,7 +12,11 @@ from __future__ import annotations
 import re
 
 from . import history
-from .adapters.base import _html_attr, _json_for_inline_script
+from .adapters.base import (
+    _STATIC_GRID_PADDING_PX,
+    _html_attr,
+    _json_for_inline_script,
+)
 from .spec import (
     _GRIDSTACK_CELL_HEIGHT_PX,
     DashboardSpec,
@@ -25,10 +29,6 @@ from .spec import (
 # flexviz/adapters/js/theme.css --fv-toolbar-height (44px), plus the 1px
 # border-bottom on #fv-header in flexviz/adapters/js/toolbar.css.
 _HEADER_HEIGHT_PX = 45
-# #fv-dashboard's own top + bottom padding on the static grid
-# (flexviz/adapters/base.py _dashboard_markup). GridStack needs no such term:
-# it sets .grid-stack to rows * cell height, its padding inside that box.
-_STATIC_GRID_PADDING_PX = 16
 
 # Pinned the way Gridstack is pinned in flexviz/adapters/base.py. The UMD
 # builds are the ones that define the globals ``marked`` and ``DOMPurify``.
@@ -73,7 +73,10 @@ def _iframe_height(url: str) -> int:
     grid_items = spec.layout.grid_items or _auto_grid_items(spec.figures)
     rows = max((item.y + item.h for item in grid_items), default=0)
     height = rows * _GRIDSTACK_CELL_HEIGHT_PX + _HEADER_HEIGHT_PX
-    return height if spec.layout.draggable else height + _STATIC_GRID_PADDING_PX
+    if spec.layout.draggable:
+        return height
+    # Top plus bottom padding of the static grid container.
+    return height + 2 * _STATIC_GRID_PADDING_PX
 
 
 def expand(md: str, *, as_html: bool) -> str:
