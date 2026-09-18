@@ -49,7 +49,7 @@ def _embed_url(line: str, entries: list[dict]) -> str | None:
         for entry in entries:
             if entry["n"] == n:
                 return entry["url"]
-        raise SystemExit(f"no history entry {n}")
+        raise ValueError(f"no history entry {n}")
     # A URL has no spaces; this excludes prose that merely mentions one and,
     # importantly, an already-rendered <iframe ...> line (which does).
     if "/view?spec=" in stripped and " " not in stripped:

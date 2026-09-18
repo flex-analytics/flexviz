@@ -433,3 +433,11 @@ def test_report_command_writes_html_and_expanded_markdown(
     assert "\\u003ciframe" in html
     assert url in html
     assert (tmp_path / "out.md").read_text().splitlines()[2] == url
+
+
+def test_report_command_exits_on_an_unknown_history_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "findings.md"
+    src.write_text("fv:9\n")
+    with pytest.raises(SystemExit, match="no history entry 9"):
+        main(["report", str(src), "-o", "out.html"])

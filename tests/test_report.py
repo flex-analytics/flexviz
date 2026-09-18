@@ -45,9 +45,9 @@ def test_raw_view_url_embeds_unchanged(monkeypatch, tmp_path):
     assert expand(plain, as_html=True).count("<iframe") == 1
 
 
-def test_unknown_history_entry_exits_nonzero(monkeypatch, tmp_path):
+def test_unknown_history_entry_raises(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError):
         expand("fv:9", as_html=True)
 
 
