@@ -693,7 +693,7 @@ async def history_view(n: int, renderer: str | None = None) -> HTMLResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    url = record.get("url", "")
+    url = record["url"]
     try:
         encoded = encoded_spec_from_url(url)
     except ValueError as exc:

@@ -1281,6 +1281,31 @@ class TestHistoryView:
         assert resp.status_code == 400
         assert "line 1 is not a history entry" in resp.json()["detail"]
 
+    def test_h_route_400s_on_an_entry_whose_url_is_not_a_string(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        """A null url must not reach encoded_spec_from_url as a TypeError."""
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".flexviz" / "history.jsonl"
+        path.parent.mkdir()
+        path.write_text('{"n": 1, "url": null}\n')
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 400
+        assert "line 1 is not a history entry" in resp.json()["detail"]
+
+    def test_h_route_400s_on_a_url_without_a_spec(
+        self, client: TestClient, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".flexviz" / "history.jsonl"
+        path.parent.mkdir()
+        path.write_text('{"n": 1, "url": "http://x/view"}\n')
+
+        resp = client.get("/h/1")
+        assert resp.status_code == 400
+        assert "no spec= query parameter" in resp.json()["detail"]
+
     def test_h_route_ignores_the_minting_session_port(
         self, client: TestClient, tmp_path, monkeypatch
     ):

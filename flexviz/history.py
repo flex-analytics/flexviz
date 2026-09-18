@@ -49,7 +49,11 @@ def entries() -> list[dict]:
                 # A half-written or hand-edited line cannot be skipped: every
                 # later number comes from the entry count, so it would shift.
                 raise ValueError(f"{PATH}: line {i} is not valid JSON") from exc
-            if not isinstance(record, dict) or "n" not in record or "url" not in record:
+            if (
+                not isinstance(record, dict)
+                or "n" not in record
+                or not isinstance(record.get("url"), str)
+            ):
                 raise ValueError(f"{PATH}: line {i} is not a history entry")
             out.append(record)
     return out
