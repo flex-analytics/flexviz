@@ -17,7 +17,12 @@ once at startup (or before ``uvicorn.run``) and are read-only thereafter.
     │    ← VisualizationSpec + InteractionEvent           │  ← full state from client
     │    → List[TraceDelta]                               │  ← only changed data
     │                                                     │
+    │  POST /dashboard/update                             │
+    │  POST /share                                        │
+    │  GET  /view                                         │
+    │  GET  /h/{n}                                        │  ← reads .flexviz/history.jsonl in cwd
     │  GET  /sources                                      │  ← introspection / health
+    │  GET  /cache/stats                                  │
     └─────────────────────────────────────────────────────┘
 
 Usage
