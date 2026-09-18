@@ -334,7 +334,8 @@ class Histogram2D(FlexTrace):
 
         Its grouping dims are its own ``(x_col, y_col)`` bin axes (order pinned:
         x first, y second) with ``bin_variant="hist2d"`` so the cube bins
-        bit-equally to the ``fixed_hist2d`` kernel (the ``+1e-10`` span eps).
+        bit-equally to the ``fixed_hist2d`` kernel (no span pad, top clamp
+        only).
         The measure is a count when ``z_col`` is ``None``, else the ``histfunc``
         reduction over ``z_col``. ``histnorm`` is NOT part of the cube — it is a
         client-side display normalization applied per-slice (two hist2ds

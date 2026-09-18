@@ -83,10 +83,20 @@ struct FixedHistKwargs {
 
 const FIXED_HIST_ROUND_EPS: f64 = 1e-9;
 
-/// Span pad shared by every 2D binner (`fixed_hist2d`, its rayon twin, and
-/// `fixed_hist2d_reduce`) so a value exactly at `hi` lands in the top bin.
-/// One definition on purpose: the scalar and parallel counts must be identical.
-const FIXED_HIST2D_SPAN_EPS: f64 = 1e-10;
+/// Per-axis bin scale for the 2D binners (`fixed_hist2d`, its rayon twin, and
+/// `fixed_hist2d_reduce`): `nb / (hi - lo)`, same as the 1D `fixed_hist`.
+/// The `.min(max_idx)` clamp at every call site folds a value at `hi` into
+/// the top bin, so the scale needs no span pad. A pad in absolute data units
+/// dominates a small span and collapses all rows into bin 0. A zero span
+/// gives scale 0, so all rows land in bin 0.
+#[inline]
+fn hist2d_axis_scale(lo: f64, hi: f64, nb: usize) -> f64 {
+    if hi > lo {
+        nb as f64 / (hi - lo)
+    } else {
+        0.0
+    }
+}
 
 trait FixedHistValue: Copy {
     const CHECK_NAN: bool;
@@ -1071,8 +1081,8 @@ fn fixed_hist2d_counts(
         return Ok(counts);
     }
 
-    let x_scale = nb_x as f64 / (x_hi - x_lo + FIXED_HIST2D_SPAN_EPS);
-    let y_scale = nb_y as f64 / (y_hi - y_lo + FIXED_HIST2D_SPAN_EPS);
+    let x_scale = hist2d_axis_scale(x_lo, x_hi, nb_x);
+    let y_scale = hist2d_axis_scale(y_lo, y_hi, nb_y);
     let max_xi = nb_x - 1;
     let max_yi = nb_y - 1;
 
@@ -1168,8 +1178,8 @@ fn fixed_hist2d_reduce_values(
     let z_f64 = z.cast(&DataType::Float64)?;
     let z_ca = z_f64.f64()?;
 
-    let x_scale = nb_x as f64 / (x_hi - x_lo + FIXED_HIST2D_SPAN_EPS);
-    let y_scale = nb_y as f64 / (y_hi - y_lo + FIXED_HIST2D_SPAN_EPS);
+    let x_scale = hist2d_axis_scale(x_lo, x_hi, nb_x);
+    let y_scale = hist2d_axis_scale(y_lo, y_hi, nb_y);
     let max_xi = nb_x - 1;
     let max_yi = nb_y - 1;
 
@@ -1372,8 +1382,8 @@ fn fixed_hist2d_counts_par(
         return scalar();
     };
 
-    let x_scale = nb_x as f64 / (x_hi - x_lo + FIXED_HIST2D_SPAN_EPS);
-    let y_scale = nb_y as f64 / (y_hi - y_lo + FIXED_HIST2D_SPAN_EPS);
+    let x_scale = hist2d_axis_scale(x_lo, x_hi, nb_x);
+    let y_scale = hist2d_axis_scale(y_lo, y_hi, nb_y);
     let (max_xi, max_yi) = (nb_x - 1, nb_y - 1);
 
     // Dispatch the two axes independently. A grouped histogram is

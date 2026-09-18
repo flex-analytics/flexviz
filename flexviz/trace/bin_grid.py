@@ -97,7 +97,8 @@ def axis_edges(
     Snapping costs at most one extra bin, which is why the count comes back too.
     """
     if range_ is None:
-        # The kernel adds its own EPS to the span, so pass the raw bounds.
+        # The kernel's top clamp folds a value at hi into the top bin, so
+        # pass the raw bounds.
         lo, hi = (domains or {})[col]
         return (
             0.0 if lo is None else float(lo),
@@ -129,10 +130,10 @@ def hist2d_count_expr(
 ) -> pl.Expr:
     """Build a count-only 2D histogram expression using fixed_hist2d.
 
-    ``edges`` are the raw bounds from ``axis_edges``: the Rust kernel adds its
-    own internal EPS to ``(x_hi - x_lo)`` when computing the bin scale, so they
-    must not be EPS-adjusted. ``mask`` restricts the rows inside the
-    expression; the batch fold passes None and filters the frame instead.
+    ``edges`` are the raw bounds from ``axis_edges``. The Rust kernel folds a
+    value at ``hi`` into the top bin, so they must not be EPS-adjusted.
+    ``mask`` restricts the rows inside the expression; the batch fold passes
+    None and filters the frame instead.
     """
     x_phys = hist2d_phys_col(x_col, schema)
     y_phys = hist2d_phys_col(y_col, schema)

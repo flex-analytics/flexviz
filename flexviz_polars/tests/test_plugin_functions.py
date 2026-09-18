@@ -675,8 +675,6 @@ class TestFixedHistParallel:
 # fixed_hist2d
 # ---------------------------------------------------------------------------
 
-_EPS2D = 1e-10  # matches internal EPS in the fixed_hist2d Rust kernel
-
 
 class TestFixedHist2D:
     # ---- output structure ---------------------------------------------------
@@ -745,8 +743,8 @@ class TestFixedHist2D:
         plugin_counts = _fixed_hist2d_counts(x, y, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y)
 
         # Polars native — compute the same bin indices the Rust kernel uses
-        x_scale = nb_x / (x_hi - x_lo + _EPS2D)
-        y_scale = nb_y / (y_hi - y_lo + _EPS2D)
+        x_scale = nb_x / (x_hi - x_lo)
+        y_scale = nb_y / (y_hi - y_lo)
         df = pl.DataFrame({"x": x, "y": y})
         native = (
             df.with_columns(
@@ -958,13 +956,13 @@ class TestFixedHist2D:
 def _ref_hist2d_counts(xs, ys, x_lo, x_hi, y_lo, y_hi, nb_x, nb_y) -> list[int]:
     """Reference 2D binning, independent of the kernel.
 
-    Mirrors the Rust arithmetic: the span carries `FIXED_HIST2D_SPAN_EPS`
-    (added by the kernel, not the caller), the index carries
-    `FIXED_HIST_ROUND_EPS`, and both axes clamp — Rust's saturating float->usize
-    cast puts anything below `lo` in bin 0. A NaN on either axis drops the row.
+    Mirrors the Rust arithmetic: the scale is `nb / (hi - lo)`, the index
+    carries `FIXED_HIST_ROUND_EPS`, and both axes clamp. Rust's saturating
+    float->usize cast puts anything below `lo` in bin 0. A NaN on either
+    axis drops the row.
     """
-    x_scale = nb_x / (x_hi - x_lo + 1e-10)
-    y_scale = nb_y / (y_hi - y_lo + 1e-10)
+    x_scale = nb_x / (x_hi - x_lo)
+    y_scale = nb_y / (y_hi - y_lo)
     z = [0] * (nb_x * nb_y)
     for xv, yv in zip(xs, ys):
         if xv is None or yv is None:

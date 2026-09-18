@@ -207,13 +207,10 @@ class TargetDimSpec:
     column's physical representation in that unit and the header dim entry
     carries it. The engine sets it from the schema dtype.
 
-    ``bin_variant`` selects the binning arithmetic for a binned dim
-    (contract K): ``"hist1d"`` (default) bins bit-equal to the Rust
-    ``fixed_hist`` kernel (``scale = n/(hi-lo)``); ``"hist2d"`` reproduces the
-    ``fixed_hist2d`` kernel's ``+1e-10`` span epsilon (``scale =
-    n/(hi-lo+1e-10)``) so a hist2d target's z-matrix is bit-equal to a server
-    delta. The default keeps every existing (line/bar/pie/corr/hist1d)
-    descriptor and content key byte-identical.
+    ``bin_variant`` marks a binned dim as ``"hist1d"`` (default) or
+    ``"hist2d"`` (contract K). Both bin bit-equal to their Rust kernels with
+    ``scale = n/(hi-lo)``. The variant only selects the engine's domain padding
+    (see ``_resolved_target_dims``).
     """
 
     column: str
@@ -744,23 +741,16 @@ def _fixed_hist_bin_expr(
     )
 
 
-#: Span epsilon of the Rust ``fixed_hist2d`` kernel (``expressions.rs``): the
-#: 2-D kernel adds it to ``(hi - lo)`` before computing the bin scale, so the
-#: cube hist2d target must reproduce it to bin bit-equally (contract K).
-_FIXED_HIST2D_SPAN_EPS: float = 1e-10
-
-
 def _fixed_hist2d_bin_expr(
     value: pl.Expr, lo: float, hi: float, n: int, alias: str
 ) -> pl.Expr:
     """Bin index bit-equal to the Rust ``fixed_hist2d`` kernel for in-domain
-    rows (per axis): ``min(floor((v-lo)*(n/(hi-lo+EPS)) + eps), n-1)``.
+    rows (per axis): ``min(floor((v-lo)*(n/(hi-lo)) + eps), n-1)``.
 
-    Differs from ``_fixed_hist_bin_expr`` ONLY by the ``+1e-10`` span epsilon
-    in the scale denominator (the 2-D kernel's ``EPS``); the epsilon makes the
-    denominator strictly positive so no ``hi > lo`` guard is needed. Same
-    operation order, same round-epsilon, same top clamp."""
-    scale = n / (hi - lo + _FIXED_HIST2D_SPAN_EPS)
+    Matches ``_fixed_hist_bin_expr``. The top clamp folds a value at ``hi``
+    into the top bin, so the scale needs no span pad. A pad in absolute data
+    units dominates a small span and collapses all rows into bin 0."""
+    scale = n / (hi - lo) if hi > lo else 0.0
     return (
         ((value.cast(pl.Float64) - lo) * scale + _FIXED_HIST_ROUND_EPS)
         .floor()
