@@ -70,13 +70,15 @@ under a number and works with the number.
 
 ```bash
 flexviz schema readings.parquet      # columns and dtypes, as JSON
-flexviz serve readings.parquet --cache --port 8077   # background server
+flexviz serve readings.parquet --cache > serve.log 2>&1 &   # background server
 ```
 
-Each file becomes a source named by its stem. `--cache` enables cross-filter
-cubes and live brushing for files that do not change while serving. The
-server is ready when `GET /sources` names your source. A bare "it answered"
-check is not enough, because another server can already own the port.
+Without `--port` the server takes a free port and prints its URL on the first
+line of the log, so the agent reads the port there. Each file becomes a source
+named by its stem. `--cache` enables cross-filter cubes and live brushing for
+files that do not change while serving. The server is ready when `GET /sources`
+names your source. A bare "it answered" check is not enough, because another
+server can answer instead.
 
 The agent runs the server from the project directory, because the history
 file and the `/h/N` route below both resolve against a working directory.
@@ -90,11 +92,11 @@ from flexviz import Dashboard, history
 dash = Dashboard(pl.scan_parquet("readings.parquet"), cache=True)
 dash.add_figure().add_line(x="timestamp", y="value", group_by="sensor_id")
 dash.add_figure().add_histogram(x="value", bins=50)
-url = dash.share_url(server_url="http://127.0.0.1:8077", source_name="readings")
+url = dash.share_url(server_url="http://127.0.0.1:<port>", source_name="readings")
 print(history.add(url, note="line + histogram, initial view", actor="agent"))
 ```
 
-Entry `N` opens at `http://127.0.0.1:8077/h/N`. That is the address the agent
+Entry `N` opens at `http://127.0.0.1:<port>/h/N`. That is the address the agent
 gives you, and the address it opens in its own browser tab. No 1 to 4 KB URL
 changes hands.
 
@@ -177,9 +179,11 @@ give each agent session its own directory.
 
 ## Reports: findings with live dashboards
 
-`flexviz report findings.md` turns a plain markdown file into an HTML
-report. Any line that is exactly `fv:N` becomes a live, zoomable dashboard,
-embedded as an iframe at the URL that history entry `N` recorded. A line
+The agent gives you its findings in chat first, each one with the `fv:N` that
+shows it, and offers a report. When you ask for one, `flexviz report
+findings.md` turns a plain markdown file into an HTML report. Any line that is
+exactly `fv:N` becomes a live, zoomable dashboard, embedded as an iframe at the
+URL that history entry `N` recorded. A line
 that is exactly a share URL embeds the same way, so a markdown file already
 expanded by `--md` (below) still renders when it is expanded again.
 
