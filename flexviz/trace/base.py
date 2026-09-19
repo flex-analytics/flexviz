@@ -85,9 +85,9 @@ class FlexTrace(ABC):
     # Subclasses override these at class level.
     trace_type: str = ""
     overlay_style: str = "full"  # "full" | "filtered_only"
-    # True means an unzoomed grid in update mode follows the cross-filter,
-    # because the axis autoranges to the surviving rows. Histogram edges stay
-    # put so the brushed subset stays comparable with the whole.
+    # True means an unzoomed grid in update mode uses the cross-filtered rows'
+    # domain. Histogram edges stay put so the brushed subset stays comparable
+    # with the whole.
     domain_follows_filter: ClassVar[bool] = False
     # One-line human description of the zoom re-aggregation policy, surfaced in
     # the generated Architecture.md table. Override alongside

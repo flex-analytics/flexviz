@@ -445,7 +445,7 @@ class TestFilterStableEdges:
         """The opposite rule, side by side: a line grid narrows to the brush.
 
         A line has no bin identity to preserve. Its buckets are a rendering
-        budget, so they follow the x extent the axis will show.
+        budget, so they follow the cross-filtered x extent.
         """
         before = self._edges(df, LinePlot(x="k", y="a", n_points=8), [])
         after = self._edges(
@@ -487,7 +487,7 @@ def _line_frame() -> pl.DataFrame:
 
 
 class TestFilteredLineGrid:
-    """An unzoomed x-width line bins over the surviving rows' x extent."""
+    """An unzoomed x-width line bins over the cross-filtered x extent."""
 
     def _points(self, src, trace, selections, **process_kwargs):
         """``[(count, x_min, x_max)]`` of the target, one entry per series."""
@@ -560,7 +560,7 @@ class TestFilteredLineGrid:
             _brush("k", _BRUSH),
             viewports_by_figure={"tgt": {"x": [0, _N - 1]}},
         )[0]
-        assert count <= 10  # ~4 % of n_points, the pre-fix behaviour
+        assert count <= 10  # ~4 % of n_points
 
     def test_overlay_mode_keeps_the_unfiltered_grid(self, df):
         """The background layer pins the axis, so the foreground shares its grid."""

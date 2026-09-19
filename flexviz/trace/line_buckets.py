@@ -43,14 +43,13 @@ def bucket_grid(
 ) -> tuple[Any, Any]:
     """``(lo, hi)`` bounds of the equal-x-width grid, in physical units.
 
-    The grid spans the x extent the axis will show. Zoomed, that is the client
-    viewport. Unzoomed it is ``x_domain``, the ``(min, max)`` the engine
-    resolved: the filtered rows' extent under a cross-filter in update mode,
-    the unfiltered one otherwise. With no bounds (an empty or all-null x column, an
-    all-NaN one, or a temporal viewport bound that failed to parse) the span is
-    one unit typed for the dtype, and both formulations fall out empty. A span
-    that is not finite raises: the edges are found by binary search, and there
-    is no finite bucket width to search over.
+    Zoomed, the grid spans the client viewport. Unzoomed it spans the
+    engine-resolved ``x_domain``: the filtered rows' extent under a cross-filter
+    in update mode, the unfiltered one otherwise. With no bounds (an empty or
+    all-null x column, an all-NaN one, or a temporal viewport bound that failed
+    to parse) the span is one unit typed for the dtype, and both formulations
+    fall out empty. A span that is not finite raises: the edges are found by
+    binary search, and there is no finite bucket width to search over.
     """
     if x_range is not None:
         lo, hi = x_range[0], x_range[1]
@@ -153,10 +152,10 @@ def _bucket_extrema(
     locate the x value at each y extremum in a single associative pass, so the
     group never buffers.
 
-    The grid spans the x extent the axis will show. When zoomed, the viewport
-    provides the x bounds. When unzoomed, ``x_domain`` carries the ``(min,
-    max)`` the engine resolved, in physical units: the filtered rows' extent
-    under a cross-filter in update mode, the unfiltered one otherwise.
+    When zoomed, the viewport provides the grid bounds. When unzoomed,
+    ``x_domain`` carries the engine-resolved ``(min, max)`` in physical units:
+    the filtered rows' extent under a cross-filter in update mode, the
+    unfiltered one otherwise.
 
     On an exact y plateau, ``min_by`` picks an arbitrary member, and which
     member can vary with ``POLARS_MAX_THREADS``. The kernel picks a member of

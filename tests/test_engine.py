@@ -2548,7 +2548,7 @@ class TestResidentLineXWidth:
         )
 
     def test_a_cross_filter_moves_the_bucket_edges(self):
-        # The grid spans the x extent the axis will show. A selection keeping
+        # The grid spans the cross-filtered x extent. A selection keeping
         # the middle 10% of ts re-spreads the whole 200-point budget over those
         # rows. Edges frozen on the unfiltered domain would leave ~20 points.
         df = self._frame()

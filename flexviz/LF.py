@@ -304,11 +304,8 @@ class LFQueryBuilder:
         With ``filter_exprs`` the reduction runs on the filtered rows. The
         result holds for that filter only, so it neither reads nor writes the
         memo, and it skips the Parquet footer, whose statistics describe the
-        unfiltered file. It collects with ``collect_engine``, the engine
-        the aggregation on this source uses. Measured on 100M rows (M5,
-        2026-09-19) that is no worse than the streaming engine on either frame
-        shape, and 5x faster on a resident frame read from Parquet: 40 ms
-        against 215 ms with 12.5M surviving rows.
+        unfiltered file. It collects with ``collect_engine``, the engine the
+        aggregation on this source uses.
         """
         sch = schema if schema is not None else self.schema
         if filter_exprs:

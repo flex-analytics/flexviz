@@ -309,8 +309,8 @@ class TestPostDashboardUpdate:
     def test_cross_filtered_line_target_keeps_its_full_budget(self, client: TestClient):
         """A brushed line target returns ``n_points``, not the brush fraction.
 
-        The bucket grid spans the x extent the axis will show, so a 4 % brush
-        no longer empties 96 % of the buckets.
+        The bucket grid spans the cross-filtered x extent, so this dense brush
+        uses the full point budget.
         """
         n, n_points = 10_000, 100
         brush = [4000, 4400]

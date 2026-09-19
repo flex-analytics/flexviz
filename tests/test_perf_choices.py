@@ -91,8 +91,8 @@ def test_domain_probe_streams_on_resident_frames() -> None:
 # concatenated source has, and small enough to keep the whole check under 3 s.
 FILTERED_PROBE_ROWS = 20_000_000
 FILTERED_PROBE_CHUNK = 125_000
-# Observed ratios on this shape were 0.2 to 1.2, so 2.0 catches a switch back
-# to the streaming engine without flagging timing noise.
+# Observed ratios on this shape were 0.2 to 1.2, so 2.0 allows timing noise
+# while still catching a large slowdown.
 FILTERED_PROBE_RATIO = 2.0
 
 
@@ -100,7 +100,9 @@ FILTERED_PROBE_RATIO = 2.0
     pl.thread_pool_size() < MIN_PROBE_THREADS,
     reason=f"the engine comparison needs >= {MIN_PROBE_THREADS} threads",
 )
-def test_filtered_domain_probe_stays_in_memory() -> None:
+def test_filtered_domain_probe_stays_in_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Decision: a filtered `LFQueryBuilder.physical_minmax` on a resident
     frame collects with the in-memory engine (the builder's `collect_engine`),
     not with the streaming engine the unfiltered probe uses.
@@ -109,12 +111,12 @@ def test_filtered_domain_probe_stays_in_memory() -> None:
     in-memory engine is no worse than the streaming one on either frame shape,
     and 5x faster on a resident frame read from Parquet: 40 ms against 215 ms
     with 12.5M surviving rows. At this test's scale the gap is only 1.1x to 3x
-    and unstable, so the check is a guard against a switch back to streaming,
-    not a proof of the 5x.
+    and unstable, so the timing check bounds overhead rather than proving the
+    5x result.
 
-    Check: on a multi-chunk resident frame the filtered probe takes at most
-    FILTERED_PROBE_RATIO of the same select on the streaming engine, and it
-    returns the bounds of the surviving rows, so it cannot pass on a no-op.
+    Check: the probe passes ``"in-memory"`` to the shared collector, takes at
+    most FILTERED_PROBE_RATIO of the same select on the streaming engine, and
+    returns the surviving rows' bounds, so it cannot pass on a no-op.
     """
     width = FILTERED_PROBE_ROWS // 8
     df = pl.concat(
@@ -131,6 +133,14 @@ def test_filtered_domain_probe_stays_in_memory() -> None:
         pl.col("x").min().alias("__min_x__"),
         pl.col("x").max().alias("__max_x__"),
     ]
+    collect_engines: list[str] = []
+    original_collect = LFQueryBuilder._minmax_collect
+
+    def tracked_collect(self, ldf, columns, schema, engine):
+        collect_engines.append(engine)
+        return original_collect(self, ldf, columns, schema, engine)
+
+    monkeypatch.setattr(LFQueryBuilder, "_minmax_collect", tracked_collect)
 
     def probe():
         # A fresh builder per call, as a request gets.
@@ -150,6 +160,7 @@ def test_filtered_domain_probe_stays_in_memory() -> None:
                 times.append((time.perf_counter() - start) * 1e3)
 
     assert probe() == {"x": (3 * width, 4 * width - 1)}
+    assert set(collect_engines) == {"in-memory"}
     median_probe = statistics.median(probe_ms)
     median_reference = statistics.median(reference_ms)
     assert median_probe <= FILTERED_PROBE_RATIO * median_reference, (
