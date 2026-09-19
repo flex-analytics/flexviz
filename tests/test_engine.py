@@ -2547,10 +2547,10 @@ class TestResidentLineXWidth:
             schema={"ts": pl.Int64, "val": pl.Float64},
         )
 
-    def test_cross_filter_does_not_move_the_bucket_edges(self):
-        # 100 buckets of width 100 over ts in [0, 9999]. A selection keeping the
-        # middle 10% overlaps 10 of them, so at most ~20 points survive. Bucket
-        # edges taken from the filtered data would re-spread the budget instead.
+    def test_a_cross_filter_moves_the_bucket_edges(self):
+        # The grid spans the cross-filtered x extent. A selection keeping
+        # the middle 10% of ts re-spreads the whole 200-point budget over those
+        # rows. Edges frozen on the unfiltered domain would leave ~20 points.
         df = self._frame()
         lf = LFQueryBuilder(df)
         source = LinePlot(x="ts", y="val", n_points=200)
@@ -2583,8 +2583,7 @@ class TestResidentLineXWidth:
         delta = next(d for d in engine.process(event, infos) if d.uid == target.uid)
         xs = list(delta.updates["x"])
         assert all(4500 <= v <= 5499 for v in xs)
-        assert 0 < len(xs) <= 22
-        assert len(xs) < 100  # far below the 200-point budget
+        assert len(xs) == 200  # the full budget, not 10% of it
 
     @staticmethod
     def _process(lf: LFQueryBuilder, trace: LinePlot):

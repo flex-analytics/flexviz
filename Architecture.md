@@ -23,7 +23,7 @@
 - **Overlay mode** — adapters own cached unfiltered backgrounds per figure, `TraceDelta.layer` carries `bg` / `fg` on the wire, per-trace `overlay_style` controls which layers are emitted, and share/import/export preserve declarative state only
 - **Linked hover** — fully client-side; a single on/off toggle (`hover_mode`), with the runtime auto-selecting the projection from the hovered source trace: lines and 1D histograms project a point onto shared axes (guides + bin-bands), while 2D cell sources (histogram2d, geo) project a cell. Column-to-figure-axis mapping computed at page load; persists in spec state through share/restore
 - **Draggable dashboard grid** — optional GridStack layout (`layout.draggable=True`) with client-side drag/resize, persisted `grid_items`, and a toolbar lock button that toggles editability (`layout.grid_editable`) without backend round-trips
-- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed unfiltered column bounds (`FlexTrace.domain_cols`) in one batched `LFQueryBuilder.physical_minmax` call. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. `Histogram`, `Histogram2D`, `GeoHistogram2D`, and every `LinePlot` x-width bucket grid (grouped or not, on both source kinds) use these bounds for stable bin edges a cross-filter cannot move. The bounds are memoized when the source is `static` (see the caching carve-out in the Server Layer).
+- **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed column bounds (`FlexTrace.domain_cols`) with one batched `LFQueryBuilder.physical_minmax` call per scope. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. The scopes split by `FlexTrace.domain_follows_filter`. `Histogram`, `Histogram2D` and `GeoHistogram2D` take unfiltered bounds, so their bin edges are filter-stable and the brushed subset stays comparable with the whole. A `LinePlot` x-width bucket grid (grouped or not, on both source kinds) takes the cross-filtered rows' x extent in update mode, distributing its rendering budget over the filtered domain. A zoomed grid takes the viewport and an overlay-mode grid stays unfiltered, because the background layer pins the axis. The unfiltered bounds are memoized when the source is `static` (see the caching carve-out in the Server Layer); the filtered ones are request-local and never memoized.
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
 Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
@@ -380,6 +380,9 @@ FlexTrace (ABC)
 ├── overlay_style: ClassVar[str]          ← "full" | "filtered_only"
 │                                           suppresses duplicate bg aggregation
 │                                           while a filtered fg is active
+├── domain_follows_filter: ClassVar[bool] ← an unzoomed grid in update mode
+│                                           follows the cross-filter; true on
+│                                           LinePlot
 ├── _backend_data: Dict[str, str | list[str]]
 ├── _display: Dict[str, Any]
 ├── _params: Dict[str, Any]
@@ -393,9 +396,10 @@ FlexTrace (ABC)
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
 ├── domain_cols(update_range) → tuple[str, ...]
-│     ← columns whose unfiltered (min, max) the spec needs; a column drops
-│       out once the viewport supplies its axis. update_range holds any
-│       subset of the trace's recompute axes
+│     ← columns whose (min, max) the spec needs; the engine picks the bounds:
+│       unfiltered, or filtered where domain_follows_filter applies in update
+│       mode. A column drops out once the viewport supplies its axis.
+│       update_range holds any subset of the trace's recompute axes
 ├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
 │     ← the engine calls every trace the same way; a trace ignores what it
@@ -489,9 +493,9 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - `trace_type = "line"`
 - 4 downsampling strategies, selected via `downsample` param. `minmax`, `lttb` and `fpcs` share one **x-width bucket pass**; `nth` stands apart.
   - **Stage 1, shared.** Every x-width line buckets by equal x width, grouped or not, and stage 1 returns one `(x_min, y_min, x_max, y_max)` pair per non-empty bucket, in bucket order. `_to_update` is the one place points are produced: it drops null and NaN rows, then `minmax` and `lttb` flatten the pairs (concat, unique, sort by x) and `fpcs` walks them.
-  - **Bucket grid.** `bucket_grid` (`trace/line_buckets.py`) builds the same grid on both source kinds, with the one bucket count `_bucket_budget` gives, and both read a row's bucket with the same arithmetic (the rounding rule is a comment there). So `minmax` and `lttb` return the same y multiset on both source kinds and differ only in which member of an exact y plateau they pick; `fpcs` can differ on such a plateau, because the walk orders each pair by x. The grid spans the viewport when zoomed, else the engine-resolved unfiltered `(min, max)` (`domain_cols` requests `x_col`), so a cross-filter never moves the bucket edges. An infinite bound has no finite width, so `bucket_grid` rejects it.
+  - **Bucket grid.** `bucket_grid` (`trace/line_buckets.py`) builds the same grid on both source kinds, with the one bucket count `_bucket_budget` gives, and both read a row's bucket with the same arithmetic (the rounding rule is a comment there). So `minmax` and `lttb` return the same y multiset on both source kinds and differ only in which member of an exact y plateau they pick; `fpcs` can differ on such a plateau, because the walk orders each pair by x. The grid spans the selected x domain: the viewport when zoomed, else the engine-resolved `(min, max)` (`domain_cols` requests `x_col`). Under a cross-filter in update mode that is the filtered rows' extent (`domain_follows_filter`); in overlay mode it stays unfiltered, because the background layer pins the axis. An infinite bound has no finite width, so `bucket_grid` rejects it.
   - **Resident frame, ungrouped.** One `minmax_pairs_line` Rust kernel call with an `x_domain`. One call on purpose: Polars does not CSE opaque plugin expressions, so a two-gather form runs the whole scan twice.
-  - **Scan source, and every grouped line.** `pairs_plan`: one streaming `group_by(key, bucket)` over the same grid, with `min_by`/`max_by` for the x at each extremum, collected with `engine="streaming"` even on a resident frame. The kernel would materialise the whole column, and inside `group_by().agg()` it holds every group's column at once. The plan is order-independent and drops null and NaN x, so it needs only the dtype gate; grouped lines take its y-plateau tie-break. Every group bins on the global grid, so a group that covers a tenth of the domain gets a tenth of the budget; that split is provisional (issue #16) and pinned by a test. A single string-like group column packs with the bucket into one Int64 key (`_grouped_bucket_keys`, issue #33); every other shape groups on the columns themselves. Grouping adds nothing to `domain_cols`.
+  - **Scan source, and every grouped line.** `pairs_plan`: one streaming `group_by(key, bucket)` over the same grid, with `min_by`/`max_by` for the x at each extremum, collected with `engine="streaming"` even on a resident frame. The kernel would materialise the whole column, and inside `group_by().agg()` it holds every group's column at once. The plan is order-independent and drops null and NaN x, so it needs only the dtype gate; grouped lines take its y-plateau tie-break. Every group bins on the global grid, so a group that covers a tenth of the domain gets a tenth of the budget; that split is provisional (issue #16) and pinned by a test. The global grid follows the cross-filter in update mode, like an ungrouped line's. A single string-like group column packs with the bucket into one Int64 key (`_grouped_bucket_keys`, issue #33); every other shape groups on the columns themselves. Grouping adds nothing to `domain_cols`.
   - **The x contract.** The trace is the one authority: the engine calls `FlexTrace.check_source(source)` for every trace before the domains are resolved. `LinePlot.check_schema` runs for every line and reads dtypes only. `LFQueryBuilder.check_line_x` then reads the data, only where order matters: an ungrouped x-width line on a resident frame. Both raise `ValueError`; `assume_sorted_x=True` skips the data pass. `Figure.add_line` runs no check, it records the promise. `n_points` is clamped to `[2, 25000]` in `LinePlot.__init__`, which is also the spec-decoding path, so the clamp is the trust boundary for a decoded spec. `add_line` requires `x`, and x width is the one bucket semantic (issue #26). The dtype lists and the row-index recipe for equal-row-count buckets are in `docs/guides/line-downsampling.md`.
   - **`"minmax"` (default)** — `n_points // 2` buckets; the flattened pairs are the output. Preserves extrema and spikes on every path.
   - **`"lttb"`** — MinMaxLTTB. Stage 1 runs at a `_LTTB_MINMAX_RATIO` (4x) budget, so `2 * n_points` buckets. Stage 2 is `_lttb()` in `_to_update`: Largest-Triangle-Three-Buckets in pure Python over the prefetched points, exactly `n_points` when the prefetch holds more, else the prefetch verbatim; the first and last prefetched points always survive. x and y go through `to_physical()` and are cast back, so a temporal y works. Grouped, the thinning runs once per child. Not a cube target.
@@ -800,8 +804,13 @@ FlexEngine
          resolution or aggregation runs
       6. Resolve every domain the active traces need — each trace's own
          `domain_cols()` unioned with the histogram groups above — in one
-         `LFQueryBuilder.physical_minmax` call; memoized when the source is
-         `static`, so a fully cached request resolves nothing
+         `LFQueryBuilder.physical_minmax` call per scope; the unfiltered
+         scope is memoized when the source is `static`, so a fully cached
+         request resolves nothing. In update mode with an active selection,
+         the columns of traces with `domain_follows_filter` (every x-width
+         `LinePlot`) resolve in a second, filtered reduction: never memoized,
+         collected with the builder's `collect_engine`, and skipping the
+         Parquet footer, whose statistics describe the unfiltered file
       7. Collect AggregationSpec / GroupedAggregationSpec per active trace,
          passing each trace its resolved domain bounds
       8. In update mode: aggregate once with selection filters
@@ -863,7 +872,7 @@ LFQueryBuilder
 ├── schema                      ← cached property
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan and the grouped histogram plan always stream)
 ├── static                       ← the data cannot change under this builder: a resident frame, or a cache=True scan
-├── physical_minmax(cols, schema)  ← per-column unfiltered (min, max); Parquet footer first; kept on the builder only when static
+├── physical_minmax(cols, schema, *, filter_exprs)  ← per-column (min, max); the unfiltered form reads the Parquet footer first and is kept on the builder only when static; the filtered form skips both and collects with collect_engine
 ├── check_line_x(col)            ← line x data check on a resident frame: one collect verifying x is null-free, sorted and NaN-free; the flag is kept only when static
 ├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
@@ -1176,7 +1185,10 @@ predicates and selections, keeps the nesting (AND across selections of OR-within
 carries no figure uids — so two sessions with the same snapped predicates share one cached
 build. **Domain resolution stays on the unfiltered frame**: unzoomed domains are unfiltered
 min/max, resolved through the same `LFQueryBuilder.physical_minmax` call the aggregation path
-uses, so bin edges are filter-stable and the two paths agree exactly. That
+uses, so binned histogram bin edges are filter-stable and the two paths agree exactly. A
+`line_env` bucket axis keeps the unfiltered domain too, because the brush is unknown at build
+time. The live envelope is therefore an approximate preview over a fixed grid; the committed
+selection POST replaces it with a delta whose grid follows the brush. That
 equivalence includes the **sibling union**: coordinate-compatible same-figure histograms grouped
 by `_histogram_domain_cols_by_uid` bin over the union of their columns' min/max in the legacy
 path, so a cube target widens its binned dim the same way — otherwise the cube-served fg layer

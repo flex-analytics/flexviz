@@ -19,7 +19,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, get_args
+from typing import Any, ClassVar, get_args
 from uuid import uuid4
 
 import polars as pl
@@ -68,7 +68,7 @@ class FlexTrace(ABC):
         Return an ``AggregationSpec`` or a ``GroupedAggregationSpec`` that the
         engine will execute against the shared ``LFQueryBuilder``.  The result
         column **must** be aliased as ``self.uid``.  A spec may carry a ``plan``
-        instead of an expression.  A trace that needs unfiltered ``(min, max)``
+        instead of an expression.  A trace that needs ``(min, max)``
         bounds asks for them through the ``domain_cols`` hook and reads them
         back from the ``domains`` argument.
 
@@ -85,6 +85,10 @@ class FlexTrace(ABC):
     # Subclasses override these at class level.
     trace_type: str = ""
     overlay_style: str = "full"  # "full" | "filtered_only"
+    # True means an unzoomed grid in update mode uses the cross-filtered rows'
+    # domain. Histogram edges stay put so the brushed subset stays comparable
+    # with the whole.
+    domain_follows_filter: ClassVar[bool] = False
     # One-line human description of the zoom re-aggregation policy, surfaced in
     # the generated Architecture.md table. Override alongside
     # ``_default_recompute_axes``.
@@ -226,11 +230,13 @@ class FlexTrace(ABC):
         """
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
-        """Columns whose **unfiltered** ``(min, max)`` this trace's spec needs.
+        """Columns whose ``(min, max)`` this trace's spec needs.
 
         Empty when the viewport already supplies the bounds, or when the trace
         needs none. The engine unions these over the request and resolves them
-        in one min/max collect, so bin edges stay put under cross-filtering.
+        in one min/max collect per scope. It chooses the bounds: unfiltered, so
+        bin edges stay put under cross-filtering, or filtered where
+        ``domain_follows_filter`` applies in update mode.
         """
         return ()
 
@@ -265,8 +271,8 @@ class FlexTrace(ABC):
         schema:
             The source schema, or ``None`` when it is unavailable.
         domains:
-            The unfiltered ``(min, max)`` per column that ``domain_cols``
-            asked for.  The engine resolves them in one collect.
+            The ``(min, max)`` per column that ``domain_cols`` asked for.  The
+            engine resolves them, filtered or not as the request demands.
         scan_source:
             The source reads from storage.  A trace may pick a bounded
             streaming formulation; the output must be identical.

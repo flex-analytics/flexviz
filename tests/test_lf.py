@@ -388,6 +388,51 @@ class TestPhysicalMinMax:
         assert out == {"a": (1.0, 4.0), "b": (2.0, 8.0)}
 
 
+class TestFilteredPhysicalMinMax:
+    """``filter_exprs`` gives the surviving rows' bounds, and memoizes nothing."""
+
+    @staticmethod
+    def _brush() -> list[pl.Expr]:
+        return [pl.col("a").is_between(3.0, 7.0)]
+
+    def test_resident_bounds_are_the_filtered_rows(self):
+        b = LFQueryBuilder(pl.DataFrame({"a": [float(i) for i in range(10)]}).lazy())
+        assert b.physical_minmax(["a"], filter_exprs=self._brush()) == {"a": (3.0, 7.0)}
+
+    def test_a_parquet_scan_ignores_the_footer(self, tmp_path):
+        """The footer describes the whole file, so a filtered call must collect."""
+        path = tmp_path / "d.parquet"
+        pl.DataFrame({"a": [float(i) for i in range(10)]}).write_parquet(path)
+        b = LFQueryBuilder(pl.scan_parquet(str(path)))
+        assert b.physical_minmax(["a"]) == {"a": (0.0, 9.0)}
+        assert b.physical_minmax(["a"], filter_exprs=self._brush()) == {"a": (3.0, 7.0)}
+
+    def test_a_filtered_call_neither_reads_nor_writes_the_memo(self):
+        b = LFQueryBuilder(
+            pl.DataFrame({"a": [float(i) for i in range(10)]}).lazy(), cache=True
+        )
+        assert b.physical_minmax(["a"]) == {"a": (0.0, 9.0)}
+        assert b.physical_minmax(["a"], filter_exprs=self._brush()) == {"a": (3.0, 7.0)}
+        assert b.physical_minmax(["a"]) == {"a": (0.0, 9.0)}
+        assert b._minmax_memo == {"a": (0.0, 9.0)}
+
+    def test_temporal_bounds_stay_physical(self):
+        b = LFQueryBuilder(
+            pl.DataFrame(
+                {"t": [date(2020, 1, 1) + timedelta(days=i) for i in range(10)]}
+            ).lazy()
+        )
+        lo, hi = b.physical_minmax(
+            ["t"],
+            filter_exprs=[pl.col("t").is_between(date(2020, 1, 4), date(2020, 1, 8))],
+        )["t"]
+        assert isinstance(lo, int) and isinstance(hi, int)
+        assert (lo, hi) == (
+            b.physical_minmax(["t"])["t"][0] + 3,
+            b.physical_minmax(["t"])["t"][0] + 7,
+        )
+
+
 # ---- LFQueryBuilder.check_line_x -------------------------------------------
 
 

@@ -38,7 +38,7 @@ Downsampling strategies:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, get_args
+from typing import Any, ClassVar, Literal, get_args
 
 import polars as pl
 import polars.selectors as cs
@@ -420,6 +420,7 @@ class LinePlot(FlexTrace):
     """
 
     trace_type: str = "line"
+    domain_follows_filter: ClassVar[bool] = True
     select_policy_doc: str = "x anchor only — vertical band across all series"
     recompute_policy_doc: str = (
         "x anchor — downsample window (frozen if update_on_zoom=False)"
@@ -678,8 +679,9 @@ class LinePlot(FlexTrace):
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         # Every x-width line bins in x, on both source kinds, grouped or not.
-        # A zoomed one takes its grid from the viewport, and ``nth`` needs no
-        # grid at all.
+        # The engine resolves these bounds on the filtered rows in update mode
+        # (``domain_follows_filter``). A zoomed line takes its grid from the
+        # viewport, and ``nth`` needs no grid at all.
         if not self._x_width or update_range.get("x") is not None:
             return ()
         return (self.x_col,)

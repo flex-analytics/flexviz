@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
@@ -255,10 +255,34 @@ class LFQueryBuilder:
     def schema(self):
         return self._ldf.collect_schema()
 
+    def _minmax_collect(
+        self,
+        ldf: pl.LazyFrame,
+        columns: list[str],
+        sch: pl.Schema | None,
+        engine: str,
+    ) -> dict[str, tuple[Any, Any]]:
+        """One batched min/max ``select`` over ``ldf``, in physical units."""
+        exprs: list[pl.Expr] = []
+        for c in columns:
+            val = pl.col(c)
+            dtype = sch.get(c) if hasattr(sch, "get") else None
+            if dtype is not None and dtype.is_temporal():
+                val = val.to_physical()
+            exprs.append(val.min().alias(f"__min_{c}__"))
+            exprs.append(val.max().alias(f"__max_{c}__"))
+        stats = ldf.select(exprs).collect(engine=engine)
+        return {
+            c: (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
+            for c in columns
+        }
+
     def physical_minmax(
         self,
         columns: list[str],
         schema: pl.Schema | None = None,
+        *,
+        filter_exprs: Sequence[pl.Expr] = (),
     ) -> dict[str, tuple[Any, Any]]:
         """``(min, max)`` of each column in its physical representation.
 
@@ -276,9 +300,23 @@ class LFQueryBuilder:
         and an uncached reset sees the changed data. Re-registering a source
         with raw data or a new builder replaces the builder and drops the memo.
         Re-registering the same builder object keeps it, and the server warns.
+
+        With ``filter_exprs`` the reduction runs on the filtered rows. The
+        result holds for that filter only, so it neither reads nor writes the
+        memo, and it skips the Parquet footer, whose statistics describe the
+        unfiltered file. It collects with ``collect_engine``, the engine the
+        aggregation on this source uses.
         """
-        memo = self._minmax_memo if self.static else {}
         sch = schema if schema is not None else self.schema
+        if filter_exprs:
+            return self._minmax_collect(
+                self._ldf.filter(*filter_exprs),
+                list(dict.fromkeys(columns)),
+                sch,
+                self.collect_engine,
+            )
+
+        memo = self._minmax_memo if self.static else {}
         # De-dupe: the same column can be requested in several roles at once
         # (e.g. the free axis is also a binned target dim), and a column may
         # already be memoized. ``dict.fromkeys`` preserves first-seen order.
@@ -292,19 +330,9 @@ class LFQueryBuilder:
             memo.update(found)
             missing = [c for c in missing if c not in found]
         if missing:
-            exprs: list[pl.Expr] = []
-            for c in missing:
-                val = pl.col(c)
-                dtype = sch.get(c) if hasattr(sch, "get") else None
-                if dtype is not None and dtype.is_temporal():
-                    val = val.to_physical()
-                exprs.append(val.min().alias(f"__min_{c}__"))
-                exprs.append(val.max().alias(f"__max_{c}__"))
             # Always streaming: the min/max select is ~2x faster on the
             # streaming engine than on the in-memory one, on both source kinds.
-            stats = self._ldf.select(exprs).collect(engine="streaming")
-            for c in missing:
-                memo[c] = (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
+            memo.update(self._minmax_collect(self._ldf, missing, sch, "streaming"))
         return {c: memo[c] for c in columns}
 
     # --------------- Handling flags ---------------
