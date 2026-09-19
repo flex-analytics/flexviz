@@ -63,8 +63,10 @@ def _register_files(files: list[str], cache: bool) -> list[str]:
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
-def _check_port_free(host: str, port: int) -> None:
-    """Fail fast with a clear message instead of a uvicorn traceback.
+def _pick_port(host: str, port: int) -> int:
+    """Check *port*, or take a free one when it is 0. Returns the port to serve.
+
+    Fails fast with a clear message instead of a uvicorn traceback.
 
     ponytail: bind-probe has a small race with the real bind; acceptable.
     """
@@ -75,6 +77,7 @@ def _check_port_free(host: str, port: int) -> None:
         with socket.socket(family, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
+            return s.getsockname()[1]
     except OSError as exc:
         raise SystemExit(f"cannot bind {host}:{port}: {exc}") from exc
 
@@ -95,11 +98,14 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             "understand the exposure.",
             file=sys.stderr,
         )
-    _check_port_free(args.host, args.port)
-    url = f"http://{args.host}:{args.port}"
-    print(f"starting {url} with sources: {', '.join(repr(n) for n in names)}")
-    print(f"poll GET {url}/sources until it responds to confirm readiness")
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    port = _pick_port(args.host, args.port or 0)
+    url = f"http://{args.host}:{port}"
+    # Flush: stdout to a log file is block-buffered, and the port is in there.
+    print(
+        f"starting {url} with sources: {', '.join(repr(n) for n in names)}", flush=True
+    )
+    print(f"poll GET {url}/sources until it responds to confirm readiness", flush=True)
+    uvicorn.run(app, host=args.host, port=port, log_level=args.log_level)
 
 
 def _cmd_schema(args: argparse.Namespace) -> None:
@@ -267,7 +273,12 @@ def main(argv: list[str] | None = None) -> None:
         help="data files; each becomes a source named by its file stem",
     )
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="port to bind; the default takes a free port and prints it",
+    )
     serve.add_argument(
         "--cache",
         action="store_true",

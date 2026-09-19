@@ -288,6 +288,24 @@ def test_serve_fails_fast_on_busy_port(tmp_path):
         assert "cannot bind" in proc.stderr
 
 
+def test_serve_without_a_port_picks_a_free_one(capsys, monkeypatch, tmp_path):
+    """An agent reads the port from the first line of the serve log."""
+    import uvicorn
+
+    path = tmp_path / "free.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    served = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: served.update(kw))
+
+    main(["serve", str(path)])
+
+    first = capsys.readouterr().out.splitlines()[0]
+    match = re.match(r"starting http://127\.0\.0\.1:(\d+) with sources: ", first)
+    assert match, first
+    assert int(match.group(1)) > 0
+    assert served["port"] == int(match.group(1))
+
+
 def test_skill_install_user_scope(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     main(["skill", "install", "--user"])
