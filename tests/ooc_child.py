@@ -25,6 +25,7 @@ import polars as pl
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import InteractionEvent
 from flexviz.LF import LFQueryBuilder
+from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
 from flexviz.trace.bar import BarPlot
 from flexviz.trace.box import BoxPlot
 from flexviz.trace.corr_heatmap import CorrHeatmap
@@ -64,7 +65,27 @@ TRACES: dict[str, Callable] = {
     "corr": lambda: CorrHeatmap(columns=["y", "z", "lat", "lon"]),
     "box": lambda: BoxPlot(y="y"),
     "box-grouped": lambda: BoxPlot(y="y", group_by="g"),
+    # A cross-filtered x-width line adds a filtered min/max probe over a
+    # SCATTERED predicate: y is standard normal, so the surviving rows sit in
+    # every row group and no row-group statistic can skip one.
+    "line-minmax-filtered": lambda: LinePlot(x="x", y="y", downsample="minmax"),
 }
+
+_SELECTION = InteractionEvent(
+    type="selection",
+    force_update=True,
+    selections=[
+        SelectionState(
+            source_figure_uid="brush_source",
+            predicates=[
+                SelectionPredicate(clauses=[ClauseFilter(column="y", range=(0.5, 0.6))])
+            ],
+        )
+    ],
+)
+
+# name -> the event the child posts; every other name gets an unfiltered init.
+EVENTS: dict[str, InteractionEvent] = {"line-minmax-filtered": _SELECTION}
 
 
 # ---- anonymous-memory sampler ------------------------------------------
@@ -184,8 +205,13 @@ def main() -> None:
     lf = LFQueryBuilder(pl.scan_parquet(path))
     trace = TRACES[name]()
     engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-    info = TraceInfo(uid=trace.uid, axes=trace._axes, trace_type=trace.trace_type)
-    event = InteractionEvent(type="init", force_update=True)
+    info = TraceInfo(
+        uid=trace.uid,
+        axes=trace._axes,
+        trace_type=trace.trace_type,
+        figure_uid="target",
+    )
+    event = EVENTS.get(name, InteractionEvent(type="init", force_update=True))
 
     # Base is taken after the engine is built; only `process` itself is measured.
     with PeakSampler() as sampler:

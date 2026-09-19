@@ -244,17 +244,21 @@ class FlexEngine:
 
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
-        # shared unfiltered domain is resolved once per request.
-        domain_cols, domains = self._resolve_domains(
-            aggregation_traces, histogram_domains, backend_schema
+        # mode decides the scope: in overlay mode every column resolves
+        # unfiltered, because the background layer pins the axis.
+        domains_by_uid = self._resolve_domains(
+            aggregation_traces,
+            histogram_domains,
+            backend_schema,
+            filter_exprs=filter_exprs,
+            cross_filter_mode=cross_filter_mode,
         )
 
         t_agg_start = time.perf_counter()
         agg_specs = self._collect_aggregation_specs(
             aggregation_traces=aggregation_traces,
             backend_schema=backend_schema,
-            domain_cols=domain_cols,
-            domains=domains,
+            domains_by_uid=domains_by_uid,
         )
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
@@ -321,7 +325,9 @@ class FlexEngine:
         selections (they never filter in the legacy engine). Domain
         resolution stays on the UNFILTERED frame — unzoomed domains are
         unfiltered min/max, so bin edges are filter-stable, exactly as in the
-        aggregation path.
+        aggregation path. A ``line_env`` target dim keeps the unfiltered domain
+        too, because the brush is unknown at build time: the live envelope is
+        an approximate preview that the committed selection POST replaces.
         """
         if self._backend_lf is None or self._source_name is None:
             return [], {}
@@ -842,35 +848,68 @@ class FlexEngine:
         aggregation_traces: list[_AggregationTrace],
         histogram_domains: dict[str, tuple[str, ...]],
         schema: pl.Schema | None,
-    ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[Any, Any]]]:
-        """Resolve every unfiltered ``(min, max)`` this request needs, in one collect.
+        *,
+        filter_exprs: list[pl.Expr],
+        cross_filter_mode: str,
+    ) -> dict[str, dict[str, tuple[Any, Any]]]:
+        """Resolve the ``(min, max)`` bounds of this request, per trace.
 
-        Bin edges must not move when a cross-filter narrows the data, so the
-        bounds come from the unfiltered frame. Each trace states its own columns
-        (``FlexTrace.domain_cols``); an unzoomed histogram instead takes the
-        union its same-figure siblings share, so their bars line up.
+        Each trace states its own columns (``FlexTrace.domain_cols``); an
+        unzoomed histogram instead takes the union its same-figure siblings
+        share, so their bars line up.
 
-        The builder memoizes the bounds when it is ``static``. An uncached scan
-        resolves again, so a reset can see changed data on disk.
+        Two scopes, one collect each, and a column may sit in both. Histogram
+        bin edges must not move when a cross-filter narrows the data, so they
+        take the unfiltered frame. A trace with ``domain_follows_filter``
+        instead takes the filtered rows' extent, but only in update mode: in
+        overlay mode the unfiltered background layer pins the axis, and both
+        layers share one spec list.
+
+        The builder memoizes the unfiltered bounds when it is ``static``. An
+        uncached scan resolves again, so a reset can see changed data on disk.
+        The filtered bounds are request-local and never memoized.
         """
         if self._backend_lf is None:
-            return {}, {}
+            return {}
         domain_cols = {
             item.info.uid: histogram_domains.get(item.info.uid)
             or item.trace.domain_cols(item.update_range)
             for item in aggregation_traces
         }
-        needed = sorted({col for cols in domain_cols.values() for col in cols})
-        if not needed:
-            return domain_cols, {}
-        return domain_cols, self._backend_lf.physical_minmax(needed, schema)
+        follows: set[str] = set()
+        if filter_exprs and cross_filter_mode == "update":
+            follows = {
+                item.info.uid
+                for item in aggregation_traces
+                if item.trace.domain_follows_filter
+            }
+        filtered_cols: set[str] = set()
+        unfiltered_cols: set[str] = set()
+        for uid, cols in domain_cols.items():
+            (filtered_cols if uid in follows else unfiltered_cols).update(cols)
+
+        filtered = (
+            self._backend_lf.physical_minmax(
+                sorted(filtered_cols), schema, filter_exprs=filter_exprs
+            )
+            if filtered_cols
+            else {}
+        )
+        unfiltered = (
+            self._backend_lf.physical_minmax(sorted(unfiltered_cols), schema)
+            if unfiltered_cols
+            else {}
+        )
+        return {
+            uid: {c: (filtered if uid in follows else unfiltered)[c] for c in cols}
+            for uid, cols in domain_cols.items()
+        }
 
     def _collect_aggregation_specs(
         self,
         aggregation_traces: list[_AggregationTrace],
         backend_schema: pl.Schema | None,
-        domain_cols: dict[str, tuple[str, ...]],
-        domains: dict[str, tuple[Any, Any]],
+        domains_by_uid: dict[str, dict[str, tuple[Any, Any]]],
     ) -> list[AggregationSpec | GroupedAggregationSpec]:
         agg_specs: list[AggregationSpec | GroupedAggregationSpec] = []
         lf = self._backend_lf
@@ -879,7 +918,7 @@ class FlexEngine:
             ti = item.info
             trace = item.trace
             t_s = time.perf_counter()
-            trace_domains = {c: domains[c] for c in domain_cols.get(ti.uid, ())}
+            trace_domains = domains_by_uid.get(ti.uid, {})
 
             agg_specs.append(
                 trace.get_aggregation_spec(

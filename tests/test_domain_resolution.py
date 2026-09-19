@@ -1,10 +1,11 @@
-"""Request-wide unfiltered-domain resolution and per-source-kind engine pinning.
+"""Request-wide domain resolution and per-source-kind engine pinning.
 
-Bin edges come from the unfiltered frame, so a cross-filter never moves them.
-The engine resolves every column a request needs in one min/max pass: the
-Parquet footer on a single-file Parquet scan, one collect otherwise. Every
-collect names its Polars engine: streaming for a scan and for the probe,
-in-memory for a resident frame's aggregation.
+Histogram bin edges come from the unfiltered frame, so a cross-filter never
+moves them. An unzoomed line grid instead follows the filtered rows' x extent
+in update mode. The engine resolves each scope in one min/max pass: the Parquet
+footer on a single-file Parquet scan, one collect otherwise. Every collect
+names its Polars engine: streaming for a scan and for the unfiltered probe,
+in-memory for a resident frame's aggregation and its filtered probe.
 """
 
 from __future__ import annotations
@@ -436,17 +437,197 @@ class TestFilterStableEdges:
     )
     def test_edges_survive_a_cross_filter(self, df, factory):
         trace = factory()
-        selection = [
-            SelectionState(
-                source_figure_uid="src",
-                predicates=[
-                    SelectionPredicate(
-                        clauses=[ClauseFilter(column="k", range=(0, 20))]
-                    )
-                ],
-            )
+        assert self._edges(df, trace, []) == self._edges(
+            df, trace, _brush("k", (0, 20))
+        )
+
+    def test_a_line_grid_does_not_survive_a_cross_filter(self, df):
+        """The opposite rule, side by side: a line grid narrows to the brush.
+
+        A line has no bin identity to preserve. Its buckets are a rendering
+        budget, so they follow the x extent the axis will show.
+        """
+        before = self._edges(df, LinePlot(x="k", y="a", n_points=8), [])
+        after = self._edges(
+            df, LinePlot(x="k", y="a", n_points=8), _brush("k", (0, 20))
+        )
+        # The brush keeps a fifth of the rows and the full point budget: the
+        # grid moved with it instead of leaving four fifths of its buckets empty.
+        assert len(after) == len(before)
+        assert max(after) <= 20 < max(before)
+
+
+# ---- a line grid follows the filter ----------------------------------------
+
+_N = 10_000
+_BRUSH = (4000, 4400)  # 401 of 10 000 rows
+
+
+def _brush(column: str, rng: tuple) -> list[SelectionState]:
+    return [
+        SelectionState(
+            source_figure_uid="src",
+            predicates=[
+                SelectionPredicate(clauses=[ClauseFilter(column=column, range=rng)])
+            ],
+        )
+    ]
+
+
+def _line_frame() -> pl.DataFrame:
+    # A pseudo-random y: fpcs keeps a curvature-driven number of points, so a
+    # smooth curve would make the unfiltered and filtered counts incomparable.
+    return pl.DataFrame(
+        {
+            "k": list(range(_N)),
+            "a": [((i * 1103515245 + 12345) % 1000) / 1000.0 for i in range(_N)],
+            "g": ["u" if i % 2 else "v" for i in range(_N)],
+        }
+    )
+
+
+class TestFilteredLineGrid:
+    """An unzoomed x-width line bins over the surviving rows' x extent."""
+
+    def _points(self, src, trace, selections, **process_kwargs):
+        """``[(count, x_min, x_max)]`` of the target, one entry per series."""
+        lf = LFQueryBuilder(src)
+        source = LinePlot(x="k", y="a", n_points=50)
+        engine = FlexEngine(
+            backend_lf=lf, scalable_traces={trace.uid: trace, source.uid: source}
+        )
+        infos = [
+            TraceInfo(
+                uid=source.uid, axes=("x", "y"), trace_type="line", figure_uid="src"
+            ),
+            TraceInfo(
+                uid=trace.uid, axes=("x", "y"), trace_type="line", figure_uid="tgt"
+            ),
         ]
-        assert self._edges(df, trace, []) == self._edges(df, trace, selection)
+        event = InteractionEvent(
+            type="selection" if selections else "init",
+            force_update=True,
+            selections=selections,
+        )
+        deltas = [
+            d
+            for d in engine.process(event, infos, **process_kwargs)
+            if d.uid == trace.uid and d.layer != "bg"
+        ]
+        assert deltas, "the target produced no delta"
+        series = [c.updates["x"] for d in deltas for c in (d.group_results or [])] or [
+            d.updates["x"] for d in deltas
+        ]
+        return [(len(xs), min(xs), max(xs)) for xs in series]
+
+    @pytest.fixture()
+    def df(self) -> pl.DataFrame:
+        return _line_frame()
+
+    @pytest.fixture(params=["resident", "scan"])
+    def src(self, request, df, tmp_path):
+        return df if request.param == "resident" else _write(tmp_path / "d.parquet", df)
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    @pytest.mark.parametrize("grouped", [False, True], ids=["ungrouped", "grouped"])
+    def test_the_grid_narrows_to_the_brush(self, src, downsample, grouped):
+        kwargs = {"group_by": "g"} if grouped else {}
+        before = self._points(
+            src,
+            LinePlot(x="k", y="a", n_points=100, downsample=downsample, **kwargs),
+            [],
+        )
+        after = self._points(
+            src,
+            LinePlot(x="k", y="a", n_points=100, downsample=downsample, **kwargs),
+            _brush("k", _BRUSH),
+        )
+        assert len(after) == len(before)
+        for (n_after, lo, hi), (n_before, _, _) in zip(after, before):
+            if downsample == "fpcs":
+                # fpcs returns a curvature-driven count, up to ~2 * n_points.
+                assert n_after >= 0.8 * n_before
+            else:
+                assert n_after == n_before == 100
+            assert _BRUSH[0] <= lo <= hi <= _BRUSH[1]
+
+    def test_a_zoomed_target_keeps_its_viewport_grid(self, df):
+        """The viewport is user state, so the brush must not move it."""
+        trace = LinePlot(x="k", y="a", n_points=100)
+        (count, _, _) = self._points(
+            df,
+            trace,
+            _brush("k", _BRUSH),
+            viewports_by_figure={"tgt": {"x": [0, _N - 1]}},
+        )[0]
+        assert count <= 10  # ~4 % of n_points, the pre-fix behaviour
+
+    def test_overlay_mode_keeps_the_unfiltered_grid(self, df):
+        """The background layer pins the axis, so the foreground shares its grid."""
+        trace = LinePlot(x="k", y="a", n_points=100)
+        (count, _, _) = self._points(
+            df, trace, _brush("k", _BRUSH), cross_filter_mode="overlay"
+        )[0]
+        assert count <= 10
+
+
+class TestFilteredResolveCount:
+    """One probe per non-empty scope, and the unfiltered memo still holds."""
+
+    def _engine(self, traces):
+        lf = LFQueryBuilder(_line_frame(), cache=True)
+        source = LinePlot(x="k", y="a", n_points=50)
+        engine = FlexEngine(
+            backend_lf=lf,
+            scalable_traces={t.uid: t for t in (*traces, source)},
+        )
+        infos = [
+            TraceInfo(
+                uid=source.uid, axes=("x", "y"), trace_type="line", figure_uid="src"
+            ),
+            *[
+                TraceInfo(
+                    uid=t.uid,
+                    axes=("x", "y"),
+                    trace_type=t.trace_type,
+                    figure_uid="tgt",
+                )
+                for t in traces
+            ],
+        ]
+        return engine, infos
+
+    def test_a_filtered_line_request_probes_once_with_the_filter(self, collects):
+        engine, infos = self._engine([LinePlot(x="k", y="a", n_points=100)])
+        engine.process(
+            InteractionEvent(
+                type="selection", force_update=True, selections=_brush("k", _BRUSH)
+            ),
+            infos,
+        )
+        assert len(collects.minmax) == 1
+        assert "is_between" in collects.minmax[0][1]
+
+    def test_an_unfiltered_request_reuses_the_memo(self, collects):
+        engine, infos = self._engine([LinePlot(x="k", y="a", n_points=100)])
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+        _init(engine, infos)
+        assert len(collects.minmax) == 1
+
+    def test_a_histogram_and_a_line_on_one_column_split_into_two_probes(self, collects):
+        engine, infos = self._engine(
+            [LinePlot(x="k", y="a", n_points=100), Histogram(x="k", bins=10)]
+        )
+        engine.process(
+            InteractionEvent(
+                type="selection", force_update=True, selections=_brush("a", (0.0, 0.4))
+            ),
+            infos,
+        )
+        filtered = [c for c in collects.minmax if "is_between" in c[1]]
+        assert len(collects.minmax) == 2
+        assert len(filtered) == 1
 
 
 # ---- domains contract: unzoomed traces require their columns ----------------

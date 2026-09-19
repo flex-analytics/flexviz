@@ -306,6 +306,52 @@ class TestPostDashboardUpdate:
         assert len(body["figure_deltas"].get(uids[2], [])) == 0
         assert len(body["figure_deltas"].get(uids[3], [])) > 0
 
+    def test_cross_filtered_line_target_keeps_its_full_budget(self, client: TestClient):
+        """A brushed line target returns ``n_points``, not the brush fraction.
+
+        The bucket grid spans the x extent the axis will show, so a 4 % brush
+        no longer empties 96 % of the buckets.
+        """
+        n, n_points = 10_000, 100
+        brush = [4000, 4400]
+        df = pl.DataFrame(
+            {"ts": list(range(n)), "val": [float(i % 97) for i in range(n)]}
+        )
+        src_name = "_integ_brushed_line"
+        register_source(src_name, df)
+
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="ts", y="val", name="A")
+        dash.add_figure().add_line(x="ts", y="val", name="B", n_points=n_points)
+        spec = dash.to_spec(source_name=src_name)
+        src_uid, tgt_uid = spec.figures[0].uid, spec.figures[1].uid
+
+        def _post(event: dict) -> list[float]:
+            resp = client.post(
+                "/dashboard/update", json={"spec": spec.model_dump(), "event": event}
+            )
+            assert resp.status_code == 200, resp.text
+            deltas = resp.json()["figure_deltas"][tgt_uid]
+            return deltas[0]["updates"]["x"]
+
+        assert len(_post({"type": "init", "force_update": True})) == n_points
+
+        xs = _post(
+            {
+                "type": "selection",
+                "figure_uid": src_uid,
+                "force_update": True,
+                "selections": [
+                    {
+                        "source_figure_uid": src_uid,
+                        "predicates": [{"clauses": [{"column": "ts", "range": brush}]}],
+                    }
+                ],
+            }
+        )
+        assert len(xs) == n_points
+        assert brush[0] <= min(xs) <= max(xs) <= brush[1]
+
     def test_cross_filter_uses_source_column(self, client: TestClient):
         n = 5_000
         df = pl.DataFrame(
