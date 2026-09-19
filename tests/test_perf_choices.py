@@ -85,3 +85,74 @@ def test_domain_probe_streams_on_resident_frames() -> None:
         f"the min/max select peaked {sampler.peak_mb:.1f} MB over its baseline, "
         f"above the {PROBE_PEAK_MB} MB cap"
     )
+
+
+# 20M rows in ~125k-row chunks: a multi-chunk resident frame, the shape a
+# concatenated source has, and small enough to keep the whole check under 3 s.
+FILTERED_PROBE_ROWS = 20_000_000
+FILTERED_PROBE_CHUNK = 125_000
+# Observed ratios on this shape were 0.2 to 1.2, so 2.0 catches a switch back
+# to the streaming engine without flagging timing noise.
+FILTERED_PROBE_RATIO = 2.0
+
+
+@pytest.mark.skipif(
+    pl.thread_pool_size() < MIN_PROBE_THREADS,
+    reason=f"the engine comparison needs >= {MIN_PROBE_THREADS} threads",
+)
+def test_filtered_domain_probe_stays_in_memory() -> None:
+    """Decision: a filtered `LFQueryBuilder.physical_minmax` on a resident
+    frame collects with the in-memory engine (the builder's `collect_engine`),
+    not with the streaming engine the unfiltered probe uses.
+
+    Evidence: on the real request path at 100M rows (M5, 2026-09-19) the
+    in-memory engine is no worse than the streaming one on either frame shape,
+    and 5x faster on a resident frame read from Parquet: 40 ms against 215 ms
+    with 12.5M surviving rows. At this test's scale the gap is only 1.1x to 3x
+    and unstable, so the check is a guard against a switch back to streaming,
+    not a proof of the 5x.
+
+    Check: on a multi-chunk resident frame the filtered probe takes at most
+    FILTERED_PROBE_RATIO of the same select on the streaming engine, and it
+    returns the bounds of the surviving rows, so it cannot pass on a no-op.
+    """
+    width = FILTERED_PROBE_ROWS // 8
+    df = pl.concat(
+        [
+            pl.DataFrame(
+                {"x": np.arange(start, start + FILTERED_PROBE_CHUNK, dtype=np.int64)}
+            ).with_columns((pl.col("x") // width).cast(pl.Int32).alias("grp"))
+            for start in range(0, FILTERED_PROBE_ROWS, FILTERED_PROBE_CHUNK)
+        ],
+        rechunk=False,
+    )
+    pred = pl.col("grp").is_in([3])
+    minmax = [
+        pl.col("x").min().alias("__min_x__"),
+        pl.col("x").max().alias("__max_x__"),
+    ]
+
+    def probe():
+        # A fresh builder per call, as a request gets.
+        return LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
+
+    def reference():
+        return df.lazy().filter(pred).select(minmax).collect(engine="streaming")
+
+    probe_ms: list[float] = []
+    reference_ms: list[float] = []
+    # Alternate the two, so a warming cache or a thermal drift costs both.
+    for run in range(6):  # one warm-up pass, then five timed ones
+        for call, times in ((probe, probe_ms), (reference, reference_ms)):
+            start = time.perf_counter()
+            call()
+            if run:
+                times.append((time.perf_counter() - start) * 1e3)
+
+    assert probe() == {"x": (3 * width, 4 * width - 1)}
+    median_probe = statistics.median(probe_ms)
+    median_reference = statistics.median(reference_ms)
+    assert median_probe <= FILTERED_PROBE_RATIO * median_reference, (
+        f"the filtered probe took {median_probe:.2f} ms, over "
+        f"{FILTERED_PROBE_RATIO} x the {median_reference:.2f} ms streaming select"
+    )
