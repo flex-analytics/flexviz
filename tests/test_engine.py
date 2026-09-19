@@ -1376,9 +1376,9 @@ class TestEngineOverlayPolicy:
         box_deltas = [d for d in deltas if d.uid == box.uid]
         assert {d.layer for d in box_deltas} == {"bg"}
         line_deltas = [d for d in deltas if d.uid == line.uid]
-        assert any(
-            d.layer == "bg" for d in line_deltas
-        ), "LinePlot should still get bg layer"
+        assert any(d.layer == "bg" for d in line_deltas), (
+            "LinePlot should still get bg layer"
+        )
 
     def test_overlay_grouped_bar_init_gets_unfiltered_bg(self):
         """Grouped filtered-only traces also need their initial data."""
@@ -1480,9 +1480,9 @@ class TestEngineOverlayPolicy:
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         bar_deltas = [d for d in deltas if d.uid == bar.uid]
-        assert any(
-            d.layer == "bg" for d in bar_deltas
-        ), "ungrouped BarPlot should get bg layer"
+        assert any(d.layer == "bg" for d in bar_deltas), (
+            "ungrouped BarPlot should get bg layer"
+        )
 
     def test_overlay_line_still_gets_bg_and_fg(self):
         """LinePlot (overlay_style='full') still gets both layers."""

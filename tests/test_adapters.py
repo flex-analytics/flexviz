@@ -164,7 +164,9 @@ class TestSharedToolbar:
 
         markup = _DummyAdapter()._dashboard_markup(
             spec,
-            render_panel=lambda idx, fig_spec: f"<fv-panel>{fig_spec.uid}:{idx}</fv-panel>",
+            render_panel=lambda idx, fig_spec: (
+                f"<fv-panel>{fig_spec.uid}:{idx}</fv-panel>"
+            ),
         )
 
         assert 'id="fv-dashboard"' in markup.container_html
@@ -180,7 +182,9 @@ class TestSharedToolbar:
 
         markup = _DummyAdapter()._dashboard_markup(
             spec,
-            render_panel=lambda idx, fig_spec: f"<fv-panel>{fig_spec.uid}:{idx}</fv-panel>",
+            render_panel=lambda idx, fig_spec: (
+                f"<fv-panel>{fig_spec.uid}:{idx}</fv-panel>"
+            ),
         )
 
         assert 'class="grid-stack"' in markup.container_html

@@ -325,12 +325,12 @@ class TestHistogramBinAlignment:
         centers_sin_filtered = list(t_sin._to_update(df_filtered).updates["x"])
         centers_cos_filtered = list(t_cos._to_update(df_filtered).updates["x"])
 
-        assert (
-            centers_sin_base == centers_sin_filtered
-        ), "sin histogram bin centers must not change under cross-filtering"
-        assert (
-            centers_cos_base == centers_cos_filtered
-        ), "cos histogram bin centers must not change under cross-filtering"
+        assert centers_sin_base == centers_sin_filtered, (
+            "sin histogram bin centers must not change under cross-filtering"
+        )
+        assert centers_cos_base == centers_cos_filtered, (
+            "cos histogram bin centers must not change under cross-filtering"
+        )
 
 
 class TestHistogramViewportSnap:
@@ -711,9 +711,9 @@ class TestHistogramBinStabilityRegression:
 
         for key, centers in centers_full.items():
             if key in centers_filtered:
-                assert (
-                    centers == centers_filtered[key]
-                ), f"Group {key}: bin centers shifted under cross-filter"
+                assert centers == centers_filtered[key], (
+                    f"Group {key}: bin centers shifted under cross-filter"
+                )
 
 
 class TestHistogramHoverSpec:

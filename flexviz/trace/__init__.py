@@ -97,8 +97,7 @@ def build_trace_from_spec(spec: TraceSpec) -> FlexTrace:
     if cls is None:
         registered = list(_REGISTRY)
         raise ValueError(
-            f"Unknown trace type {spec.trace_type!r}. "
-            f"Registered types: {registered}"
+            f"Unknown trace type {spec.trace_type!r}. Registered types: {registered}"
         )
     return cls.from_trace_spec(spec)
 

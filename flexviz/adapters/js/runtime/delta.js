@@ -41,7 +41,10 @@ async function postDashboardUpdate(event) {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ spec: DASHBOARD_SPEC, event }),
       });
-      if (!resp.ok) return false;
+      if (!resp.ok) {
+        console.warn('flexviz /dashboard/update returned', resp.status);
+        return false;
+      }
       data = await resp.json();
     } catch (e) {
       console.warn('flexviz /dashboard/update request failed', e);

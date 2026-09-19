@@ -340,7 +340,9 @@ only that URL's `spec=` value, so the recorded host and port survive.
 Together with the compact readback and the apply
 contract above, an agent drives a dashboard by number alone, and `fv:N` lines
 in a findings file (`flexviz/report.py`) embed the same entries as live
-iframes.
+iframes. The report page sanitizes the rendered markdown with DOMPurify and
+re-allows the `iframe` tag so `fv:N` embeds render. CDN script tags carry no
+SRI hash by decision: both are local pages bound to a loopback server.
 
 ---
 

@@ -133,9 +133,9 @@ class TestDashboardSpecState:
     def test_interaction_state_has_no_hover_enabled(self):
         """hover_enabled must not exist on InteractionState after migration."""
         state = InteractionState()
-        assert not hasattr(
-            state, "hover_enabled"
-        ), "hover_enabled must be deleted from InteractionState"
+        assert not hasattr(state, "hover_enabled"), (
+            "hover_enabled must be deleted from InteractionState"
+        )
 
     def test_interaction_state_accepts_spec_without_hover_enabled(self):
         """Deserializing a spec that omits hover_enabled must not raise."""
@@ -1057,9 +1057,9 @@ class TestEncodeDecodeFullState:
         encoded = encode_spec(spec)
         import re
 
-        assert re.fullmatch(
-            r"[A-Za-z0-9_\-]+", encoded
-        ), f"Encoded spec contains URL-unsafe chars: {encoded[:80]}"
+        assert re.fullmatch(r"[A-Za-z0-9_\-]+", encoded), (
+            f"Encoded spec contains URL-unsafe chars: {encoded[:80]}"
+        )
 
 
 class TestClauseFilter:

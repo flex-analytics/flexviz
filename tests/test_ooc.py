@@ -99,9 +99,9 @@ def _run(path: str, name: str) -> float:
         capture_output=True,
         text=True,
     )
-    assert (
-        result.returncode == 0
-    ), f"{name} child failed (exit {result.returncode}):\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"{name} child failed (exit {result.returncode}):\n{result.stderr}"
+    )
     out = json.loads(result.stdout.strip().splitlines()[-1])
     assert out["threads"] == THREADS, f"{name}: child ran on {out['threads']} threads"
     return out["peak_mb"]

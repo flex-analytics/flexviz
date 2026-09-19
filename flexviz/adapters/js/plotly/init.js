@@ -111,7 +111,9 @@ window.addEventListener('resize', function() {
 // binds its figure. A figure the response never drew (a failed request) still
 // needs a graph div for its events and for later updates to react into.
 (async function _fvInitPlotly() {
-  await restoreDashboardFromSpec();
+  if (!(await restoreDashboardFromSpec())) {
+    console.error('flexviz: initial load failed, panels are empty');
+  }
 
   for (const figUid of _fvAllFigUids) {
     const figIdx = figUidToIdx[figUid];

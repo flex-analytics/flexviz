@@ -729,12 +729,12 @@ class TestLiveBrushCube:
 
         gesture_bodies = bodies[n_before_drag:]
         types = [b.get("event", {}).get("type") for b in gesture_bodies]
-        assert (
-            "cube_request" not in types
-        ), f"live_brush=off must never request cubes: {types}"
-        assert types == [
-            "selection"
-        ], f"expected exactly one selection POST, got {types}"
+        assert "cube_request" not in types, (
+            f"live_brush=off must never request cubes: {types}"
+        )
+        assert types == ["selection"], (
+            f"expected exactly one selection POST, got {types}"
+        )
 
         # Legacy predicate: raw (unsnapped) drag range, closed-interval default.
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
@@ -753,9 +753,9 @@ class TestLiveBrushCube:
             scaled = (v - a_lo) / span * _P
             return math.isclose(scaled, round(scaled), abs_tol=1e-6)
 
-        assert not (
-            _on_grid(lo) and _on_grid(hi)
-        ), f"predicate looks snapped ({lo}, {hi}) — legacy path must be unsnapped"
+        assert not (_on_grid(lo) and _on_grid(hi)), (
+            f"predicate looks snapped ({lo}, {hi}) — legacy path must be unsnapped"
+        )
         # And the target did update after the server round-trip.
         assert _target_y(page) != y_before
 
@@ -940,12 +940,12 @@ class TestLiveBrushCube:
         page.evaluate("divs[0].emit('plotly_selected', undefined)")
         page.wait_for_timeout(500)
 
-        assert (
-            page.evaluate("DASHBOARD_SPEC.state.selections") == []
-        ), "abandoned gesture must not store a selection"
-        assert (
-            _target_y(page) == y_before
-        ), "abandoned gesture must restore the target's pre-drag rendering"
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == [], (
+            "abandoned gesture must not store a selection"
+        )
+        assert _target_y(page) == y_before, (
+            "abandoned gesture must restore the target's pre-drag rendering"
+        )
         # The only traffic allowed is the gesture-start cube_request.
         types = [b.get("event", {}).get("type") for b in bodies[n_before:]]
         assert types in ([], ["cube_request"]), types
@@ -2548,9 +2548,9 @@ class TestCategoricalSourceCube:
         page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, steps=8)
         page.mouse.move(x2, y2, steps=8)
         page.wait_for_timeout(800)
-        assert (
-            _hist_y(page, "#fv-plot-2") == y_before
-        ), "no mid-drag updates with live_brush=off"
+        assert _hist_y(page, "#fv-plot-2") == y_before, (
+            "no mid-drag updates with live_brush=off"
+        )
         page.mouse.up()
         page.wait_for_timeout(1_500)
 
@@ -2939,9 +2939,9 @@ class TestCompositeLabelUnicodeParity:
         for parts in cases:
             expected = _group_value_key(parts)
             got = page.evaluate("parts => fvJsonDumpsAscii(parts)", list(parts))
-            assert (
-                got == expected
-            ), f"fvJsonDumpsAscii({parts!r}) = {got!r} != {expected!r}"
+            assert got == expected, (
+                f"fvJsonDumpsAscii({parts!r}) = {got!r} != {expected!r}"
+            )
 
     def test_composite_nonascii_bar_cube_delta_matches_server(
         self, page: Page, server_port: int
@@ -4215,9 +4215,9 @@ def _line_xy(page: Page, selector: str) -> dict:
 
 
 def _assert_xy_close(got: dict, expected: dict, tol: float = 1e-4) -> None:
-    assert len(got["x"]) == len(
-        expected["x"]
-    ), f"x length {len(got['x'])} != {len(expected['x'])}"
+    assert len(got["x"]) == len(expected["x"]), (
+        f"x length {len(got['x'])} != {len(expected['x'])}"
+    )
     assert len(got["y"]) == len(expected["y"])
     for g, e in zip(got["x"], expected["x"]):
         assert g == pytest.approx(e, abs=tol), (g, e)
@@ -4442,9 +4442,9 @@ class TestLineGapsClientSide:
         # Offsets are converted, not ignored: +02:00 wall-clock is 2h AHEAD of
         # UTC, -05:30 is 5.5h BEHIND — both denote the same 00:00:00Z instant.
         assert vals["plus2"] == expected_us, f"+02:00 not converted: {vals['plus2']}"
-        assert (
-            vals["minus530"] == expected_us
-        ), f"-05:30 not converted: {vals['minus530']}"
+        assert vals["minus530"] == expected_us, (
+            f"-05:30 not converted: {vals['minus530']}"
+        )
         # The compact ±HHMM spelling must convert identically.
         assert vals["plus2hm"] == expected_us
 
@@ -4573,13 +4573,13 @@ class TestLineTargetCube:
         assert page.evaluate("divs[1]._fullLayout.xaxis.type") == "date"
         assert len(drag_xy["x"]) > 0 and len(drag_xy["y"]) > 0
         for xv in drag_xy["x"]:
-            assert isinstance(
-                xv, (int, float)
-            ), f"expected numeric epoch-ms, got {xv!r}"
+            assert isinstance(xv, (int, float)), (
+                f"expected numeric epoch-ms, got {xv!r}"
+            )
             d = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=xv)
-            assert (
-                dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1)
-            ), f"envelope x {xv} decodes to {d}, outside the data's date range"
+            assert dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1), (
+                f"envelope x {xv} decodes to {d}, outside the data's date range"
+            )
 
     def test_grouped_temporal_line_target_live_updates_on_date_axis(
         self, page: Page, server_port: int
@@ -4631,13 +4631,13 @@ class TestLineTargetCube:
         flat = [xv for xs in after for xv in xs]
         assert len(flat) > 0
         for xv in flat:
-            assert isinstance(
-                xv, (int, float)
-            ), f"expected numeric epoch-ms, got {xv!r}"
+            assert isinstance(xv, (int, float)), (
+                f"expected numeric epoch-ms, got {xv!r}"
+            )
             d = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=xv)
-            assert (
-                dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1)
-            ), f"child envelope x {xv} decodes to {d}, outside the data's range"
+            assert dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1), (
+                f"child envelope x {xv} decodes to {d}, outside the data's range"
+            )
 
     def test_hist_source_live_updates_line_target(self, page: Page, server_port: int):
         """A hist-source brush live-updates a LINE target: the envelope tracks
