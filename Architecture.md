@@ -380,6 +380,9 @@ FlexTrace (ABC)
 ├── overlay_style: ClassVar[str]          ← "full" | "filtered_only"
 │                                           suppresses duplicate bg aggregation
 │                                           while a filtered fg is active
+├── domain_follows_filter: ClassVar[bool] ← an unzoomed grid in update mode
+│                                           follows the cross-filter; true on
+│                                           LinePlot
 ├── _backend_data: Dict[str, str | list[str]]
 ├── _display: Dict[str, Any]
 ├── _params: Dict[str, Any]
@@ -393,9 +396,10 @@ FlexTrace (ABC)
 ├── group_by_cols: tuple[str, ...] | None← normalized tuple form of group_by
 │
 ├── domain_cols(update_range) → tuple[str, ...]
-│     ← columns whose unfiltered (min, max) the spec needs; a column drops
-│       out once the viewport supplies its axis. update_range holds any
-│       subset of the trace's recompute axes
+│     ← columns whose (min, max) the spec needs; the engine picks the bounds:
+│       unfiltered, or filtered where domain_follows_filter applies in update
+│       mode. A column drops out once the viewport supplies its axis.
+│       update_range holds any subset of the trace's recompute axes
 ├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
 │     ← the engine calls every trace the same way; a trace ignores what it
@@ -868,7 +872,7 @@ LFQueryBuilder
 ├── schema                      ← cached property
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan and the grouped histogram plan always stream)
 ├── static                       ← the data cannot change under this builder: a resident frame, or a cache=True scan
-├── physical_minmax(cols, schema)  ← per-column unfiltered (min, max); Parquet footer first; kept on the builder only when static
+├── physical_minmax(cols, schema, *, filter_exprs)  ← per-column (min, max); the unfiltered form reads the Parquet footer first and is kept on the builder only when static; the filtered form skips both and collects with collect_engine
 ├── check_line_x(col)            ← line x data check on a resident frame: one collect verifying x is null-free, sorted and NaN-free; the flag is kept only when static
 ├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
