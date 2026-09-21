@@ -476,3 +476,46 @@ class TestCanonicalPassiveKey:
             {"c": "a", "r": [1.0, 2.0], "cl": "left"},
             {"c": "g", "v": ["x", "y"]},
         ]
+
+
+class TestValuesEdgeCases:
+    """Characterization of a values clause whose members are empty, null or
+    uncoercible. A null selects nothing, as a member and as a data value."""
+
+    @pytest.fixture
+    def nulls_df(self) -> pl.DataFrame:
+        return pl.DataFrame({"country": ["NL", None, "BE", "NL"]})
+
+    @staticmethod
+    def _rows(df: pl.DataFrame, column: str, values: list) -> list:
+        from flexviz.predicates import predicates_to_expr
+
+        preds = [
+            SelectionPredicate(clauses=[ClauseFilter(column=column, values=values)])
+        ]
+        return df.filter(predicates_to_expr(preds, df.schema))[column].to_list()
+
+    def test_empty_values_selects_no_rows(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", []) == []
+
+    def test_null_only_values_selects_no_rows(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", [None]) == []
+
+    def test_null_member_selects_the_other_values_only(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", ["NL", None]) == ["NL", "NL"]
+
+    def test_uncoercible_value_on_int_column_selects_no_rows(self):
+        # "abc" casts to null under the lenient cast, leaving no member.
+        df = pl.DataFrame({"i": [1, 2, 3]})
+        assert self._rows(df, "i", ["abc"]) == []
+
+    def test_uncoercible_member_leaves_the_valid_one(self):
+        df = pl.DataFrame({"i": [1, 2, 3]})
+        assert self._rows(df, "i", ["abc", "2"]) == [2]
+
+    def test_datetime_string_value_selects_no_rows(self):
+        # Polars 1.44 casts String → Datetime to null, so the clause is empty.
+        import datetime as dt
+
+        df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
+        assert self._rows(df, "ts", ["2026-01-02"]) == []
