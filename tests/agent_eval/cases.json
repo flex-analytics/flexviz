@@ -206,9 +206,9 @@
     "seed": 8,
     "anomaly": {"column": "sensor_2", "window": [0.36, 0.40]},
     "prompt": "Here is the view I was looking at, straight out of the Share button: {url}\n\nI brushed a range on the line chart in it. What is the mean of that sensor inside the range I brushed?",
-    "pre": [{"agent_entry": {}}, {"human_entry": {"brush": "anomaly_window"}}],
+    "pre": [{"agent_entry": {}}],
     "checks": [
-      "no_duplicate_human_entry",
+      "human_entry_recorded",
       "agent_change_recorded",
       "handover_answer",
       "no_url_leak",
@@ -216,13 +216,13 @@
     ]
   },
   {
-    "id": "follow-up-histogram",
+    "id": "follow-up-hist2d",
     "tags": ["follow-up"],
     "fixture": "sensors_1m",
     "seed": 9,
     "anomaly": {"column": "sensor_4", "window": [0.50, 0.54]},
     "prompt": "Explore sensors.parquet in this folder, about a million rows of readings. Build me something interactive, and tell me what stands out.",
-    "follow_up_prompt": "Now add a histogram of that sensor to the dashboard as well.",
+    "follow_up_prompt": "Now add a 2D histogram of sensor_1 against sensor_2 to the dashboard as well.",
     "pre": [],
     "checks": ["rebuild_recorded"]
   },

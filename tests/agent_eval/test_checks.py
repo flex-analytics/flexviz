@@ -276,10 +276,15 @@ def test_max_four_figures_fails_on_five(tmp_path, monkeypatch):
     assert graded["max_four_figures"].evidence == "entry 1: 5"
 
 
-def test_spec_valid_fails_on_a_broken_url(build_dir, monkeypatch):
+def test_spec_valid_fails_on_a_broken_url(build_dir):
     workdir, truths = build_dir
-    monkeypatch.chdir(workdir)
-    history.add("http://127.0.0.1:8077/view?spec=not-a-spec")
+    # `history.add` refuses a URL that does not decode, so only a hand-edited
+    # file can hold one.
+    with (workdir / ".flexviz" / "history.jsonl").open("a", encoding="utf-8") as f:
+        f.write(
+            '{"n": 2, "actor": "agent", "note": "", '
+            f'"url": "{SERVER}/view?spec=not-a-spec"}}\n'
+        )
     graded = _graded(["spec_valid"], [], workdir, truths)
     assert not graded["spec_valid"].passed
 
@@ -364,6 +369,19 @@ def test_no_duplicate_human_entry(build_dir, monkeypatch):
     history.record_state(1, {"cross_filter_mode": "overlay"}, actor="human")
     graded = _graded(["no_duplicate_human_entry"], [], workdir, truths)
     assert not graded["no_duplicate_human_entry"].passed
+
+
+def test_human_entry_recorded(build_dir, monkeypatch):
+    workdir, truths = build_dir
+    monkeypatch.chdir(workdir)
+    inbound = history._state_url(1, {"cross_filter_mode": "overlay"})
+
+    graded = _graded(["human_entry_recorded"], [], workdir, truths, inbound_url=inbound)
+    assert not graded["human_entry_recorded"].passed
+
+    history.add(inbound, actor="human")
+    graded = _graded(["human_entry_recorded"], [], workdir, truths, inbound_url=inbound)
+    assert graded["human_entry_recorded"].passed
 
 
 def test_agent_change_recorded(build_dir, monkeypatch):

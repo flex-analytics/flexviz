@@ -412,9 +412,13 @@ def run_once(case: dict, arm: str, model: str, budget: float, out: Path) -> tupl
             "truths": apply_pre(case, workdir, write_fixture(workdir, case)),
         }
         if "{url}" in case["prompt"]:
+            # A human who pastes a share URL does not also run `history add`,
+            # so the brushed state is built here and never recorded. Recording
+            # it is the agent's job.
             with checks._history_file(workdir):
-                human = [e for e in history.entries() if e.get("actor") == "human"]
-            case["inbound_url"] = human[-1]["url"]
+                case["inbound_url"] = history._state_url(
+                    1, _brush(case["truths"]), {"hover_mode": "off"}
+                )
         prompt = case["prompt"].replace("{url}", case.get("inbound_url", ""))
         install_skill(workdir, arm)
         before = listening_ports()

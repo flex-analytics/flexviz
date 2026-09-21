@@ -502,6 +502,22 @@ def no_duplicate_human_entry(case: dict, events: list[dict], workdir: Path) -> C
     )
 
 
+def human_entry_recorded(case: dict, events: list[dict], workdir: Path) -> Check:
+    """A pasted share URL is state only the agent can record.
+
+    The human hands the URL over and nothing else, so exactly one new human
+    entry must appear, holding that URL.
+    """
+    before = case["truths"]["human_entries"]
+    human = [e for e in _entries(workdir) if e.get("actor") == "human"]
+    matches = bool(human) and human[-1]["url"] == case.get("inbound_url")
+    return Check(
+        "human_entry_recorded",
+        len(human) == before + 1 and matches,
+        f"{before} before, {len(human)} now, url matches inbound={matches}",
+    )
+
+
 def agent_change_recorded(case: dict, events: list[dict], workdir: Path) -> Check:
     changed = _calls(events, _APPLY) + _calls(events, _REBUILD)
     if not changed:
@@ -582,6 +598,7 @@ CHECKS = {
         findings_in_chat,
         burst_found,
         no_duplicate_human_entry,
+        human_entry_recorded,
         agent_change_recorded,
         rebuild_recorded,
         handover_answer,
