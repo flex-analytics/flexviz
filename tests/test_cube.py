@@ -1134,6 +1134,67 @@ class TestFVCubeCodec:
         assert sum(partial.values()) == 2
 
 
+class TestCategoricalDimEncoding:
+    """Category order and codes per dim dtype (the columnar dictionary)."""
+
+    def _dim(self, values: pl.Series) -> tuple[list, list[int]]:
+        result = CubeResult(
+            spec=CubeSpec(
+                source_name="s",
+                free=FreeAxisSpec(column="active", p=8, domain=(0.0, 100.0)),
+                target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+                measure=MeasureSpec(agg="count"),
+            ),
+            frame=pl.DataFrame(
+                {
+                    # One row per bin: the encoder sorts by (free_bin, dim), so
+                    # distinct bins keep the codes in input order.
+                    "free_bin": pl.Series(range(len(values)), dtype=pl.Int32),
+                    "cat": values,
+                    "count": pl.Series([1] * len(values), dtype=pl.UInt32),
+                }
+            ),
+            group_cols=("cat",),
+        )
+        blob = encode_fvcube(result, cube_id="dim")
+        header = decode_fvcube_header(blob)
+        return header["target_dims"][0]["categories"], _read_u32_col(
+            blob, header, "cat"
+        )
+
+    def test_null_string_dim_is_its_own_category(self):
+        # A null and the literal "None" are DIFFERENT categories (they shared
+        # one code before the columnar encoder) and every code is reachable.
+        cats, codes = self._dim(pl.Series(["a", None, "None"]))
+        assert cats == [None, "None", "a"]
+        assert sorted(codes) == [0, 1, 2]
+        assert dict(zip(["a", None, "None"], codes)) == {"a": 2, None: 0, "None": 1}
+
+    @pytest.mark.parametrize(
+        "dtype", [pl.Categorical, pl.Enum(["b", "a", "c"])], ids=["categorical", "enum"]
+    )
+    def test_dictionary_dtypes_sort_lexically(self, dtype):
+        # Not in declaration/dictionary order: an Enum sorts by declaration
+        # unless the encoder casts to Utf8 first.
+        cats, codes = self._dim(pl.Series(["b", "a", "c"], dtype=dtype))
+        assert cats == ["a", "b", "c"]
+        assert codes == [1, 0, 2]
+
+    def test_numeric_dim_nan_sorts_last_null_first(self):
+        cats, codes = self._dim(
+            pl.Series([2.0, float("nan"), None, -1.0], dtype=pl.Float64)
+        )
+        assert cats[0] is None
+        assert cats[1:3] == [-1.0, 2.0]
+        assert math.isnan(cats[3])
+        assert codes == [2, 3, 0, 1]
+
+    def test_numeric_dim_keeps_numeric_order(self):
+        cats, codes = self._dim(pl.Series([12, 2, 100, -3], dtype=pl.Int64))
+        assert cats == [-3, 2, 12, 100]
+        assert codes == [2, 1, 3, 0]
+
+
 # ---------------------------------------------------------------------------
 # Frozen FVCube byte fixtures
 # ---------------------------------------------------------------------------

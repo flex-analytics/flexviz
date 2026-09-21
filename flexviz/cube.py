@@ -1351,6 +1351,36 @@ def _line_env_quantized_buffers(
     }
 
 
+def _dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
+    """Dictionary-encode one categorical target dim: (categories, u32 codes).
+
+    The categories are the distinct values in **Polars sort order** — null
+    first, NaN last, UTF-8 byte order for strings — and each code indexes that
+    list. A null is its own category (JSON ``null`` in the header), never
+    folded into the string ``"None"``.
+    """
+    if s.dtype.is_integer() or s.dtype.is_float():
+        # Numeric categories keep their type and NUMERIC order so the cube's
+        # emitted labels byte-match the server's typed, numerically-sorted
+        # grouped/ungrouped output. This avoids Python/JS string-format drift
+        # for floats such as 1.0 vs 1. search_sorted is exact because every
+        # value is a member of ``cats`` (NaN included — Polars sorts it last).
+        cats = s.unique().sort()
+        codes = cats.drop_nulls().search_sorted(s, side="left").cast(pl.Int64)
+    else:
+        # Cast to Utf8 first: an Enum/Categorical column sorts in DECLARATION
+        # order, and the header contract is lexical order.
+        s = s.cast(pl.Utf8)
+        cats = s.unique().sort()
+        codes = s.cast(pl.Enum(cats.drop_nulls())).to_physical().cast(pl.Int64)
+    if cats.null_count():
+        # Null sorts first, so it owns code 0 and every value shifts up one.
+        # Both branches already leave a null input at 0 before the shift (the
+        # Enum cast yields null, search_sorted yields 0).
+        codes = codes.fill_null(0) + s.is_not_null().cast(pl.Int64)
+    return cats.to_list(), codes.cast(pl.UInt32)
+
+
 def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     """Encode a built cube as an FVCube v1 blob.
 
@@ -1362,13 +1392,16 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     engine's morsel boundaries vary between runs and f64 addition is not
     associative, so ``sum``/``mean``/``corr`` partials can land on different
     last bits. Do not byte-compare, hash, or ETag blobs across builds.
-    Categorical target columns are dictionary-encoded: the
-    header lists typed numeric categories in numeric order, other categories
-    in sorted string order, and the column ships u32 codes into that list.
+    Categorical target columns are dictionary-encoded: the header lists typed
+    numeric categories in numeric order, other categories in lexical (UTF-8
+    byte) order, and the column ships u32 codes into that list. Every category
+    list is in Polars sort order — null first (a null category ships as JSON
+    ``null``), NaN last — and is built with Polars expressions, never a
+    per-row Python loop.
 
     A **categorical free axis** is dictionary-encoded the same way: the
     distinct category *tuples* over the ``__free__`` columns are listed in
-    Python-sorted order in the header free block, preserving numeric values as
+    sorted order in the header free block, preserving numeric values as
     JSON numbers
     (``{"kind": "categorical", "cols": [...], "categories": [[part, ...], ...]}``
     — no ``p``, no ``domain``) and the standard u32 ``free_bin`` column holds
@@ -1379,20 +1412,22 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     group_cols = list(result.group_cols)
     if spec.free.kind == "categorical":
         key_cols = list(result.free_key_cols)
-        row_tuples = (
-            list(zip(*(result.frame[c].to_list() for c in key_cols)))
-            if result.frame.height
-            else []
+        # The distinct key tuples in Polars multi-column sort order. The free
+        # key columns are null-filtered at build time, so no null part can
+        # reach this sort. The join back is unordered, but
+        # ``(free_bin, *group_cols)`` is unique per cell, so the sort below is
+        # a total order — the same one the range branch relies on.
+        cats = result.frame.select(key_cols).unique().sort(key_cols)
+        codes = cats.with_row_index("free_bin").with_columns(
+            pl.col("free_bin").cast(pl.UInt32)
         )
-        categories = sorted(set(row_tuples))
-        code_of = {t: i for i, t in enumerate(categories)}
-        frame = result.frame.with_columns(
-            pl.Series("free_bin", [code_of[t] for t in row_tuples], dtype=pl.UInt32)
-        ).sort(["free_bin", *group_cols])
+        frame = result.frame.join(codes, on=key_cols, how="left").sort(
+            ["free_bin", *group_cols]
+        )
         free_block: dict = {
             "kind": "categorical",
             "cols": list(spec.free.columns or ()),
-            "categories": [list(t) for t in categories],
+            "categories": [list(t) for t in cats.iter_rows()],
         }
     elif spec.free.kind == "box2d":
         # The composite free_bin is already a u32 (build cast it to Int32); the
@@ -1463,26 +1498,8 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     ]
     for d, col in zip(spec.target_dims, group_cols):
         if d.kind == "categorical":
-            if frame.schema[col].is_integer() or frame.schema[col].is_float():
-                # Numeric categories keep their type and NUMERIC order so the
-                # cube's emitted labels byte-match the server's typed,
-                # numerically-sorted grouped/ungrouped output. This avoids
-                # Python/JS string-format drift for floats such as 1.0 vs 1.
-                categories = sorted(frame[col].unique().to_list())
-                codes = {v: i for i, v in enumerate(categories)}
-                buf = np.fromiter(
-                    (codes[v] for v in frame[col].to_list()),
-                    dtype="<u4",
-                    count=frame.height,
-                ).tobytes()
-            else:
-                categories = sorted(str(v) for v in frame[col].unique().to_list())
-                codes = {v: i for i, v in enumerate(categories)}
-                buf = np.fromiter(
-                    (codes[str(v)] for v in frame[col].to_list()),
-                    dtype="<u4",
-                    count=frame.height,
-                ).tobytes()
+            categories, codes = _dim_dictionary(frame[col])
+            buf = codes.to_numpy().astype("<u4").tobytes()
             target_dims.append(
                 {"name": d.column, "kind": "categorical", "categories": categories}
             )

@@ -1350,7 +1350,14 @@ them.
   + 8-byte-aligned little-endian typed-array buffers sorted by `free_bin` (u32 bins/codes/counts,
   f64 measure partials with null as NaN — except the `line_env` measure, which packs `(min_y,
   max_y)` as f32 and the extremal-x offsets as u16; categorical columns are dictionary-encoded
-  codes into the header's sorted category lists). It rides raw (no base64) inside a thin binary
+  codes into the header's sorted category lists). **Category order** is Polars sort order, built
+  with Polars expressions (unique/sort, an `Enum` cast or `search_sorted`, a join for the free
+  keys) and never a per-row Python loop: null first, NaN last, UTF-8 byte order for strings
+  (an `Enum`/`Categorical` column is cast to `Utf8` first, so it never sorts in declaration
+  order), numeric order for numeric labels. A **null dim value is its own category** and ships
+  as JSON `null` — the client then labels it exactly like the legacy server delta, which also
+  emits the raw null. Free-key columns are null-filtered at build time, so a free category tuple
+  has no null part. It rides raw (no base64) inside a thin binary
   **cube bundle** envelope (`encode_cube_bundle` / `decodeCubeBundle`) as the
   `application/octet-stream` body of the `/dashboard/update` cube response; the same bytes can
   later move to WebSocket binary frames. The cube path **gzip-compresses** the bundle itself at a
@@ -1378,6 +1385,11 @@ them.
 - Runtime cube state (store, gesture machine, remembered free domains) is client-only and never
   serialized into the spec; the committed *selection* (snapped, `closed="left"`) is ordinary
   declarative state and round-trips through share/restore like any other predicate.
+- A blob's category lists follow the encoder's ordering contract above (Polars sort order, null
+  first, NaN last, UTF-8 byte order). `tests/fixtures/fvcube/*.bin` freeze the bytes per encoder
+  shape; they hold no null or NaN dim value. The columnar encoder changed how those encode (a
+  null was folded into the string `"None"` before), so blobs with a null or NaN dim value are
+  not byte-comparable across that change.
 
 ---
 
