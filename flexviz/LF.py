@@ -245,8 +245,8 @@ class LFQueryBuilder:
 
         Fixed per source kind rather than left to ``"auto"``: a file scan must
         stream, a resident frame must not pay the streaming machinery. The line
-        bucket plan, the grouped histogram plan and the domain probe are the
-        exceptions: all stream on both source kinds.
+        bucket plan, the grouped histogram plan and the domain probe (filtered
+        or not) are the exceptions: all stream on both source kinds.
         """
         return "streaming" if self.is_scan else "in-memory"
 
@@ -260,9 +260,12 @@ class LFQueryBuilder:
         ldf: pl.LazyFrame,
         columns: list[str],
         sch: pl.Schema | None,
-        engine: str,
     ) -> dict[str, tuple[Any, Any]]:
-        """One batched min/max ``select`` over ``ldf``, in physical units."""
+        """One batched min/max ``select`` over ``ldf``, in physical units.
+
+        Always streaming: the reduction folds morsel by morsel instead of
+        reading the column once per bound, and it never copies the column.
+        """
         exprs: list[pl.Expr] = []
         for c in columns:
             val = pl.col(c)
@@ -271,7 +274,7 @@ class LFQueryBuilder:
                 val = val.to_physical()
             exprs.append(val.min().alias(f"__min_{c}__"))
             exprs.append(val.max().alias(f"__max_{c}__"))
-        stats = ldf.select(exprs).collect(engine=engine)
+        stats = ldf.select(exprs).collect(engine="streaming")
         return {
             c: (stats[f"__min_{c}__"].item(), stats[f"__max_{c}__"].item())
             for c in columns
@@ -304,8 +307,7 @@ class LFQueryBuilder:
         With ``filter_exprs`` the reduction runs on the filtered rows. The
         result holds for that filter only, so it neither reads nor writes the
         memo, and it skips the Parquet footer, whose statistics describe the
-        unfiltered file. It collects with ``collect_engine``, the engine the
-        aggregation on this source uses.
+        unfiltered file.
         """
         sch = schema if schema is not None else self.schema
         if filter_exprs:
@@ -313,7 +315,6 @@ class LFQueryBuilder:
                 self._ldf.filter(*filter_exprs),
                 list(dict.fromkeys(columns)),
                 sch,
-                self.collect_engine,
             )
 
         memo = self._minmax_memo if self.static else {}
@@ -330,9 +331,7 @@ class LFQueryBuilder:
             memo.update(found)
             missing = [c for c in missing if c not in found]
         if missing:
-            # Always streaming: the min/max select is ~2x faster on the
-            # streaming engine than on the in-memory one, on both source kinds.
-            memo.update(self._minmax_collect(self._ldf, missing, sch, "streaming"))
+            memo.update(self._minmax_collect(self._ldf, missing, sch))
         return {c: memo[c] for c in columns}
 
     # --------------- Handling flags ---------------

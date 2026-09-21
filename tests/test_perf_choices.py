@@ -87,86 +87,64 @@ def test_domain_probe_streams_on_resident_frames() -> None:
     )
 
 
-# 20M rows in ~125k-row chunks: a multi-chunk resident frame, the shape a
-# concatenated source has, and small enough to keep the whole check under 3 s.
-FILTERED_PROBE_ROWS = 20_000_000
-FILTERED_PROBE_CHUNK = 125_000
-# Observed ratios on this shape were 0.2 to 1.2, so 2.0 allows timing noise
-# while still catching a large slowdown.
-FILTERED_PROBE_RATIO = 2.0
+# The streaming engine reduces over the filtered morsels, so a filtered probe
+# must not materialize the surviving rows either. Measured 0.1 to 2.3 MB on a
+# warm allocator against 52 to 62 MB for the same select on the in-memory
+# engine; 8 MB sits between the two.
+FILTERED_PEAK_MB = 8
 
 
-@pytest.mark.skipif(
-    pl.thread_pool_size() < MIN_PROBE_THREADS,
-    reason=f"the engine comparison needs >= {MIN_PROBE_THREADS} threads",
-)
-def test_filtered_domain_probe_stays_in_memory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Decision: a filtered `LFQueryBuilder.physical_minmax` on a resident
-    frame collects with the in-memory engine (the builder's `collect_engine`),
-    not with the streaming engine the unfiltered probe uses.
+def test_filtered_domain_probe_streams_too() -> None:
+    """Decision: a filtered `LFQueryBuilder.physical_minmax` streams like the
+    unfiltered one, on a resident frame as well as on a scan.
 
-    Evidence: on the real request path at 100M rows (M5, 2026-09-19) the
-    in-memory engine is no worse than the streaming one on either frame shape,
-    and 5x faster on a resident frame read from Parquet: 40 ms against 215 ms
-    with 12.5M surviving rows. At this test's scale the gap is only 1.1x to 3x
-    and unstable, so the timing check bounds overhead rather than proving the
-    5x result.
+    Evidence: only the predicate kind flips the engine winner, not the filter.
+    On `is_between` and on `==` the streaming engine wins on resident frames
+    (M5, 100M rows, y band keeping 10M: 34.0 ms / 0.0 MB streaming against
+    53.5 ms / 235 MB in-memory; 50M with 90 % kept: 12.5 against 29.3 ms and
+    9.5 against 118 MB). The deleted `test_filtered_domain_probe_stays_in_memory`
+    pinned the in-memory engine from an `is_in` fixture, the one predicate
+    shape where in-memory wins, and values clauses no longer compile to
+    `is_in` below the equality-chain cutoff.
 
-    Check: the probe passes ``"in-memory"`` to the shared collector, takes at
-    most FILTERED_PROBE_RATIO of the same select on the streaming engine, and
-    returns the surviving rows' bounds, so it cannot pass on a no-op.
+    Check: the probe's collect names the streaming engine, its peak stays
+    under FILTERED_PEAK_MB, and it returns the surviving rows' bounds, so it
+    cannot pass on a no-op. No wall assertion: at this scale the gap is 1.1x
+    to 3x and unstable.
     """
-    width = FILTERED_PROBE_ROWS // 8
-    df = pl.concat(
-        [
-            pl.DataFrame(
-                {"x": np.arange(start, start + FILTERED_PROBE_CHUNK, dtype=np.int64)}
-            ).with_columns((pl.col("x") // width).cast(pl.Int32).alias("grp"))
-            for start in range(0, FILTERED_PROBE_ROWS, FILTERED_PROBE_CHUNK)
-        ],
-        rechunk=False,
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "x": np.arange(PROBE_ROWS, dtype=np.int64),
+            "y": rng.standard_normal(PROBE_ROWS),
+        }
     )
-    pred = pl.col("grp").is_in([3])
-    minmax = [
-        pl.col("x").min().alias("__min_x__"),
-        pl.col("x").max().alias("__max_x__"),
-    ]
-    collect_engines: list[str] = []
-    original_collect = LFQueryBuilder._minmax_collect
+    pred = pl.col("y").is_between(-0.5, 0.5)
 
-    def tracked_collect(self, ldf, columns, schema, engine):
-        collect_engines.append(engine)
-        return original_collect(self, ldf, columns, schema, engine)
+    engines: list[str | None] = []
+    original_collect = pl.LazyFrame.collect
 
-    monkeypatch.setattr(LFQueryBuilder, "_minmax_collect", tracked_collect)
+    def tracked_collect(self, *args, **kwargs):
+        engines.append(kwargs.get("engine"))
+        return original_collect(self, *args, **kwargs)
 
-    def probe():
-        # A fresh builder per call, as a request gets.
-        return LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
+    # Warm-up: the first probe also pays the allocator's first touch (12 MB).
+    LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
 
-    def reference():
-        return df.lazy().filter(pred).select(minmax).collect(engine="streaming")
+    pl.LazyFrame.collect = tracked_collect
+    try:
+        with PeakSampler(interval=0.001) as sampler:
+            bounds = LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
+    finally:
+        pl.LazyFrame.collect = original_collect
 
-    probe_ms: list[float] = []
-    reference_ms: list[float] = []
-    # Alternate the two, so a warming cache or a thermal drift costs both.
-    for run in range(6):  # one warm-up pass, then five timed ones
-        for call, times in ((probe, probe_ms), (reference, reference_ms)):
-            start = time.perf_counter()
-            call()
-            if run:
-                times.append((time.perf_counter() - start) * 1e3)
-
-    assert probe() == {"x": (3 * width, 4 * width - 1)}
-    assert set(collect_engines) == {"in-memory"}
-    median_probe = statistics.median(probe_ms)
-    median_reference = statistics.median(reference_ms)
-    assert median_probe <= FILTERED_PROBE_RATIO * median_reference, (
-        f"the filtered probe took {median_probe:.2f} ms, over "
-        f"{FILTERED_PROBE_RATIO} x the {median_reference:.2f} ms streaming select"
+    assert engines == ["streaming"]
+    assert sampler.peak_mb <= FILTERED_PEAK_MB, (
+        f"the filtered probe peaked {sampler.peak_mb:.1f} MB over its baseline, "
+        f"above the {FILTERED_PEAK_MB} MB cap"
     )
+    kept = df.filter(pred)
+    assert bounds == {"x": (kept["x"].min(), kept["x"].max())}
 
 
 # 20 categories over PROBE_ROWS rows, the shape of a category cross-filter.
