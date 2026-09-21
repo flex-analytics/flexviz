@@ -113,7 +113,8 @@ print(history.add(url, note="data.parquet: line + histogram, initial view", acto
 ### 4. Open the entry
 
 Open `http://127.0.0.1:<port>/h/N` for the number step 3 printed, and give the
-human the same address. Tell them: drag on one chart to cross-filter the
+human the same address. The `/h/N` address is what they open. In everything
+you write, the entry is `fv:N`. Tell them: drag on one chart to cross-filter the
 others, zoom to re-aggregate at higher detail, double-click to reset.
 
 A page that opens is not a page that drew: check the serve log for a
@@ -122,8 +123,8 @@ traceback after the first open of every new spec.
 ### 5. Read the state back
 
 All interaction state lives in ONE browser tab, so which tab the human uses
-decides what you can read. Ask once: "do you use the window I open, or your own
-browser?" Assume separate browsers until they confirm otherwise.
+decides what you can read. Assume separate browsers until they confirm
+otherwise.
 
 **Shared tab.** Your browser tool drives a window on this machine that the human
 can also use: a headed Playwright session (never `--headless`), or an extension
@@ -232,8 +233,10 @@ the history reads as a sequence of who did what.
 
 End the first pass in chat: the findings in a few lines, each one naming the
 entry that shows it as `fv:3`, never as "panel 1". Filter the LazyFrame to the
-brushed range to put a number next to a figure. Then offer: "Say report and I
-write findings.md with live views, or tell me what to look at next."
+brushed range to put a number next to a figure. End that same message with the
+offer, after the findings, never before: "Say report and I write findings.md
+with live views, tell me what to look at next, and say whether you use the
+window I opened or your own browser."
 
 Write that file only when they ask. A line that holds nothing but `fv:5` becomes
 the live dashboard of entry 5, zoomable for as long as the server runs. `--md`
