@@ -7,9 +7,12 @@ plugin, no memory file, and no MCP server.
 
 Usage::
 
-    python tests/agent_eval/run.py --case implicit-sensors --arm candidate
-    python tests/agent_eval/run.py --all       # every visible case, both arms
-    python tests/agent_eval/run.py --holdout   # holdout cases, aggregate only
+    python tests/agent_eval/run.py --case implicit-sensors --case handover-url   # candidate arm, one results dir
+    python tests/agent_eval/run.py --all --arm both                              # release sweep, both arms
+    python tests/agent_eval/run.py --holdout --arm both
+
+The candidate arm alone is the default: a per-edit run only needs the cases
+that exercise the edit, and the two-arm sweep is a release-time run.
 
 A sweep writes ``results/<ts>/summary.md``. The exit status is 1 on a candidate
 gate or a holdout drop only: the reference arm never fails the suite.
@@ -493,12 +496,14 @@ def _score(runs: list) -> tuple[int, int]:
     )
 
 
-def summary(root: Path, results: dict, aggregate: bool) -> None:
+def summary(
+    root: Path, results: dict, aggregate: bool, arms: tuple[str, ...] = ARMS
+) -> None:
     """Write ``summary.md``: one row per case, or one row per arm on holdout."""
     lines = [f"# skill eval {root.name}", ""]
     if aggregate:
         lines += ["| arm | holdout checks passed |", "|---|---|"]
-        for arm in ARMS:
+        for arm in arms:
             runs = [r for (_, a), rs in results.items() if a == arm for r in rs]
             ok, total = _score(runs)
             lines.append(f"| {arm} | {ok}/{total} |")
@@ -536,17 +541,17 @@ def summary(root: Path, results: dict, aggregate: bool) -> None:
     (root / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def gate(results: dict, aggregate: bool) -> int:
+def gate(results: dict, aggregate: bool, arms: tuple[str, ...] = ARMS) -> int:
     """Fail the sweep on a candidate regression only. The reference never does."""
     reasons = []
     if aggregate:
         rate = {}
-        for arm in ARMS:
+        for arm in arms:
             ok, total = _score(
                 [r for (_, a), rs in results.items() if a == arm for r in rs]
             )
             rate[arm] = ok / total if total else 0.0
-        if rate["candidate"] < rate["reference"]:
+        if len(rate) == 2 and rate["candidate"] < rate["reference"]:
             reasons.append(
                 f"holdout {rate['candidate']:.2f} below {rate['reference']:.2f}"
             )
@@ -578,21 +583,22 @@ def gate(results: dict, aggregate: bool) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case")
+    parser.add_argument("--case", action="append")
     parser.add_argument("--all", action="store_true", help="every case in cases.json")
     parser.add_argument("--holdout", action="store_true", help="cases_holdout.json")
-    parser.add_argument("--arm", choices=ARMS, default="candidate")
+    parser.add_argument("--arm", choices=(*ARMS, "both"), default="candidate")
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--model", default="claude-sonnet-5")
     parser.add_argument("--max-budget-usd", type=float, default=1.0)
     parser.add_argument("--out", default=str(Path(__file__).with_name("results")))
     args = parser.parse_args()
 
+    arms = ARMS if args.arm == "both" else (args.arm,)
     if args.all or args.holdout:
         path = HOLDOUT if args.holdout else CASES
-        cases, arms = json.loads(path.read_text(encoding="utf-8")), ARMS
+        cases = json.loads(path.read_text(encoding="utf-8"))
     elif args.case:
-        cases, arms = [load_case(args.case)], (args.arm,)
+        cases = [load_case(case_id) for case_id in args.case]
     else:
         raise SystemExit("pass --case, --all, or --holdout")
 
@@ -615,9 +621,9 @@ def main() -> None:
                     )
                 )
             results[case["id"], arm] = runs
-    summary(root, results, args.holdout)
+    summary(root, results, args.holdout, arms)
     print(f"results in {root}")
-    sys.exit(gate(results, args.holdout))
+    sys.exit(gate(results, args.holdout, arms))
 
 
 if __name__ == "__main__":
