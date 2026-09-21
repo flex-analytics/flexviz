@@ -519,3 +519,110 @@ class TestValuesEdgeCases:
 
         df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
         assert self._rows(df, "ts", ["2026-01-02"]) == []
+
+
+class TestValuesCompiledForm:
+    """A small values clause compiles to an OR of equality tests; a wide one
+    keeps ``is_in``. Both forms must select exactly the same rows."""
+
+    @staticmethod
+    def _expr(column: str, values: list, schema: pl.Schema) -> pl.Expr:
+        from flexviz.predicates import predicates_to_expr
+
+        return predicates_to_expr(
+            [SelectionPredicate(clauses=[ClauseFilter(column=column, values=values)])],
+            schema,
+        )
+
+    def _both_forms(
+        self, monkeypatch: pytest.MonkeyPatch, df: pl.DataFrame, column: str, values
+    ) -> tuple[list, list]:
+        """Rows under the compiled chain and under the ``is_in`` form."""
+        from flexviz import predicates
+
+        chain = df.filter(self._expr(column, values, df.schema))[column].to_list()
+        # A cutoff of 0 sends every non-empty clause down the `is_in` branch.
+        monkeypatch.setattr(predicates, "_EQUALITY_CHAIN_MAX_VALUES", 0)
+        is_in = df.filter(self._expr(column, values, df.schema))[column].to_list()
+        return chain, is_in
+
+    @pytest.mark.parametrize("k", [1, 5])
+    def test_small_clause_compiles_to_equality_chain(self, k: int):
+        from flexviz.predicates import _EQUALITY_CHAIN_MAX_VALUES
+
+        assert k <= _EQUALITY_CHAIN_MAX_VALUES
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(20)]})
+        values = [f"g{i}" for i in range(k)]
+        expr = self._expr("g", values, df.schema)
+        assert "is_in" not in str(expr)
+        # One column reference per equality test, and no other column.
+        assert expr.meta.root_names() == ["g"] * k
+        assert df.filter(expr)["g"].to_list() == values
+
+    def test_above_the_cutoff_keeps_is_in(self):
+        from flexviz.predicates import _EQUALITY_CHAIN_MAX_VALUES
+
+        k = _EQUALITY_CHAIN_MAX_VALUES + 1
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(k + 3)]})
+        values = [f"g{i}" for i in range(k)]
+        expr = self._expr("g", values, df.schema)
+        assert "is_in" in str(expr)
+        assert df.filter(expr)["g"].to_list() == values
+
+    def test_string_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"country": ["NL", None, "BE", "DE"]})
+        chain, is_in = self._both_forms(monkeypatch, df, "country", ["NL", "DE", None])
+        assert chain == is_in == ["NL", "DE"]
+
+    def test_boolean_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        chain, is_in = self._both_forms(monkeypatch, df, "flag", ["true", "false"])
+        assert chain == is_in == [True, False]
+
+    def test_int_column_with_string_values_matches_is_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Clause values arrive as JSON, so an Int64 column is selected by strings.
+        df = pl.DataFrame({"i": [1, 2, 3, 4]})
+        chain, is_in = self._both_forms(monkeypatch, df, "i", ["2", "4"])
+        assert chain == is_in == [2, 4]
+
+    def test_float32_column_is_not_widened(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"f": pl.Series([1.5, 2.5, 3.5], dtype=pl.Float32)})
+        chain, is_in = self._both_forms(monkeypatch, df, "f", [2.5])
+        assert chain == is_in == [2.5]
+
+    def test_datetime_column_matches_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        import datetime as dt
+
+        df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
+        chain, is_in = self._both_forms(
+            monkeypatch, df, "ts", [dt.datetime(2026, 1, 2)]
+        )
+        assert chain == is_in == [dt.datetime(2026, 1, 2)]
+
+    @pytest.mark.parametrize("dtype", [pl.Categorical, pl.Enum(["a", "b", "c"])])
+    def test_categorical_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch, dtype):
+        df = pl.DataFrame({"c": pl.Series(["a", "b", "c"], dtype=dtype)})
+        # "zz" is no category: it casts to null and drops out of both forms.
+        chain, is_in = self._both_forms(monkeypatch, df, "c", ["a", "c", "zz"])
+        assert chain == is_in == ["a", "c"]
+
+    def test_canonical_clause_key_unchanged(self):
+        # The canonical key reads the clause, never the compiled expression.
+        import json as _json
+
+        from flexviz.predicates import canonical_passive_key
+        from flexviz.spec import SelectionState
+
+        sel = SelectionState(
+            source_figure_uid="figB",
+            predicates=[
+                SelectionPredicate(
+                    clauses=[ClauseFilter(column="g", values=["y", "x"])]
+                )
+            ],
+        )
+        key = canonical_passive_key([sel], "figA")
+        (pred_str,) = _json.loads(_json.loads(key)[0])
+        assert _json.loads(pred_str) == [{"c": "g", "v": ["x", "y"]}]

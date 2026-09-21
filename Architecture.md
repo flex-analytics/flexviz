@@ -419,6 +419,14 @@ column names, then the engine ANDs the expressions from non-source selections be
 aggregation.  Click/brush handlers in adapters emit ``SelectionPredicate`` clauses by
 reading the source trace's ``backend_data``.
 
+A values clause casts its members to the column dtype and drops the nulls (a null
+never selects a row, and an all-null remainder compiles to ``pl.lit(False)``).  Up to
+``_EQUALITY_CHAIN_MAX_VALUES`` members it compiles to ``any_horizontal(col == v, ...)``
+with dtype-typed literals, which streams instead of materializing the column; a wider
+clause keeps ``is_in``, past the measured crossover
+(``tests/test_perf_choices.py::test_small_values_clause_compiles_to_an_equality_chain``).
+The canonical cube key reads the clause, never the compiled expression.
+
 ### Zoom re-aggregation policy
 
 Each trace declares the anchors whose viewport *range* parameterizes its

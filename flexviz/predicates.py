@@ -43,10 +43,30 @@ def _values_to_typed_series(
     return series
 
 
+# Up to this many values an OR of equality tests beats `is_in`: the chain
+# streams morsel by morsel while `is_in` materializes the column (100M rows,
+# 20-category String: k=5 55 ms / 0.6 MB against 123 ms / 571 MB). Past the
+# crossover the chain's ~7 ms per extra value overtakes the flat `is_in`.
+_EQUALITY_CHAIN_MAX_VALUES = 14
+
+
 def _clause_to_expr(clause: ClauseFilter, schema: pl.Schema | None) -> pl.Expr:
     if clause.values is not None:
         series = _values_to_typed_series(clause.column, clause.values, schema)
-        return pl.col(clause.column).is_in(series.implode())
+        # A null never matches: `is_in` ignores a null member and `col == None`
+        # is null for every row. Dropping nulls keeps both forms equal, and an
+        # empty remainder cannot be an `any_horizontal` (it raises).
+        typed = series.drop_nulls()
+        if len(typed) == 0:
+            return pl.lit(False)
+        if len(typed) <= _EQUALITY_CHAIN_MAX_VALUES:
+            # Literals carry the cast series' dtype, so the comparison never
+            # widens the column (a Float32 column against a Float64 literal
+            # would copy it).
+            return pl.any_horizontal(
+                *[pl.col(clause.column) == pl.lit(v, dtype=typed.dtype) for v in typed]
+            )
+        return pl.col(clause.column).is_in(typed.implode())
 
     bounds = _typed_range_bounds(clause.column, clause.range, schema, clause.closed)
     if bounds is None:

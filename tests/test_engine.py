@@ -791,6 +791,40 @@ class TestBarPlotCrossFilter:
         line_delta = next(d for d in deltas if d.uid == line.uid)
         assert line_delta.updates["y"] == [50.0, 60.0], "Only cat=C rows"
 
+    def test_values_cross_filter_matches_the_is_in_form(
+        self, cat_lf: LFQueryBuilder, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A category cross-filter compiles to an equality chain; its deltas
+        must equal the ones the `is_in` form produced."""
+        from flexviz import predicates
+
+        def run() -> list[dict]:
+            bar = BarPlot(labels="cat")
+            line = LinePlot(x="ts", y="val", n_points=1000)
+            engine = FlexEngine(
+                backend_lf=cat_lf,
+                scalable_traces={bar.uid: bar, line.uid: line},
+            )
+            infos = [
+                TraceInfo(
+                    uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
+                ),
+                TraceInfo(
+                    uid=line.uid,
+                    axes=("x", "y"),
+                    trace_type="line",
+                    figure_uid="fig_line",
+                ),
+            ]
+            deltas = engine.process(self._make_event("fig_bar", ["A", "C"]), infos)
+            return [d.updates for d in deltas]
+
+        chain = run()
+        # A cutoff of 0 sends the clause down the `is_in` branch.
+        monkeypatch.setattr(predicates, "_EQUALITY_CHAIN_MAX_VALUES", 0)
+        assert chain == run()
+        assert chain[0]["y"] == [10.0, 20.0, 50.0, 60.0]
+
     def test_overlay_grouped_target_selection_returns_fg_parent_delta(self):
         df = pl.DataFrame(
             {
