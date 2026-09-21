@@ -161,10 +161,12 @@ records a new entry, and hands you the new `/h/N`.
 ## History: numbered URLs instead of pasted ones
 
 `flexviz history add "<url>" --note "..."` records a URL under a number in
-`.flexviz/history.jsonl`. `flexviz history list` shows the notes without the
-URLs, and `flexviz history show N` prints the state back; add `--url` when
-the URL itself is really needed. Add `.flexviz/` to your `.gitignore`: the
-file holds full share URLs, which include column names and selections.
+`.flexviz/history.jsonl`. It refuses a URL whose spec does not decode, so a
+retyped or truncated URL fails here and not at `/h/N`. `flexviz history list`
+shows the notes without the URLs, and `flexviz history show N` prints the state
+back; add `--url` when the URL itself is really needed. Add `.flexviz/` to
+your `.gitignore`: the file holds full share URLs, which include column names
+and selections.
 
 A page cannot write that file, so an agent that reads your state back records
 it with `history.record_state(n, state, client_state)`. That reuses the figures

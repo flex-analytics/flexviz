@@ -468,6 +468,14 @@ def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_p
         main(["history", "add", "yesterday's parquet run"])
 
 
+def test_history_add_rejects_a_corrupted_spec(monkeypatch, tmp_path):
+    """A retyped or truncated URL fails at `add`, not later at /h/N."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit, match="invalid spec"):
+        main(["history", "add", "http://127.0.0.1:8000/view?spec=" + "A" * 300])
+    assert not (tmp_path / ".flexviz").exists()
+
+
 def test_report_command_writes_html_and_expanded_markdown(
     capsys, monkeypatch, tmp_path
 ):

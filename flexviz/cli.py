@@ -221,7 +221,10 @@ def _cmd_history(args: argparse.Namespace) -> None:
     if args.action == "add":
         if not args.target or "/view?spec=" not in args.target:
             raise SystemExit("history add requires a /view?spec= share URL")
-        print(history.add(args.target, note=args.note, actor=args.actor))
+        try:
+            print(history.add(args.target, note=args.note, actor=args.actor))
+        except Exception as exc:
+            raise SystemExit(f"invalid spec: {exc}") from exc
         return
 
     if args.action == "list":
