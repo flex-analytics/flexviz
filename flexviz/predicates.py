@@ -30,7 +30,7 @@ def _values_to_typed_series(
     dtype = _dtype_for_col(schema, column)
     coerced = list(values)
     if dtype == pl.Boolean:
-        _bool_map = {"true": True, "false": False}
+        _bool_map = {"true": True, "false": False, None: None}
         try:
             coerced = [_bool_map[v] for v in coerced]
         except KeyError as e:

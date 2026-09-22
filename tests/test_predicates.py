@@ -520,6 +520,14 @@ class TestValuesEdgeCases:
         df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
         assert self._rows(df, "ts", ["2026-01-02"]) == []
 
+    def test_null_member_on_boolean_column_selects_no_rows(self):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        assert self._rows(df, "flag", [None]) == []
+
+    def test_null_member_on_boolean_column_leaves_the_true_values(self):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        assert self._rows(df, "flag", ["true", None]) == [True]
+
     @pytest.mark.parametrize("values", [[], [None]])
     def test_missing_column_raises_even_when_the_clause_selects_no_rows(
         self, nulls_df: pl.DataFrame, values: list
