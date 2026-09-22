@@ -96,85 +96,144 @@ def test_domain_probe_streams_on_resident_frames() -> None:
     )
 
 
-# 20M rows in ~125k-row chunks: a multi-chunk resident frame, the shape a
-# concatenated source has, and small enough to keep the whole check under 3 s.
-FILTERED_PROBE_ROWS = 20_000_000
-FILTERED_PROBE_CHUNK = 125_000
-# Observed ratios on this shape were 0.2 to 1.2, so 2.0 allows timing noise
-# while still catching a large slowdown.
-FILTERED_PROBE_RATIO = 2.0
+# The streaming engine reduces over the filtered morsels, so a filtered probe
+# must not materialize the surviving rows either. Measured 0.1 to 2.3 MB on a
+# warm allocator against 52 to 62 MB for the same select on the in-memory
+# engine; 8 MB sits between the two.
+FILTERED_PEAK_MB = 8
 
 
-@pytest.mark.skipif(
-    pl.thread_pool_size() < MIN_PROBE_THREADS,
-    reason=f"the engine comparison needs >= {MIN_PROBE_THREADS} threads",
-)
-def test_filtered_domain_probe_stays_in_memory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Decision: a filtered `LFQueryBuilder.physical_minmax` on a resident
-    frame collects with the in-memory engine (the builder's `collect_engine`),
-    not with the streaming engine the unfiltered probe uses.
+def test_filtered_domain_probe_streams_too() -> None:
+    """Decision: a filtered `LFQueryBuilder.physical_minmax` streams like the
+    unfiltered one, on a resident frame as well as on a scan.
 
-    Evidence: on the real request path at 100M rows (M5, 2026-09-19) the
-    in-memory engine is no worse than the streaming one on either frame shape,
-    and 5x faster on a resident frame read from Parquet: 40 ms against 215 ms
-    with 12.5M surviving rows. At this test's scale the gap is only 1.1x to 3x
-    and unstable, so the timing check bounds overhead rather than proving the
-    5x result.
+    Evidence: only the predicate kind flips the engine winner, not the filter.
+    On `is_between` and on `==` the streaming engine wins on resident frames
+    (M5, 100M rows, y band keeping 10M: 34.0 ms / 0.0 MB streaming against
+    53.5 ms / 235 MB in-memory; 50M with 90 % kept: 12.5 against 29.3 ms and
+    9.5 against 118 MB). The deleted `test_filtered_domain_probe_stays_in_memory`
+    pinned the in-memory engine from an `is_in` fixture, the one predicate
+    shape where in-memory wins, and values clauses no longer compile to
+    `is_in` below the equality-chain cutoff.
 
-    Check: the probe passes ``"in-memory"`` to the shared collector, takes at
-    most FILTERED_PROBE_RATIO of the same select on the streaming engine, and
-    returns the surviving rows' bounds, so it cannot pass on a no-op.
+    Check: the probe's collect names the streaming engine, its peak stays
+    under FILTERED_PEAK_MB, and it returns the surviving rows' bounds, so it
+    cannot pass on a no-op. No wall assertion: at this scale the gap is 1.1x
+    to 3x and unstable.
     """
-    width = FILTERED_PROBE_ROWS // 8
-    df = pl.concat(
-        [
-            pl.DataFrame(
-                {"x": np.arange(start, start + FILTERED_PROBE_CHUNK, dtype=np.int64)}
-            ).with_columns((pl.col("x") // width).cast(pl.Int32).alias("grp"))
-            for start in range(0, FILTERED_PROBE_ROWS, FILTERED_PROBE_CHUNK)
-        ],
-        rechunk=False,
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "x": np.arange(PROBE_ROWS, dtype=np.int64),
+            "y": rng.standard_normal(PROBE_ROWS),
+        }
     )
-    pred = pl.col("grp").is_in([3])
-    minmax = [
-        pl.col("x").min().alias("__min_x__"),
-        pl.col("x").max().alias("__max_x__"),
-    ]
-    collect_engines: list[str] = []
-    original_collect = LFQueryBuilder._minmax_collect
+    pred = pl.col("y").is_between(-0.5, 0.5)
 
-    def tracked_collect(self, ldf, columns, schema, engine):
-        collect_engines.append(engine)
-        return original_collect(self, ldf, columns, schema, engine)
+    engines: list[str | None] = []
+    original_collect = pl.LazyFrame.collect
 
-    monkeypatch.setattr(LFQueryBuilder, "_minmax_collect", tracked_collect)
+    def tracked_collect(self, *args, **kwargs):
+        engines.append(kwargs.get("engine"))
+        return original_collect(self, *args, **kwargs)
 
-    def probe():
-        # A fresh builder per call, as a request gets.
-        return LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
+    # Warm-up: the first probe also pays the allocator's first touch (12 MB).
+    LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
 
-    def reference():
-        return df.lazy().filter(pred).select(minmax).collect(engine="streaming")
+    pl.LazyFrame.collect = tracked_collect
+    try:
+        with PeakSampler(interval=0.001) as sampler:
+            bounds = LFQueryBuilder(df).physical_minmax(["x"], filter_exprs=[pred])
+    finally:
+        pl.LazyFrame.collect = original_collect
 
-    probe_ms: list[float] = []
-    reference_ms: list[float] = []
-    # Alternate the two, so a warming cache or a thermal drift costs both.
-    for run in range(6):  # one warm-up pass, then five timed ones
-        for call, times in ((probe, probe_ms), (reference, reference_ms)):
-            start = time.perf_counter()
-            call()
-            if run:
-                times.append((time.perf_counter() - start) * 1e3)
+    assert engines == ["streaming"]
+    assert sampler.peak_mb <= FILTERED_PEAK_MB, (
+        f"the filtered probe peaked {sampler.peak_mb:.1f} MB over its baseline, "
+        f"above the {FILTERED_PEAK_MB} MB cap"
+    )
+    kept = df.filter(pred)
+    assert bounds == {"x": (kept["x"].min(), kept["x"].max())}
 
-    assert probe() == {"x": (3 * width, 4 * width - 1)}
-    assert set(collect_engines) == {"in-memory"}
-    median_probe = statistics.median(probe_ms)
-    median_reference = statistics.median(reference_ms)
-    assert median_probe <= FILTERED_PROBE_RATIO * median_reference, (
-        f"the filtered probe took {median_probe:.2f} ms, over "
-        f"{FILTERED_PROBE_RATIO} x the {median_reference:.2f} ms streaming select"
+
+# 20 categories over PROBE_ROWS rows, the shape of a category cross-filter.
+CHAIN_CATEGORIES = 20
+CHAIN_VALUES = 5
+# The chain streams: it never holds more than a morsel (measured 0.0 to
+# 0.3 MB).
+CHAIN_PEAK_MB = 8
+
+
+def test_small_values_clause_compiles_to_an_equality_chain() -> None:
+    """Decision: on a resident source a values clause of at most
+    `_EQUALITY_CHAIN_MAX_VALUES` members compiles to
+    `any_horizontal(col == v, ...)` instead of `is_in`. A scan source always
+    compiles `is_in`. The source kind is the discriminator, not k.
+
+    Evidence: M5, 100M rows, a String column, both forms on the streaming
+    engine (the engine the product uses), probe over the filtered frame.
+    Resident, k=1/5/10/14/20: the chain 18/54/102/132/172 ms against
+    280/581/947/961/634 ms for `is_in`, 7 to 15x. The chain costs about 9 ms
+    per extra value while `is_in` stays flat at 500 to 1000 ms, so the two
+    cross around k 80 to 100 (200 categories: k=60 545 against 798 ms, k=80
+    746 against 784, k=100 950 against 922). 64 keeps a margin.
+
+    On a Parquet scan both forms are pushed into the scan node (identical
+    plans) and the ranking flips: `is_in` costs about 2.4 ms per extra value
+    on a 90 ms base, the chain about 12.7 ms, so the chain loses from k=2 on
+    (k=5 164 against 126 ms, k=20 332 against 144). End to end through the
+    engine on a scan, k=14: 773 against 521 ms.
+
+    Memory is NOT the argument. Both forms stream in a few MB on the
+    streaming engine (0.2 to 5 MB). The large `is_in` peaks reported earlier
+    belong to the in-memory engine, which no product path takes here.
+
+    Check: a k=5 resident clause compiles without `is_in`, a k=5 scan clause
+    keeps `is_in`, both forms select the same rows, and the chain's streaming
+    select stays under CHAIN_PEAK_MB.
+    """
+    from flexviz.predicates import predicates_to_expr
+    from flexviz.spec import ClauseFilter, SelectionPredicate
+
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "g": "g"
+            + pl.Series(rng.integers(0, CHAIN_CATEGORIES, PROBE_ROWS)).cast(pl.String),
+            "x": np.arange(PROBE_ROWS, dtype=np.int64),
+        }
+    )
+    values = [f"g{i}" for i in range(CHAIN_VALUES)]
+    chain_expr = predicates_to_expr(
+        [SelectionPredicate(clauses=[ClauseFilter(column="g", values=values)])],
+        df.schema,
+    )
+    assert "is_in" not in str(chain_expr)
+    # The scan rule, checked without timing: the same clause on a scan source
+    # keeps `is_in` whatever k is.
+    scan_expr = predicates_to_expr(
+        [SelectionPredicate(clauses=[ClauseFilter(column="g", values=values)])],
+        df.schema,
+        is_scan=True,
+    )
+    assert "is_in" in str(scan_expr)
+    is_in_expr = pl.col("g").is_in(pl.Series(values, dtype=pl.String).implode())
+    minmax = [pl.col("x").min().alias("lo"), pl.col("x").max().alias("hi")]
+
+    # Warm-up: the first select also pays the allocator's first touch, which
+    # is not what is measured here.
+    df.lazy().filter(chain_expr).select(minmax).collect(engine="streaming")
+
+    with PeakSampler(interval=0.001) as chain_sampler:
+        chain = df.lazy().filter(chain_expr).select(minmax).collect(engine="streaming")
+    # The other form on the same engine the product runs: the comparison is
+    # chain against `is_in`, not streaming against in-memory.
+    reference = df.lazy().filter(is_in_expr).select(minmax).collect(engine="streaming")
+
+    assert chain.equals(reference)
+    assert chain_sampler.peak_mb <= CHAIN_PEAK_MB, (
+        f"the chain peaked {chain_sampler.peak_mb:.1f} MB over its baseline, "
+        f"above the {CHAIN_PEAK_MB} MB cap"
     )
 
 

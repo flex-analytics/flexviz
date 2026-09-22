@@ -791,6 +791,40 @@ class TestBarPlotCrossFilter:
         line_delta = next(d for d in deltas if d.uid == line.uid)
         assert line_delta.updates["y"] == [50.0, 60.0], "Only cat=C rows"
 
+    def test_values_cross_filter_matches_the_is_in_form(
+        self, cat_lf: LFQueryBuilder, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A category cross-filter compiles to an equality chain; its deltas
+        must equal the ones the `is_in` form produced."""
+        from flexviz import predicates
+
+        def run() -> list[dict]:
+            bar = BarPlot(labels="cat")
+            line = LinePlot(x="ts", y="val", n_points=1000)
+            engine = FlexEngine(
+                backend_lf=cat_lf,
+                scalable_traces={bar.uid: bar, line.uid: line},
+            )
+            infos = [
+                TraceInfo(
+                    uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
+                ),
+                TraceInfo(
+                    uid=line.uid,
+                    axes=("x", "y"),
+                    trace_type="line",
+                    figure_uid="fig_line",
+                ),
+            ]
+            deltas = engine.process(self._make_event("fig_bar", ["A", "C"]), infos)
+            return [d.updates for d in deltas]
+
+        chain = run()
+        # A cutoff of 0 sends the clause down the `is_in` branch.
+        monkeypatch.setattr(predicates, "_EQUALITY_CHAIN_MAX_VALUES", 0)
+        assert chain == run()
+        assert chain[0]["y"] == [10.0, 20.0, 50.0, 60.0]
+
     def test_overlay_grouped_target_selection_returns_fg_parent_delta(self):
         df = pl.DataFrame(
             {
@@ -2050,6 +2084,83 @@ class TestEngineSelectionFilterExprs:
         assert target is None
         assert sorted(deltas_by_uid["b"].updates["x"]) == ["solar", "wind"]
         assert all(v == 1.0 for v in deltas_by_uid["b"].updates["y"])
+
+    _XF_FRAME = pl.DataFrame(
+        {
+            "country": ["NL", "BE", "NL", "DE"],
+            "source": ["solar", "solar", "wind", "wind"],
+            "v": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+
+    def _compiled_selection_exprs(self, monkeypatch, source) -> tuple[list[str], bool]:
+        """The selection filters the engine compiles, and the source's kind.
+
+        Patching the compiler is the smallest hook that sees both the routing
+        keyword and the expression the engine actually applies.
+        """
+        import flexviz.engine as engine_mod
+
+        real = engine_mod.predicates_to_expr
+        compiled: list[str] = []
+
+        def spy(predicates, schema, *, is_scan=False):
+            expr = real(predicates, schema, is_scan=is_scan)
+            compiled.append(str(expr))
+            return expr
+
+        monkeypatch.setattr(engine_mod, "predicates_to_expr", spy)
+
+        lf = LFQueryBuilder(source)
+        src = BarPlot(labels="country", values="v", agg="sum")
+        target = BarPlot(labels="source", values="v", agg="sum")
+        engine = FlexEngine(
+            backend_lf=lf, scalable_traces={src.uid: src, target.uid: target}
+        )
+        engine.process(
+            event=InteractionEvent(
+                type="selection",
+                force_update=True,
+                selections=[
+                    SelectionState(
+                        source_figure_uid="figA",
+                        predicates=[
+                            SelectionPredicate(
+                                clauses=[
+                                    ClauseFilter(column="country", values=["NL", "BE"])
+                                ]
+                            )
+                        ],
+                    )
+                ],
+            ),
+            trace_infos=[
+                TraceInfo(
+                    uid=src.uid, axes=("x", "y"), trace_type="bar", figure_uid="figA"
+                ),
+                TraceInfo(
+                    uid=target.uid, axes=("x", "y"), trace_type="bar", figure_uid="figB"
+                ),
+            ],
+        )
+        assert compiled, "the engine compiled no selection filter"
+        return compiled, lf.is_scan
+
+    def test_scan_source_compiles_a_values_selection_to_is_in(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "xf.parquet"
+        self._XF_FRAME.write_parquet(path)
+        compiled, is_scan = self._compiled_selection_exprs(
+            monkeypatch, pl.scan_parquet(path)
+        )
+        assert is_scan is True
+        assert all("is_in" in e for e in compiled)
+
+    def test_resident_source_compiles_a_values_selection_to_a_chain(self, monkeypatch):
+        compiled, is_scan = self._compiled_selection_exprs(monkeypatch, self._XF_FRAME)
+        assert is_scan is False
+        assert all("is_in" not in e for e in compiled)
 
 
 # ---- residency seam --------------------------------------------------------

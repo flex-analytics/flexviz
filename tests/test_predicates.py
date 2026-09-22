@@ -476,3 +476,188 @@ class TestCanonicalPassiveKey:
             {"c": "a", "r": [1.0, 2.0], "cl": "left"},
             {"c": "g", "v": ["x", "y"]},
         ]
+
+
+class TestValuesEdgeCases:
+    """Characterization of a values clause whose members are empty, null or
+    uncoercible. A null selects nothing, as a member and as a data value."""
+
+    @pytest.fixture
+    def nulls_df(self) -> pl.DataFrame:
+        return pl.DataFrame({"country": ["NL", None, "BE", "NL"]})
+
+    @staticmethod
+    def _rows(df: pl.DataFrame, column: str, values: list) -> list:
+        from flexviz.predicates import predicates_to_expr
+
+        preds = [
+            SelectionPredicate(clauses=[ClauseFilter(column=column, values=values)])
+        ]
+        return df.filter(predicates_to_expr(preds, df.schema))[column].to_list()
+
+    def test_empty_values_selects_no_rows(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", []) == []
+
+    def test_null_only_values_selects_no_rows(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", [None]) == []
+
+    def test_null_member_selects_the_other_values_only(self, nulls_df: pl.DataFrame):
+        assert self._rows(nulls_df, "country", ["NL", None]) == ["NL", "NL"]
+
+    def test_uncoercible_value_on_int_column_selects_no_rows(self):
+        # "abc" casts to null under the lenient cast, leaving no member.
+        df = pl.DataFrame({"i": [1, 2, 3]})
+        assert self._rows(df, "i", ["abc"]) == []
+
+    def test_uncoercible_member_leaves_the_valid_one(self):
+        df = pl.DataFrame({"i": [1, 2, 3]})
+        assert self._rows(df, "i", ["abc", "2"]) == [2]
+
+    def test_datetime_string_value_selects_no_rows(self):
+        # Polars 1.44 casts String → Datetime to null, so the clause is empty.
+        import datetime as dt
+
+        df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
+        assert self._rows(df, "ts", ["2026-01-02"]) == []
+
+    def test_null_member_on_boolean_column_selects_no_rows(self):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        assert self._rows(df, "flag", [None]) == []
+
+    def test_null_member_on_boolean_column_leaves_the_true_values(self):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        assert self._rows(df, "flag", ["true", None]) == [True]
+
+    @pytest.mark.parametrize("values", [[], [None]])
+    def test_missing_column_raises_even_when_the_clause_selects_no_rows(
+        self, nulls_df: pl.DataFrame, values: list
+    ):
+        from flexviz.predicates import predicates_to_expr
+
+        preds = [
+            SelectionPredicate(clauses=[ClauseFilter(column="missing", values=values)])
+        ]
+        expr = predicates_to_expr(preds, nulls_df.schema)
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            nulls_df.filter(expr)
+
+
+class TestValuesCompiledForm:
+    """A small values clause compiles to an OR of equality tests; a wide one
+    keeps ``is_in``. Both forms must select exactly the same rows."""
+
+    @staticmethod
+    def _expr(
+        column: str, values: list, schema: pl.Schema, *, is_scan: bool = False
+    ) -> pl.Expr:
+        from flexviz.predicates import predicates_to_expr
+
+        return predicates_to_expr(
+            [SelectionPredicate(clauses=[ClauseFilter(column=column, values=values)])],
+            schema,
+            is_scan=is_scan,
+        )
+
+    def _both_forms(
+        self, monkeypatch: pytest.MonkeyPatch, df: pl.DataFrame, column: str, values
+    ) -> tuple[list, list]:
+        """Rows under the compiled chain and under the ``is_in`` form."""
+        from flexviz import predicates
+
+        chain = df.filter(self._expr(column, values, df.schema))[column].to_list()
+        # A cutoff of 0 sends every non-empty clause down the `is_in` branch.
+        monkeypatch.setattr(predicates, "_EQUALITY_CHAIN_MAX_VALUES", 0)
+        is_in = df.filter(self._expr(column, values, df.schema))[column].to_list()
+        return chain, is_in
+
+    @pytest.mark.parametrize("k", [1, 5])
+    def test_small_clause_compiles_to_equality_chain(self, k: int):
+        from flexviz.predicates import _EQUALITY_CHAIN_MAX_VALUES
+
+        assert k <= _EQUALITY_CHAIN_MAX_VALUES
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(20)]})
+        values = [f"g{i}" for i in range(k)]
+        expr = self._expr("g", values, df.schema)
+        assert "is_in" not in str(expr)
+        # One column reference per equality test, and no other column.
+        assert expr.meta.root_names() == ["g"] * k
+        assert df.filter(expr)["g"].to_list() == values
+
+    def test_scan_source_keeps_is_in(self):
+        # A scan pushes both forms into the reader, where `is_in` costs one
+        # pass and the chain k passes. So k never buys the chain there.
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(20)]})
+        values = [f"g{i}" for i in range(5)]
+        expr = self._expr("g", values, df.schema, is_scan=True)
+        assert "is_in" in str(expr)
+        assert df.filter(expr)["g"].to_list() == values
+        chain = self._expr("g", values, df.schema)
+        assert df.filter(chain)["g"].to_list() == values
+
+    def test_above_the_cutoff_keeps_is_in(self):
+        from flexviz.predicates import _EQUALITY_CHAIN_MAX_VALUES
+
+        k = _EQUALITY_CHAIN_MAX_VALUES + 1
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(k + 3)]})
+        values = [f"g{i}" for i in range(k)]
+        expr = self._expr("g", values, df.schema)
+        assert "is_in" in str(expr)
+        assert df.filter(expr)["g"].to_list() == values
+
+    def test_string_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"country": ["NL", None, "BE", "DE"]})
+        chain, is_in = self._both_forms(monkeypatch, df, "country", ["NL", "DE", None])
+        assert chain == is_in == ["NL", "DE"]
+
+    def test_boolean_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"flag": [True, False, None]})
+        chain, is_in = self._both_forms(monkeypatch, df, "flag", ["true", "false"])
+        assert chain == is_in == [True, False]
+
+    def test_int_column_with_string_values_matches_is_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Clause values arrive as JSON, so an Int64 column is selected by strings.
+        df = pl.DataFrame({"i": [1, 2, 3, 4]})
+        chain, is_in = self._both_forms(monkeypatch, df, "i", ["2", "4"])
+        assert chain == is_in == [2, 4]
+
+    def test_float32_column_is_not_widened(self, monkeypatch: pytest.MonkeyPatch):
+        df = pl.DataFrame({"f": pl.Series([1.5, 2.5, 3.5], dtype=pl.Float32)})
+        chain, is_in = self._both_forms(monkeypatch, df, "f", [2.5])
+        assert chain == is_in == [2.5]
+
+    def test_datetime_column_matches_is_in(self, monkeypatch: pytest.MonkeyPatch):
+        import datetime as dt
+
+        df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
+        chain, is_in = self._both_forms(
+            monkeypatch, df, "ts", [dt.datetime(2026, 1, 2)]
+        )
+        assert chain == is_in == [dt.datetime(2026, 1, 2)]
+
+    @pytest.mark.parametrize("dtype", [pl.Categorical, pl.Enum(["a", "b", "c"])])
+    def test_categorical_rows_match_is_in(self, monkeypatch: pytest.MonkeyPatch, dtype):
+        df = pl.DataFrame({"c": pl.Series(["a", "b", "c"], dtype=dtype)})
+        # "zz" is no category: it casts to null and drops out of both forms.
+        chain, is_in = self._both_forms(monkeypatch, df, "c", ["a", "c", "zz"])
+        assert chain == is_in == ["a", "c"]
+
+    def test_canonical_clause_key_unchanged(self):
+        # The canonical key reads the clause, never the compiled expression.
+        import json as _json
+
+        from flexviz.predicates import canonical_passive_key
+        from flexviz.spec import SelectionState
+
+        sel = SelectionState(
+            source_figure_uid="figB",
+            predicates=[
+                SelectionPredicate(
+                    clauses=[ClauseFilter(column="g", values=["y", "x"])]
+                )
+            ],
+        )
+        key = canonical_passive_key([sel], "figA")
+        (pred_str,) = _json.loads(_json.loads(key)[0])
+        assert _json.loads(pred_str) == [{"c": "g", "v": ["x", "y"]}]

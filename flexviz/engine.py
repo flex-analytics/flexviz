@@ -351,7 +351,12 @@ class FlexEngine:
         build_ldf = self._backend_lf._ldf
         if passive:
             build_ldf = build_ldf.filter(
-                *[predicates_to_expr(sel.predicates, schema) for sel in passive]
+                *[
+                    predicates_to_expr(
+                        sel.predicates, schema, is_scan=self._backend_lf.is_scan
+                    )
+                    for sel in passive
+                ]
             )
         owning_figures = {sel.source_figure_uid for sel in passive}
 
@@ -784,7 +789,11 @@ class FlexEngine:
                 continue
             if not sel.predicates:
                 continue
-            filter_exprs.append(predicates_to_expr(sel.predicates, backend_schema))
+            filter_exprs.append(
+                predicates_to_expr(
+                    sel.predicates, backend_schema, is_scan=self._backend_lf.is_scan
+                )
+            )
         return filter_exprs
 
     def _should_process_trace(

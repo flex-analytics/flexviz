@@ -97,7 +97,8 @@ class ClauseFilter(BaseModel):
     """One column filter. Exactly one of range/values is set.
 
     - ``range``: continuous `is_between(lo, hi)` filter (numeric, temporal).
-    - ``values``: categorical `is_in([...])` filter.
+    - ``values``: categorical membership filter (see ``predicates.py`` for the
+      compiled form).
     - ``closed``: range endpoint inclusivity. ``"left"`` is the half-open
       interval `[lo, hi)` emitted by cube-snapped commits; ``"both"``
       (default) is the closed interval. Only valid with ``range``.
