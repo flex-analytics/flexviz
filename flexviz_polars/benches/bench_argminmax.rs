@@ -1,3 +1,5 @@
+use std::hint::black_box;
+
 /// Microbenchmarks for the min-max bucket kernel internals.
 ///
 /// Run with:
@@ -21,7 +23,6 @@
 use argminmax::ArgMinMax;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rayon::prelude::*;
-use std::hint::black_box;
 
 // ---------------------------------------------------------------------------
 // Helpers (mirrors expressions.rs internals)
