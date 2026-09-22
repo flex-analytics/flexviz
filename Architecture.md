@@ -420,7 +420,8 @@ aggregation.  Click/brush handlers in adapters emit ``SelectionPredicate`` claus
 reading the source trace's ``backend_data``.
 
 A values clause casts its members to the column dtype and drops the nulls (a null
-never selects a row, and an all-null remainder compiles to ``pl.lit(False)``).  Up to
+never selects a row, and an empty remainder keeps ``is_in``, which selects nothing
+but still names the column).  Up to
 ``_EQUALITY_CHAIN_MAX_VALUES`` members it compiles to ``any_horizontal(col == v, ...)``
 with dtype-typed literals, which streams instead of materializing the column; a wider
 clause keeps ``is_in``, past the measured crossover

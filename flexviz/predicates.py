@@ -53,13 +53,12 @@ _EQUALITY_CHAIN_MAX_VALUES = 14
 def _clause_to_expr(clause: ClauseFilter, schema: pl.Schema | None) -> pl.Expr:
     if clause.values is not None:
         series = _values_to_typed_series(clause.column, clause.values, schema)
-        # A null never matches: `is_in` ignores a null member and `col == None`
-        # is null for every row. Dropping nulls keeps both forms equal, and an
-        # empty remainder cannot be an `any_horizontal` (it raises).
+        # A null never matches, so it is dropped. An empty remainder still
+        # goes through `is_in`, which selects nothing but keeps naming the
+        # column, so a missing column still raises at collect time.
+        # `any_horizontal` needs at least one test, hence the lower bound.
         typed = series.drop_nulls()
-        if len(typed) == 0:
-            return pl.lit(False)
-        if len(typed) <= _EQUALITY_CHAIN_MAX_VALUES:
+        if 0 < len(typed) <= _EQUALITY_CHAIN_MAX_VALUES:
             # Literals carry the cast series' dtype, so the comparison never
             # widens the column (a Float32 column against a Float64 literal
             # would copy it).

@@ -520,6 +520,19 @@ class TestValuesEdgeCases:
         df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
         assert self._rows(df, "ts", ["2026-01-02"]) == []
 
+    @pytest.mark.parametrize("values", [[], [None]])
+    def test_missing_column_raises_even_when_the_clause_selects_no_rows(
+        self, nulls_df: pl.DataFrame, values: list
+    ):
+        from flexviz.predicates import predicates_to_expr
+
+        preds = [
+            SelectionPredicate(clauses=[ClauseFilter(column="missing", values=values)])
+        ]
+        expr = predicates_to_expr(preds, nulls_df.schema)
+        with pytest.raises(pl.exceptions.ColumnNotFoundError):
+            nulls_df.filter(expr)
+
 
 class TestValuesCompiledForm:
     """A small values clause compiles to an OR of equality tests; a wide one
