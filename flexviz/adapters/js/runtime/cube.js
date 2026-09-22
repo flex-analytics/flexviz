@@ -610,6 +610,7 @@ function fvCubeSliceCells(entry, binRanges) {
       if (Number.isNaN(value)) continue; // all-null cell — omitted
     }
     cells.push({
+      codes: cell.codes,
       dims: cell.codes.map((code, i) =>
         dims[i].kind === 'binned' ? code : dims[i].categories[code]),
       value,
@@ -750,14 +751,14 @@ function _fvCubeCellLabel(parts) {
   return parts.length === 1 ? parts[0] : fvJsonDumpsAscii(parts);
 }
 
-// Ascending label-tuple order (per-column string <), mirroring the server's
-// sort over the label columns. Byte-order vs UTF-16 divergence on astral
-// chars is a documented non-goal (contract D).
+// Ascending cell order by dim code: a code indexes the header's category list,
+// which _dim_dictionary builds in the server's sort order (a binned code is its
+// bin index). Decoded values would not do: JS compares null as 0 against
+// numbers and not at all against strings.
 function _fvCubeSortCells(cells) {
   return cells.slice().sort((a, b) => {
-    for (let i = 0; i < a.dims.length; i++) {
-      if (a.dims[i] < b.dims[i]) return -1;
-      if (a.dims[i] > b.dims[i]) return 1;
+    for (let i = 0; i < a.codes.length; i++) {
+      if (a.codes[i] !== b.codes[i]) return a.codes[i] - b.codes[i];
     }
     return 0;
   });
@@ -1040,7 +1041,11 @@ function fvGroupedResultsFromCells(figUid, traceSpec, header, cells) {
       group = { parts, cells: [] };
       byGroup.set(gvk, group);
     }
-    group.cells.push({ dims: cellIdx.map(i => cell.dims[i]), value: cell.value });
+    group.cells.push({
+      codes: cellIdx.map(i => cell.codes[i]),
+      dims: cellIdx.map(i => cell.dims[i]),
+      value: cell.value,
+    });
   }
 
   const recorded = (groupedDataByParent[figUid] || {})[traceSpec.uid] || {};

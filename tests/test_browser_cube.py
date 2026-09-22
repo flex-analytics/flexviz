@@ -3209,13 +3209,122 @@ class TestNanLabelBarCube:
         # would have thrown in JSON.parse and dropped the whole bundle).
         assert sorted(map(str, mid["x"])) == sorted(map(str, bar_init["x"]))
         assert len(mid["y"]) == 3 and all(v > 0 for v in mid["y"]), mid["y"]
-        # Order differs by design of the client comparator: the server sorts a
-        # non-finite float last, while the JS cell sort compares the decoded
-        # null against numbers (null < 1) and puts it first. Strings are
-        # unaffected (null compares equal to a string, so the header order
-        # survives the stable sort).
+        # Same order too: the cube cells sort by header code, and the header
+        # lists the categories in the server's sort order (non-finite last).
         assert bar_init["x"] == [1, 2, None], bar_init["x"]
-        assert mid["x"] == [None, 1, 2], mid["x"]
+        assert mid["x"] == bar_init["x"], mid["x"]
+
+
+def _label_parity_df(kind: str) -> pl.DataFrame:
+    """``_cube_df`` plus the label columns for one ``TestCubeLabelParity`` case.
+
+    Low ``a`` rows carry only the LAST category, so a partial brush meets the
+    cells out of header order and the client sort decides the result.
+    """
+    df = _cube_df()
+    a = df["a"].to_list()
+    n = df.height
+    if kind == "int_null":
+        vals = [-5, 3, None]
+        return df.with_columns(
+            pl.Series("g", [vals[i % 3] for i in range(n)], dtype=pl.Int64)
+        )
+    g = ["b" if a[i] < 35 else (None, "a")[i % 2] for i in range(n)]
+    df = df.with_columns(pl.Series("g", g, dtype=pl.Utf8))
+    if kind == "grouped_bar_null_label":
+        df = df.with_columns(pl.Series("k", ["P", "Q"] * (n // 2)))
+    return df
+
+
+def _label_parity_url(port: int, kind: str) -> str:
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    df = _label_parity_df(kind)
+    name = f"_cube_browser_label_{kind}"
+    register_source(name, df, cache=True)
+    dash = Dashboard(df)
+    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    fig = dash.add_figure(title="Target")
+    if kind == "pie_null_label":
+        fig.add_pie(labels="g")
+    elif kind == "grouped_bar_null_label":
+        fig.add_bar(labels="g", group_by="k")
+    else:
+        fig.add_bar(labels="g")
+    spec = dash.to_spec(source_name=name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = "auto"
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+_PARITY_KEYS = ("x", "y", "labels", "values", "ids", "parents")
+_READ_PARITY = (
+    "gd => gd.data.map(t => ({uid: t.uid, "
+    + ", ".join(f"{k}: t.{k} ? Array.from(t.{k}) : null" for k in _PARITY_KEYS)
+    + "}))"
+)
+
+
+def _json_value(v):
+    # The server delta ships a non-finite float as JSON null.
+    return None if isinstance(v, float) and v != v else v
+
+
+class TestCubeLabelParity:
+    @pytest.mark.parametrize(
+        "kind",
+        ["bar_null_label", "int_null", "pie_null_label", "grouped_bar_null_label"],
+    )
+    def test_committed_cube_delta_matches_server(
+        self, page: Page, server_port: int, kind: str
+    ):
+        """With live brush on, the commit keeps the client-built cube delta on
+        screen. It must equal the server delta for the committed spec: same
+        traces in the same order, same labels in the same order."""
+        page.goto(_label_parity_url(server_port, kind))
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        init = page.eval_on_selector("#fv-plot-1", _READ_PARITY)
+
+        x1, x2, y, _ = _drag_coords(page)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move(x2, y, steps=8)
+        page.wait_for_function(
+            "before => JSON.stringify(document.querySelector('#fv-plot-1')"
+            ".data.map(t => Array.from(t.y || t.values || []))) !== before",
+            arg=json.dumps([t["y"] or t["values"] for t in init]),
+            timeout=10_000,
+        )
+        page.mouse.up()
+        page.wait_for_timeout(800)
+        rendered = page.eval_on_selector("#fv-plot-1", _READ_PARITY)
+
+        server = page.evaluate(
+            """async () => {
+                const spec = JSON.parse(JSON.stringify(DASHBOARD_SPEC));
+                const resp = await fetch(SERVER_URL + '/dashboard/update', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({spec, event: {type: 'selection',
+                        figure_uid: spec.figures[0].uid, force_update: true}}),
+                });
+                return (await resp.json()).figure_deltas[spec.figures[1].uid];
+            }"""
+        )
+        expected = []
+        for d in server:
+            expected.extend(d.get("group_results") or [d])
+        expected_uids = [d["uid"] for d in expected]
+        assert [t["uid"] for t in rendered if t["uid"] in expected_uids] == (
+            expected_uids
+        )
+        got = {t["uid"]: t for t in rendered}
+        for d in expected:
+            for k in _PARITY_KEYS:
+                if k in d["updates"]:
+                    want = [_json_value(v) for v in d["updates"][k]]
+                    assert got[d["uid"]][k] == want, (d["uid"], k)
 
 
 # ---------------------------------------------------------------------------
