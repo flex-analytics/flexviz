@@ -156,25 +156,32 @@ CHAIN_PEAK_MB = 8
 
 
 def test_small_values_clause_compiles_to_an_equality_chain() -> None:
-    """Decision: a values clause of at most `_EQUALITY_CHAIN_MAX_VALUES`
-    members compiles to `any_horizontal(col == v, ...)` instead of `is_in`.
+    """Decision: on a resident source a values clause of at most
+    `_EQUALITY_CHAIN_MAX_VALUES` members compiles to
+    `any_horizontal(col == v, ...)` instead of `is_in`. A scan source always
+    compiles `is_in`. The source kind is the discriminator, not k.
 
-    Evidence: M5, 100M resident rows, a 20-category String column, probe over
-    the filtered frame. Today's `is_in` on the in-memory engine: k=1 184 ms /
-    71 MB, k=5 123 / 571, k=10 171 / 1.2 GB, k=14 179 / 1.7 GB. The chain on
-    the streaming engine: k=1 56 / 0.2, k=5 55 / 0.6, k=10 101 / 0.4, k=14
-    139 / 0.2. The chain costs ~7 ms per extra value while `is_in` stays flat,
-    so it is kept below the measured crossover only. The same expression runs
-    in every aggregation filter: 100M, k=5, x-width pairs, resident 879 to
-    205 ms and scan 3814 to 2422 ms with 2.3 GB to 0.3 GB peak.
+    Evidence: M5, 100M rows, a String column, both forms on the streaming
+    engine (the engine the product uses), probe over the filtered frame.
+    Resident, k=1/5/10/14/20: the chain 18/54/102/132/172 ms against
+    280/581/947/961/634 ms for `is_in`, 7 to 15x. The chain costs about 9 ms
+    per extra value while `is_in` stays flat at 500 to 1000 ms, so the two
+    cross around k 80 to 100 (200 categories: k=60 545 against 798 ms, k=80
+    746 against 784, k=100 950 against 922). 64 keeps a margin.
 
-    The cutoff is the largest k at which the chain wins at 50M as well as at
-    100M. At 100M it wins through k=17; at 50M (median of 5, same fixture)
-    k=14 89.8 against 90.7 ms, k=15 89.2 against 88.0, k=16 94.5 against 81.3,
-    k=17 99.1 against 79.4, k=18 95.1 against 81.7. So 14.
+    On a Parquet scan both forms are pushed into the scan node (identical
+    plans) and the ranking flips: `is_in` costs about 2.4 ms per extra value
+    on a 90 ms base, the chain about 12.7 ms, so the chain loses from k=2 on
+    (k=5 164 against 126 ms, k=20 332 against 144). End to end through the
+    engine on a scan, k=14: 773 against 521 ms.
 
-    Check: a k=5 clause compiles without `is_in`, both forms select the same
-    rows, and the chain's streaming select stays under CHAIN_PEAK_MB.
+    Memory is NOT the argument. Both forms stream in a few MB on the
+    streaming engine (0.2 to 5 MB). The large `is_in` peaks reported earlier
+    belong to the in-memory engine, which no product path takes here.
+
+    Check: a k=5 resident clause compiles without `is_in`, a k=5 scan clause
+    keeps `is_in`, both forms select the same rows, and the chain's streaming
+    select stays under CHAIN_PEAK_MB.
     """
     from flexviz.predicates import predicates_to_expr
     from flexviz.spec import ClauseFilter, SelectionPredicate
@@ -193,6 +200,14 @@ def test_small_values_clause_compiles_to_an_equality_chain() -> None:
         df.schema,
     )
     assert "is_in" not in str(chain_expr)
+    # The scan rule, checked without timing: the same clause on a scan source
+    # keeps `is_in` whatever k is.
+    scan_expr = predicates_to_expr(
+        [SelectionPredicate(clauses=[ClauseFilter(column="g", values=values)])],
+        df.schema,
+        is_scan=True,
+    )
+    assert "is_in" in str(scan_expr)
     is_in_expr = pl.col("g").is_in(pl.Series(values, dtype=pl.String).implode())
     minmax = [pl.col("x").min().alias("lo"), pl.col("x").max().alias("hi")]
 
@@ -202,8 +217,9 @@ def test_small_values_clause_compiles_to_an_equality_chain() -> None:
 
     with PeakSampler(interval=0.001) as chain_sampler:
         chain = df.lazy().filter(chain_expr).select(minmax).collect(engine="streaming")
-    # The old path: `is_in` on the engine a resident source collects with.
-    reference = df.lazy().filter(is_in_expr).select(minmax).collect(engine="in-memory")
+    # The other form on the same engine the product runs: the comparison is
+    # chain against `is_in`, not streaming against in-memory.
+    reference = df.lazy().filter(is_in_expr).select(minmax).collect(engine="streaming")
 
     assert chain.equals(reference)
     assert chain_sampler.peak_mb <= CHAIN_PEAK_MB, (

@@ -43,11 +43,14 @@ def _values_to_typed_series(
     return series
 
 
-# Up to this many values an OR of equality tests beats `is_in`: the chain
-# streams morsel by morsel while `is_in` materializes the column (100M rows,
-# 20-category String: k=5 55 ms / 0.6 MB against 123 ms / 571 MB). Past the
-# crossover the chain's ~7 ms per extra value overtakes the flat `is_in`.
-_EQUALITY_CHAIN_MAX_VALUES = 14
+# Up to this many values an OR of equality tests beats `is_in` on a resident
+# frame. Measured on 100M rows, a String column, both forms on the streaming
+# engine: k=1/5/10/14/20 the chain runs 18/54/102/132/172 ms against
+# 280/581/947/961/634 ms for `is_in`, 7 to 15x. The chain costs about 9 ms per
+# extra value while `is_in` stays flat at 500 to 1000 ms, so the two cross
+# around k 80 to 100 (200 categories: k=60 545 against 798 ms, k=80 746
+# against 784, k=100 950 against 922). 64 keeps a margin under that crossover.
+_EQUALITY_CHAIN_MAX_VALUES = 64
 
 
 def _clause_to_expr(

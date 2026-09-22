@@ -425,7 +425,7 @@ but still names the column).  The source kind picks the compiled form, so the en
 passes the builder's ``is_scan`` to ``predicates_to_expr``.  A scan always keeps
 ``is_in``: both forms are pushed into the reader, where ``is_in`` costs one pass over
 the column and an equality chain costs one pass per value.  On a resident frame it is
-the other way round, so up to ``_EQUALITY_CHAIN_MAX_VALUES`` members the clause
+the other way round, so up to ``_EQUALITY_CHAIN_MAX_VALUES`` (64) members the clause
 compiles to ``any_horizontal(col == v, ...)`` with dtype-typed literals, 5 to 15x
 faster than ``is_in`` on a String column; a wider clause keeps ``is_in``, past the
 measured crossover
