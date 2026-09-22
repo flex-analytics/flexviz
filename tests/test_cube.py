@@ -1137,7 +1137,7 @@ class TestFVCubeCodec:
 class TestCategoricalDimEncoding:
     """Category order and codes per dim dtype (the columnar dictionary)."""
 
-    def _dim(self, values: pl.Series) -> tuple[list, list[int]]:
+    def _blob(self, values: pl.Series) -> bytes:
         result = CubeResult(
             spec=CubeSpec(
                 source_name="s",
@@ -1156,7 +1156,10 @@ class TestCategoricalDimEncoding:
             ),
             group_cols=("cat",),
         )
-        blob = encode_fvcube(result, cube_id="dim")
+        return encode_fvcube(result, cube_id="dim")
+
+    def _dim(self, values: pl.Series) -> tuple[list, list[int]]:
+        blob = self._blob(values)
         header = decode_fvcube_header(blob)
         return header["target_dims"][0]["categories"], _read_u32_col(
             blob, header, "cat"
@@ -1180,14 +1183,37 @@ class TestCategoricalDimEncoding:
         assert cats == ["a", "b", "c"]
         assert codes == [1, 0, 2]
 
-    def test_numeric_dim_nan_sorts_last_null_first(self):
-        cats, codes = self._dim(
-            pl.Series([2.0, float("nan"), None, -1.0], dtype=pl.Float64)
+    def test_non_finite_numeric_dim_ships_as_null(self):
+        # NaN and inf sort last and keep their own codes, but they ship as
+        # null: json.dumps writes bare NaN/Infinity, which JSON.parse rejects.
+        values = pl.Series(
+            [2.0, float("nan"), None, -1.0, float("inf")], dtype=pl.Float64
         )
-        assert cats[0] is None
-        assert cats[1:3] == [-1.0, 2.0]
-        assert math.isnan(cats[3])
-        assert codes == [2, 3, 0, 1]
+        blob = self._blob(values)
+        header = decode_fvcube_header(blob)
+        codes = _read_u32_col(blob, header, "cat")
+        assert header["target_dims"][0]["categories"] == [None, -1.0, 2.0, None, None]
+        assert codes == [2, 4, 0, 1, 3]
+        header_bytes = blob[12 : _buffer_section_start(blob)]
+        assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
+
+    def test_non_finite_free_key_ships_as_null(self):
+        # Same rule on the categorical free axis: build drops null key parts,
+        # a NaN part survives and must not reach the header as bare NaN.
+        df = pl.DataFrame(
+            {
+                "f": pl.Series([1.0, 2.0, float("nan"), 1.0], dtype=pl.Float64),
+                "cat": ["a", "a", "a", "a"],
+            }
+        )
+        blob = encode_fvcube(build_cube(df.lazy(), _cat_free_spec(("f",))), "freenan")
+        header = decode_fvcube_header(blob)
+        # Labels only: the encoder joins the cells on the raw key, and a join
+        # on a NaN part does not match reliably, so its code is not a stable
+        # expectation.
+        assert header["free"]["categories"] == [[1.0], [2.0], [None]]
+        header_bytes = blob[12 : _buffer_section_start(blob)]
+        assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
 
     def test_numeric_dim_keeps_numeric_order(self):
         cats, codes = self._dim(pl.Series([12, 2, 100, -3], dtype=pl.Int64))

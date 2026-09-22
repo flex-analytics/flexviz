@@ -1351,13 +1351,25 @@ def _line_env_quantized_buffers(
     }
 
 
+def _finite_or_null(col: str) -> pl.Expr:
+    """Map a non-finite float (NaN, +/-inf) to null, keeping the column name.
+
+    json.dumps writes bare ``NaN``/``Infinity``, which the client's strict
+    JSON.parse rejects — the whole bundle is then dropped. The delta path
+    already ships a non-finite float as JSON ``null`` (pydantic), so the
+    header does too. The value keeps its own distinct code.
+    """
+    return pl.when(pl.col(col).is_finite()).then(pl.col(col)).alias(col)
+
+
 def _dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
     """Dictionary-encode one categorical target dim: (categories, u32 codes).
 
     The categories are the distinct values in **Polars sort order** — null
-    first, NaN last, UTF-8 byte order for strings — and each code indexes that
-    list. A null is its own category (JSON ``null`` in the header), never
-    folded into the string ``"None"``.
+    first, non-finite floats last, UTF-8 byte order for strings — and each code
+    indexes that list. A null is its own category (JSON ``null`` in the
+    header), never folded into the string ``"None"``. A NaN or infinite float
+    keeps its own code but also ships as ``null``, like the delta path.
     """
     if s.dtype.is_integer() or s.dtype.is_float():
         # Numeric categories keep their type and NUMERIC order so the cube's
@@ -1378,6 +1390,10 @@ def _dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
         # Both branches already leave a null input at 0 before the shift (the
         # Enum cast yields null, search_sorted yields 0).
         codes = codes.fill_null(0) + s.is_not_null().cast(pl.Int64)
+    if cats.dtype.is_float():
+        # Codes above kept NaN/inf as distinct categories; the labels ship as
+        # null so the header stays strict JSON (see _finite_or_null).
+        cats = cats.to_frame().select(_finite_or_null(cats.name)).to_series()
     return cats.to_list(), codes.cast(pl.UInt32)
 
 
@@ -1396,8 +1412,9 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     numeric categories in numeric order, other categories in lexical (UTF-8
     byte) order, and the column ships u32 codes into that list. Every category
     list is in Polars sort order — null first (a null category ships as JSON
-    ``null``), NaN last — and is built with Polars expressions, never a
-    per-row Python loop.
+    ``null``), non-finite floats last (they keep their own code but ship as
+    ``null`` too) — and is built with Polars expressions, never a per-row
+    Python loop.
 
     A **categorical free axis** is dictionary-encoded the same way: the
     distinct category *tuples* over the ``__free__`` columns are listed in
@@ -1424,10 +1441,18 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
         frame = result.frame.join(codes, on=key_cols, how="left").sort(
             ["free_bin", *group_cols]
         )
+        schema = result.frame.schema
         free_block: dict = {
             "kind": "categorical",
             "cols": list(spec.free.columns or ()),
-            "categories": [list(t) for t in cats.iter_rows()],
+            # Build drops null key parts, but a float part can still be NaN.
+            "categories": [
+                list(t)
+                for t in cats.select(
+                    _finite_or_null(c) if schema[c].is_float() else pl.col(c)
+                    for c in key_cols
+                ).iter_rows()
+            ],
         }
     elif spec.free.kind == "box2d":
         # The composite free_bin is already a u32 (build cast it to Int32); the
