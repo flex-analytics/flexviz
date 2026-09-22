@@ -1372,9 +1372,8 @@ them.
   and ships as JSON `null` — the client then labels it exactly like the legacy server delta,
   which also emits the raw null. A **non-finite float dim category** (NaN, infinity) keeps its
   own code and ships as JSON `null` too, like the delta path: the header must be strict JSON,
-  which has no `NaN` or `Infinity`. The labels then match the delta, but not the order — the
-  client cell sort compares that `null` against numbers and puts it first, while the server
-  sorts a non-finite float last. A free category tuple has no null or non-finite part: build
+  which has no `NaN` or `Infinity`. The labels and the order both match the delta: the client
+  sorts cells by dim code, so the header's sort order is the delta's. A free category tuple has no null or non-finite part: build
   drops those rows, because such a bar cannot be selected (a null predicate member is dropped).
   It rides raw (no base64) inside a thin binary
   **cube bundle** envelope (`encode_cube_bundle` / `decodeCubeBundle`) as the

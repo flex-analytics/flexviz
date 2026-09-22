@@ -3088,13 +3088,10 @@ class TestNanLabelBarCube:
         # would have thrown in JSON.parse and dropped the whole bundle).
         assert sorted(map(str, mid["x"])) == sorted(map(str, bar_init["x"]))
         assert len(mid["y"]) == 3 and all(v > 0 for v in mid["y"]), mid["y"]
-        # Order differs by design of the client comparator: the server sorts a
-        # non-finite float last, while the JS cell sort compares the decoded
-        # null against numbers (null < 1) and puts it first. Strings are
-        # unaffected (null compares equal to a string, so the header order
-        # survives the stable sort).
+        # Same order too: the cube cells sort by header code, and the header
+        # lists the categories in the server's sort order (non-finite last).
         assert bar_init["x"] == [1, 2, None], bar_init["x"]
-        assert mid["x"] == [None, 1, 2], mid["x"]
+        assert mid["x"] == bar_init["x"], mid["x"]
 
 
 # ---------------------------------------------------------------------------
