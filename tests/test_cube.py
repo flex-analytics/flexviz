@@ -1215,6 +1215,26 @@ class TestCategoricalDimEncoding:
         header_bytes = blob[12 : _buffer_section_start(blob)]
         assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
 
+    @pytest.mark.parametrize(
+        "dtype", [pl.Categorical, pl.Enum(["z", "a", "m"])], ids=["categorical", "enum"]
+    )
+    def test_free_keys_sort_lexically(self, dtype):
+        # An Enum key sorts by declaration unless the encoder casts to Utf8.
+        df = pl.DataFrame(
+            {
+                "region": pl.Series(["z", "a", "m", "a"], dtype=dtype),
+                "cat": ["a", "a", "a", "a"],
+            }
+        )
+        blob = encode_fvcube(
+            build_cube(df.lazy(), _cat_free_spec(("region",))), "freeenum"
+        )
+        header = decode_fvcube_header(blob)
+        assert header["free"]["categories"] == [["a"], ["m"], ["z"]]
+        # The codes follow: the two "a" rows share free_bin 0.
+        assert _read_u32_col(blob, header, "free_bin") == [0, 1, 2]
+        assert _read_u32_col(blob, header, "count") == [2, 1, 1]
+
     def test_numeric_dim_keeps_numeric_order(self):
         cats, codes = self._dim(pl.Series([12, 2, 100, -3], dtype=pl.Int64))
         assert cats == [-3, 2, 12, 100]

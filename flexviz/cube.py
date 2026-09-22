@@ -1429,19 +1429,27 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     group_cols = list(result.group_cols)
     if spec.free.kind == "categorical":
         key_cols = list(result.free_key_cols)
+        schema = result.frame.schema
+        # Same rule as _dim_dictionary: an Enum/Categorical key sorts in
+        # DECLARATION order, and the header contract is lexical. Numeric keys
+        # keep their type and numeric order.
+        base = result.frame.with_columns(
+            pl.col(c).cast(pl.Utf8)
+            for c in key_cols
+            if isinstance(schema[c], (pl.Categorical, pl.Enum))
+        )
         # The distinct key tuples in Polars multi-column sort order. The free
         # key columns are null-filtered at build time, so no null part can
         # reach this sort. The join back is unordered, but
         # ``(free_bin, *group_cols)`` is unique per cell, so the sort below is
         # a total order — the same one the range branch relies on.
-        cats = result.frame.select(key_cols).unique().sort(key_cols)
+        cats = base.select(key_cols).unique().sort(key_cols)
         codes = cats.with_row_index("free_bin").with_columns(
             pl.col("free_bin").cast(pl.UInt32)
         )
-        frame = result.frame.join(codes, on=key_cols, how="left").sort(
+        frame = base.join(codes, on=key_cols, how="left").sort(
             ["free_bin", *group_cols]
         )
-        schema = result.frame.schema
         free_block: dict = {
             "kind": "categorical",
             "cols": list(spec.free.columns or ()),
@@ -1449,7 +1457,7 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
             "categories": [
                 list(t)
                 for t in cats.select(
-                    _finite_or_null(c) if schema[c].is_float() else pl.col(c)
+                    _finite_or_null(c) if cats.schema[c].is_float() else pl.col(c)
                     for c in key_cols
                 ).iter_rows()
             ],
