@@ -752,6 +752,22 @@ def _target_dim_value_expr(d: TargetDimSpec) -> pl.Expr:
     return pl.col(d.column)
 
 
+def _free_key_filters(schema: pl.Schema, cols: Sequence[str]) -> list[pl.Expr]:
+    """Keep only the rows a categorical free key can represent.
+
+    A null or non-finite key cannot be selected: a null predicate member is
+    dropped client-side, so such a bar would select nothing. Dropping the rows
+    here also keeps a NaN out of the encoder's key join, which does not match
+    a NaN reliably.
+    """
+    return [
+        pl.col(c).is_not_null() & pl.col(c).is_finite()
+        if schema[c].is_float()
+        else pl.col(c).is_not_null()
+        for c in cols
+    ]
+
+
 def _target_group_exprs(
     spec: CubeSpec,
 ) -> tuple[list[pl.Expr], list[str], list[pl.Expr]]:
@@ -854,7 +870,7 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
         free_key_cols = tuple(f"__free__{c}" for c in free_cols)
         part_cols = [*free_key_cols, *cat_cols]
         df = (
-            ldf.filter(*[pl.col(c).is_not_null() for c in free_cols])
+            ldf.filter(*_free_key_filters(ldf.collect_schema(), free_cols))
             .select(
                 *[pl.col(c).alias(k) for c, k in zip(free_cols, free_key_cols)],
                 *[pl.col(c) for c in cat_cols],
@@ -1076,9 +1092,9 @@ def _build_corr_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             raise ValueError("categorical free axis requires columns")
         free_key_cols = tuple(f"__free__{c}" for c in free.columns)
         free_exprs = [pl.col(c).alias(f"__free__{c}") for c in free.columns]
-        null_filters = [pl.col(c).is_not_null() for c in free.columns]
+        key_filters = _free_key_filters(ldf.collect_schema(), free.columns)
         frame = (
-            ldf.filter(*null_filters)
+            ldf.filter(*key_filters)
             .with_columns(*free_exprs)
             .group_by(*free_key_cols)
             .agg(*agg_exprs)
@@ -1251,9 +1267,9 @@ def build_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             raise ValueError("categorical free axis requires columns")
         free_key_cols = tuple(f"__free__{c}" for c in free.columns)
         free_exprs = [pl.col(c).alias(f"__free__{c}") for c in free.columns]
-        null_filters = [pl.col(c).is_not_null() for c in free.columns]
+        key_filters = _free_key_filters(ldf.collect_schema(), free.columns)
         frame = (
-            ldf.filter(*null_filters, *filters)
+            ldf.filter(*key_filters, *filters)
             .with_columns(*pre, *free_exprs)
             .group_by(*group_cols, *free_key_cols)
             .agg(*_measure_exprs(spec.measure))
@@ -1438,11 +1454,11 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
             for c in key_cols
             if isinstance(schema[c], (pl.Categorical, pl.Enum))
         )
-        # The distinct key tuples in Polars multi-column sort order. The free
-        # key columns are null-filtered at build time, so no null part can
-        # reach this sort. The join back is unordered, but
-        # ``(free_bin, *group_cols)`` is unique per cell, so the sort below is
-        # a total order — the same one the range branch relies on.
+        # The distinct key tuples in Polars multi-column sort order. Build
+        # drops null and non-finite key parts, so neither reaches this sort.
+        # The join back is unordered, but ``(free_bin, *group_cols)`` is unique
+        # per cell, so the sort below is a total order — the same one the range
+        # branch relies on.
         cats = base.select(key_cols).unique().sort(key_cols)
         codes = cats.with_row_index("free_bin").with_columns(
             pl.col("free_bin").cast(pl.UInt32)
@@ -1453,14 +1469,7 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
         free_block: dict = {
             "kind": "categorical",
             "cols": list(spec.free.columns or ()),
-            # Build drops null key parts, but a float part can still be NaN.
-            "categories": [
-                list(t)
-                for t in cats.select(
-                    _finite_or_null(c) if cats.schema[c].is_float() else pl.col(c)
-                    for c in key_cols
-                ).iter_rows()
-            ],
+            "categories": [list(t) for t in cats.iter_rows()],
         }
     elif spec.free.kind == "box2d":
         # The composite free_bin is already a u32 (build cast it to Int32); the

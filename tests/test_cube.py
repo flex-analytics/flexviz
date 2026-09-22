@@ -1197,23 +1197,26 @@ class TestCategoricalDimEncoding:
         header_bytes = blob[12 : _buffer_section_start(blob)]
         assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
 
-    def test_non_finite_free_key_ships_as_null(self):
-        # Same rule on the categorical free axis: build drops null key parts,
-        # a NaN part survives and must not reach the header as bare NaN.
+    def test_non_finite_free_key_rows_are_dropped(self):
+        # A NaN or inf bar cannot be selected (a null predicate member is
+        # dropped), so build drops those rows — and the encoder's key join,
+        # which does not match a NaN reliably, never sees one.
         df = pl.DataFrame(
             {
-                "f": pl.Series([1.0, 2.0, float("nan"), 1.0], dtype=pl.Float64),
+                "f": pl.Series(
+                    [1.0, 2.0, float("nan"), float("inf")], dtype=pl.Float64
+                ),
                 "cat": ["a", "a", "a", "a"],
             }
         )
-        blob = encode_fvcube(build_cube(df.lazy(), _cat_free_spec(("f",))), "freenan")
-        header = decode_fvcube_header(blob)
-        # Labels only: the encoder joins the cells on the raw key, and a join
-        # on a NaN part does not match reliably, so its code is not a stable
-        # expectation.
-        assert header["free"]["categories"] == [[1.0], [2.0], [None]]
-        header_bytes = blob[12 : _buffer_section_start(blob)]
-        assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
+        spec = _cat_free_spec(("f",))
+        for _ in range(50):  # the join on a NaN key failed intermittently
+            cube = build_cube(df.lazy(), spec)
+            assert cube.frame["__free__f"].is_finite().all()
+            blob = encode_fvcube(cube, "freenan")
+            header = decode_fvcube_header(blob)
+            assert header["free"]["categories"] == [[1.0], [2.0]]
+            assert sorted(_read_u32_col(blob, header, "free_bin")) == [0, 1]
 
     @pytest.mark.parametrize(
         "dtype", [pl.Categorical, pl.Enum(["z", "a", "m"])], ids=["categorical", "enum"]

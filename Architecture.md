@@ -1356,12 +1356,13 @@ them.
   for strings (an `Enum`/`Categorical` column is cast to `Utf8` first, so it never sorts in
   declaration order), numeric order for numeric labels. A **null dim value is its own category**
   and ships as JSON `null` — the client then labels it exactly like the legacy server delta,
-  which also emits the raw null. A **non-finite float category** (NaN, infinity) keeps its own
-  code and ships as JSON `null` too, like the delta path: the header must be strict JSON, which
-  has no `NaN` or `Infinity`. The labels then match the delta, but not the order — the client
-  cell sort compares that `null` against numbers and puts it first, while the server sorts a
-  non-finite float last. Free-key columns are null-filtered at build time, so a free
-  category tuple has no null part, but a float part can still be a NaN, shipped as `null`. It rides raw (no base64) inside a thin binary
+  which also emits the raw null. A **non-finite float dim category** (NaN, infinity) keeps its
+  own code and ships as JSON `null` too, like the delta path: the header must be strict JSON,
+  which has no `NaN` or `Infinity`. The labels then match the delta, but not the order — the
+  client cell sort compares that `null` against numbers and puts it first, while the server
+  sorts a non-finite float last. A free category tuple has no null or non-finite part: build
+  drops those rows, because such a bar cannot be selected (a null predicate member is dropped).
+  It rides raw (no base64) inside a thin binary
   **cube bundle** envelope (`encode_cube_bundle` / `decodeCubeBundle`) as the
   `application/octet-stream` body of the `/dashboard/update` cube response; the same bytes can
   later move to WebSocket binary frames. The cube path **gzip-compresses** the bundle itself at a
