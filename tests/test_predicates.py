@@ -547,12 +547,15 @@ class TestValuesCompiledForm:
     keeps ``is_in``. Both forms must select exactly the same rows."""
 
     @staticmethod
-    def _expr(column: str, values: list, schema: pl.Schema) -> pl.Expr:
+    def _expr(
+        column: str, values: list, schema: pl.Schema, *, is_scan: bool = False
+    ) -> pl.Expr:
         from flexviz.predicates import predicates_to_expr
 
         return predicates_to_expr(
             [SelectionPredicate(clauses=[ClauseFilter(column=column, values=values)])],
             schema,
+            is_scan=is_scan,
         )
 
     def _both_forms(
@@ -579,6 +582,17 @@ class TestValuesCompiledForm:
         # One column reference per equality test, and no other column.
         assert expr.meta.root_names() == ["g"] * k
         assert df.filter(expr)["g"].to_list() == values
+
+    def test_scan_source_keeps_is_in(self):
+        # A scan pushes both forms into the reader, where `is_in` costs one
+        # pass and the chain k passes. So k never buys the chain there.
+        df = pl.DataFrame({"g": [f"g{i}" for i in range(20)]})
+        values = [f"g{i}" for i in range(5)]
+        expr = self._expr("g", values, df.schema, is_scan=True)
+        assert "is_in" in str(expr)
+        assert df.filter(expr)["g"].to_list() == values
+        chain = self._expr("g", values, df.schema)
+        assert df.filter(chain)["g"].to_list() == values
 
     def test_above_the_cutoff_keeps_is_in(self):
         from flexviz.predicates import _EQUALITY_CHAIN_MAX_VALUES

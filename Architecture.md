@@ -421,10 +421,14 @@ reading the source trace's ``backend_data``.
 
 A values clause casts its members to the column dtype and drops the nulls (a null
 never selects a row, and an empty remainder keeps ``is_in``, which selects nothing
-but still names the column).  Up to
-``_EQUALITY_CHAIN_MAX_VALUES`` members it compiles to ``any_horizontal(col == v, ...)``
-with dtype-typed literals, which streams instead of materializing the column; a wider
-clause keeps ``is_in``, past the measured crossover
+but still names the column).  The source kind picks the compiled form, so the engine
+passes the builder's ``is_scan`` to ``predicates_to_expr``.  A scan always keeps
+``is_in``: both forms are pushed into the reader, where ``is_in`` costs one pass over
+the column and an equality chain costs one pass per value.  On a resident frame it is
+the other way round, so up to ``_EQUALITY_CHAIN_MAX_VALUES`` members the clause
+compiles to ``any_horizontal(col == v, ...)`` with dtype-typed literals, 5 to 15x
+faster than ``is_in`` on a String column; a wider clause keeps ``is_in``, past the
+measured crossover
 (``tests/test_perf_choices.py::test_small_values_clause_compiles_to_an_equality_chain``).
 The canonical cube key reads the clause, never the compiled expression.
 

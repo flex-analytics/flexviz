@@ -50,7 +50,9 @@ def _values_to_typed_series(
 _EQUALITY_CHAIN_MAX_VALUES = 14
 
 
-def _clause_to_expr(clause: ClauseFilter, schema: pl.Schema | None) -> pl.Expr:
+def _clause_to_expr(
+    clause: ClauseFilter, schema: pl.Schema | None, *, is_scan: bool = False
+) -> pl.Expr:
     if clause.values is not None:
         series = _values_to_typed_series(clause.column, clause.values, schema)
         # A null never matches, so it is dropped. An empty remainder still
@@ -58,7 +60,12 @@ def _clause_to_expr(clause: ClauseFilter, schema: pl.Schema | None) -> pl.Expr:
         # column, so a missing column still raises at collect time.
         # `any_horizontal` needs at least one test, hence the lower bound.
         typed = series.drop_nulls()
-        if 0 < len(typed) <= _EQUALITY_CHAIN_MAX_VALUES:
+        # The source kind decides the form, not k. A scan pushes either form
+        # into the reader, where `is_in` costs one pass over the column and
+        # the chain costs k passes. A resident frame is the other way round:
+        # `is_in` on a String column is 5 to 15x slower than the chain up to
+        # the cutoff.
+        if not is_scan and 0 < len(typed) <= _EQUALITY_CHAIN_MAX_VALUES:
             # Literals carry the cast series' dtype, so the comparison never
             # widens the column (a Float32 column against a Float64 literal
             # would copy it).
@@ -77,12 +84,12 @@ def _clause_to_expr(clause: ClauseFilter, schema: pl.Schema | None) -> pl.Expr:
 
 
 def predicate_to_expr(
-    predicate: SelectionPredicate, schema: pl.Schema | None
+    predicate: SelectionPredicate, schema: pl.Schema | None, *, is_scan: bool = False
 ) -> pl.Expr:
     """Convert one predicate (AND of clauses) to a Polars expression."""
     if not predicate.clauses:
         return pl.lit(True)
-    exprs = [_clause_to_expr(c, schema) for c in predicate.clauses]
+    exprs = [_clause_to_expr(c, schema, is_scan=is_scan) for c in predicate.clauses]
     return pl.all_horizontal(*exprs)
 
 
@@ -147,14 +154,22 @@ def canonical_passive_key(
 
 
 def predicates_to_expr(
-    predicates: list[SelectionPredicate], schema: pl.Schema | None
+    predicates: list[SelectionPredicate],
+    schema: pl.Schema | None,
+    *,
+    is_scan: bool = False,
 ) -> pl.Expr:
     """Convert a list of predicates (OR of ANDs) to one Polars expression.
 
     An empty list produces ``pl.lit(True)`` so the caller can pass it
     through ``filter()`` unconditionally without branching.
+
+    ``is_scan`` is the source's ``LFQueryBuilder.is_scan``: it selects the
+    compiled form of a values clause, the same residency signal that already
+    picks kernel against plan formulations. The default suits a resident
+    frame.
     """
     if not predicates:
         return pl.lit(True)
-    disjuncts = [predicate_to_expr(p, schema) for p in predicates]
+    disjuncts = [predicate_to_expr(p, schema, is_scan=is_scan) for p in predicates]
     return pl.any_horizontal(*disjuncts)
