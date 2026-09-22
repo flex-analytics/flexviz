@@ -19,8 +19,9 @@
 ///    bandwidth-saturated Zen 3: the split wins ~1.3-1.6x solo, costs up to ~9%
 ///    at 3-5 concurrent callers. This case is where that shows up.
 use argminmax::ArgMinMax;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rayon::prelude::*;
+use std::hint::black_box;
 
 // ---------------------------------------------------------------------------
 // Helpers (mirrors expressions.rs internals)
