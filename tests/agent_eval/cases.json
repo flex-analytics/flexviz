@@ -1,0 +1,257 @@
+[
+  {
+    "id": "explicit-sensors",
+    "tags": ["explicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 11,
+    "anomaly": {"column": "sensor_2", "window": [0.72, 0.76]},
+    "prompt": "Use FlexViz on sensors.parquet in this directory, roughly a million rows of sensor readings. Build me a dashboard I can click through, and tell me what stands out.",
+    "pre": [],
+    "checks": [
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "explicit-events",
+    "tags": ["explicit", "build"],
+    "fixture": "events",
+    "seed": 12,
+    "prompt": "Use FlexViz on events.csv in this directory, about half a million rows. I want a bar chart of the regions and a histogram of latency_ms that cross-filter each other, plus your read on where the slow requests sit.",
+    "pre": [],
+    "checks": [
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "renders",
+      "findings_in_chat"
+    ]
+  },
+  {
+    "id": "implicit-sensors",
+    "tags": ["implicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 1,
+    "anomaly": {"column": "sensor_5", "window": [0.30, 0.34]},
+    "prompt": "Explore sensors.parquet in this directory, about a million rows of sensor readings. Build me something interactive I can look at, and tell me what stands out.",
+    "pre": [],
+    "checks": [
+      "skill_fired",
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "implicit-off",
+    "tags": ["implicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 2,
+    "anomaly": {"column": "sensor_0", "window": [0.55, 0.60]},
+    "prompt": "There is a parquet file called sensors.parquet in this folder, about a million readings. Something in it looks off to me. Find out what, and give me a chart I can zoom into.",
+    "pre": [],
+    "checks": [
+      "skill_fired",
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "implicit-channels",
+    "tags": ["implicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 3,
+    "anomaly": {"column": "sensor_7", "window": [0.12, 0.16]},
+    "prompt": "Take a look at sensors.parquet here: a million rows, timestamps plus eight channels. I want to see the shape of each channel and anything unusual in them. Make it interactive.",
+    "pre": [],
+    "checks": [
+      "skill_fired",
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "contextual-pump",
+    "tags": ["contextual", "build"],
+    "fixture": "sensors_1m",
+    "seed": 4,
+    "anomaly": {"column": "sensor_6", "window": [0.44, 0.48]},
+    "prompt": "These are vibration channels from an overnight pump test, one row per second, in sensors.parquet. Maintenance says one bearing started singing partway through the run. Show me where, in something I can zoom into.",
+    "pre": [],
+    "checks": [
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "contextual-scale",
+    "tags": ["contextual", "build", "scale"],
+    "fixture": "sensors_10m",
+    "seed": 5,
+    "anomaly": {"column": "sensor_4", "window": [0.81, 0.84]},
+    "prompt": "sensors.parquet holds ten million rows from a logger run, one row per second across eight channels. Loading all of it in a notebook is hopeless on this box. Give me a view I can pan and zoom, and tell me where the run goes wrong.",
+    "pre": [],
+    "checks": [
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "handover-mean",
+    "tags": ["handover"],
+    "fixture": "sensors_1m",
+    "seed": 6,
+    "anomaly": {"column": "sensor_1", "window": [0.25, 0.30]},
+    "prompt": "I brushed a time range on the line chart in fv:2 and left the selection there. What is the mean of the sensor in that chart over just the range I brushed?",
+    "pre": [{"agent_entry": {}}, {"human_entry": {"brush": "anomaly_window"}}],
+    "checks": [
+      "no_duplicate_human_entry",
+      "agent_change_recorded",
+      "handover_answer",
+      "no_url_leak",
+      "no_raw_history_read"
+    ]
+  },
+  {
+    "id": "handover-compare",
+    "tags": ["handover"],
+    "fixture": "sensors_1m",
+    "seed": 7,
+    "anomaly": {"column": "sensor_3", "window": [0.62, 0.66]},
+    "prompt": "fv:2 is the view I was looking at, with a range selected on the line chart. Tell me the mean value of that sensor inside my selection, and whether it looks like the rest of the run.",
+    "pre": [{"agent_entry": {}}, {"human_entry": {"brush": "anomaly_window"}}],
+    "checks": [
+      "no_duplicate_human_entry",
+      "agent_change_recorded",
+      "handover_answer",
+      "no_url_leak",
+      "no_raw_history_read"
+    ]
+  },
+  {
+    "id": "handover-url",
+    "tags": ["handover", "url"],
+    "fixture": "sensors_1m",
+    "seed": 8,
+    "anomaly": {"column": "sensor_2", "window": [0.36, 0.40]},
+    "prompt": "Here is the view I was looking at, straight out of the Share button: {url}\n\nI brushed a range on the line chart in it. What is the mean of that sensor inside the range I brushed?",
+    "pre": [{"agent_entry": {}}],
+    "checks": [
+      "human_entry_recorded",
+      "agent_change_recorded",
+      "handover_answer",
+      "no_url_leak",
+      "no_raw_history_read"
+    ]
+  },
+  {
+    "id": "follow-up-hist2d",
+    "tags": ["follow-up"],
+    "fixture": "sensors_1m",
+    "seed": 9,
+    "anomaly": {"column": "sensor_4", "window": [0.50, 0.54]},
+    "prompt": "Explore sensors.parquet in this folder, about a million rows of readings. Build me something interactive, and tell me what stands out.",
+    "follow_up_prompt": "Now add a 2D histogram of sensor_1 against sensor_2 to the dashboard as well.",
+    "pre": [],
+    "checks": ["rebuild_recorded"]
+  },
+  {
+    "id": "negative-tiny",
+    "tags": ["negative"],
+    "fixture": "tiny",
+    "seed": 20,
+    "prompt": "Plot the 50 values in tiny.csv so I can see the trend.",
+    "pre": [],
+    "checks": ["skill_not_fired", "no_server"]
+  },
+  {
+    "id": "negative-png",
+    "tags": ["negative"],
+    "fixture": "tiny",
+    "seed": 21,
+    "prompt": "Make me a PNG chart of tiny.csv, value against t. I need to paste it into a slide.",
+    "pre": [],
+    "checks": ["skill_not_fired", "no_server"]
+  },
+  {
+    "id": "decline-remote",
+    "tags": ["decline"],
+    "fixture": "sensors_1m",
+    "seed": 10,
+    "anomaly": {"column": "sensor_0", "window": [0.70, 0.74]},
+    "prompt": "I'm on a remote box over ssh with no browser and no port forwarding. Chart sensors.parquet for me.",
+    "pre": [],
+    "checks": ["no_server", "declined"]
+  }
+]

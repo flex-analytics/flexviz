@@ -46,24 +46,24 @@ peek is fine. Never collect the full frame.
 ### 2. Serve the file (background process)
 
 ```bash
-flexviz serve data.parquet --cache --port 8077
+flexviz serve data.parquet --cache > serve.log 2>&1 &
 ```
 
 Run the server, and every command below, from the project directory: the history
 file (`.flexviz/history.jsonl`) and `/h/N` both resolve against a working
 directory.
 
+- Without `--port` the server takes a free port and prints its URL on the first
+  line of the log. Read the port there and use it in every step below.
 - Each file becomes a source named by its stem (`data.parquet` -> `"data"`).
 - `--cache` enables cross-filter cubes and live brushing. Use it whenever
   the file will not change while serving.
 - Wait for readiness: poll until the answer names YOUR source, for example
-  `until curl -s http://127.0.0.1:8077/sources | grep -q '"data"'; do sleep 1; done`.
-  A bare "it answered" check is not enough, because another server can own
-  the port and answer with its own source list. On a busy port, `flexviz
-  serve` exits with `cannot bind ...`. Read the serve log, then retry.
+  `until curl -s http://127.0.0.1:<port>/sources | grep -q '"data"'; do sleep 1; done`.
+  A bare "it answered" check is not enough: another server can answer instead.
 - Keep the process running while the human explores, tell them the port and
   PID, and stop it at the end. An orphan server otherwise holds the port.
-- To add files later, restart with the FULL file list (old + new), same port.
+- To add files later, restart with the FULL file list (old + new).
 - Serve on loopback. Another interface exposes unauthenticated endpoints, so
   only do it if the human explicitly accepts that.
 
@@ -94,7 +94,7 @@ from flexviz import Dashboard, history
 dash = Dashboard(pl.scan_parquet("data.parquet"), cache=True)
 dash.add_figure().add_line(x="timestamp", y="value", group_by="sensor_id")
 dash.add_figure().add_histogram(x="value", bins=50)
-url = dash.share_url(server_url="http://127.0.0.1:8077", source_name="data")
+url = dash.share_url(server_url="http://127.0.0.1:<port>", source_name="data")
 print(history.add(url, note="data.parquet: line + histogram, initial view", actor="agent"))
 ```
 
@@ -112,8 +112,9 @@ print(history.add(url, note="data.parquet: line + histogram, initial view", acto
 
 ### 4. Open the entry
 
-Open `http://127.0.0.1:8077/h/N` for the number step 3 printed, and give the
-human the same address. Tell them: drag on one chart to cross-filter the
+Open `http://127.0.0.1:<port>/h/N` for the number step 3 printed, and give the
+human the same address. The `/h/N` address is what they open. In everything
+you write, the entry is `fv:N`. Tell them: drag on one chart to cross-filter the
 others, zoom to re-aggregate at higher detail, double-click to reset.
 
 A page that opens is not a page that drew: check the serve log for a
@@ -122,8 +123,8 @@ traceback after the first open of every new spec.
 ### 5. Read the state back
 
 All interaction state lives in ONE browser tab, so which tab the human uses
-decides what you can read. Ask once: "do you use the window I open, or your own
-browser?" Assume separate browsers until they confirm otherwise.
+decides what you can read. Assume separate browsers until they confirm
+otherwise.
 
 **Shared tab.** Your browser tool drives a window on this machine that the human
 can also use: a headed Playwright session (never `--headless`), or an extension
@@ -228,18 +229,22 @@ a new spec, because panels are built server-side. Rebuild in Python as in step
 3, `history.add(...)`, then open the new `/h/N`. Note your own entries too, so
 the history reads as a sequence of who did what.
 
-### 8. Report the findings
+### 8. Tell them what you found
 
-Write plain markdown. A line that holds nothing but `fv:5` becomes the live
-dashboard of entry 5. Put your prose around such lines, then run:
+End the first pass in chat: the findings in a few lines, each one naming the
+entry that shows it as `fv:3`, never as "panel 1". Filter the LazyFrame to the
+brushed range to put a number next to a figure. End that same message with the
+offer, after the findings, never before: "Say report and I write findings.md
+with live views, tell me what to look at next, and say whether you use the
+window I opened or your own browser."
+
+Write that file only when they ask. A line that holds nothing but `fv:5` becomes
+the live dashboard of entry 5, zoomable for as long as the server runs. `--md`
+writes a second copy with bare links, for GitHub or chat:
 
 ```bash
 flexviz report findings.md -o findings.html --md findings.expanded.md
 ```
-
-`findings.html` embeds each entry as a real, zoomable dashboard, for as long as
-the server runs. `findings.expanded.md` holds bare links instead, for GitHub or
-chat. Filter the LazyFrame to the brushed range to put numbers next to a figure.
 
 ## API cheat-sheet
 
@@ -316,8 +321,6 @@ Other rules:
 
 - Never collect the full dataset into your context. The data stays in the
   lazy engine.
-- One serve process per port. Pick an uncommon free one (8077 for example).
-  Your own earlier sessions are the likeliest occupant of a busy port.
 - The history file belongs to one working directory and grows across sessions.
   Numbers never restart, and an old entry still opens at `/h/N` after a server
   restart, if the same file is served under the same source name. Two agents in

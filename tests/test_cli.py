@@ -288,6 +288,24 @@ def test_serve_fails_fast_on_busy_port(tmp_path):
         assert "cannot bind" in proc.stderr
 
 
+def test_serve_without_a_port_picks_a_free_one(capsys, monkeypatch, tmp_path):
+    """An agent reads the port from the first line of the serve log."""
+    import uvicorn
+
+    path = tmp_path / "free.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    served = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: served.update(kw))
+
+    main(["serve", str(path)])
+
+    first = capsys.readouterr().out.splitlines()[0]
+    match = re.match(r"starting http://127\.0\.0\.1:(\d+) with sources: ", first)
+    assert match, first
+    assert int(match.group(1)) > 0
+    assert served["port"] == int(match.group(1))
+
+
 def test_skill_install_user_scope(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     main(["skill", "install", "--user"])
@@ -448,6 +466,14 @@ def test_history_add_rejects_a_target_that_is_not_a_share_url(monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):
         main(["history", "add", "yesterday's parquet run"])
+
+
+def test_history_add_rejects_a_corrupted_spec(monkeypatch, tmp_path):
+    """A retyped or truncated URL fails at `add`, not later at /h/N."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit, match="invalid spec"):
+        main(["history", "add", "http://127.0.0.1:8000/view?spec=" + "A" * 300])
+    assert not (tmp_path / ".flexviz").exists()
 
 
 def test_report_command_writes_html_and_expanded_markdown(

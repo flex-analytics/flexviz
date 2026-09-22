@@ -71,7 +71,12 @@ def entry(n: int) -> dict:
 
 
 def add(url: str, note: str = "", actor: str = "agent") -> int:
-    """Append one entry and return its 1-based number."""
+    """Append one entry and return its 1-based number.
+
+    Raises on a URL whose spec does not decode.
+    """
+    # A retyped or truncated URL has to fail here, not later at ``/h/N``.
+    decode_spec(encoded_spec_from_url(url))
     n = len(entries()) + 1
     entry = {
         "n": n,
@@ -86,20 +91,11 @@ def add(url: str, note: str = "", actor: str = "agent") -> int:
     return n
 
 
-def record_state(
-    n: int,
-    state: dict,
-    client_state: dict | None = None,
-    *,
-    note: str = "",
-    actor: str = "human",
-) -> int:
-    """Record the dashboard of entry ``n`` with a different interaction state.
+def _state_url(n: int, state: dict, client_state: dict | None = None) -> str:
+    """Build the URL of entry ``n`` carrying a different interaction state.
 
-    A browser page cannot write this file, so an agent that reads the live
-    state back has to record it. Entry ``n`` supplies the figures; only the
-    ``spec=`` value of its URL is rewritten, so the host and port stay the
-    ones that entry was served from. Returns the new entry number.
+    Entry ``n`` supplies the figures; only the ``spec=`` value of its URL is
+    rewritten, so the host and port stay the ones that entry was served from.
     """
     url = entry(n)["url"]
     spec = decode_spec(encoded_spec_from_url(url))
@@ -113,5 +109,20 @@ def record_state(
     parts = urlsplit(url)
     query = parse_qs(parts.query)
     query["spec"] = [encode_spec(spec)]
-    new_url = urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
-    return add(new_url, note=note, actor=actor)
+    return urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
+
+
+def record_state(
+    n: int,
+    state: dict,
+    client_state: dict | None = None,
+    *,
+    note: str = "",
+    actor: str = "human",
+) -> int:
+    """Record the dashboard of entry ``n`` with a different interaction state.
+
+    A browser page cannot write this file, so an agent that reads the live
+    state back has to record it. Returns the new entry number.
+    """
+    return add(_state_url(n, state, client_state), note=note, actor=actor)
