@@ -2991,6 +2991,112 @@ class TestCompositeLabelUnicodeParity:
         assert mid["colors"] == expected_colors, mid["colors"]
 
 
+def _null_label_bar_dashboard_url(
+    port: int, source_name: str, labels: pl.Series | None = None
+) -> str:
+    """Source hist(a) + bar(labels=[g]) where a third of the rows have a NULL
+    or NaN label — the encoder ships either as a ``null`` category."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    df = _cube_df()
+    if labels is None:
+        values = [None, "a", "b"]
+        labels = pl.Series(
+            "g", [values[i % 3] for i in range(df.height)], dtype=pl.Utf8
+        )
+    df = df.with_columns(labels.alias("g"))
+    register_source(source_name, df, cache=True)
+
+    dash = Dashboard(df)
+    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    dash.add_figure(title="Bar").add_bar(labels=["g"])
+    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = "auto"
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+class TestNullLabelBarCube:
+    def test_null_label_cube_delta_matches_server(self, page: Page, server_port: int):
+        """A null bar label rides the cube as a ``null`` category: the
+        mid-drag labels and the rendered bar count must equal the server's,
+        which also emits the raw null (nulls sort first on both sides)."""
+        url = _null_label_bar_dashboard_url(server_port, "_cube_browser_nulllabel")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+
+        bar_init = _bar_xy(page, "#fv-plot-1")
+        assert bar_init["x"] == [None, "a", "b"], bar_init["x"]
+
+        x1, x2, y, _ = _drag_coords(page)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move((x1 + x2) / 2, y, steps=8)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=bar_init["y"],
+            timeout=10_000,
+        )
+        mid = _bar_xy(page, "#fv-plot-1")
+        page.mouse.up()
+        assert mid["x"] == [None, "a", "b"], mid["x"]
+        # The null bar is a real bar, not a dropped row.
+        assert len(mid["y"]) == 3 and all(v > 0 for v in mid["y"]), mid["y"]
+
+
+class TestNanLabelBarCube:
+    def test_nan_label_cube_delta_matches_server(self, page: Page, server_port: int):
+        """A NaN float bar label rides the cube as a ``null`` category: the
+        header carries no bare ``NaN`` (JSON.parse would reject it and drop
+        the bundle), and both paths label the bar the same way."""
+        df_height = _cube_df().height
+        values = [1.0, 2.0, float("nan")]
+        url = _null_label_bar_dashboard_url(
+            server_port,
+            "_cube_browser_nanlabel",
+            pl.Series("g", [values[i % 3] for i in range(df_height)], dtype=pl.Float64),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+
+        bar_init = _bar_xy(page, "#fv-plot-1")
+
+        x1, x2, y, _ = _drag_coords(page)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move((x1 + x2) / 2, y, steps=8)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=bar_init["y"],
+            timeout=10_000,
+        )
+        mid = _bar_xy(page, "#fv-plot-1")
+        page.mouse.up()
+        # Same three bars on both paths, all real. The NaN bar is labelled
+        # null by both, so the cube bundle decoded (a bare NaN in the header
+        # would have thrown in JSON.parse and dropped the whole bundle).
+        assert sorted(map(str, mid["x"])) == sorted(map(str, bar_init["x"]))
+        assert len(mid["y"]) == 3 and all(v > 0 for v in mid["y"]), mid["y"]
+        # Order differs by design of the client comparator: the server sorts a
+        # non-finite float last, while the JS cell sort compares the decoded
+        # null against numbers (null < 1) and puts it first. Strings are
+        # unaffected (null compares equal to a string, so the header order
+        # survives the stable sort).
+        assert bar_init["x"] == [1, 2, None], bar_init["x"]
+        assert mid["x"] == [None, 1, 2], mid["x"]
+
+
 # ---------------------------------------------------------------------------
 # Stale-passive regression guard (plan step 1; updated by step 4)
 # ---------------------------------------------------------------------------

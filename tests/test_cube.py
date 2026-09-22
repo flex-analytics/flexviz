@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 import struct
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -1130,6 +1132,288 @@ class TestFVCubeCodec:
         # …and a reslice stopping short of it does not.
         partial = self._reslice(blob, cube, 0.0, 99.0)
         assert sum(partial.values()) == 2
+
+
+class TestCategoricalDimEncoding:
+    """Category order and codes per dim dtype (the columnar dictionary)."""
+
+    def _blob(self, values: pl.Series) -> bytes:
+        result = CubeResult(
+            spec=CubeSpec(
+                source_name="s",
+                free=FreeAxisSpec(column="active", p=8, domain=(0.0, 100.0)),
+                target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+                measure=MeasureSpec(agg="count"),
+            ),
+            frame=pl.DataFrame(
+                {
+                    # One row per bin: the encoder sorts by (free_bin, dim), so
+                    # distinct bins keep the codes in input order.
+                    "free_bin": pl.Series(range(len(values)), dtype=pl.Int32),
+                    "cat": values,
+                    "count": pl.Series([1] * len(values), dtype=pl.UInt32),
+                }
+            ),
+            group_cols=("cat",),
+        )
+        return encode_fvcube(result, cube_id="dim")
+
+    def _dim(self, values: pl.Series) -> tuple[list, list[int]]:
+        blob = self._blob(values)
+        header = decode_fvcube_header(blob)
+        return header["target_dims"][0]["categories"], _read_u32_col(
+            blob, header, "cat"
+        )
+
+    def test_null_string_dim_is_its_own_category(self):
+        # A null and the literal "None" are DIFFERENT categories (they shared
+        # one code before the columnar encoder) and every code is reachable.
+        cats, codes = self._dim(pl.Series(["a", None, "None"]))
+        assert cats == [None, "None", "a"]
+        assert sorted(codes) == [0, 1, 2]
+        assert dict(zip(["a", None, "None"], codes)) == {"a": 2, None: 0, "None": 1}
+
+    @pytest.mark.parametrize(
+        "dtype", [pl.Categorical, pl.Enum(["b", "a", "c"])], ids=["categorical", "enum"]
+    )
+    def test_dictionary_dtypes_sort_lexically(self, dtype):
+        # Not in declaration/dictionary order: an Enum sorts by declaration
+        # unless the encoder casts to Utf8 first.
+        cats, codes = self._dim(pl.Series(["b", "a", "c"], dtype=dtype))
+        assert cats == ["a", "b", "c"]
+        assert codes == [1, 0, 2]
+
+    def test_non_finite_numeric_dim_ships_as_null(self):
+        # NaN and inf sort last and keep their own codes, but they ship as
+        # null: json.dumps writes bare NaN/Infinity, which JSON.parse rejects.
+        values = pl.Series(
+            [2.0, float("nan"), None, -1.0, float("inf")], dtype=pl.Float64
+        )
+        blob = self._blob(values)
+        header = decode_fvcube_header(blob)
+        codes = _read_u32_col(blob, header, "cat")
+        assert header["target_dims"][0]["categories"] == [None, -1.0, 2.0, None, None]
+        assert codes == [2, 4, 0, 1, 3]
+        header_bytes = blob[12 : _buffer_section_start(blob)]
+        assert b"NaN" not in header_bytes and b"Infinity" not in header_bytes
+
+    def test_non_finite_free_key_rows_are_dropped(self):
+        # A NaN or inf bar cannot be selected (a null predicate member is
+        # dropped), so build drops those rows — and the encoder's key join,
+        # which does not match a NaN reliably, never sees one.
+        df = pl.DataFrame(
+            {
+                "f": pl.Series(
+                    [1.0, 2.0, float("nan"), float("inf")], dtype=pl.Float64
+                ),
+                "cat": ["a", "a", "a", "a"],
+            }
+        )
+        spec = _cat_free_spec(("f",))
+        for _ in range(50):  # the join on a NaN key failed intermittently
+            cube = build_cube(df.lazy(), spec)
+            assert cube.frame["__free__f"].is_finite().all()
+            blob = encode_fvcube(cube, "freenan")
+            header = decode_fvcube_header(blob)
+            assert header["free"]["categories"] == [[1.0], [2.0]]
+            assert sorted(_read_u32_col(blob, header, "free_bin")) == [0, 1]
+
+    @pytest.mark.parametrize(
+        "dtype", [pl.Categorical, pl.Enum(["z", "a", "m"])], ids=["categorical", "enum"]
+    )
+    def test_free_keys_sort_lexically(self, dtype):
+        # An Enum key sorts by declaration unless the encoder casts to Utf8.
+        df = pl.DataFrame(
+            {
+                "region": pl.Series(["z", "a", "m", "a"], dtype=dtype),
+                "cat": ["a", "a", "a", "a"],
+            }
+        )
+        blob = encode_fvcube(
+            build_cube(df.lazy(), _cat_free_spec(("region",))), "freeenum"
+        )
+        header = decode_fvcube_header(blob)
+        assert header["free"]["categories"] == [["a"], ["m"], ["z"]]
+        # The codes follow: the two "a" rows share free_bin 0.
+        assert _read_u32_col(blob, header, "free_bin") == [0, 1, 2]
+        assert _read_u32_col(blob, header, "count") == [2, 1, 1]
+
+    def test_numeric_dim_keeps_numeric_order(self):
+        cats, codes = self._dim(pl.Series([12, 2, 100, -3], dtype=pl.Int64))
+        assert cats == [-3, 2, 12, 100]
+        assert codes == [2, 1, 3, 0]
+
+
+# ---------------------------------------------------------------------------
+# Frozen FVCube byte fixtures
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "fvcube"
+
+
+def _fixture_cubes() -> dict[str, CubeResult]:
+    """One hand-built ``CubeResult`` per encoder shape.
+
+    Built from literal frames, never through ``build_cube``: the streaming
+    group_by emits rows in a nondeterministic order, so only a literal frame
+    is a stable byte oracle.
+    """
+    free = FreeAxisSpec(column="active", p=8, domain=(0.0, 100.0))
+    free_cat = FreeAxisSpec(
+        column="region",
+        kind="categorical",
+        p=0,
+        columns=("region", "code"),
+    )
+    shapes: dict[str, CubeResult] = {}
+
+    # (a) range free + string dim: empty string, accents, CJK, a prefix pair
+    # and a capital — Python code-point order == Polars UTF-8 byte order.
+    shapes["range_string_dim"] = CubeResult(
+        spec=CubeSpec(
+            source_name="s",
+            free=free,
+            target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        ),
+        frame=pl.DataFrame(
+            {
+                "free_bin": pl.Series([0, 3, 3, 5, 8, 1], dtype=pl.Int32),
+                "cat": ["", "é", "日", "ab", "Z", "a"],
+                "count": pl.Series([7, 1, 9, 4, 2, 3], dtype=pl.UInt32),
+            }
+        ),
+        group_cols=("cat",),
+    )
+
+    # (b) range free + integer dim (numeric order, not string order).
+    shapes["range_int_dim"] = CubeResult(
+        spec=CubeSpec(
+            source_name="s",
+            free=free,
+            target_dims=(TargetDimSpec(column="icat", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        ),
+        frame=pl.DataFrame(
+            {
+                "free_bin": pl.Series([0, 1, 1, 4, 8, 8], dtype=pl.Int32),
+                "icat": pl.Series([12, 2, -3, 100, 2, 7], dtype=pl.Int64),
+                "count": pl.Series([1, 2, 3, 4, 5, 6], dtype=pl.UInt32),
+            }
+        ),
+        group_cols=("icat",),
+    )
+
+    # …and a float dim with a `min` partial (f64, bit-reproducible here: the
+    # frame is literal, so no streaming combine order is involved).
+    shapes["range_float_dim_min"] = CubeResult(
+        spec=CubeSpec(
+            source_name="s",
+            free=free,
+            target_dims=(TargetDimSpec(column="fcat", kind="categorical"),),
+            measure=MeasureSpec(agg="min", value_col="val"),
+        ),
+        frame=pl.DataFrame(
+            {
+                "free_bin": pl.Series([0, 2, 2, 7, 8], dtype=pl.Int32),
+                "fcat": pl.Series([1.0, -0.5, 2.5, 1.0, 3.25], dtype=pl.Float64),
+                "min": pl.Series([0.5, -2.0, 7.25, 1.0, 3.0], dtype=pl.Float64),
+            }
+        ),
+        group_cols=("fcat",),
+    )
+
+    # (c) categorical free over two columns (Utf8 + Int64) + count.
+    shapes["cat_free_two_cols"] = CubeResult(
+        spec=CubeSpec(
+            source_name="s",
+            free=free_cat,
+            target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        ),
+        frame=pl.DataFrame(
+            {
+                "__free__region": ["west", "east", "west", "east", "west"],
+                "__free__code": pl.Series([2, 1, 1, 2, 2], dtype=pl.Int64),
+                "cat": ["b", "a", "a", "b", "a"],
+                "count": pl.Series([5, 4, 3, 2, 1], dtype=pl.UInt32),
+            }
+        ),
+        group_cols=("cat",),
+        free_key_cols=("__free__region", "__free__code"),
+    )
+
+    # (d) categorical free + line_env (packed f32/u16 partials).
+    shapes["cat_free_line_env"] = CubeResult(
+        spec=CubeSpec(
+            source_name="s",
+            free=FreeAxisSpec(
+                column="region", kind="categorical", p=0, columns=("region",)
+            ),
+            target_dims=(
+                TargetDimSpec(column="g", kind="categorical"),
+                TargetDimSpec(column="x", kind="binned", bins=8, domain=(0.0, 100.0)),
+            ),
+            measure=MeasureSpec(agg="line_env", value_col="y"),
+        ),
+        frame=pl.DataFrame(
+            {
+                "__free__region": ["west", "east", "west", "east"],
+                "g": ["b", "a", "a", "b"],
+                "__bin__x": pl.Series([0, 3, 3, 8], dtype=pl.Int32),
+                "y_min": pl.Series([-1.5, 0.25, 2.0, 7.0], dtype=pl.Float64),
+                "y_max": pl.Series([3.5, 0.75, 9.0, 7.0], dtype=pl.Float64),
+                "x_at_ymin": pl.Series([0.0, 41.0, 37.5, 100.0], dtype=pl.Float64),
+                "x_at_ymax": pl.Series([11.25, 49.5, 38.0, 100.0], dtype=pl.Float64),
+            }
+        ),
+        group_cols=("g", "__bin__x"),
+        free_key_cols=("__free__region",),
+    )
+
+    # (e) Categorical- and Enum-dtyped string dims: both sort lexically in the
+    # header, never in dictionary/declaration order.
+    for name, dtype in (
+        ("range_categorical_dtype_dim", pl.Categorical),
+        ("range_enum_dtype_dim", pl.Enum(["b", "a", "c"])),
+    ):
+        shapes[name] = CubeResult(
+            spec=CubeSpec(
+                source_name="s",
+                free=free,
+                target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+                measure=MeasureSpec(agg="count"),
+            ),
+            frame=pl.DataFrame(
+                {
+                    "free_bin": pl.Series([0, 0, 5, 8], dtype=pl.Int32),
+                    "cat": pl.Series(["b", "a", "c", "a"], dtype=dtype),
+                    "count": pl.Series([9, 8, 7, 6], dtype=pl.UInt32),
+                }
+            ),
+            group_cols=("cat",),
+        )
+    return shapes
+
+
+class TestFVCubeByteFixtures:
+    """Frozen blobs per encoder shape — the oracle across encoder rewrites.
+
+    Regenerate after a deliberate codec change:
+    ``FVCUBE_REGEN=1 uv run --no-sync pytest tests/test_cube.py -k ByteFixtures``.
+    Null and NaN dim values are deliberately absent: their encoding changed
+    with the columnar encoder (null is its own category now), so freezing them
+    would freeze the old collision.
+    """
+
+    @pytest.mark.parametrize("name", sorted(_fixture_cubes()))
+    def test_blob_matches_fixture(self, name: str) -> None:
+        blob = encode_fvcube(_fixture_cubes()[name], cube_id=name)
+        path = _FIXTURE_DIR / f"{name}.bin"
+        if os.environ.get("FVCUBE_REGEN"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+        assert blob == path.read_bytes()
 
 
 class TestValidation:

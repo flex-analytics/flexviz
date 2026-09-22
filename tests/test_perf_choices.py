@@ -16,6 +16,15 @@ import polars as pl
 import pytest
 from ooc_child import PeakSampler
 
+from flexviz import cube
+from flexviz.cube import (
+    CubeSpec,
+    FreeAxisSpec,
+    MeasureSpec,
+    TargetDimSpec,
+    build_cube,
+    encode_fvcube,
+)
 from flexviz.LF import LFQueryBuilder
 
 pytestmark = pytest.mark.benchmark
@@ -245,4 +254,88 @@ def test_envelope_kernel_scans_chunks_directly() -> None:
     assert median_chunked <= ENVELOPE_TIME_RATIO * median_single, (
         f"the {len(chunks)}-chunk frame took {median_chunked:.1f} ms, over "
         f"{ENVELOPE_TIME_RATIO} x the {median_single:.1f} ms single-chunk frame"
+    )
+
+
+# ~1M cells over 50k distinct labels: a realistic large bar/treemap cube, and
+# the shape where the per-row dict lookup cost is visible without the test
+# taking seconds. The frame must come from `build_cube`: a hand-gathered
+# string column is a scattered Utf8 view, on which Polars `unique`/`cast` cost
+# 5x more than on the compact column a group_by emits.
+ENCODER_ROWS = 1_000_000
+ENCODER_LABELS = 50_000
+# Lane Cd measured 3.0x (10M rows, K=1000: 256 → 84 ms), 3.2x (K=100k:
+# 1683 → 523 ms) and 6.8x (K=1M: 8824 → 1294 ms). 2.5x leaves headroom.
+ENCODER_SPEEDUP = 2.5
+
+
+def _legacy_dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
+    """The pre-columnar encoder path, for reference: materialize the column as
+    Python objects and look every row up in a dict."""
+    categories = sorted(str(v) for v in s.unique().to_list())
+    code_of = {v: i for i, v in enumerate(categories)}
+    codes = np.fromiter(
+        (code_of[str(v)] for v in s.to_list()), dtype="<u4", count=len(s)
+    )
+    return categories, pl.Series(codes)
+
+
+def test_cube_encoder_codes_columnar_not_per_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decision: `encode_fvcube` dictionary-encodes categorical dims and
+    categorical free keys with Polars expressions (unique/sort, Enum cast or
+    search_sorted, a join for the free keys), not with `to_list()` plus a
+    per-row Python dict lookup.
+
+    Evidence: lane Cd, 10M rows on an M5 — a range free axis with 1000 labels
+    encoded in 84 ms against 256 ms, 100k labels in 523 ms against 1683 ms,
+    1M labels in 1294 ms against 8824 ms, and a categorical free axis with
+    100k labels in 590 ms against 3339 ms, with 1.25x to 2.8x less peak
+    memory. Re-measured on this test's cube (995k cells, 50k labels): the dim
+    step 24.5 ms against 103.4 ms (4.2x) and the whole encode 51.8 ms against
+    133.5 ms (2.6x — the frame sort is shared); at 3.9M cells 184 ms against
+    805 ms. The blobs are byte-identical on null-free data.
+
+    Check: on a real `build_cube` frame the dim step is at least
+    ENCODER_SPEEDUP faster than the per-row path, and the whole encode emits
+    the same bytes either way. The timing covers the dim step alone because
+    that is what the decision changed — the shared sort dilutes an end-to-end
+    ratio without being part of it.
+    """
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "active": rng.random(ENCODER_ROWS),
+            "cat": pl.Series(
+                "cat", [f"label-{i:06d}" for i in range(ENCODER_LABELS)]
+            ).gather(rng.integers(0, ENCODER_LABELS, ENCODER_ROWS)),
+        }
+    )
+    result = build_cube(
+        df.lazy(),
+        CubeSpec(
+            source_name="s",
+            free=FreeAxisSpec(column="active", p=2048, domain=(0.0, 1.0)),
+            target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        ),
+    )
+
+    def encode() -> bytes:
+        return encode_fvcube(result, cube_id="perf")
+
+    shipped_blob = encode()
+    monkeypatch.setattr(cube, "_dim_dictionary", _legacy_dim_dictionary)
+    assert encode() == shipped_blob
+    monkeypatch.undo()
+
+    # The encoder's own input: the frame after its total-order sort.
+    col = result.frame.sort(["free_bin", "cat"])["cat"]
+    shipped_ms = _median_ms(lambda: cube._dim_dictionary(col))
+    legacy_ms = _median_ms(lambda: _legacy_dim_dictionary(col))
+
+    assert shipped_ms * ENCODER_SPEEDUP <= legacy_ms, (
+        f"the columnar dim dictionary took {shipped_ms:.1f} ms against "
+        f"{legacy_ms:.1f} ms per-row, under {ENCODER_SPEEDUP}x"
     )
