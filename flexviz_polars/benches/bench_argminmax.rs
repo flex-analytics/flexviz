@@ -1,25 +1,28 @@
-/// Microbenchmarks for the min-max bucket kernel internals.
-///
-/// Run with:
-///   cargo bench --bench bench_argminmax
-///
-/// Benchmarks:
-/// 1. SIMD (argminmax crate) vs scalar fallback — validates the SIMD speedup
-///    for the common case (f64, 5M rows, 500 buckets).
-/// 2. Bucket count scaling — measures how cost grows with n_buckets (1 → 1000)
-///    on a fixed 5M-row dataset. Confirms single-pass scaling (cost ∝ n_buckets
-///    only in partitioning overhead, not data scans).
-/// 3. Data size scaling — measures 1M / 5M / 10M rows at fixed n_buckets=500.
-///    Confirms linear O(n) growth as expected for a memory-bandwidth-bound kernel.
-/// 4. Concurrent callers — N distinct DRAM-sized columns scanned at once,
-///    serial-per-caller vs pool-split-per-caller on one shared pool. This is the
-///    regime the engine actually runs (N traces batched into one `select`), and
-///    the one the other groups cannot see: a solo call is the sole condition
-///    under which the pool split is unambiguously good. Measured 2026-08-25 on a
-///    bandwidth-saturated Zen 3: the split wins ~1.3-1.6x solo, costs up to ~9%
-///    at 3-5 concurrent callers. This case is where that shows up.
+//! Microbenchmarks for the min-max bucket kernel internals.
+//!
+//! Run with:
+//!   cargo bench --bench bench_argminmax
+//!
+//! Benchmarks:
+//! 1. SIMD (argminmax crate) vs scalar fallback — validates the SIMD speedup
+//!    for the common case (f64, 5M rows, 500 buckets).
+//! 2. Bucket count scaling — measures how cost grows with n_buckets (1 → 1000)
+//!    on a fixed 5M-row dataset. Confirms single-pass scaling (cost ∝ n_buckets
+//!    only in partitioning overhead, not data scans).
+//! 3. Data size scaling — measures 1M / 5M / 10M rows at fixed n_buckets=500.
+//!    Confirms linear O(n) growth as expected for a memory-bandwidth-bound kernel.
+//! 4. Concurrent callers — N distinct DRAM-sized columns scanned at once,
+//!    serial-per-caller vs pool-split-per-caller on one shared pool. This is the
+//!    regime the engine actually runs (N traces batched into one `select`), and
+//!    the one the other groups cannot see: a solo call is the sole condition
+//!    under which the pool split is unambiguously good. Measured 2026-08-25 on a
+//!    bandwidth-saturated Zen 3: the split wins ~1.3-1.6x solo, costs up to ~9%
+//!    at 3-5 concurrent callers. This case is where that shows up.
+
+use std::hint::black_box;
+
 use argminmax::ArgMinMax;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
