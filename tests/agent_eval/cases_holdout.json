@@ -1,0 +1,84 @@
+[
+  {
+    "id": "holdout-implicit-logger",
+    "tags": ["implicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 31,
+    "anomaly": {"column": "sensor_3", "window": [0.18, 0.22]},
+    "prompt": "sensors.parquet in this folder came off a test bench, about a million rows. Give me a way to look through it, and say what you find.",
+    "pre": [],
+    "checks": [
+      "skill_fired",
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "holdout-implicit-quiet",
+    "tags": ["implicit", "build"],
+    "fixture": "sensors_1m",
+    "seed": 32,
+    "anomaly": {"column": "sensor_6", "window": [0.66, 0.70]},
+    "prompt": "I have a million rows of readings in sensors.parquet and no idea what is in them. Walk me through it with charts I can poke at.",
+    "pre": [],
+    "checks": [
+      "skill_fired",
+      "schema_before_serve",
+      "loopback",
+      "sources_polled",
+      "max_four_figures",
+      "no_url_leak",
+      "no_raw_history_read",
+      "history_entry",
+      "spec_valid",
+      "columns_exist",
+      "x_is_time",
+      "renders",
+      "findings_in_chat",
+      "burst_found"
+    ]
+  },
+  {
+    "id": "holdout-handover-window",
+    "tags": ["handover"],
+    "fixture": "sensors_1m",
+    "seed": 33,
+    "anomaly": {"column": "sensor_5", "window": [0.42, 0.46]},
+    "prompt": "In fv:2 I selected a time range on the line chart. What is the average of that sensor inside my selection?",
+    "pre": [{"agent_entry": {}}, {"human_entry": {"brush": "anomaly_window"}}],
+    "checks": [
+      "no_duplicate_human_entry",
+      "agent_change_recorded",
+      "handover_answer",
+      "no_url_leak",
+      "no_raw_history_read"
+    ]
+  },
+  {
+    "id": "holdout-handover-level",
+    "tags": ["handover"],
+    "fixture": "sensors_1m",
+    "seed": 34,
+    "anomaly": {"column": "sensor_7", "window": [0.28, 0.32]},
+    "prompt": "fv:2 holds my brush on the line chart. How high does that sensor sit on average inside the brushed range?",
+    "pre": [{"agent_entry": {}}, {"human_entry": {"brush": "anomaly_window"}}],
+    "checks": [
+      "no_duplicate_human_entry",
+      "agent_change_recorded",
+      "handover_answer",
+      "no_url_leak",
+      "no_raw_history_read"
+    ]
+  }
+]

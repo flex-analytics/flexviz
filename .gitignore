@@ -218,3 +218,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Skill eval runs: transcripts, grades, and usage per run
+tests/agent_eval/results/

@@ -178,6 +178,85 @@ def test_filtered_domain_probe_stays_in_memory(
     )
 
 
+# 8M rows in 100k-row chunks: 80 chunks, the shape a Parquet collect gives
+# (one chunk per row group), at a size where the kernel runs tens of ms.
+ENVELOPE_ROWS = 8_000_000
+ENVELOPE_CHUNK = 100_000
+# The per-chunk loop costs one extra iterator setup per chunk and nothing else,
+# so the multi-chunk frame must stay close to the rechunked one. Measured 1.0x
+# to 1.1x on an M5; 1.3 leaves headroom for a shared runner.
+ENVELOPE_TIME_RATIO = 1.3
+
+
+def test_envelope_kernel_scans_chunks_directly() -> None:
+    """Decision: `envelope_scan` takes its dense fast path per chunk, on any
+    chunk layout that is null-free and aligned, instead of only on a single
+    contiguous chunk.
+
+    Evidence: a Parquet collect has one chunk per row group, 10 at 10M rows and
+    407 at 50M, so a real cube build never reached the old single-chunk fast
+    path and ran the `Option` iterator instead. Lane C2 (2026-09-20) measured
+    1.8x to 2.1x on kernel time from an explicit `.rechunk()`, which buys that
+    speed by copying the whole projection (240 MB at 10M, 1.2 GB at 50M).
+
+    Check: the multi-chunk frame gives the same envelope as the rechunked one
+    and takes at most ENVELOPE_TIME_RATIO of its wall time, so the fast path is
+    reached without the copy.
+    """
+    import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
+
+    rng = np.random.default_rng(0)
+    chunks = [
+        pl.DataFrame(
+            {
+                "x": rng.uniform(0.0, 100.0, ENVELOPE_CHUNK),
+                "y": rng.standard_normal(ENVELOPE_CHUNK),
+                "f": rng.uniform(0.0, 10.0, ENVELOPE_CHUNK),
+            }
+        )
+        for _ in range(ENVELOPE_ROWS // ENVELOPE_CHUNK)
+    ]
+    chunked = pl.concat(chunks, rechunk=False)
+    assert chunked["x"].n_chunks() == ENVELOPE_ROWS // ENVELOPE_CHUNK
+    single = chunked.rechunk()
+    assert single["x"].n_chunks() == 1
+
+    def envelope(df: pl.DataFrame) -> pl.DataFrame:
+        return df.select(
+            pl.col("x").flexviz.fixed_line_envelope2d(
+                pl.col("y"),
+                pl.col("f"),
+                pl.lit(0.0),
+                pl.lit(100.0),
+                pl.lit(0.0),
+                pl.lit(10.0),
+                512,
+                64,
+            )
+        )
+
+    assert envelope(chunked).equals(envelope(single))
+
+    # The kernel is serial, so this ratio does not depend on the thread pool,
+    # hence no thread-count skip. Alternate the two frames, so a warming cache
+    # or a thermal drift costs both.
+    chunked_ms: list[float] = []
+    single_ms: list[float] = []
+    for run in range(6):  # one warm-up pass, then five timed ones
+        for df, times in ((chunked, chunked_ms), (single, single_ms)):
+            start = time.perf_counter()
+            envelope(df)
+            if run:
+                times.append((time.perf_counter() - start) * 1e3)
+
+    median_chunked = statistics.median(chunked_ms)
+    median_single = statistics.median(single_ms)
+    assert median_chunked <= ENVELOPE_TIME_RATIO * median_single, (
+        f"the {len(chunks)}-chunk frame took {median_chunked:.1f} ms, over "
+        f"{ENVELOPE_TIME_RATIO} x the {median_single:.1f} ms single-chunk frame"
+    )
+
+
 # ~1M cells over 50k distinct labels: a realistic large bar/treemap cube, and
 # the shape where the per-row dict lookup cost is visible without the test
 # taking seconds. The frame must come from `build_cube`: a hand-gathered

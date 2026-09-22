@@ -1603,18 +1603,32 @@ fn envelope_scan(
         acc.update(bf * stride + bx, xv, yv);
     };
 
-    let mut scanned = false;
-    if x_ca.null_count() == 0 && y_ca.null_count() == 0 && f_ca.null_count() == 0 {
-        // Fast path: single contiguous chunk, no nulls → raw slices.
-        if let (Ok(xs), Ok(ys), Ok(fs)) = (x_ca.cont_slice(), y_ca.cont_slice(), f_ca.cont_slice())
+    // Fast path: no nulls and the same chunk layout on all three columns, so
+    // raw chunk values line up row by row. A Parquet collect has one chunk per
+    // row group, so demanding a single chunk would mean copying the whole
+    // projection to reach this path.
+    let dense = x_ca.null_count() == 0
+        && y_ca.null_count() == 0
+        && f_ca.null_count() == 0
+        && x_ca.chunk_lengths().eq(y_ca.chunk_lengths())
+        && x_ca.chunk_lengths().eq(f_ca.chunk_lengths());
+    if dense {
+        for ((x_arr, y_arr), f_arr) in x_ca
+            .downcast_iter()
+            .zip(y_ca.downcast_iter())
+            .zip(f_ca.downcast_iter())
         {
-            for ((&xv, &yv), &fv) in xs.iter().zip(ys.iter()).zip(fs.iter()) {
+            // `values()` is already offset-sliced, so sliced chunks are safe.
+            for ((&xv, &yv), &fv) in x_arr
+                .values()
+                .iter()
+                .zip(y_arr.values().iter())
+                .zip(f_arr.values().iter())
+            {
                 visit(xv, yv, fv);
             }
-            scanned = true;
         }
-    }
-    if !scanned {
+    } else {
         for ((xv_opt, yv_opt), fv_opt) in x_ca.iter().zip(y_ca.iter()).zip(f_ca.iter()) {
             if let (Some(xv), Some(yv), Some(fv)) = (xv_opt, yv_opt, fv_opt) {
                 visit(xv, yv, fv);
