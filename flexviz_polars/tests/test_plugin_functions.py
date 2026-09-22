@@ -1416,6 +1416,149 @@ class TestFixedLineEnvelope2D:
         out = _assert_envelope_parity(x, y, f, 0.0, 100.0, 0.0, 10.0, 16, 32)
         assert 0 < out.height <= 17 * 33
 
+    # ---- chunk layouts ------------------------------------------------------
+
+    @staticmethod
+    def _chunked(name: str, parts: list[list[float]]) -> pl.Series:
+        """A multi-chunk Series with one chunk per part."""
+        out = pl.concat(
+            [pl.Series(name, part, dtype=pl.Float64) for part in parts], rechunk=False
+        )
+        assert out.n_chunks() == len(parts)
+        return out
+
+    @staticmethod
+    def _envelope_from_frame(
+        x: pl.Series,
+        y: pl.Series,
+        f: pl.Series,
+        n_chunks: tuple[int, int, int],
+    ) -> pl.DataFrame:
+        """Run the kernel over frame columns, pinning their chunk counts."""
+        df = pl.DataFrame([x, y, f])
+        assert (
+            df["x"].n_chunks(),
+            df["y"].n_chunks(),
+            df["f"].n_chunks(),
+        ) == n_chunks, "the frame must keep the input chunk layout"
+        return (
+            df.select(
+                pl.col("x").flexviz.fixed_line_envelope2d(
+                    pl.col("y"),
+                    pl.col("f"),
+                    pl.lit(0.0),
+                    pl.lit(100.0),
+                    pl.lit(0.0),
+                    pl.lit(10.0),
+                    8,
+                    4,
+                )
+            )
+            .to_series()
+            .struct.unnest()
+        )
+
+    @staticmethod
+    def _messy(seed: int, n: int, lo: float, hi: float) -> list[float]:
+        import random
+
+        rng = random.Random(seed)
+        span = hi - lo
+        # Spill outside the domain on both sides, so filtering is exercised.
+        return [rng.uniform(lo - 0.1 * span, hi + 0.1 * span) for _ in range(n)]
+
+    def test_aligned_multichunk_parity(self):
+        from polars.testing import assert_frame_equal
+
+        n = 300
+        xs = self._messy(1, n, 0.0, 100.0)
+        ys = self._messy(2, n, -10.0, 10.0)
+        fs = self._messy(3, n, 0.0, 10.0)
+        parts = [(0, 100), (100, 200), (200, 300)]
+        x = self._chunked("x", [xs[a:b] for a, b in parts])
+        y = self._chunked("y", [ys[a:b] for a, b in parts])
+        f = self._chunked("f", [fs[a:b] for a, b in parts])
+        got = self._envelope_from_frame(x, y, f, (3, 3, 3))
+        want = _envelope_reference(
+            pl.Series("x", xs),
+            pl.Series("y", ys),
+            pl.Series("f", fs),
+            0.0,
+            100.0,
+            0.0,
+            10.0,
+            8,
+            4,
+        )
+        assert_frame_equal(got, want, check_exact=True)
+        assert got.height > 0
+
+    def test_mismatched_chunk_layouts_parity(self):
+        # Different chunk layouts per column: the dense path must not apply.
+        from polars.testing import assert_frame_equal
+
+        n = 300
+        xs = self._messy(4, n, 0.0, 100.0)
+        ys = self._messy(5, n, -10.0, 10.0)
+        fs = self._messy(6, n, 0.0, 10.0)
+        x = self._chunked("x", [xs[0:100], xs[100:200], xs[200:300]])
+        y = self._chunked("y", [ys[0:150], ys[150:300]])
+        f = pl.Series("f", fs, dtype=pl.Float64)
+        got = self._envelope_from_frame(x, y, f, (3, 2, 1))
+        want = _envelope_reference(
+            pl.Series("x", xs),
+            pl.Series("y", ys),
+            pl.Series("f", fs),
+            0.0,
+            100.0,
+            0.0,
+            10.0,
+            8,
+            4,
+        )
+        assert_frame_equal(got, want, check_exact=True)
+        assert got.height > 0
+
+    @pytest.mark.parametrize("null_col", ["x", "y", "f"])
+    def test_multichunk_with_null_parity(self, null_col):
+        # A null in any column keeps the aligned layout but forces the slow
+        # path; parity must hold there too.
+        from polars.testing import assert_frame_equal
+
+        n = 300
+        cols = {
+            "x": self._messy(7, n, 0.0, 100.0),
+            "y": self._messy(8, n, -10.0, 10.0),
+            "f": self._messy(9, n, 0.0, 10.0),
+        }
+        nulled: dict[str, list[float | None]] = {k: list(v) for k, v in cols.items()}
+        nulled[null_col][150] = None
+        parts = [(0, 100), (100, 200), (200, 300)]
+        series = {
+            name: pl.concat(
+                [pl.Series(name, vals[a:b], dtype=pl.Float64) for a, b in parts],
+                rechunk=False,
+            )
+            for name, vals in nulled.items()
+        }
+        assert all(s.n_chunks() == 3 for s in series.values())
+        got = self._envelope_from_frame(
+            series["x"], series["y"], series["f"], (3, 3, 3)
+        )
+        want = _envelope_reference(
+            pl.Series("x", nulled["x"], dtype=pl.Float64),
+            pl.Series("y", nulled["y"], dtype=pl.Float64),
+            pl.Series("f", nulled["f"], dtype=pl.Float64),
+            0.0,
+            100.0,
+            0.0,
+            10.0,
+            8,
+            4,
+        )
+        assert_frame_equal(got, want, check_exact=True)
+        assert got.height > 0
+
     def test_filtered_multichunk_input(self):
         # Lazy filter → multi-chunk, possibly null-masked input series.
         frames = [
