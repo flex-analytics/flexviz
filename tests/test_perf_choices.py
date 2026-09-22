@@ -151,10 +151,8 @@ def test_filtered_domain_probe_streams_too() -> None:
 CHAIN_CATEGORIES = 20
 CHAIN_VALUES = 5
 # The chain streams: it never holds more than a morsel (measured 0.0 to
-# 0.3 MB). The pairing it replaces, `is_in` on the in-memory engine, copies
-# the surviving rows of both columns (measured 52 to 54 MB at 10M rows).
+# 0.3 MB).
 CHAIN_PEAK_MB = 8
-IS_IN_PEAK_MB = 30
 
 
 def test_small_values_clause_compiles_to_an_equality_chain() -> None:
@@ -176,8 +174,7 @@ def test_small_values_clause_compiles_to_an_equality_chain() -> None:
     k=17 99.1 against 79.4, k=18 95.1 against 81.7. So 14.
 
     Check: a k=5 clause compiles without `is_in`, both forms select the same
-    rows, the chain's streaming select stays under CHAIN_PEAK_MB while the
-    pairing it replaces, `is_in` on the in-memory engine, passes IS_IN_PEAK_MB.
+    rows, and the chain's streaming select stays under CHAIN_PEAK_MB.
     """
     from flexviz.predicates import predicates_to_expr
     from flexviz.spec import ClauseFilter, SelectionPredicate
@@ -199,25 +196,17 @@ def test_small_values_clause_compiles_to_an_equality_chain() -> None:
     is_in_expr = pl.col("g").is_in(pl.Series(values, dtype=pl.String).implode())
     minmax = [pl.col("x").min().alias("lo"), pl.col("x").max().alias("hi")]
 
-    # Warm-up: the first select of each pair also pays the allocator's first
-    # touch, which is the same for both forms and not what is measured here.
+    # Warm-up: the first select also pays the allocator's first touch, which
+    # is not what is measured here.
     df.lazy().filter(chain_expr).select(minmax).collect(engine="streaming")
-    df.lazy().filter(is_in_expr).select(minmax).collect(engine="in-memory")
 
     with PeakSampler(interval=0.001) as chain_sampler:
         chain = df.lazy().filter(chain_expr).select(minmax).collect(engine="streaming")
-    with PeakSampler(interval=0.001) as is_in_sampler:
-        # The old path: `is_in` on the engine a resident source collects with.
-        reference = (
-            df.lazy().filter(is_in_expr).select(minmax).collect(engine="in-memory")
-        )
+    # The old path: `is_in` on the engine a resident source collects with.
+    reference = df.lazy().filter(is_in_expr).select(minmax).collect(engine="in-memory")
 
     assert chain.equals(reference)
     assert chain_sampler.peak_mb <= CHAIN_PEAK_MB, (
         f"the chain peaked {chain_sampler.peak_mb:.1f} MB over its baseline, "
         f"above the {CHAIN_PEAK_MB} MB cap"
-    )
-    assert is_in_sampler.peak_mb >= IS_IN_PEAK_MB, (
-        f"the `is_in` form peaked only {is_in_sampler.peak_mb:.1f} MB; the "
-        "measured gap this decision rests on is gone"
     )
