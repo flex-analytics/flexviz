@@ -235,6 +235,30 @@ class TestErrors:
         with pytest.raises(ValueError, match="mix time zones"):
             dash.to_spec()
 
+    def test_numeric_column_on_a_date_axis(self, df):
+        """Its zoom sends date strings the numeric column cannot compare."""
+        dash = Dashboard(df)
+        a = dash.add_figure()
+        a.add_line(x="ts", y="val")
+        a.update_layout(xaxis={"type": "date"})
+        b = dash.add_figure()
+        b.add_line(x="ts", y="val")
+        dash.link_axes(a, b, axis="x")
+        with pytest.raises(ValueError, match="numeric 'ts' on a date axis"):
+            dash.to_spec()
+
+    def test_date_and_linear_axis_types_do_not_mix(self, df):
+        """A date axis reports strings and a linear one numbers."""
+        dash = Dashboard(df)
+        a = dash.add_figure()
+        a.add_line(x="at", y="val")
+        a.update_layout(xaxis={"type": "linear"})
+        b = dash.add_figure()
+        b.add_line(x="at", y="val")
+        dash.link_axes(a, b, axis="x")
+        with pytest.raises(ValueError, match="mix date and linear axis types"):
+            dash.to_spec()
+
     def test_two_axes_of_one_figure(self, df):
         dash, a, *_ = _four(df)
         dash.link_axes((a, "x"), (a, "y"))

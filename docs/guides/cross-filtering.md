@@ -102,7 +102,9 @@ Rules and limits:
   linked, one axis per figure in a group. A histogram's count axis, a bar, a
   map, a log or category axis and a time-of-day or duration axis cannot.
   Numeric and temporal axes do not mix; date and datetime axes do, if they
-  share one time zone. A reversed axis links only to reversed axes.
+  share one time zone. Linked axes must also share a Plotly axis type: a
+  numeric column on an axis set to `type="date"` cannot be linked, and date and
+  linear axis types do not mix. A reversed axis links only to reversed axes.
 - Locking the axes of one figure locks every axis linked to them, at the range
   that figure shows.
 - After a double-click autorange, each figure autoranges to its own data, so

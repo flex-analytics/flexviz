@@ -654,8 +654,11 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
     are positions, not values. A group must not mix numeric and temporal axes,
     because a copied range would not parse, nor time zones (``Date`` and a
     naive ``Datetime`` count as no zone), because it is copied as wall-clock
-    text. The builder and the server both run
-    this, so an imported spec gets the same rule. Raises ``ValueError``.
+    text. The Plotly axis type must match too: a ``date`` axis reports date
+    strings and a ``linear`` one numbers, so a group holds one of them, and a
+    numeric column on a ``date`` axis is refused (its zoom already fails
+    unlinked). The builder and the server both run this, so an imported spec
+    gets the same rule. Raises ``ValueError``.
     """
     import polars as pl
 
@@ -663,19 +666,28 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
     for group in spec.client_state.axis_links:
         kinds = set()
         zones = set()
+        axis_types = set()
         for key in group:
             fig_uid, _, axis_id = key.partition("/")
             figure = figures[fig_uid]
             schema = schemas.get(figure.source) or {}
+            layout_type = _layout_axis(figure, axis_id).get("type")
             for col in figure_axis_columns(figure).get(axis_id, ()):
                 dtype = schema.get(col)
                 if dtype is None:
                     continue
                 if dtype.is_numeric():
+                    if layout_type == "date":
+                        raise ValueError(
+                            f"linked axis {key!r} shows numeric {col!r} on a date "
+                            "axis; its zoom sends dates the column cannot compare"
+                        )
                     kinds.add("numeric")
+                    axis_types.add("linear")
                 elif isinstance(dtype, (pl.Date, pl.Datetime)):
                     kinds.add("temporal")
                     zones.add(getattr(dtype, "time_zone", None))
+                    axis_types.add("linear" if layout_type == "linear" else "date")
                 else:
                     raise ValueError(
                         f"linked axis {key!r} shows {col!r} of type {dtype}; only "
@@ -689,6 +701,8 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
             raise ValueError(
                 f"linked axes {group} mix time zones {sorted(map(str, zones))}"
             )
+        if len(axis_types) > 1:
+            raise ValueError(f"linked axes {group} mix date and linear axis types")
 
 
 # ---------------------------------------------------------------------------
