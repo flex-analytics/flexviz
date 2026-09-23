@@ -1185,9 +1185,9 @@ class TestPlotlyBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[1],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -1349,10 +1349,8 @@ class TestPlotlyBrowser:
             window.fvSetSelectionState([sel]);
             return postDashboardUpdate({
                 type: 'selection',
-                axis_ranges: {},
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
-                figure_uid: figUid,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -1396,10 +1394,8 @@ class TestPlotlyBrowser:
             ]);
             return postDashboardUpdate({
                 type: 'selection',
-                axis_ranges: {},
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
-                figure_uid: figUids[0],
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -1780,7 +1776,10 @@ class TestPlotlyBrowser:
             if body.get("event", {}).get("type") == "viewport"
         ]
         assert len(viewport_events) >= 1, update_bodies[initial_req_count:]
-        assert viewport_events[-1]["event"]["axis_ranges"]["coordinates"] == coords
+        last = viewport_events[-1]
+        key = f"{last['spec']['figures'][0]['uid']}/coordinates"
+        assert last["event"]["viewport_keys"] == [key]
+        assert last["spec"]["state"]["viewport"][key] == coords
         assert 200 in response_statuses[initial_resp_count:], response_statuses[
             initial_resp_count:
         ]
@@ -1974,12 +1973,12 @@ class TestGroupedBrowser:
 
         page.evaluate("""async () => {
               const figUid = DASHBOARD_SPEC.figures[0].uid;
+              DASHBOARD_SPEC.state.viewport[figUid + '/x'] = {min: 0, max: 60};
               await postDashboardUpdate({
                 type: 'viewport',
-                axis_ranges: { x: [0, 60] },
+                viewport_keys: [figUid + '/x'],
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: false,
-                figure_uid: figUid,
               });
             }""")
         page.wait_for_timeout(2_000)
@@ -2357,10 +2356,8 @@ class TestDemoEChartsBrowser:
                 window.fvSetSelectionState?.([selection]);
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: [selection],
                   force_update: true,
-                  figure_uid: figUid,
                 });
             }""")
         page.wait_for_function("""() => {
@@ -2477,9 +2474,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(2_000)
@@ -2515,9 +2512,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2563,9 +2560,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2628,9 +2625,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2661,7 +2658,8 @@ class TestCrossFilterBrowser:
         viewport_events = [
             b for b in post if b.get("event", {}).get("type") == "viewport"
         ]
-        assert viewport_events[-1]["event"].get("figure_uid") == fig1_uid
+        keys = viewport_events[-1]["event"]["viewport_keys"]
+        assert keys and all(k.startswith(f"{fig1_uid}/") for k in keys), keys
 
     def test_reset_clears_zoom_and_filter(
         self, page: Page, server_port: int, renderer: str
@@ -2689,9 +2687,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2741,9 +2739,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2783,9 +2781,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2825,9 +2823,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2889,9 +2887,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2947,9 +2945,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -3017,9 +3015,8 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [100, 200] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', axis_ranges: {},
-                selections: DASHBOARD_SPEC.state.selections, force_update: true,
-                figure_uid: figUids[0]});
+            return postDashboardUpdate({type: 'selection', 
+                selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
         page.click("#fv-btn-reset")
@@ -3030,9 +3027,8 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [150, 300] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', axis_ranges: {},
-                selections: DASHBOARD_SPEC.state.selections, force_update: true,
-                figure_uid: figUids[0]});
+            return postDashboardUpdate({type: 'selection', 
+                selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
 
@@ -3091,9 +3087,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_function("""() => {
@@ -3174,9 +3170,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -3214,9 +3210,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -3261,9 +3257,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_400)
@@ -3426,10 +3422,8 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
-                  figure_uid: uidA,
                 });
 
                 // Allow the selection response to apply.
@@ -3613,10 +3607,9 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.viewport[uidA + '/x'] = {min: 100, max: 300};
                 await postDashboardUpdate({
                   type: 'viewport',
-                  axis_ranges: {x: [100, 300]},
+                  viewport_keys: [uidA + '/x'],
                   selections: DASHBOARD_SPEC.state.selections,
-                  force_update: true,
-                  figure_uid: uidA,
+                  force_update: false,
                 });
 
                 // Step 2: cross-filter on A
@@ -3627,10 +3620,8 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
-                  figure_uid: uidA,
                 });
 
                 // Step 3: Share
@@ -3829,9 +3820,9 @@ class TestAgentReadback:
                 predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
             }];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection', 
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_function(f"() => ({total}) < {unfiltered}")
@@ -5264,9 +5255,9 @@ _INJECT_SELECTION_JS = """() => {
     };
     DASHBOARD_SPEC.state.selections = [sel];
     return postDashboardUpdate({
-        type: 'selection', axis_ranges: {},
+        type: 'selection', 
         selections: DASHBOARD_SPEC.state.selections,
-        force_update: true, figure_uid: figUids[0],
+        force_update: true,
     });
 }"""
 
@@ -5594,7 +5585,6 @@ class TestResetCleanupBrowser:
         page.evaluate("""async () => {
                 await postDashboardUpdate({
                   type: 'init',
-                  axis_ranges: {},
                   selections: [],
                   force_update: true,
                 });
@@ -5780,7 +5770,7 @@ class TestResetCleanupBrowser:
     ):
         """The positive case of the fvNeedsFetch gate: with y locked, a
         relayout touching both axes still POSTs (the line's x re-aggregates)
-        and the POSTed axis_ranges carry only the unlocked x."""
+        and the POSTed event names only the unlocked x as changed."""
         url = _dashboard_url(server_port, "plotly", n_figures=1)
         update_bodies: list[dict] = []
 
@@ -5831,8 +5821,7 @@ class TestResetCleanupBrowser:
         assert len(update_bodies) > count_before
         event = update_bodies[-1]["event"]
         assert event["type"] == "viewport"
-        assert event["axis_ranges"]["x"] == [50, 100]
-        assert "y" not in event["axis_ranges"]
+        assert event["viewport_keys"] == [f"{state['figUid']}/x"]
         assert state["viewport"][f"{state['figUid']}/x"] == {
             "min": 50,
             "max": 100,
@@ -5911,10 +5900,9 @@ class TestLegendVisibilityBrowser:
                 DASHBOARD_SPEC.state.viewport[figUid + '/x'] = {min: 5, max: 25};
                 await postDashboardUpdate({
                     type: 'viewport',
-                    axis_ranges: {x: [5, 25]},
+                    viewport_keys: [figUid + '/x'],
                     selections: DASHBOARD_SPEC.state.selections || [],
-                    force_update: true,
-                    figure_uid: figUid,
+                    force_update: false,
                 });
             }""")
 

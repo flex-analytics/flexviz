@@ -201,7 +201,7 @@ def _run_init(trace, cache, source_name="s"):
     ti = TraceInfo(
         uid=trace.uid, axes=trace._axes, trace_type=trace.trace_type, figure_uid="f"
     )
-    ev = InteractionEvent(type="init", axis_ranges={}, selections=[], force_update=True)
+    ev = InteractionEvent(type="init", selections=[], force_update=True)
     return eng.process(ev, [ti], {"f": {}}, "update")
 
 
@@ -221,7 +221,7 @@ def test_engine_no_cache_when_backend_none():
     lf = _engine(None)
     eng = FlexEngine(backend_lf=lf, scalable_traces={tr.uid: tr})  # no cache
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
-    ev = InteractionEvent(type="init", axis_ranges={}, selections=[], force_update=True)
+    ev = InteractionEvent(type="init", selections=[], force_update=True)
     # Should simply run without touching any cache and return a delta.
     assert eng.process(ev, [ti], {"f": {}}, "update")[0].uid == tr.uid
 
@@ -239,10 +239,9 @@ def test_engine_viewport_event_not_cached():
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
     ev = InteractionEvent(
         type="viewport",
-        axis_ranges={"x": (1, 5)},
+        viewport_keys=["f/x"],
         selections=[],
         force_update=True,
-        figure_uid="f",
     )
     eng.process(ev, [ti], {"f": {"x": (1, 5)}}, "update")
     assert cache.stats()["entries"] == 0
@@ -274,7 +273,7 @@ def test_engine_overlay_init_reuses_update_entry():
         source_name="s",
     )
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
-    ev = InteractionEvent(type="init", axis_ranges={}, selections=[], force_update=True)
+    ev = InteractionEvent(type="init", selections=[], force_update=True)
     out = eng.process(ev, [ti], {"f": {}}, "overlay")
     assert cache.stats()["hits"] == 1
     assert out[0].layer == "bg"
@@ -292,10 +291,8 @@ def test_engine_deselect_while_zoomed_is_not_served_from_cache():
 
     desel = InteractionEvent(
         type="deselect",
-        axis_ranges={},
         selections=[],
         force_update=True,
-        figure_uid="f",
     )
     zoomed_vp = {"f": {"x": (1.0, 5.0)}}
 
@@ -339,14 +336,10 @@ def test_engine_mixed_zoom_deselect_does_not_short_circuit_from_cache():
         ]
         return eng.process(event, infos, viewports, "update")
 
-    init = InteractionEvent(
-        type="init", axis_ranges={}, selections=[], force_update=True
-    )
+    init = InteractionEvent(type="init", selections=[], force_update=True)
     run(init, {"f1": {}, "f2": {}})  # populate both unfiltered entries
 
-    desel = InteractionEvent(
-        type="deselect", axis_ranges={}, selections=[], force_update=True
-    )
+    desel = InteractionEvent(type="deselect", selections=[], force_update=True)
     out = run(desel, {"f1": {}, "f2": {"x": (1.0, 5.0)}})
     by_uid = {d.uid: d for d in out}
     assert set(by_uid) == {"t1", "t2"}  # zoomed trace not dropped by short-circuit
@@ -403,23 +396,28 @@ def test_grouped_payload_is_uid_agnostic_and_restamps():
 
 
 _SPEC = {
-    "version": "0.3",
-    "figure": {
-        "uid": "f1",
-        "source": "s",
-        "traces": [
-            {
-                "uid": "t1",
-                "trace_type": "line",
-                "axes": ["x", "y"],
-                "backend_data": {"x": "x", "y": "y"},
-                "params": {"n_points": 50, "downsample": "minmax", "add_gaps": False},
-            }
-        ],
-    },
+    "figures": [
+        {
+            "uid": "f1",
+            "source": "s",
+            "traces": [
+                {
+                    "uid": "t1",
+                    "trace_type": "line",
+                    "axes": ["x", "y"],
+                    "backend_data": {"x": "x", "y": "y"},
+                    "params": {
+                        "n_points": 50,
+                        "downsample": "minmax",
+                        "add_gaps": False,
+                    },
+                }
+            ],
+        }
+    ],
     "state": {"viewport": {}, "selections": [], "cross_filter_mode": "update"},
 }
-_INIT = {"type": "init", "axis_ranges": {}, "selections": [], "force_update": True}
+_INIT = {"type": "init", "selections": [], "force_update": True}
 
 
 @pytest.fixture
@@ -441,8 +439,8 @@ def test_server_caches_when_flag_set(client):
         pl.DataFrame({"x": list(range(40)), "y": [i % 3 for i in range(40)]}),
         cache=True,
     )
-    r1 = client.post("/update", json={"spec": _SPEC, "event": _INIT})
-    r2 = client.post("/update", json={"spec": _SPEC, "event": _INIT})
+    r1 = client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
+    r2 = client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
     assert r1.status_code == 200 and r1.json() == r2.json()
     assert client.get("/cache/stats").json()["backend"]["hits"] >= 1
 
@@ -455,8 +453,8 @@ def test_server_does_not_cache_without_flag(client):
         pl.DataFrame({"x": list(range(40)), "y": [i % 3 for i in range(40)]}),
         cache=False,
     )
-    client.post("/update", json={"spec": _SPEC, "event": _INIT})
-    client.post("/update", json={"spec": _SPEC, "event": _INIT})
+    client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
+    client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
     stats = client.get("/cache/stats").json()
     assert stats["backend"]["hits"] == 0
     assert "s" not in stats["cacheable_sources"]
@@ -466,7 +464,7 @@ def test_reregister_clears_cache(client):
     from flexviz.server import register_source
 
     register_source("s", pl.DataFrame({"x": [1, 2], "y": [1, 2]}), cache=True)
-    client.post("/update", json={"spec": _SPEC, "event": _INIT})
+    client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
     assert cache_mod.get_cache().stats()["entries"] >= 1
     register_source("s", pl.DataFrame({"x": [3, 4], "y": [3, 4]}), cache=True)
     assert cache_mod.get_cache().stats()["entries"] == 0
@@ -486,7 +484,7 @@ def test_reregister_same_builder_invalidates_nothing_and_warns(client, tmp_path)
     )
     builder = LFQueryBuilder(pl.scan_parquet(path))
     register_source("s", builder, cache=True)
-    r1 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    r1 = client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT}).json()
     entries = cache_mod.get_cache().stats()["entries"]
     assert entries >= 1
 
@@ -501,14 +499,14 @@ def test_reregister_same_builder_invalidates_nothing_and_warns(client, tmp_path)
     with pytest.warns(UserWarning, match="nothing was invalidated"):
         register_source("s", builder, cache=True)
     assert cache_mod.get_cache().stats()["entries"] == entries
-    r2 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    r2 = client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT}).json()
     assert r2 == r1
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         register_source("s", pl.scan_parquet(path), cache=True)
     assert cache_mod.get_cache().stats()["entries"] == 0
-    r3 = client.post("/update", json={"spec": _SPEC, "event": _INIT}).json()
+    r3 = client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT}).json()
     assert r3 != r1
 
 
@@ -529,7 +527,7 @@ def test_register_new_source_preserves_other_cache(client):
     from flexviz.server import register_source
 
     register_source("s", pl.DataFrame({"x": [1, 2], "y": [1, 2]}), cache=True)
-    client.post("/update", json={"spec": _SPEC, "event": _INIT})
+    client.post("/dashboard/update", json={"spec": _SPEC, "event": _INIT})
     entries = cache_mod.get_cache().stats()["entries"]
     assert entries >= 1
 

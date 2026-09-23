@@ -6,7 +6,7 @@ window.fvEnsureOverlayBackground = async function(selections) {
   const missingBg = DASHBOARD_SPEC.figures.some(fig => !hasBgByFigure[fig.uid]);
   if (!missingBg) return;
   await postDashboardUpdate({
-    type: 'init', axis_ranges: {}, selections, force_update: true,
+    type: 'init', selections, force_update: true,
   });
 };
 window.fvResetRuntimeCache = function() {
@@ -35,11 +35,11 @@ async function restoreDashboardFromSpec() {
   // so the server aggregates within state.viewport; init marks every figure
   // dirty, so each figure's render applies that viewport to its layout.
   let ok = await postDashboardUpdate({
-    type: 'init', axis_ranges: {}, selections: savedSelections, force_update: true,
+    type: 'init', selections: savedSelections, force_update: true,
   });
   if (savedSelections.length) {
     ok = await postDashboardUpdate({
-      type: 'selection', axis_ranges: {}, selections: savedSelections, force_update: true,
+      type: 'selection', selections: savedSelections, force_update: true,
     }) && ok;
   }
   window.fvRefreshSelectionSummary?.();

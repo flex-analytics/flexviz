@@ -3,7 +3,7 @@
 Architecture
 ------------
 The server is fully **stateless**: every request carries a complete
-``VisualizationSpec`` (figure config + current interaction state) so the
+``DashboardSpec`` (figure config + current interaction state) so the
 server never needs to remember anything between calls.
 
 The only server-side state is the *data-source registry* — a mapping of
@@ -13,11 +13,9 @@ once at startup (or before ``uvicorn.run``) and are read-only thereafter.
     ┌─────────────────────────────────────────────────────┐
     │  _sources: Dict[str, LFQueryBuilder]                │  ← read-only after startup
     │                                                     │
-    │  POST /update                                       │
-    │    ← VisualizationSpec + InteractionEvent           │  ← full state from client
-    │    → List[TraceDelta]                               │  ← only changed data
-    │                                                     │
     │  POST /dashboard/update                             │
+    │    ← DashboardSpec + InteractionEvent               │  ← full state from client
+    │    → {figure_uid: List[TraceDelta]}                 │  ← only changed data
     │  POST /share                                        │
     │  GET  /view                                         │
     │  GET  /h/{n}                                        │  ← reads .flexviz/history.jsonl in cwd
@@ -76,7 +74,6 @@ from flexviz.spec import (
     DashboardSpec,
     FigureSpec,
     InteractionState,
-    VisualizationSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,34 +156,6 @@ def get_source(name: str) -> LFQueryBuilder:
 # ---------------------------------------------------------------------------
 
 
-class UpdateRequest(BaseModel):
-    """Everything the server needs to process one interaction.
-
-    The client is responsible for maintaining ``spec`` across requests and
-    echoing it back — the server never stores it.
-
-    ``request_cube`` + ``active_source`` opt one ``"cube_request"`` event into
-    the cube-assembly path (no deltas are computed); the default ``False``
-    keeps today's behavior at zero cube cost.
-    """
-
-    spec: VisualizationSpec
-    event: InteractionEvent
-    request_cube: bool = False
-    active_source: ActiveSource | None = None
-
-
-class UpdateResponse(BaseModel):
-    """Minimal response: only the data that changed.
-
-    A ``request_cube`` + ``"cube_request"`` pair is answered out-of-band with a
-    binary cube bundle (``application/octet-stream``), not this JSON model — see
-    ``_cube_response``.
-    """
-
-    deltas: list[dict[str, Any]]
-
-
 class DashboardRequest(BaseModel):
     """Everything the server needs to process one dashboard interaction.
 
@@ -194,7 +163,9 @@ class DashboardRequest(BaseModel):
     and the triggering ``InteractionEvent``. The client echoes the spec back
     on every request so the server remains completely stateless.
 
-    ``request_cube`` / ``active_source``: see ``UpdateRequest``.
+    ``request_cube`` + ``active_source`` opt one ``"cube_request"`` event into
+    the cube-assembly path (no deltas are computed); the default ``False``
+    keeps the plain delta path at zero cube cost.
     """
 
     spec: DashboardSpec
@@ -246,41 +217,14 @@ def _viewport_state_value(value: Any) -> Any:
 
 def _figure_viewport_from_state(
     state: InteractionState,
-    figure_uid: str | None = None,
+    figure_uid: str,
 ) -> dict[str, Any]:
     viewport: dict[str, Any] = {}
     for key, value in state.viewport.items():
-        axis_id = key
-        if "/" in key:
-            prefix, axis_id = key.split("/", 1)
-            if figure_uid is not None and prefix != figure_uid:
-                continue
-        elif figure_uid is not None:
-            # Single-figure specs store axis ids directly ("x", "y", ...).
-            axis_id = key
-        viewport[axis_id] = _viewport_state_value(value)
+        prefix, _, axis_id = key.partition("/")
+        if prefix == figure_uid:
+            viewport[axis_id] = _viewport_state_value(value)
     return viewport
-
-
-def _build_trace_infos(
-    figure: FigureSpec,
-    *,
-    figure_uid: str | None = None,
-) -> list[TraceInfo]:
-    """Derive ``TraceInfo`` objects directly from a ``FigureSpec``.
-
-    ``TraceSpec`` now carries ``axes`` so no live figure
-    object is required — the spec is fully self-describing.
-    """
-    return [
-        TraceInfo(
-            uid=t.uid,
-            axes=t.axes,
-            trace_type=t.trace_type,
-            figure_uid=figure_uid,
-        )
-        for t in figure.traces
-    ]
 
 
 def _viewports_by_figure(
@@ -289,26 +233,6 @@ def _viewports_by_figure(
 ) -> dict[str, dict[str, tuple[Any, Any] | None]]:
     """Build per-figure viewport ranges from shared interaction state."""
     return {fig.uid: _figure_viewport_from_state(state, fig.uid) for fig in figures}
-
-
-def _active_trace_infos_for_event(
-    event: InteractionEvent,
-    infos: list[TraceInfo],
-    uid_to_fig_uid: dict[str, str],
-) -> list[TraceInfo]:
-    """Scope dashboard traces to the figures affected by a given event."""
-    if event.figure_uid is None or event.type not in ("viewport", "reset"):
-        return infos
-
-    active_fig_uids = {event.figure_uid}
-    if event.type == "viewport":
-        active_fig_uids.update(
-            sel.source_figure_uid
-            for sel in event.selections
-            if sel.source_figure_uid is not None
-        )
-
-    return [ti for ti in infos if uid_to_fig_uid.get(ti.uid) in active_fig_uids]
 
 
 def _serialise_updates(updates: dict[str, Any], uid: str) -> dict[str, Any]:
@@ -507,96 +431,6 @@ async def cache_stats() -> dict[str, Any]:
     }
 
 
-@app.post("/update", response_model=UpdateResponse, responses=_CUBE_BUNDLE_RESPONSE)
-async def update(req: UpdateRequest, request: Request) -> UpdateResponse:
-    """Process one interaction event and return per-trace data deltas.
-
-    The endpoint is fully stateless: every call is self-contained.
-
-    Steps
-    -----
-    1. Resolve the named data source (or ``None`` for in-memory figures).
-    2. Reconstruct ``SelectionState`` objects from the spec's interaction state.
-    3. Build a fresh ``FlexEngine`` (cheap — no data is copied).
-    4. Offload the CPU-bound ``engine.process`` call to a threadpool so the
-       async event loop is not blocked.
-    5. Serialise and return ``TraceDelta`` objects.
-    """
-    figure = req.spec.figure
-    event = req.event
-
-    # -- 1. resolve data source ------------------------------------------------
-    backend_lf: LFQueryBuilder | None = None
-    if figure.source is not None:
-        try:
-            backend_lf = get_source(figure.source)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-
-    # -- 2. build engine (per-request; stateless) ------------------------------
-    # Reconstruct FlexTrace objects from TraceSpec (cheap — no data copies).
-    from flexviz.trace import build_trace_from_spec  # local import avoids cycle
-
-    scalable_traces = {t.uid: build_trace_from_spec(t) for t in figure.traces}
-    engine = FlexEngine(
-        backend_lf=backend_lf,
-        scalable_traces=scalable_traces,
-        cache_backend=get_cache() if is_source_cacheable(figure.source) else None,
-        source_name=figure.source,
-    )
-
-    trace_infos = _build_trace_infos(
-        figure,
-        figure_uid=figure.uid,
-    )
-    viewports_by_figure = {
-        figure.uid: _figure_viewport_from_state(req.spec.state, figure.uid)
-    }
-
-    # -- cube path: no deltas; a single figure has no cross-filter targets
-    #    besides itself, so this is plumbing that returns an empty bundle ------
-    if event.type == "cube_request":
-        # Substring match, not q-value parsing — intentionally mirrors Starlette's
-        # GZipMiddleware (which handles the JSON path); no real client (browser or
-        # the flexviz runtime) sends ``gzip;q=0``, so the two stay consistent.
-        gzip_ok = "gzip" in request.headers.get("accept-encoding", "")
-        if req.request_cube:
-            body, enc = await _run_cube_path(
-                engine,
-                trace_infos,
-                viewports_by_figure,
-                req.spec.state,
-                req.active_source,
-                figure.source,
-                gzip_ok,
-            )
-        else:
-            body, enc = await run_in_threadpool(_encode_cube_bundle, [], {}, gzip_ok)
-        return _cube_response(body, enc)
-
-    # -- 3. run aggregation off the event loop ---------------------------------
-    try:
-        deltas: list[TraceDelta] = await run_in_threadpool(
-            engine.process,
-            event,
-            trace_infos,
-            viewports_by_figure,
-            req.spec.state.cross_filter_mode,
-        )
-    except Exception as exc:
-        logger.exception("engine.process failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Aggregation failed") from exc
-
-    # -- 4. serialise ----------------------------------------------------------
-    try:
-        payload = _deltas_to_json(deltas)
-    except TypeError as exc:
-        logger.exception("delta serialisation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return UpdateResponse(deltas=payload)
-
-
 @app.post("/share")
 async def share(req: ShareRequest) -> dict[str, str]:
     """Encode a spec dict to a shareable ``/view`` URL.
@@ -622,14 +456,13 @@ def _render_spec_html(spec: str, renderer: str, server_url: str) -> HTMLResponse
 
     try:
         decoded = decode_spec(spec)
+        if isinstance(decoded, _DashboardSpec):
+            dash_spec = decoded
+        else:
+            # Wrap single-figure spec into a 1-figure dashboard.
+            dash_spec = _DashboardSpec(figures=[decoded.figure], state=decoded.state)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
-
-    if isinstance(decoded, _DashboardSpec):
-        dash_spec = decoded
-    else:
-        # Wrap single-figure spec into a 1-figure dashboard.
-        dash_spec = _DashboardSpec(figures=[decoded.figure], state=decoded.state)
     from flexviz.adapters import build_adapter, validate_dashboard_renderer
 
     try:
@@ -817,15 +650,6 @@ async def dashboard_update(
         if not infos:
             continue
 
-        active_infos = _active_trace_infos_for_event(
-            event=event,
-            infos=infos,
-            uid_to_fig_uid=uid_to_fig_uid,
-        )
-
-        if not active_infos:
-            continue
-
         engine = FlexEngine(
             backend_lf=source_map[src_name],
             scalable_traces=scalable,
@@ -836,7 +660,7 @@ async def dashboard_update(
             src_deltas: list[TraceDelta] = await run_in_threadpool(
                 engine.process,
                 event,
-                active_infos,
+                infos,
                 viewports_by_figure,
                 req.spec.state.cross_filter_mode,
             )

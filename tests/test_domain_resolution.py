@@ -91,9 +91,12 @@ class TestResolveCount:
         """A viewport already carries its domain; nothing to scan for."""
         df = pl.DataFrame({"a": [float(i) for i in range(50)]})
         engine, infos = _engine(df, [Histogram(x="a", bins=10)])
-        engine.process(
-            InteractionEvent(type="viewport", axis_ranges={"x": [5, 25]}), infos
+        deltas = engine.process(
+            InteractionEvent(type="viewport", viewport_keys=["f0/x"]),
+            infos,
+            {"f0": {"x": [5, 25]}},
         )
+        assert deltas, "no delta would make the collect check vacuous"
         assert collects.minmax == []
 
     def test_one_collect_covers_every_column_in_the_request(self, tmp_path, collects):

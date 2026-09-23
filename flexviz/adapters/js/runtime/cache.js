@@ -25,7 +25,7 @@
 const _fvCacheableSources = new Set(
   typeof FV_CACHEABLE_SOURCES !== 'undefined' ? FV_CACHEABLE_SOURCES : []
 );
-const _FV_CACHE_EVENT_TYPES = new Set(['init', 'reset', 'deselect']);
+const _FV_CACHE_EVENT_TYPES = new Set(['init', 'deselect']);
 const _fvResponseCache = new Map(); // `${type}|${mode}` -> figure_deltas
 
 function _fvCrossFilterMode() {
@@ -61,9 +61,9 @@ function fvCacheActive(event) {
 }
 
 function _fvCacheKey(event) {
-  // init / reset / deselect all resolve to the same unfiltered output on the
-  // server, so they share one entry per cross-filter mode — the first reset or
-  // deselect after load already hits the entry populated by init.
+  // init and deselect resolve to the same unfiltered output on the server, so
+  // they share one entry per cross-filter mode — the first global reset (an
+  // init) or deselect after load already hits the entry populated by init.
   return 'unfiltered|' + _fvCrossFilterMode();
 }
 
@@ -79,49 +79,45 @@ function fvCachePut(event, figureDeltas) {
   _fvResponseCache.set(_fvCacheKey(event), cloneObj(figureDeltas));
 }
 
-function _fvIsEmptyObject(obj) {
-  return !obj || Object.keys(obj).length === 0;
+// === Figure-scoped reset cache (per-figure reset or autorange, case 3a) ===
+// A viewport event that returns figures to full autorange (a per-figure reset,
+// or a double-click that clears the last zoomed axis) names keys whose figures
+// now hold no viewport at all. When *no figure* cross-filters (event.selections
+// empty), each such figure's unfiltered slice is exactly the slice already held
+// in the whole-dashboard unfiltered blob — so serve those slices and leave the
+// other figures untouched.
+//
+// Gated on event shape, not on which control fired it. No per-figure store is
+// needed: the whole-dashboard blob is only ever written when every figure is
+// cacheable (see fvCacheActive), so a present blob already contains each
+// figure's exact unfiltered slice.
+function _fvEventFigureUids(event) {
+  return [...new Set((event.viewport_keys || []).map(key => key.split('/')[0]))];
 }
 
-// === Figure-scoped reset cache (per-figure reset, case 3a) ===
-// A per-figure reset that returns a figure to full autorange emits a single
-// `viewport` event scoped to that figure with an empty `axis_ranges` (the
-// viewport was just cleared). When *no other figure* cross-filters it
-// (event.selections empty), that figure's unfiltered slice is exactly the slice
-// already held in the whole-dashboard unfiltered blob — so serve just that
-// figure's slice and leave the others untouched.
-//
-// Gated on event shape, not on which control fired it. Axis locks need no
-// special handling: they are view-only — pruned from server requests and
-// re-applied as a client-side display range on render — so the server response
-// (and therefore the cached slice) is the same full-range data whether or not
-// the figure is locked. Rendering the slice re-applies the lock, so a locked
-// figure is served exactly like an unlocked one.
-//
-// No per-figure store is needed: the whole-dashboard blob is only ever written
-// when every figure is cacheable (see fvCacheActive), so a present blob already
-// contains this figure's exact unfiltered slice.
 function _fvFigureCacheEligible(event) {
+  const figUids = _fvEventFigureUids(event);
   return (
     _fvCacheableSources.size > 0 &&
-    !!event &&
     event.type === 'viewport' &&
-    typeof event.figure_uid === 'string' &&
-    event.figure_uid.length > 0 &&
+    figUids.length > 0 &&
     (event.selections || []).length === 0 &&
-    _fvIsEmptyObject(event.axis_ranges)
+    figUids.every(figUid => Object.keys(figureViewportRanges(figUid)).length === 0)
   );
 }
 
-// Return a deep clone of just this figure's unfiltered slice as a one-figure
-// figure_deltas payload, or null.
+// Return a deep clone of those figures' unfiltered slices as a figure_deltas
+// payload, or null.
 function fvCacheGetFigure(event) {
   if (!_fvFigureCacheEligible(event)) return null;
   const blob = _fvResponseCache.get(_fvCacheKey(event));
   if (!blob) return null;
-  const slice = blob[event.figure_uid];
-  if (!slice) return null;
-  return { [event.figure_uid]: cloneObj(slice) };
+  const out = {};
+  for (const figUid of _fvEventFigureUids(event)) {
+    if (!blob[figUid]) return null;
+    out[figUid] = cloneObj(blob[figUid]);
+  }
+  return out;
 }
 
 // Cleared on full restore/import (a different spec invalidates the payloads).

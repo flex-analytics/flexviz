@@ -36,13 +36,13 @@ window.fvOnReset = async function() {
     window.fvClearUnlockedViewports?.();
     window.fvSetSelectionState?.([]);
     window.fvResetRuntimeCache?.();
-    await postDashboardUpdate({type: 'init', axis_ranges: {}, selections: [], force_update: true});
+    await postDashboardUpdate({type: 'init', selections: [], force_update: true});
   });
 };
 window.fvOnDeselect = async function() {
   await fvRunProgrammaticPlotlyOp(async function() {
     window.fvSetSelectionState?.([]);
-    await postDashboardUpdate({type: 'deselect', axis_ranges: {}, selections: [], force_update: true});
+    await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
   });
 };
 

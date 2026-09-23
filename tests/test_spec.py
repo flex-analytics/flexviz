@@ -203,6 +203,28 @@ class TestDashboardSpecState:
         assert restored.selection.axis_columns == {"x": "ts"}
 
 
+_RANGE = {"min": 0.0, "max": 1.0}
+
+
+class TestViewportKeys:
+    @pytest.mark.parametrize("key", ["x", "/x", "fig-1/"])
+    def test_key_without_figure_and_axis_is_rejected(self, key):
+        with pytest.raises(ValidationError, match="<figure_uid>/<axis_id>"):
+            InteractionState.model_validate({"viewport": {key: _RANGE}})
+
+    def test_dashboard_accepts_keys_of_its_figures(self):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {"fig-1/x": _RANGE, "fig-2/y": _RANGE}
+        spec = DashboardSpec.model_validate(data)
+        assert set(spec.state.viewport) == {"fig-1/x", "fig-2/y"}
+
+    def test_dashboard_rejects_key_of_unknown_figure(self):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {"fig-1/x": _RANGE, "fig-9/x": _RANGE}
+        with pytest.raises(ValidationError, match="fig-9/x"):
+            DashboardSpec.model_validate(data)
+
+
 class TestTypedDicts:
     def test_trace_display_accepts_known_keys(self):
         d: TraceDisplay = {"name": "My Trace", "color": "#ff0000"}
@@ -1023,10 +1045,10 @@ class TestEncodeDecodeFullState:
 
     def test_roundtrip_preserves_viewport(self):
         spec = _make_viz_spec()
-        spec.state.viewport = {"x": AxisRange(min=100.0, max=200.0)}
+        spec.state.viewport = {"fig-bbb/x": AxisRange(min=100.0, max=200.0)}
         decoded = decode_spec(encode_spec(spec))
         assert isinstance(decoded, VisualizationSpec)
-        vp = decoded.state.viewport["x"]
+        vp = decoded.state.viewport["fig-bbb/x"]
         assert isinstance(vp, AxisRange)
         assert vp.min == 100.0
         assert vp.max == 200.0

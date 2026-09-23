@@ -6,11 +6,6 @@ TraceDelta, InteractionEvent) and a specific frontend library.
 
 Responsibilities
 ----------------
-parse_event(raw_event)
-    Convert a renderer-specific interaction payload (e.g. Plotly
-    ``relayoutData``) into an ``InteractionEvent`` that the backend
-    understands.  Return ``None`` if the event should be ignored.
-
 show_dashboard(spec, server_url, **adapter_options)
     High-level convenience: build the dashboard HTML, deliver it to the
     user (notebook IFrame or browser), and start an interactive session.
@@ -38,7 +33,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
-from ..events import InteractionEvent
 from ..spec import DashboardSpec, VisualizationSpec
 from .runtime import toolbar_css
 
@@ -115,21 +109,6 @@ class AbstractAdapter(ABC):
     # ------------------------------------------------------------------
     # Abstract interface — adapters must implement these
     # ------------------------------------------------------------------
-
-    @abstractmethod
-    def parse_event(self, raw_event: Any) -> InteractionEvent | None:
-        """Convert a renderer-specific event into an ``InteractionEvent``.
-
-        Parameters
-        ----------
-        raw_event:
-            Renderer-native event data.
-
-        Returns
-        -------
-        InteractionEvent or None
-            ``None`` if the event should not trigger a backend call.
-        """
 
     @abstractmethod
     def show_dashboard(

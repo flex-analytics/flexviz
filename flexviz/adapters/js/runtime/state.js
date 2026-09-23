@@ -201,11 +201,11 @@ function figureHasSelectionSource(figUid, selections) {
   return selectionSourceFigureUids(selections).has(figUid);
 }
 function requestHasActiveSelections(event) {
-  return !['init', 'deselect', 'reset'].includes(event.type)
+  return !['init', 'deselect'].includes(event.type)
     && !!(event.selections && event.selections.length);
 }
 function isUnfilteredBaseForFigure(event, figUid) {
-  if (['init', 'deselect', 'reset'].includes(event.type)) return true;
+  if (['init', 'deselect'].includes(event.type)) return true;
   if (!requestHasActiveSelections(event)) return true;
   return figureHasSelectionSource(figUid, event.selections || []);
 }

@@ -22,43 +22,34 @@ class InteractionEvent(BaseModel):
 
     ``type``
         - ``"init"``      — initial data load (no viewport, no selections)
-        - ``"viewport"``  — zoom / pan (axis ranges changed)
+        - ``"viewport"``  — zoom / pan / autorange (viewport state changed)
         - ``"selection"`` — one or more rectangle selections changed
         - ``"deselect"``  — all selections cleared
-        - ``"reset"``     — full reset (autorange + clear selections)
         - ``"cube_request"`` — brush-start cube materialization hint.  Carries
-          the usual ``axis_ranges`` + ``selections`` (the committed ones — the
-          future passive set) and **no active range**; the server computes no
-          deltas for it.  Only meaningful with ``request_cube=True`` on the
-          request body (see ``server.UpdateRequest``).
+          the ``selections`` (the committed ones — the future passive set)
+          and **no active range**; the server computes no deltas for it.
+          Only meaningful with ``request_cube=True`` on the request body.
 
-    ``axis_ranges``
-        Mapping of trace-anchor axis id (e.g. ``"x"``, ``"y2"``, ``"map"``)
-        to range values.  For cartesian axes this is a ``(start, stop)`` tuple;
-        for maps it may be a dict of centre/zoom data; ``None`` means
-        "autorange / reset".
+    ``viewport_keys``
+        The ``state.viewport`` keys (``"<figure_uid>/<axis_id>"``) this event
+        changed.  The ranges themselves are read from ``state.viewport``; a
+        listed key that is absent there was autoranged.  A trace re-aggregates
+        when one of its ``recompute_axes`` is listed for its figure, so one
+        event can cover several figures (linked axes).
 
     ``selections``
         Full list of current rectangular selections.  Populated for
         ``"selection"`` events; empty list for ``"deselect"``.
 
     ``force_update``
-        When ``True`` every scalable trace is recomputed regardless of whether
-        its axes appear in ``axis_ranges``.  Useful for the ``"init"`` event.
-
-    ``figure_uid``
-        For dashboard ``"viewport"`` events, the uid of the figure that
-        triggered the interaction.  The server restricts re-aggregation to
-        traces belonging to that figure only, leaving all other figures
-        unchanged.  ``None`` means *all* figures are affected (used for
-        ``"init"``, ``"reset"``, ``"selection"``, and ``"deselect"`` events).
+        When ``True`` every scalable trace is recomputed, except the traces of
+        a figure that sources a selection in a ``"selection"`` event.
     """
 
-    type: Literal["init", "viewport", "selection", "deselect", "reset", "cube_request"]
-    axis_ranges: dict[str, Any] = Field(default_factory=dict)
+    type: Literal["init", "viewport", "selection", "deselect", "cube_request"]
+    viewport_keys: list[str] = Field(default_factory=list)
     selections: list[SelectionState] = Field(default_factory=list)
     force_update: bool = False
-    figure_uid: str | None = None
 
 
 class ActiveSource(BaseModel):

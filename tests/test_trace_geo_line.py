@@ -412,7 +412,7 @@ class TestGeoLineEngine:
                 uid=trace.uid, axes=None, trace_type="geo_line", figure_uid="fig1"
             ),
         ]
-        event = InteractionEvent(type="init", force_update=True, figure_uid="fig1")
+        event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos)
         assert len(deltas) == 1
         delta = deltas[0]
@@ -433,9 +433,7 @@ class TestGeoLineEngine:
             ),
         ]
 
-        init_event = InteractionEvent(
-            type="init", force_update=True, figure_uid="fig_map"
-        )
+        init_event = InteractionEvent(type="init", force_update=True)
         init_deltas = engine.process(init_event, infos)
         n_init = len(init_deltas[0].updates["lat"])
         assert n_init == len(geo_df)
@@ -443,8 +441,7 @@ class TestGeoLineEngine:
         coords = [[-74.0, 40.0], [-73.0, 40.0], [-73.0, 41.0], [-74.0, 41.0]]
         viewport_event = InteractionEvent(
             type="viewport",
-            axis_ranges={"coordinates": coords},
-            figure_uid="fig_map",
+            viewport_keys=["fig_map/coordinates"],
         )
         viewports = {"fig_map": {"coordinates": coords}}
         vp_deltas = engine.process(viewport_event, infos, viewports_by_figure=viewports)
@@ -482,11 +479,9 @@ class TestGeoLineNthScanPlan:
             TraceInfo(uid=trace.uid, axes=None, trace_type="geo_line", figure_uid="fig")
         ]
         if coords is None:
-            event = InteractionEvent(type="init", force_update=True, figure_uid="fig")
+            event = InteractionEvent(type="init", force_update=True)
             return engine.process(event, infos)[0].updates
-        event = InteractionEvent(
-            type="viewport", axis_ranges={"coordinates": coords}, figure_uid="fig"
-        )
+        event = InteractionEvent(type="viewport", viewport_keys=["fig/coordinates"])
         deltas = engine.process(
             event, infos, viewports_by_figure={"fig": {"coordinates": coords}}
         )

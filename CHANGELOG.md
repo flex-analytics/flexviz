@@ -59,6 +59,23 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   share one key. `legend()` and `update_layout(legend={...})` now work in
   either order, and a placement dict survives `legend(False)`. Specs encoded
   at version 0.5 carry the old key and do not round-trip.
+- Viewport events name the `state.viewport` keys they changed
+  (`InteractionEvent.viewport_keys`) instead of carrying `axis_ranges` and
+  `figure_uid`. The engine reads every range from `state.viewport`, so one
+  event can re-aggregate several figures. A figure is never filtered by its
+  own selection, including when it is re-aggregated together with others.
+- `state.viewport` keys must have the form `"<figure_uid>/<axis_id>"` and name
+  a figure of the spec. Bare axis keys are rejected.
+- In overlay mode, zooming a figure that sources a selection now refreshes all
+  of its traces. Before, its heatmap-like traces kept stale data.
+- ECharts (deprecated): zoom no longer re-aggregates.
+
+### Removed
+
+- `POST /update`. A single figure is shown and updated as a one-figure
+  dashboard through `POST /dashboard/update`.
+- `parse_event` on `AbstractAdapter` and `PlotlyAdapter`, and the `"reset"`
+  event type. No client sent them.
 
 ## [0.1.0b3] - 2026-09-09
 

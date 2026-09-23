@@ -35,10 +35,25 @@ def _build_engine(
     traces = {line.uid: line, hist.uid: hist}
     engine = FlexEngine(backend_lf=lf, scalable_traces=traces)
     infos = [
-        TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line"),
-        TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram"),
+        TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"),
+        TraceInfo(
+            uid=hist.uid, axes=("x", "y"), trace_type="histogram", figure_uid="fig"
+        ),
     ]
     return engine, infos, traces
+
+
+def _zoom(
+    ranges: dict, fig: str = "fig", **kwargs
+) -> tuple[InteractionEvent, dict[str, dict]]:
+    """A viewport event that changed ``ranges`` of ``fig``, plus the viewport
+    state it reads. A ``None`` range is an autorange: listed, absent from state.
+    """
+    event = InteractionEvent(
+        type="viewport", viewport_keys=[f"{fig}/{ax}" for ax in ranges], **kwargs
+    )
+    state = {ax: rng for ax, rng in ranges.items() if rng is not None}
+    return event, {fig: state}
 
 
 # ---- init event ------------------------------------------------------------
@@ -68,20 +83,14 @@ class TestEngineInit:
 class TestEngineViewport:
     def test_viewport_matching_axes(self, small_df: pl.DataFrame):
         engine, infos, _ = _build_engine(small_df)
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": [200, 400]},
-        )
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x": [200, 400]})
+        deltas = engine.process(event, infos, viewports)
         assert len(deltas) > 0
 
     def test_viewport_no_matching_axes(self, small_df: pl.DataFrame):
         engine, infos, _ = _build_engine(small_df)
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x99": [200, 400]},
-        )
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x99": [200, 400]})
+        deltas = engine.process(event, infos, viewports)
         assert len(deltas) == 0
 
     def test_viewport_fewer_points_than_init(self, small_df: pl.DataFrame):
@@ -89,11 +98,8 @@ class TestEngineViewport:
 
         init_event = InteractionEvent(type="init", force_update=True)
         engine.process(init_event, infos)
-        vp_event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": [200, 400]},
-        )
-        vp_deltas = engine.process(vp_event, infos)
+        vp_event, viewports = _zoom({"x": [200, 400]})
+        vp_deltas = engine.process(vp_event, infos, viewports)
         assert len(vp_deltas) > 0
 
     def test_viewport_shared_x_dual_y(self, small_df: pl.DataFrame):
@@ -103,13 +109,12 @@ class TestEngineViewport:
         traces = {line.uid: line}
         engine = FlexEngine(backend_lf=lf, scalable_traces=traces)
         infos = [
-            TraceInfo(uid=line.uid, axes=("x", "y2"), trace_type="line"),
+            TraceInfo(
+                uid=line.uid, axes=("x", "y2"), trace_type="line", figure_uid="fig"
+            ),
         ]
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": [200, 400]},
-        )
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x": [200, 400]})
+        deltas = engine.process(event, infos, viewports)
         assert len(deltas) == 1
         assert deltas[0].uid == line.uid
         assert all(200 <= v <= 400 for v in deltas[0].updates["x"])
@@ -193,8 +198,8 @@ _PARTIAL_VIEWPORT_CASES = [
 
 
 class TestEnginePartialViewport:
-    """A client sends only the axes a zoom moved, so every zoomable trace must
-    resolve each of its recompute axes on its own.
+    """A viewport event lists only the keys a zoom moved, so every zoomable
+    trace must resolve each of its recompute axes on its own.
 
     One axis of a two-axis trace may carry a range while the other does not:
     the zoomed axis follows the viewport, the other keeps its init extent, and
@@ -202,10 +207,10 @@ class TestEnginePartialViewport:
     """
 
     @staticmethod
-    def _updates(trace, axis_ranges: dict | None) -> dict | None:
+    def _updates(trace, ranges: dict | None) -> dict | None:
         """Run one event through a fresh engine and return the trace's updates.
 
-        ``axis_ranges`` of ``None`` is the init request. The engine is stateless,
+        ``ranges`` of ``None`` is the init request. The engine is stateless,
         so each call builds its own.
         """
         lf = LFQueryBuilder(_partial_viewport_df())
@@ -218,14 +223,11 @@ class TestEnginePartialViewport:
                 figure_uid="fig",
             )
         ]
-        if axis_ranges is None:
+        if ranges is None:
             event = InteractionEvent(type="init", force_update=True)
             viewports = {}
         else:
-            event = InteractionEvent(
-                type="viewport", axis_ranges=axis_ranges, figure_uid="fig"
-            )
-            viewports = {"fig": axis_ranges}
+            event, viewports = _zoom(ranges)
         deltas = engine.process(event, infos, viewports)
         return deltas[0].updates if deltas else None
 
@@ -254,16 +256,135 @@ class TestEnginePartialViewport:
                         assert got == extract(init), f"{zoomed}: {axis} moved"
 
 
-# ---- reset event -----------------------------------------------------------
+# ---- viewport keys ---------------------------------------------------------
 
 
-class TestEngineReset:
-    def test_reset_returns_all_traces(self, small_df: pl.DataFrame):
-        engine, infos, traces = _build_engine(small_df)
-        event = InteractionEvent(type="reset", force_update=True)
-        deltas = engine.process(event, infos)
-        assert len(deltas) == 2
-        assert {d.uid for d in deltas} == set(traces.keys())
+def _ts_range_selection(fig: str, lo: float, hi: float) -> SelectionState:
+    return SelectionState(
+        source_figure_uid=fig,
+        predicates=[
+            SelectionPredicate(clauses=[ClauseFilter(column="ts", range=(lo, hi))])
+        ],
+    )
+
+
+class TestEngineViewportKeys:
+    """``viewport_keys`` pick the figures to re-aggregate; ranges come from
+    the viewport state; each figure is filtered by every selection but its own.
+    """
+
+    @staticmethod
+    def _engine(traces_by_fig: dict[str, list]) -> tuple[FlexEngine, list[TraceInfo]]:
+        df = pl.DataFrame(
+            {"ts": list(range(100)), "val": [float(i) for i in range(100)]}
+        )
+        traces = {t.uid: t for ts in traces_by_fig.values() for t in ts}
+        engine = FlexEngine(backend_lf=LFQueryBuilder(df), scalable_traces=traces)
+        infos = [
+            TraceInfo(uid=t.uid, axes=t._axes, trace_type=t.trace_type, figure_uid=fig)
+            for fig, ts in traces_by_fig.items()
+            for t in ts
+        ]
+        return engine, infos
+
+    def test_two_changed_figures_each_skip_their_own_selection(self):
+        lines = {fig: LinePlot(x="ts", y="val", n_points=1000) for fig in "abc"}
+        engine, infos = self._engine({fig: [line] for fig, line in lines.items()})
+        event = InteractionEvent(
+            type="viewport",
+            viewport_keys=["a/x", "b/x"],
+            selections=[
+                _ts_range_selection("a", 20, 60),
+                _ts_range_selection("c", 40, 80),
+            ],
+        )
+        viewports = {"a": {"x": (10, 90)}, "b": {"x": (10, 90)}}
+        deltas = {d.uid: d for d in engine.process(event, infos, viewports)}
+
+        assert lines["c"].uid not in deltas
+        a_x = deltas[lines["a"].uid].updates["x"]
+        # Filtered by c (40..80) only: a's own brush (20..60) would cap it at 60.
+        assert (min(a_x), max(a_x)) == (40, 80)
+        b_x = deltas[lines["b"].uid].updates["x"]
+        assert (min(b_x), max(b_x)) == (40, 60)
+
+    def test_overlay_zoom_on_an_owner_returns_bg_for_every_trace(self):
+        line = LinePlot(x="ts", y="val", n_points=1000)
+        hist2d = Histogram2D(x="ts", y="val", x_bins=8, y_bins=8)
+        target = LinePlot(x="ts", y="val", n_points=1000)
+        engine, infos = self._engine({"own": [line, hist2d], "tgt": [target]})
+        event = InteractionEvent(
+            type="viewport",
+            viewport_keys=["own/x"],
+            selections=[_ts_range_selection("own", 20, 40)],
+        )
+        deltas = engine.process(
+            event, infos, {"own": {"x": (10, 90)}}, cross_filter_mode="overlay"
+        )
+
+        assert {(d.uid, d.layer) for d in deltas} == {
+            (line.uid, "bg"),
+            (hist2d.uid, "bg"),
+        }
+        line_x = next(d for d in deltas if d.uid == line.uid).updates["x"]
+        assert (min(line_x), max(line_x)) == (10, 90)
+
+    def test_selection_event_recomputes_a_source_figure_whose_key_changed(self):
+        src = LinePlot(x="ts", y="val", n_points=1000)
+        tgt = LinePlot(x="ts", y="val", n_points=1000)
+        engine, infos = self._engine({"src": [src], "tgt": [tgt]})
+        event = InteractionEvent(
+            type="selection",
+            force_update=True,
+            viewport_keys=["src/x"],
+            selections=[_ts_range_selection("src", 20, 40)],
+        )
+        deltas = {
+            d.uid: d for d in engine.process(event, infos, {"src": {"x": (10, 90)}})
+        }
+
+        src_x = deltas[src.uid].updates["x"]
+        assert (min(src_x), max(src_x)) == (10, 90)
+        tgt_x = deltas[tgt.uid].updates["x"]
+        assert (min(tgt_x), max(tgt_x)) == (20, 40)
+
+    def test_owner_partitions_share_one_unfiltered_domain_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Two owner figures are two partitions, but the unfiltered bin-edge
+        domain is one collect for the request, not one per partition."""
+        h_a = Histogram(x="val", bins=10)
+        h_b = Histogram(x="val", bins=10)
+        engine, infos = self._engine({"a": [h_a], "b": [h_b]})
+        calls: list[bool] = []
+        probe = LFQueryBuilder.physical_minmax
+
+        def counting(self, cols, schema=None, **kw):
+            calls.append(bool(kw.get("filter_exprs")))
+            return probe(self, cols, schema, **kw)
+
+        monkeypatch.setattr(LFQueryBuilder, "physical_minmax", counting)
+        event = InteractionEvent(
+            type="viewport",
+            viewport_keys=["a/x", "b/x"],
+            selections=[
+                _ts_range_selection("a", 20, 60),
+                _ts_range_selection("b", 40, 80),
+            ],
+        )
+        deltas = engine.process(event, infos, {})
+
+        assert {d.uid for d in deltas} == {h_a.uid, h_b.uid}
+        assert calls == [False]
+
+    @pytest.mark.parametrize("state", [{}, {"x": None}], ids=["absent", "none"])
+    def test_listed_key_without_a_range_is_the_full_range(self, state):
+        line = LinePlot(x="ts", y="val", n_points=50)
+        engine, infos = self._engine({"f": [line]})
+        init = engine.process(InteractionEvent(type="init", force_update=True), infos)
+        event = InteractionEvent(type="viewport", viewport_keys=["f/x"])
+        (autorange,) = engine.process(event, infos, {"f": state})
+        assert autorange.updates == init[0].updates
 
 
 # ---- deselect event --------------------------------------------------------
@@ -566,9 +687,9 @@ class TestEngineOverlay:
             ),
         ]
 
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": (0, 6)},
+        event, viewports = _zoom(
+            {"x": (0, 6)},
+            fig="fig_b",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -579,26 +700,14 @@ class TestEngineOverlay:
                     ],
                 )
             ],
-            figure_uid="fig_b",
         )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
+        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert {d.layer for d in target_deltas} == {"bg", "fg"}
         bg = next(d for d in target_deltas if d.layer == "bg")
         fg = next(d for d in target_deltas if d.layer == "fg")
         assert all(0 <= v <= 6 for v in bg.updates["x"])
         assert all(2 <= v <= 4 for v in fg.updates["x"])
-
-    def test_overlay_reset_returns_bg_only(self):
-        df = pl.DataFrame({"ts": list(range(10)), "val": [float(i) for i in range(10)]})
-        lf = LFQueryBuilder(df)
-        line = LinePlot(x="ts", y="val", n_points=1000)
-        engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-
-        event = InteractionEvent(type="reset", force_update=True)
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
-        assert {d.layer for d in deltas} == {"bg"}
 
 
 class TestBarPlotCrossFilter:
@@ -906,12 +1015,15 @@ class TestBarPlotCrossFilter:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=1000)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
 
-        event = InteractionEvent(
-            type="viewport", axis_ranges={"x": (2, 7)}, selections=[]
-        )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
+        event, viewports = _zoom({"x": (2, 7)})
+        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
+        assert deltas
         assert all(d.layer == "bg" for d in deltas)
         assert not any(d.layer == "fg" for d in deltas)
 
@@ -1171,11 +1283,13 @@ class TestEngineBar:
             backend_lf=lf, scalable_traces={bar.uid: bar, line.uid: line}
         )
         infos = [
-            TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar"),
-            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line"),
+            TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig"),
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            ),
         ]
-        event = InteractionEvent(type="viewport", axis_ranges={"x": [0, 50]})
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x": [0, 50]})
+        deltas = engine.process(event, infos, viewports)
         delta_uids = {d.uid for d in deltas}
         assert bar.uid not in delta_uids
         assert line.uid in delta_uids
@@ -1189,13 +1303,17 @@ class TestEngineBar:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=50)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
 
-        y_only = InteractionEvent(type="viewport", axis_ranges={"y": [0, 10]})
-        assert engine.process(y_only, infos) == []
+        y_only, viewports = _zoom({"y": [0, 10]})
+        assert engine.process(y_only, infos, viewports) == []
 
-        x_zoom = InteractionEvent(type="viewport", axis_ranges={"x": [0, 50]})
-        assert {d.uid for d in engine.process(x_zoom, infos)} == {line.uid}
+        x_zoom, viewports = _zoom({"x": [0, 50]})
+        assert {d.uid for d in engine.process(x_zoom, infos, viewports)} == {line.uid}
 
     def test_vertical_histogram_not_updated_on_count_axis_zoom(self):
         """A vertical histogram bins on x; zooming the count axis (y) must not
@@ -1204,13 +1322,17 @@ class TestEngineBar:
         lf = LFQueryBuilder(df)
         hist = Histogram(x="val", bins=10)
         engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
-        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        infos = [
+            TraceInfo(
+                uid=hist.uid, axes=("x", "y"), trace_type="histogram", figure_uid="fig"
+            )
+        ]
 
-        count_zoom = InteractionEvent(type="viewport", axis_ranges={"y": [0, 5]})
-        assert engine.process(count_zoom, infos) == []
+        count_zoom, viewports = _zoom({"y": [0, 5]})
+        assert engine.process(count_zoom, infos, viewports) == []
 
-        bin_zoom = InteractionEvent(type="viewport", axis_ranges={"x": [0, 50]})
-        assert {d.uid for d in engine.process(bin_zoom, infos)} == {hist.uid}
+        bin_zoom, viewports = _zoom({"x": [0, 50]})
+        assert {d.uid for d in engine.process(bin_zoom, infos, viewports)} == {hist.uid}
 
 
 # ---- grouped line (group_by) -----------------------------------------------
@@ -1273,9 +1395,13 @@ class TestEngineGroupedLine:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=100, group_by="sensor")
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        event = InteractionEvent(type="viewport", axis_ranges={"x": [0, 20]})
-        deltas = engine.process(event, infos)
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        event, viewports = _zoom({"x": [0, 20]})
+        deltas = engine.process(event, infos, viewports)
         grp_delta = deltas[0]
         assert [cr.group_value_key for cr in grp_delta.group_results] == ["A"]
 
@@ -1291,9 +1417,13 @@ class TestEngineGroupedLine:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=100, group_by="sensor")
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        event = InteractionEvent(type="viewport", axis_ranges={"x": [100, 120]})
-        deltas = engine.process(event, infos)
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        event, viewports = _zoom({"x": [100, 120]})
+        deltas = engine.process(event, infos, viewports)
         grp_delta = deltas[0]
         assert grp_delta.group_results == []
 
@@ -1479,7 +1609,6 @@ class TestEngineOverlayPolicy:
                     ],
                 )
             ],
-            figure_uid="fig_b",
         )
 
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
@@ -1536,9 +1665,9 @@ class TestEngineOverlayPolicy:
                 uid=line_b.uid, axes=("x", "y"), trace_type="line", figure_uid="fig_b"
             ),
         ]
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": (0, 6)},
+        event, viewports = _zoom(
+            {"x": (0, 6)},
+            fig="fig_b",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -1549,9 +1678,8 @@ class TestEngineOverlayPolicy:
                     ],
                 )
             ],
-            figure_uid="fig_b",
         )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
+        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert {d.layer for d in target_deltas} == {"bg", "fg"}
 
@@ -1732,10 +1860,8 @@ class TestEngineHistogramBinAlignment:
                 uid=h2.uid, axes=("x", "y"), trace_type="histogram", figure_uid="fig"
             ),
         ]
-        event = InteractionEvent(
-            type="viewport", axis_ranges={"x": (50, 300)}, force_update=True
-        )
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x": (50, 300)}, force_update=True)
+        deltas = engine.process(event, infos, viewports)
         d1 = next(d for d in deltas if d.uid == h1.uid)
         d2 = next(d for d in deltas if d.uid == h2.uid)
         assert d1.updates["x"] == d2.updates["x"]
@@ -1743,7 +1869,7 @@ class TestEngineHistogramBinAlignment:
         assert len(d1.updates["x"]) == snap_range(50.0, 300.0, 8)[2] == 9
 
     def test_hist_aligned_on_autorange_null_viewport(self):
-        """A double-click autorange posts ``axis_ranges={"x": None}`` (unzoomed).
+        """An autorange can leave ``state.viewport["fig/x"] = None`` (unzoomed).
         Sibling histograms on different columns must keep their shared domain —
         a ``None`` range must not be read as "zoomed" and drop them to per-column
         domains (that misaligned the bars; see the anchor/null review finding)."""
@@ -1765,9 +1891,9 @@ class TestEngineHistogramBinAlignment:
             ),
         ]
         event = InteractionEvent(
-            type="viewport", axis_ranges={"x": None}, force_update=True
+            type="viewport", viewport_keys=["fig/x"], force_update=True
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, {"fig": {"x": None}})
         d1 = next(d for d in deltas if d.uid == h1.uid)
         d2 = next(d for d in deltas if d.uid == h2.uid)
         assert d1.updates["x"] == d2.updates["x"]
@@ -1807,10 +1933,9 @@ class TestEngineHistogramOverlayAlignment:
                 figure_uid="fig_tgt",
             ),
         ]
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": (0, n - 1)},
-            figure_uid="fig_tgt",
+        event, viewports = _zoom(
+            {"x": (0, n - 1)},
+            fig="fig_tgt",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_src",
@@ -1822,7 +1947,7 @@ class TestEngineHistogramOverlayAlignment:
                 )
             ],
         )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
+        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         hist_deltas = [d for d in deltas if d.uid == hist_tgt.uid]
         assert {d.layer for d in hist_deltas} == {"bg", "fg"}
         bg = next(d for d in hist_deltas if d.layer == "bg")
@@ -1874,15 +1999,6 @@ class TestEngineOverlaySequences:
         assert "fg" not in layers
         assert "bg" in layers
 
-    def test_reset_overlay_returns_bg_only(self):
-        """After a reset, overlay mode emits only bg, same as init."""
-        engine, infos, _src, _tgt = self._two_figure_setup()
-        event = InteractionEvent(type="reset", force_update=True, selections=[])
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
-        layers = {d.layer for d in deltas}
-        assert "fg" not in layers
-        assert "bg" in layers
-
 
 # ---- viewport edge cases ---------------------------------------------------
 
@@ -1894,9 +2010,13 @@ class TestEngineViewportEdgeCases:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=100)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        event = InteractionEvent(type="viewport", axis_ranges={"x": [1000, 2000]})
-        deltas = engine.process(event, infos)
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        event, viewports = _zoom({"x": [1000, 2000]})
+        deltas = engine.process(event, infos, viewports)
         assert len(deltas) == 1
         assert deltas[0].updates["x"] == []
 
@@ -1918,10 +2038,9 @@ class TestEngineViewportEdgeCases:
             ),
         ]
         # viewport from fig_a with a selection on fig_a — both traces are in fig_a
-        event = InteractionEvent(
-            type="viewport",
-            axis_ranges={"x": (0, 5)},
-            figure_uid="fig_a",
+        event, viewports = _zoom(
+            {"x": (0, 5)},
+            fig="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -1933,7 +2052,7 @@ class TestEngineViewportEdgeCases:
                 )
             ],
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, viewports)
         # fig_a traces should not be cross-filtered — both traces get viewport data
         assert len(deltas) >= 1
         for d in deltas:
@@ -1951,11 +2070,15 @@ class TestEngineViewportEdgeCases:
             backend_lf=lf, scalable_traces={hist.uid: hist, line.uid: line}
         )
         infos = [
-            TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram"),
-            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line"),
+            TraceInfo(
+                uid=hist.uid, axes=("x", "y"), trace_type="histogram", figure_uid="fig"
+            ),
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            ),
         ]
-        event = InteractionEvent(type="viewport", axis_ranges={"x": [10, 40]})
-        deltas = engine.process(event, infos)
+        event, viewports = _zoom({"x": [10, 40]})
+        deltas = engine.process(event, infos, viewports)
         delta_uids = {d.uid for d in deltas}
         assert hist.uid not in delta_uids
         assert line.uid in delta_uids
@@ -2183,15 +2306,11 @@ _SEAM_FRAME = pl.DataFrame(
     }
 )
 
-_SEAM_INIT = InteractionEvent(type="init", force_update=True)
-_SEAM_ZOOM_X = InteractionEvent(type="viewport", axis_ranges={"x": [2000.0, 7000.0]})
-_SEAM_ZOOM_XY = InteractionEvent(
-    type="viewport", axis_ranges={"x": [2000.0, 7000.0], "y": [10.0, 60.0]}
-)
-_SEAM_ZOOM_TS = InteractionEvent(
-    type="viewport",
-    axis_ranges={"x": ["2020-01-15T00:00:00", "2020-02-15T00:00:00"]},
-)
+#: (event, viewports by figure) pairs, the two request inputs ``process`` reads.
+_SEAM_INIT = (InteractionEvent(type="init", force_update=True), {})
+_SEAM_ZOOM_X = _zoom({"x": [2000.0, 7000.0]})
+_SEAM_ZOOM_XY = _zoom({"x": [2000.0, 7000.0], "y": [10.0, 60.0]})
+_SEAM_ZOOM_TS = _zoom({"x": ["2020-01-15T00:00:00", "2020-02-15T00:00:00"]})
 
 
 @pytest.fixture(scope="module")
@@ -2343,11 +2462,19 @@ class TestResidencySeam:
     """
 
     @staticmethod
-    def _delta(src, trace, event):
+    def _delta(src, trace, request):
+        event, viewports = request
         lf = LFQueryBuilder(src)
         engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-        infos = [TraceInfo(uid=trace.uid, axes=("x", "y"), trace_type=trace.trace_type)]
-        return engine.process(event, infos)[0], lf.is_scan
+        infos = [
+            TraceInfo(
+                uid=trace.uid,
+                axes=("x", "y"),
+                trace_type=trace.trace_type,
+                figure_uid="fig",
+            )
+        ]
+        return engine.process(event, infos, viewports)[0], lf.is_scan
 
     @pytest.mark.parametrize(
         "make_trace,event,read,compare",
@@ -2585,8 +2712,8 @@ class TestDescendingViewportRanges:
                 event, infos, viewports_by_figure={"f1": {"x": x_range}}
             )
         else:
-            event = InteractionEvent(type="viewport", axis_ranges={"x": x_range})
-            deltas = engine.process(event, infos)
+            event, viewports = _zoom({"x": x_range}, fig="f1")
+            deltas = engine.process(event, infos, viewports)
         assert len(deltas) == 1
         return {k: list(v) for k, v in deltas[0].updates.items()}
 
@@ -2609,9 +2736,16 @@ class TestDescendingViewportRanges:
             lf = LFQueryBuilder(self._df())
             hist = Histogram(x="val", bins=20)
             engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
-            infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
-            event = InteractionEvent(type="viewport", axis_ranges={"x": x_range})
-            deltas = engine.process(event, infos)
+            infos = [
+                TraceInfo(
+                    uid=hist.uid,
+                    axes=("x", "y"),
+                    trace_type="histogram",
+                    figure_uid="fig",
+                )
+            ]
+            event, viewports = _zoom({"x": x_range})
+            deltas = engine.process(event, infos, viewports)
             assert len(deltas) == 1
             return {k: list(v) for k, v in deltas[0].updates.items()}
 
@@ -2818,10 +2952,13 @@ class TestResidentLineXWidth:
             lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=50)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        deltas = engine.process(
-            InteractionEvent(type="viewport", axis_ranges={"x": (0.0, 2.0)}), infos
-        )
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        event, viewports = _zoom({"x": (0.0, 2.0)})
+        deltas = engine.process(event, infos, viewports)
         assert sorted(deltas[0].updates["y"]) == [1.0, 2.0, 3.0]
 
     @staticmethod
@@ -2848,12 +2985,14 @@ class TestResidentLineXWidth:
         lf = self._source(df, tmp_path, scan)
         line = LinePlot(x="ts", y="val", n_points=50)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
-        with pytest.raises(ValueError, match="no finite span"):
-            engine.process(
-                InteractionEvent(type="viewport", axis_ranges={"x": (-1e308, 1e308)}),
-                infos,
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
             )
+        ]
+        event, viewports = _zoom({"x": (-1e308, 1e308)})
+        with pytest.raises(ValueError, match="no finite span"):
+            engine.process(event, infos, viewports)
 
     @staticmethod
     def _scan(tmp_path, xs) -> LFQueryBuilder:

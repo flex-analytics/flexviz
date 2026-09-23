@@ -72,7 +72,6 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
                       ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  SERVER LAYER  (FastAPI, stateless)                            │
-│  POST /update            — single-figure interaction           │
 │  POST /dashboard/update  — dashboard interaction               │
 │  POST /share             — encode spec → shareable URL         │
 │  GET  /view              — render shared spec as HTML          │
@@ -180,11 +179,14 @@ DashboardSpec
             / show_grid / show_share / show_export / show_import: bool (all True by default)
 
 InteractionEvent
-├── type: "init" | "viewport" | "selection" | "deselect" | "reset" | "cube_request"
-├── axis_ranges: Dict[str, Any]
+├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
+├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed
 ├── selections: List[SelectionState]
-├── force_update: bool
-└── figure_uid: str | None               ← scopes viewport/reset to one figure
+└── force_update: bool
+
+A viewport event carries no ranges: the engine reads every range from
+`state.viewport`, and a listed key absent from it means autorange. One event can
+name keys of several figures.
 
 "cube_request" events carry no active range and produce no deltas; they ride with
 `request_cube: true` + `active_source: {figure_uid, column, trace_uid}` on the request and return
@@ -440,7 +442,7 @@ escape hatch on line/geo_line freezes a trace to ``()``).  A viewport change
 re-aggregates a trace only when it moves one of these axes — so a line ignores
 y-only zoom, a vertical histogram ignores count-axis zoom, and categorical
 traces ignore zoom entirely.  The same concrete ``recompute_axes`` set is
-serialized into `TraceSpec`, read by the client to suppress no-op `/update` POSTs
+serialized into `TraceSpec`, read by the client to suppress no-op `/dashboard/update` POSTs
 and by the engine (`_should_process_trace`) to gate per-trace recompute.  This is
 a producer contract: current specs must carry the concrete tuple/list emitted by
 ``to_trace_spec()``.  Omitted or null values are not repaired in the browser (the
@@ -801,13 +803,21 @@ FlexEngine
          (reversed plotly axes report high-to-low) are swapped so every
          consumer downstream holds the lo <= hi invariant
       1. Derive active selections from event.type + event.selections
-      2. Identify source figures; build cross-filter Polars exprs by passing each
-         non-source selection's predicates through `predicates_to_expr` (one expression
-         per selection — predicates ORed inside, expressions ANDed across selections)
-      3. Decide which traces need re-aggregation (one uniform rule for cartesian
+      2. Decide which traces need re-aggregation (one uniform rule for cartesian
          and map traces):
-         force_update=True  OR  (trace.recompute_axes ∩ changed event axes ≠ ∅)
-         where changed axes are cartesian keys ("x"/"y2"/…) or "coordinates" for maps
+         (trace.recompute_axes ∩ changed axes of its figure ≠ ∅)
+         OR (force_update AND NOT (selection event AND the figure owns a selection))
+         where changed axes come from `event.viewport_keys`: cartesian ids
+         ("x"/"y2"/…) or "coordinates" for maps. Every trace's range comes
+         from `state.viewport` (`viewports_by_figure`)
+      3. Partition the traces by owner: a figure is never filtered by its own
+         selection, so the traces of each figure that owns an active selection
+         form their own partition, and all others share one. Each partition
+         builds its cross-filter Polars exprs by passing every other selection's
+         predicates through `predicates_to_expr` (one expression per selection —
+         predicates ORed inside, expressions ANDed across selections). A single
+         figure's zoom is one partition; a linked zoom that reaches an owner
+         figure adds one
       4. Group histogram domain-sharing siblings for the request: for histogram
          traces without a viewport range, coordinate-compatible same-figure
          siblings are grouped by (figure_uid, axes, data_axis, coordinate_unit)
@@ -817,24 +827,26 @@ FlexEngine
          hit, return the cached deltas here (see Caching, below) — no domain
          resolution or aggregation runs
       6. Resolve every domain the active traces need — each trace's own
-         `domain_cols()` unioned with the histogram groups above — in one
-         `LFQueryBuilder.physical_minmax` call per scope; the unfiltered
-         scope is memoized when the source is `static`, so a fully cached
-         request resolves nothing. In update mode with an active selection,
-         the columns of traces with `domain_follows_filter` (every x-width
-         `LinePlot`) resolve in a second, filtered reduction: never memoized,
-         streaming like the unfiltered probe, and skipping the Parquet
-         footer, whose statistics describe the unfiltered file
+         `domain_cols()` unioned with the histogram groups above. The
+         unfiltered scope is one `LFQueryBuilder.physical_minmax` call for all
+         partitions, memoized when the source is `static`, so a fully cached
+         request resolves nothing. In update mode, the columns of traces with
+         `domain_follows_filter` (every x-width `LinePlot`) in a partition with
+         filters resolve in a filtered reduction per partition: never
+         memoized, streaming like the unfiltered probe, and skipping the
+         Parquet footer, whose statistics describe the unfiltered file
       7. Collect AggregationSpec / GroupedAggregationSpec per active trace,
          passing each trace its resolved domain bounds
-      8. In update mode: aggregate once with selection filters
-      9. In overlay mode: filter agg specs per layer via overlay_style
+      8. In update mode: aggregate once per partition with its filters
+      9. In overlay mode, per partition: an owner partition computes only bg,
+         with every trace (the renderer draws no fg for a selection's source
+         figure). Other partitions filter agg specs per layer via overlay_style
          (with an active selection, traces with "filtered_only" reuse their
-         cached unfiltered layer instead of recomputing bg; init/deselect/reset
-         still emit that sole unfiltered layer for every trace);
-         execute only the layers required by the event
-         (`selection` → fg, `init`/`deselect`/`reset` → bg,
-         `viewport` → bg or bg+fg depending on active selections)
+         cached unfiltered layer instead of recomputing bg; init/deselect
+         still emit that sole unfiltered layer for every trace) and execute
+         only the layers required by the event (`selection` → fg, plus bg when
+         a trace's viewport key changed; `init`/`deselect` → bg; `viewport` →
+         bg or bg+fg depending on active selections)
       10. Route regular results to _to_update(df_agg)
       11. Route grouped results to _to_grouped_update(df_grouped)
       12. Normalize Series → list once; emit TraceDelta / GroupedChildDelta
@@ -842,7 +854,7 @@ FlexEngine
 
 `TraceInfo` (dataclass) carries `uid`, `axes`, `trace_type`, `figure_uid` — the minimal metadata the engine needs without holding trace instances directly.
 
-**Cross-filtering:** Selections live in `state.selections`.  Each `SelectionState` carries one or more `SelectionPredicate` objects whose clauses translate directly to Polars expressions via `flexviz/predicates.py::predicates_to_expr` and are applied lazily to the shared LazyFrame *before* aggregation.  Predicates from one selection are ORed; predicates from different source figures are ANDed by `LazyFrame.filter(*exprs)`.  When a figure is the source of a selection its traces are excluded from re-aggregation during `selection` events.  Trace classes no longer participate in filter compilation — every selection is interpreted column-by-column at the engine boundary.
+**Cross-filtering:** Selections live in `state.selections`.  Each `SelectionState` carries one or more `SelectionPredicate` objects whose clauses translate directly to Polars expressions via `flexviz/predicates.py::predicates_to_expr` and are applied lazily to the shared LazyFrame *before* aggregation.  Predicates from one selection are ORed; predicates from different source figures are ANDed by `LazyFrame.filter(*exprs)`.  A figure is never filtered by its own selection.  When a figure is the source of a selection its traces are excluded from re-aggregation during `selection` events, unless the event also names one of its viewport keys.  Trace classes no longer participate in filter compilation — every selection is interpreted column-by-column at the engine boundary.
 
 **Per-figure reset (`fvOnResetPanel`):** each figure's panel has its own Reset button that resets **only that figure**, with semantics that depend on the *direction* of any cross-filter relative to the figure:
 
@@ -850,7 +862,7 @@ FlexEngine
 - *Target* (other figures' selections filter this figure): only this figure's viewport is reset; the incoming selections are **kept and stay applied**, so the figure re-renders filtered-by-others at autorange and the source figures are untouched.
 - *Sole source* (the figure's selection is the only one in the dashboard): clearing it returns the whole dashboard to unfiltered.
 
-Because the engine keys its recompute/scoping on event type, `fvOnResetPanel` derives the emitted type from the resulting state: `selection` when filters remain, `deselect` when none remain, `viewport` (scoped to the figure) when only the viewport changed. The global toolbar **Reset** (`fvOnReset`) instead clears all viewports + selections and emits `init`; the global **Deselect** clears selections only and **keeps zoom** (emitting `deselect`).
+Because the engine keys its recompute on event type, `fvOnResetPanel` derives the emitted type from the resulting state: `selection` when filters remain, `deselect` when none remain, `viewport` when only the viewport changed. Every variant names the cleared keys in `viewport_keys`, so a viewport-only reset re-aggregates only this figure. The global toolbar **Reset** (`fvOnReset`) instead clears all viewports + selections and emits `init`; the global **Deselect** clears selections only and **keeps zoom** (emitting `deselect`).
 
 **Treemap / pie multi-click:** successive clicks on the same figure append OR predicates via `fvUpsertPathPredicate` in the shared runtime (Plotly and ECharts).  Re-clicking the same node toggles that predicate off; refining along one branch (parent → child or child → parent) replaces the broader/narrower predicate instead of accumulating redundant filters.  *UX note:* this follows common additive-filter BI patterns; we should periodically reassess whether modifier keys or explicit multi-select mode would better match natural visual exploration for hierarchical charts.
 
@@ -964,9 +976,9 @@ The "stateless server" invariant forbids *authoritative interaction state* (view
 - **never authoritative** — a miss recomputes a byte-identical result, so correctness never depends on a hit (any replica may serve any request);
 - **droppable** — eviction is global (LRU/size), never per-session.
 
-The response cache covers only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #39). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init`, `reset`, and *unzoomed* `deselect`:
+The response cache covers only the **unfiltered *and* viewport-free** computation, gated on a per-source `cache=True` flag that **asserts the source data is static for the process lifetime** (no data-change invalidation yet — issue #39). The content key is viewport-blind, so a trace is cached **only when its resolved `update_range` is empty** — a trace that is zoomed/panned is neither stored nor served and always recomputes (otherwise a zoomed result would alias the full-range entry). This makes the eligible events `init` (the global toolbar reset sends one) and *unzoomed* `deselect`:
 
-- `init` and `reset` are viewport-free by construction (`reset` forces an empty `update_range`);
+- `init` is viewport-free whenever `state.viewport` is empty (the global reset clears it first);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
 
 In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (a Redis/disk backend swaps in through the same interface), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
@@ -977,7 +989,6 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 
 | Method | Path                | Purpose                                           |
 |--------|---------------------|---------------------------------------------------|
-| `POST` | `/update`           | Single-figure interaction; returns `List[TraceDelta]` |
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly\|echarts`)  |
@@ -987,32 +998,26 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 
 ### Request Flows
 
-**Single figure (`POST /update`):**
-1. Resolve `figure.source` → `LFQueryBuilder`
-2. `build_trace_from_spec()` per `TraceSpec`
-3. Construct `FlexEngine`; run `engine.process()` in threadpool
-4. Serialize deltas to JSON; grouped parent deltas preserve `group_results=[]`
-
 **Dashboard (`POST /dashboard/update`):**
 1. Collect distinct sources across all figures; resolve each once
 2. Reconstruct all traces; group by source
 3. `"cube_request"` events short-circuit here: run `FlexEngine.build_cubes` for the
    `active_source` figure's source only (gated on `request_cube=True` and a `cache=True`
    source) and return a **binary cube bundle** instead of JSON deltas
-4. Run a separate `FlexEngine` per source
-5. Scope viewport/reset events to `event.figure_uid` when set
-6. Partition `TraceDelta` list by figure uid
+4. Run a separate `FlexEngine` per source; the engine picks the traces from
+   `event.viewport_keys` and `force_update`
+5. Partition `TraceDelta` list by figure uid
 
-`UpdateRequest` / `DashboardRequest` carry the additive cube fields
+A single figure is shown and updated as a one-figure dashboard.
+
+`DashboardRequest` carries the additive cube fields
 (`request_cube: bool = False`, `active_source: ActiveSource | None`). A `cube_request` is
-answered out-of-band (not via the `UpdateResponse` / `DashboardResponse` JSON models) with an
+answered out-of-band (not via the `DashboardResponse` JSON model) with an
 `application/octet-stream` **cube bundle** — `encode_cube_bundle` packs the FVCube blobs raw
 (no base64) plus the `trace_cubes` map (target trace uid → blob index) behind a thin binary
 envelope, and the cube path gzips it itself at a fixed low level (`_cube_response`) so the
 `GZipMiddleware` leaves it untouched. Shipping raw binary instead of base64-in-JSON avoids 33%
-inflation and the CPU cost of gzipping text. The single-figure
-`/update` cube path is plumbing only — one figure has no cross-filter targets, so it always
-returns an empty bundle.
+inflation and the CPU cost of gzipping text.
 
 **Share / restore:**
 - `POST /share` → `/view?spec=<encoded>&renderer=...` — the URL is built from the client-sent
@@ -1419,7 +1424,6 @@ them.
 
 ```
 AbstractAdapter (ABC)
-├── parse_event(raw_event) → InteractionEvent | None    [abstract]
 ├── show_dashboard(spec, server_url, **kw) → None       [abstract]
 │
 ├── show(spec, server_url, **kw)

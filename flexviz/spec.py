@@ -23,6 +23,7 @@ from pydantic import (
     BaseModel,
     Field,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -284,6 +285,19 @@ class InteractionState(BaseModel):
     group_domains: dict[str, GroupDomainState] = Field(default_factory=dict)
     cross_filter_mode: Literal["update", "overlay"] = "update"
 
+    @field_validator("viewport")
+    @classmethod
+    def _check_viewport_keys(
+        cls, viewport: dict[str, ViewportStateValue]
+    ) -> dict[str, ViewportStateValue]:
+        for key in viewport:
+            fig_uid, sep, axis_id = key.partition("/")
+            if not (fig_uid and sep and axis_id):
+                raise ValueError(
+                    f"viewport key {key!r} must have the form '<figure_uid>/<axis_id>'"
+                )
+        return viewport
+
     @field_serializer("viewport")
     def _serialize_viewport(
         self, viewport: dict[str, ViewportStateValue]
@@ -500,6 +514,14 @@ class DashboardSpec(BaseModel):
     state: InteractionState = Field(default_factory=InteractionState)
     layout: LayoutSpec = Field(default_factory=LayoutSpec)
     client_state: ClientState = Field(default_factory=ClientState)
+
+    @model_validator(mode="after")
+    def _check_viewport_figures(self) -> DashboardSpec:
+        fig_uids = {fig.uid for fig in self.figures}
+        for key in self.state.viewport:
+            if key.partition("/")[0] not in fig_uids:
+                raise ValueError(f"viewport key {key!r} names no figure in this spec")
+        return self
 
 
 # ---------------------------------------------------------------------------

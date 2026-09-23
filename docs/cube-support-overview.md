@@ -79,7 +79,7 @@ Notes on the two `❌` columns:
   never cube targets, by any source.
 
 When a target is **not** buildable for the active source, the engine **silently skips it** (it
-falls back to the per-commit `POST /update`) instead of failing the whole live-brush request.
+falls back to the per-commit `POST /dashboard/update`) instead of failing the whole live-brush request.
 Buildable targets in the same dashboard are still served.
 
 ---

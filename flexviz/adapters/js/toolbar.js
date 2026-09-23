@@ -118,23 +118,15 @@ window.fvAxisLockRangesForFigure = function(figUid) {
   }
   return out;
 };
+// Returns the cleared state keys: a viewport event lists them as changed.
 window.fvClearFigureViewport = function(figUid) {
-  if (!figUid) return;
+  if (!figUid) return [];
   const state = fvEnsureState();
   const viewport = state.viewport || {};
-  for (const key of Object.keys(viewport)) {
-    if (!key.startsWith(figUid + '/')) continue;
-    delete viewport[key];
-  }
+  const cleared = Object.keys(viewport).filter(key => key.startsWith(figUid + '/'));
+  for (const key of cleared) delete viewport[key];
   state.viewport = viewport;
-};
-// True when this figure has any stored viewport (zoom/pan) range. Used by the
-// per-figure reset no-op guard, which must sample zoom state *before* clearing.
-window.fvFigureHasViewport = function(figUid) {
-  if (!figUid) return false;
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  return Object.keys(viewport).some(key => key.startsWith(figUid + '/'));
+  return cleared;
 };
 // Clear a single axis' stored range (used by per-axis autorange / double-click),
 // leaving any other still-zoomed axis on the same figure untouched.
@@ -241,13 +233,12 @@ window.fvOnLockAllAxes = async function() {
 // engine keys its recompute/scoping on event type:
 //   * selection removed, others remain  -> 'selection' (re-apply remaining filters)
 //   * selection removed, none remain     -> 'deselect'  (whole dashboard unfiltered)
-//   * no selection changed (viewport-only reset) -> 'viewport' (scoped to this figure)
+//   * no selection changed (viewport-only reset) -> 'viewport' (names the
+//     cleared keys, so only this figure re-aggregates)
 window.fvOnResetPanel = async function(figUid) {
   if (!figUid) return;
-  // Sample zoom state before clearing — the no-op guard below needs to know
-  // whether the reset actually removes anything.
-  const wasZoomed = window.fvFigureHasViewport?.(figUid) || false;
-  window.fvClearFigureViewport?.(figUid);
+  const clearedKeys = window.fvClearFigureViewport?.(figUid) || [];
+  const wasZoomed = clearedKeys.length > 0;
   const before = window.fvSelectionState?.() || [];
   const remaining = window.fvClearFigureSelectionFromList?.(figUid, before) || before;
   const selectionChanged = remaining.length !== before.length;
@@ -255,29 +246,27 @@ window.fvOnResetPanel = async function(figUid) {
   // no selection, so it is already at full autorange, filtered only by *other*
   // figures (which this reset does not touch). Skip the round-trip and the
   // redundant re-render entirely. Covers the case with no other cross-filters
-  // and the case where other figures keep cross-filtering F. Axis locks are
-  // view-only (pruned from server requests, re-applied on render), so a locked
-  // figure is no different here — its lock is already holding, and a reset that
-  // clears nothing leaves it untouched.
+  // and the case where other figures keep cross-filtering F.
   if (!wasZoomed && !selectionChanged) return;
   window.fvSetSelectionState?.(remaining);
-  const axisRanges = window.figureViewportRanges?.(figUid) || {};
+  // A cleared axis that no trace aggregates on (a line's y) yields no delta,
+  // and only figures with deltas re-render, so apply the autorange here.
+  if (wasZoomed) _fvRenderFigure(figUid);
   await postDashboardUpdate({
     type: selectionChanged ? (remaining.length ? 'selection' : 'deselect') : 'viewport',
-    axis_ranges: axisRanges,
+    viewport_keys: clearedKeys,
     selections: remaining,
-    force_update: true,
-    figure_uid: figUid,
+    force_update: selectionChanged,
   });
 };
 window.fvOnReset = async function() {
   window.fvClearUnlockedViewports?.();
   window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'init', axis_ranges: {}, selections: [], force_update: true});
+  await postDashboardUpdate({type: 'init', selections: [], force_update: true});
 };
 window.fvOnDeselect = async function() {
   window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'deselect', axis_ranges: {}, selections: [], force_update: true});
+  await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
 };
 window.fvOnCfMode = async function() {
   if (!DASHBOARD_SPEC.state) DASHBOARD_SPEC.state = {};
@@ -291,7 +280,6 @@ window.fvOnCfMode = async function() {
   }
   await postDashboardUpdate({
     type: selections.length ? 'selection' : 'deselect',
-    axis_ranges: {},
     selections,
     force_update: true,
   });

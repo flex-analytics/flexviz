@@ -1994,12 +1994,10 @@ class TestNthScanPlan:
             )
             deltas = engine.process(event, infos)
         elif x_range is None:
-            event = InteractionEvent(type="init", force_update=True, figure_uid="fig")
+            event = InteractionEvent(type="init", force_update=True)
             deltas = engine.process(event, infos)
         else:
-            event = InteractionEvent(
-                type="viewport", axis_ranges={"x": x_range}, figure_uid="fig"
-            )
+            event = InteractionEvent(type="viewport", viewport_keys=["fig/x"])
             deltas = engine.process(
                 event, infos, viewports_by_figure={"fig": {"x": x_range}}
             )

@@ -58,7 +58,7 @@ async function postDashboardUpdate(event) {
     for (const [figUid, deltas] of Object.entries(data.figure_deltas)) {
       const sourceFigure = figureHasSelectionSource(figUid, event.selections || []);
       let sawBackground = false;
-      if (['deselect', 'reset', 'init'].includes(event.type)) {
+      if (['deselect', 'init'].includes(event.type)) {
         bgYExtentByFig[figUid] = null;
       }
       for (const delta of deltas) {
@@ -105,7 +105,7 @@ async function postDashboardUpdate(event) {
       }
       if (deltas.length) dirtyFigUids.add(figUid);
     }
-    if (['selection', 'deselect', 'reset', 'init'].includes(event.type)) {
+    if (['selection', 'deselect', 'init'].includes(event.type)) {
       _fvAllFigUids.forEach(figUid => dirtyFigUids.add(figUid));
     } else {
       selectionSourceFigureUids(DASHBOARD_SPEC.state.selections || [])
@@ -116,7 +116,7 @@ async function postDashboardUpdate(event) {
     return false;
   }
 
-  if (['deselect', 'reset', 'init'].includes(event.type)) {
+  if (['deselect', 'init'].includes(event.type)) {
     _resetTreemapLevel = true;
   }
   for (const figUid of dirtyFigUids) {
