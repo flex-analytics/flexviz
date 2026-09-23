@@ -1,8 +1,9 @@
 // === FlexViz shared runtime — client-side init cache (Phase 1, issue #26) ===
 // Requires: state.js loaded first (DASHBOARD_SPEC, cloneObj).
 //
-// Caches the *unfiltered, viewport-free* init/reset/deselect response so repeat
-// occurrences (reset, deselect-to-empty, re-init) need zero server round-trips.
+// Caches the *unfiltered, viewport-free* init/deselect response so repeat
+// occurrences (global reset, deselect-to-empty, re-init) need zero server
+// round-trips.
 // Design points:
 //
 //   * Gated on the source(s) opting into caching (FV_CACHEABLE_SOURCES, set by

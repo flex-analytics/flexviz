@@ -803,7 +803,7 @@ class Figure:
         ----------
         source:
             Data source name as registered with ``register_source()`` on the
-            server.  Clients include this in every ``/update`` request so the
+            server.  Clients include this in every ``/dashboard/update`` request so the
             server knows which ``LFQueryBuilder`` to use.
         """
         domain_source = source or self._uid

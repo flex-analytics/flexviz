@@ -827,7 +827,7 @@ class FlexEngine:
     ) -> list[_Partition]:
         """Group traces by the selection they must ignore: their own figure's.
 
-        One partition (today's single pass) unless a re-aggregated figure owns
+        One partition, one pass, unless a re-aggregated figure owns
         an active selection, e.g. a linked zoom that reaches an owner figure.
         """
         items_by_owner: dict[str | None, list[_AggregationTrace]] = {}
@@ -995,7 +995,7 @@ class FlexEngine:
     def _cache_active(self, event: InteractionEvent) -> bool:
         """Whether the per-trace cache applies to this request.
 
-        Only the unfiltered ``init``/``reset``/``deselect`` computation is
+        Only the unfiltered ``init``/``deselect`` computation is
         cached in Phase 1, and only when the engine was given a cache backend
         for a source that opted in.
         """
@@ -1285,8 +1285,9 @@ class FlexEngine:
                 bg_items += partition.items
             if "fg" in layers and partition.filter_exprs:
                 fg_jobs.append((partition, specs))
-        # The background is unfiltered in every partition, so one pass over the
-        # source serves all of them.
+        # The background is unfiltered in every partition, so one aggregate call
+        # serves all of them: specs that share the source's select read it once
+        # (a spec with its own plan still scans on its own).
         deltas = self._aggregate_layer([], bg_specs, bg_items, "bg") if bg_specs else []
         for partition, specs in fg_jobs:
             deltas += self._aggregate_layer(

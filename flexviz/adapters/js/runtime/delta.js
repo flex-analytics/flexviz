@@ -66,7 +66,7 @@ async function postDashboardUpdate(event) {
   _fvLastUpdateError = null;
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
-  // Whole-dashboard blob first (init / reset / deselect); then the figure-scoped
+  // Whole-dashboard blob first (init / deselect); then the figure-scoped
   // slice (a per-figure reset or autorange to full range with no other filters).
   const cachedFigureDeltas = fvCacheGet(event) || fvCacheGetFigure(event);
   if (cachedFigureDeltas) {

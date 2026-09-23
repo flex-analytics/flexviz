@@ -221,7 +221,7 @@ class TraceSpec(BaseModel):
     display: dict[str, Any] = Field(default_factory=dict)
     # Anchor ids whose viewport range parameterizes this trace's aggregation
     # (e.g. ``("x",)`` for a line, ``("coordinates",)`` for a map trace).
-    # Read by both the client (to suppress no-op /update POSTs) and the engine
+    # Read by both the client (to suppress no-op viewport POSTs) and the engine
     # (to gate per-trace recompute).  Current producers must emit a concrete
     # tuple: populated means "these viewport anchors re-aggregate the trace",
     # while an explicit empty tuple means deliberately frozen.  ``None`` is only
