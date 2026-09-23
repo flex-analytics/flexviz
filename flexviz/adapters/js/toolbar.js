@@ -118,12 +118,19 @@ window.fvAxisLockRangesForFigure = function(figUid) {
   }
   return out;
 };
+// A locked axis keeps its key: the lock pins the displayed range, and the
+// engine aggregates at the state range, so clearing it would split the two.
+function fvIsViewportKeyLocked(key) {
+  const slashIdx = key.indexOf('/');
+  return window.fvIsAxisLocked(key.slice(0, slashIdx), key.slice(slashIdx + 1));
+}
 // Returns the cleared state keys: a viewport event lists them as changed.
 window.fvClearFigureViewport = function(figUid) {
   if (!figUid) return [];
   const state = fvEnsureState();
   const viewport = state.viewport || {};
-  const cleared = Object.keys(viewport).filter(key => key.startsWith(figUid + '/'));
+  const cleared = Object.keys(viewport)
+    .filter(key => key.startsWith(figUid + '/') && !fvIsViewportKeyLocked(key));
   for (const key of cleared) delete viewport[key];
   state.viewport = viewport;
   return cleared;
@@ -139,7 +146,11 @@ window.fvClearFigureAxisViewport = function(figUid, axisId) {
 };
 window.fvClearUnlockedViewports = function() {
   const state = fvEnsureState();
-  state.viewport = {};
+  const viewport = state.viewport || {};
+  for (const key of Object.keys(viewport)) {
+    if (!fvIsViewportKeyLocked(key)) delete viewport[key];
+  }
+  state.viewport = viewport;
 };
 function fvTryLockAxis(figUid, axisId) {
   const ranges = window.fvCaptureAxisDisplayRanges?.(figUid, axisId) || {};

@@ -5856,13 +5856,13 @@ class TestResetCleanupBrowser:
         page.click("#fv-btn-reset")
         page.wait_for_function("""() => {
                 const figUid = DASHBOARD_SPEC.figures[0].uid;
-                return Object.keys(DASHBOARD_SPEC.state.viewport).length === 0
-                  && DASHBOARD_SPEC.state.selections.length === 0
+                return DASHBOARD_SPEC.state.selections.length === 0
                   && DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'] === true;
             }""")
         state = page.evaluate("""() => {
                 const figUid = DASHBOARD_SPEC.figures[0].uid;
                 return {
+                  figUid,
                   lockRange: DASHBOARD_SPEC.client_state.axis_lock_ranges[figUid + '/x'],
                   locked: DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'],
                   viewport: DASHBOARD_SPEC.state.viewport,
@@ -5871,8 +5871,72 @@ class TestResetCleanupBrowser:
             }""")
         assert state["locked"] is True
         assert state["lockRange"] == locked_x
-        assert state["viewport"] == {}
+        # The locked axis keeps its key, so aggregation matches the lock.
+        assert list(state["viewport"]) == [f"{state['figUid']}/x"]
         assert state["selections"] == []
+
+    @staticmethod
+    def _zoom_and_lock(page: Page) -> str:
+        """Zoom figure 0 to x 100..200, then lock its axes. Returns its uid."""
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_function(
+            "() => DASHBOARD_SPEC.state.viewport[DASHBOARD_SPEC.figures[0].uid + '/x']"
+        )
+        page.wait_for_timeout(500)
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        return page.evaluate("""() => {
+                const figUid = DASHBOARD_SPEC.figures[0].uid;
+                return DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'] ? figUid : null;
+            }""")
+
+    @staticmethod
+    def _shown(page: Page) -> dict:
+        return page.evaluate("""() => ({
+                range: divs[0]._fullLayout.xaxis.range,
+                x: divs[0].data[0].x,
+                viewport: DASHBOARD_SPEC.state.viewport,
+              })""")
+
+    def test_resets_keep_a_locked_zoomed_axis(self, page: Page, server_port: int):
+        """Panel reset, global reset and double-click leave a locked, zoomed axis
+        at its lock range, and the data stays aggregated inside that range."""
+        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}"))
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        fig_uid = self._zoom_and_lock(page)
+        assert fig_uid
+
+        for label, act in [
+            ("panel", "() => fvOnResetPanel(DASHBOARD_SPEC.figures[0].uid)"),
+            ("autorange", "() => Plotly.relayout(divs[0], {'xaxis.autorange': true})"),
+            ("global", "() => fvOnReset()"),
+        ]:
+            page.evaluate(act)
+            page.wait_for_timeout(800)
+            shown = self._shown(page)
+            assert shown["viewport"][f"{fig_uid}/x"] == {"min": 100, "max": 200}, label
+            assert [round(v) for v in shown["range"]] == [100, 200], label
+            assert shown["x"] and min(shown["x"]) >= 100 and max(shown["x"]) <= 200, (
+                label,
+                min(shown["x"]),
+                max(shown["x"]),
+            )
+
+        # The global reset re-aggregated at the locked range.
+        init = [p for p in posts if p["event"]["type"] == "init"][-1]
+        assert init["spec"]["state"]["viewport"][f"{fig_uid}/x"] == {
+            "min": 100,
+            "max": 200,
+        }
 
 
 @pytest.mark.browser

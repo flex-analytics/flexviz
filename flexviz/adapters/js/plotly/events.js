@@ -270,14 +270,17 @@ function handleRelayout(relayout, figUid) {
   }
   if (hasAuto && Object.keys(complete).length === 0) {
     // Per-axis autorange (double-click): clear only the autoranged axes locally
-    // so a still-zoomed sibling axis is untouched (persist always).
-    for (const ax of autoAxes) window.fvClearFigureAxisViewport?.(figUid, ax);
+    // so a still-zoomed sibling axis is untouched (persist always). A locked
+    // axis keeps its key and snaps back to its lock range.
+    const unlockedAuto = autoAxes.filter(ax => !window.fvIsAxisLocked?.(figUid, ax));
+    if (unlockedAuto.length < autoAxes.length) window.fvApplyAxisLocks?.(figUid);
+    for (const ax of unlockedAuto) window.fvClearFigureAxisViewport?.(figUid, ax);
     // Only round-trip if an autoranged axis re-aggregates a trace. The
     // cleared keys are listed as changed: absent from state means full range.
-    if (!fvNeedsFetch(figUid, autoAxes)) return;
+    if (!unlockedAuto.length || !fvNeedsFetch(figUid, unlockedAuto)) return;
     postDashboardUpdate({
       type: 'viewport',
-      viewport_keys: autoAxes.map(ax => figUid + '/' + ax),
+      viewport_keys: unlockedAuto.map(ax => figUid + '/' + ax),
       force_update: false,
       selections: DASHBOARD_SPEC.state.selections || [],
     });
