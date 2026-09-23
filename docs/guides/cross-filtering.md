@@ -56,11 +56,58 @@ The mode travels with the spec (`cross_filter_mode`), so it persists through
 
 - The toolbar's **deselect** button (or a Plotly double-click deselect)
   clears selections but keeps zoom.
-- The toolbar's **reset** button clears selections and viewport both.
+- The toolbar's **reset** button clears selections and viewport both. A
+  locked axis keeps its range.
 
 ## Zoom is not a filter
 
 Zooming a figure re-aggregates that figure to its viewport (a zoomed line
 re-downsamples, a zoomed histogram re-bins), but it does not filter the other
 figures. Only selections cross-filter. Categorical traces (bar, pie, treemap)
-never re-aggregate on zoom.
+never re-aggregate on zoom. To make other figures follow a zoom, link their
+axes.
+
+## Linked axes
+
+Linked axes always show the same range. Zoom, pan, double-click or reset one of
+them, and the others follow. Each figure re-aggregates at the new range, all in
+one request: a line re-downsamples, a histogram re-bins.
+
+```python
+dash = Dashboard(pl.scan_parquet("sensors.parquet"))
+temp = dash.add_figure()
+temp.add_line(x="timestamp", y="temperature")
+hum = dash.add_figure()
+hum.add_line(x="timestamp", y="humidity")
+dash.add_figure().add_histogram(x="timestamp", bins=100)
+dash.link_axes(on="timestamp")
+dash.show()
+```
+
+`link_axes` has three forms:
+
+| Call | Links |
+|---|---|
+| `link_axes(on="timestamp")` | the axis showing `timestamp` in every figure that shows it |
+| `link_axes(temp, hum, on="timestamp")` | that axis in the given figures only |
+| `link_axes(temp, hum, axis="y")` | the same axis of each figure |
+| `link_axes((temp, "x"), (hist, "y"))` | the named axes, e.g. a line's x and the y of a horizontal histogram `hist` |
+
+Calls that share an axis merge into one group. Links are resolved when the
+dashboard is built, so figures added after the call count too.
+
+Rules and limits:
+
+- Only x and y axes that show a numeric or temporal column can be linked.
+  A histogram's count axis, a bar, a map and a log axis cannot. Numeric and
+  temporal axes do not mix; date and datetime axes do.
+- Locking the axes of one figure locks every axis linked to them.
+- After a double-click autorange, each figure autoranges to its own data. On
+  one shared column the ranges usually match; on a filtered figure or a
+  histogram they can differ slightly until the next zoom.
+- A linked y of a line is display-only: the line does not re-aggregate on y.
+- The links live in `client_state.axis_links`, so they survive
+  [shared URLs](sharing.md), export and import. A spec whose linked axes hold
+  different ranges is rejected, so an agent that patches the viewport with
+  `flexvizApply` must set every key of a group.
+- The deprecated ECharts renderer does not support linked axes.

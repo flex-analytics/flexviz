@@ -105,6 +105,8 @@ print(history.add(url, note="data.parquet: line + histogram, initial view", acto
   process answers every interaction.
 - `source_name` must match the served stem, and `cache=True` must match
   `--cache`.
+- Several figures over one time axis? Add `dash.link_axes(on="timestamp")`, so a
+  zoom on one moves them all.
 - No categorical column to `group_by`? Split metrics across figures instead,
   and use `add_histogram2d` to relate numeric columns. Add at most one
   `add_corr_heatmap` for the whole dashboard, and only when many numeric columns
@@ -150,7 +152,8 @@ serialized state differs from the previous read; it does not say who changed it.
 
 - `version`/`revision`: the spec version, and a counter that increases when the serialized state differs from the previous read.
 - `state`: server-visible — viewport (`fig_uid/axis`), selections, group_domains, cross_filter_mode.
-- `client_state`: client-only display state; the server ignores it.
+- `client_state`: client-only display state; the engine ignores it. `axis_links`
+  lists groups of viewport keys that always hold one range.
 
 **Separate browsers.** A headless session, or a human at another machine. Your
 tab and their tab hold independent state, so polling yours tells you nothing
@@ -219,7 +222,10 @@ Only `state`, `client_state` and `layout` apply; every other key is ignored
 with a warning. `state` and `client_state` merge one level deep, so a
 partial `state` keeps its sibling keys (`viewport`, `group_domains`,
 `cross_filter_mode`). It re-renders and resolves with the compact state. It
-rejects when the re-request fails, and the state is then ahead of the page. With
+rejects with the server's reason when the re-request fails, and the page keeps
+its previous state. When `client_state.axis_links` lists a viewport key, set
+every key of that group to the same range; a patch that sets only one is
+rejected. With
 separate browsers the human does not see it, so record the state with
 `record_state(..., actor="agent")` and give them the new `/h/N` instead;
 the default actor is `"human"`, because step 6 is its first use.
@@ -256,6 +262,8 @@ For the rest, read `flexviz/figure.py` or https://docs.flexviz.tech.
 Dashboard(data, cache=False)     # data: pl.LazyFrame/DataFrame, pandas, pyarrow
                                  # cache=True enables cross-filter cubes (live brushing)
 dash.add_figure(title=...)       # -> Figure; chainable builders below
+dash.link_axes(on="col")         # or (fig_a, fig_b, axis="x") or ((fig, "x"), ...);
+                                 #   linked axes share one range; numeric/temporal only
 dash.share_url(server_url, source_name, rows=None, cols=None,
                draggable=None,   # GridStack, locked initially; False = static/read-only
                cache=None, live_brush=None, layout=None)
