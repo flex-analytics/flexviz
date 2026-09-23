@@ -407,6 +407,21 @@ class TestEngineViewportKeys:
             [(h.uid, "bg") for h in hists.values()] + [(hists["a"].uid, "fg")]
         )
 
+    def test_selection_without_predicates_keeps_filtered_only_background(self):
+        """No filter means no foreground, so a filtered_only trace needs its
+        background (it got no delta at all before)."""
+        hist2d = Histogram2D(x="ts", y="val", x_bins=8, y_bins=8)
+        engine, infos = self._engine({"t": [hist2d]})
+        event = InteractionEvent(
+            type="viewport",
+            viewport_keys=["t/x"],
+            selections=[SelectionState(source_figure_uid="s", predicates=[])],
+        )
+        deltas = engine.process(
+            event, infos, {"t": {"x": (10, 90)}}, cross_filter_mode="overlay"
+        )
+        assert [(d.uid, d.layer) for d in deltas] == [(hist2d.uid, "bg")]
+
     @pytest.mark.parametrize("state", [{}, {"x": None}], ids=["absent", "none"])
     def test_listed_key_without_a_range_is_the_full_range(self, state):
         line = LinePlot(x="ts", y="val", n_points=50)

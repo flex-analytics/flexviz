@@ -1275,9 +1275,12 @@ class FlexEngine:
                 changed_axes=changed_axes,
             )
             if "bg" in layers:
-                # An owner figure never shows a foreground, so its background
-                # must carry every trace, filtered_only ones included.
-                foreground_shown = has_active_selections and partition.owner is None
+                # Only a partition with filters gets a foreground, and an owner
+                # figure never shows one: otherwise the background must carry
+                # every trace, filtered_only ones included.
+                foreground_shown = partition.owner is None and bool(
+                    partition.filter_exprs
+                )
                 bg_specs += self._background_specs(specs, foreground_shown)
                 bg_items += partition.items
             if "fg" in layers and partition.filter_exprs:
