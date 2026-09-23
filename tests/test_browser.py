@@ -1185,7 +1185,7 @@ class TestPlotlyBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2474,7 +2474,7 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2512,7 +2512,7 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2560,7 +2560,7 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2625,7 +2625,7 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2687,7 +2687,7 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2739,7 +2739,7 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2781,7 +2781,7 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2823,7 +2823,7 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2887,7 +2887,7 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -2945,7 +2945,7 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -3015,7 +3015,7 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [100, 200] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', 
+            return postDashboardUpdate({type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
@@ -3027,7 +3027,7 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [150, 300] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', 
+            return postDashboardUpdate({type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
@@ -3087,7 +3087,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -3170,7 +3170,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -3210,7 +3210,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -3257,7 +3257,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -3820,7 +3820,7 @@ class TestAgentReadback:
                 predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
             }];
             return postDashboardUpdate({
-                type: 'selection', 
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
@@ -5317,7 +5317,7 @@ _INJECT_SELECTION_JS = """() => {
     };
     DASHBOARD_SPEC.state.selections = [sel];
     return postDashboardUpdate({
-        type: 'selection', 
+        type: 'selection',
         selections: DASHBOARD_SPEC.state.selections,
         force_update: true,
     });

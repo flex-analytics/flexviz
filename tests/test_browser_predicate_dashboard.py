@@ -222,7 +222,7 @@ class TestPredicateDashboard:
                 };
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
-                    type: 'selection', 
+                    type: 'selection',
                     selections: [sel], force_update: true
                 });
             }""")
@@ -252,7 +252,7 @@ class TestPredicateDashboard:
                 };
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
-                    type: 'selection', 
+                    type: 'selection',
                     selections: [sel], force_update: true
                 });
             }""")
@@ -370,7 +370,7 @@ class TestPredicateDashboard:
                     // posting (postDashboardUpdate does not sync state from the event).
                     DASHBOARD_SPEC.state.selections = selections;
                     await postDashboardUpdate({
-                        type: 'selection', 
+                        type: 'selection',
                         selections, force_update: true
                     });
                 }""")
@@ -381,7 +381,7 @@ class TestPredicateDashboard:
                     const fig = DASHBOARD_SPEC.figures[2];
                     DASHBOARD_SPEC.state.selections = [];
                     await postDashboardUpdate({
-                        type: 'deselect', 
+                        type: 'deselect',
                         selections: [], force_update: true
                     });
                 }""")
