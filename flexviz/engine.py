@@ -289,26 +289,27 @@ class FlexEngine:
             return []
 
         t_start = time.perf_counter()
-        deltas: list[TraceDelta] = []
+        specs_by_partition = []
         for partition in partitions:
             uids = {item.info.uid for item in partition.items}
             part_specs = [spec for spec in agg_specs if spec.uid in uids]
-            if not part_specs:
-                continue
-            if cross_filter_mode == "overlay":
-                deltas.extend(
-                    self._process_overlay_mode(
-                        agg_specs=part_specs,
-                        partition=partition,
-                        has_active_selections=bool(active_selections),
-                        event=event,
-                        changed_axes=changed_axes,
-                    )
+            if part_specs:
+                specs_by_partition.append((partition, part_specs))
+        if cross_filter_mode == "overlay":
+            deltas = self._process_overlay_mode(
+                specs_by_partition,
+                has_active_selections=bool(active_selections),
+                event=event,
+                changed_axes=changed_axes,
+            )
+        else:
+            deltas = [
+                delta
+                for partition, part_specs in specs_by_partition
+                for delta in self._aggregate_layer(
+                    partition.filter_exprs, part_specs, partition.items
                 )
-            else:
-                deltas.extend(
-                    self._process_update_mode(agg_specs=part_specs, partition=partition)
-                )
+            ]
 
         if cache_items:
             self._store_in_cache(cache_items, deltas)
@@ -1191,22 +1192,18 @@ class FlexEngine:
             layer=layer,
         )
 
-    def _process_update_mode(
+    def _aggregate_layer(
         self,
-        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
-        partition: _Partition,
+        filter_exprs: list[pl.Expr],
+        specs: list[AggregationSpec | GroupedAggregationSpec],
+        items: list[_AggregationTrace],
+        layer: Literal["bg", "fg"] | None = None,
     ) -> list[TraceDelta]:
         t_start = time.perf_counter()
-        df_agg, grouped_dfs = self._backend_lf.aggregate(
-            partition.filter_exprs, agg_specs
-        )
+        df_agg, grouped_dfs = self._backend_lf.aggregate(filter_exprs, specs)
         t_end = time.perf_counter()
-        logger.info(f"Aggregate time: {t_end - t_start:.4f}s")
-        t_build_start = time.perf_counter()
-        deltas = self._build_deltas(partition.items, df_agg, grouped_dfs)
-        t_build_end = time.perf_counter()
-        logger.info(f"Build deltas time: {t_build_end - t_build_start:.4f}s")
-        return deltas
+        logger.info("Aggregate time (%s): %.4fs", layer or "update", t_end - t_start)
+        return self._build_deltas(items, df_agg, grouped_dfs, layer=layer)
 
     def _overlay_layers(
         self,
@@ -1233,20 +1230,19 @@ class FlexEngine:
             return ("bg", "fg") if has_active_selections else ("bg",)
         raise ValueError(f"Unsupported interaction event type: {event.type!r}")
 
-    def _specs_for_layer(
+    def _background_specs(
         self,
         specs: list[AggregationSpec | GroupedAggregationSpec],
-        layer: Literal["bg", "fg"],
         foreground_shown: bool,
     ) -> list[AggregationSpec | GroupedAggregationSpec]:
-        """Filter aggregation specs based on per-trace overlay policy.
+        """Filter background specs based on per-trace overlay policy.
 
         Every trace needs the sole unfiltered layer used by init/deselect.
         While a filtered foreground is shown, ``filtered_only`` traces reuse
         that cached unfiltered data instead of recomputing a duplicate
         background.
         """
-        if layer == "fg" or not foreground_shown:
+        if not foreground_shown:
             return specs
         return [
             s
@@ -1261,44 +1257,38 @@ class FlexEngine:
 
     def _process_overlay_mode(
         self,
-        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
-        partition: _Partition,
+        specs_by_partition: list[
+            tuple[_Partition, list[AggregationSpec | GroupedAggregationSpec]]
+        ],
         has_active_selections: bool,
         event: InteractionEvent,
         changed_axes: dict[str, set[str]],
     ) -> list[TraceDelta]:
-        requested_layers = self._overlay_layers(
-            event=event,
-            partition=partition,
-            has_active_selections=has_active_selections,
-            changed_axes=changed_axes,
-        )
-        # An owner figure never shows a foreground, so its background must
-        # carry every trace, filtered_only ones included.
-        foreground_shown = has_active_selections and partition.owner is None
-        deltas: list[TraceDelta] = []
-        for layer in requested_layers:
-            if layer == "fg" and not partition.filter_exprs:
-                continue
-            layer_specs = self._specs_for_layer(agg_specs, layer, foreground_shown)
-            if not layer_specs:
-                continue
-            t_start = time.perf_counter()
-            layer_filters = [] if layer == "bg" else partition.filter_exprs
-            df_agg, grouped_dfs = self._backend_lf.aggregate(layer_filters, layer_specs)
-            t_end = time.perf_counter()
-            logger.info("Overlay aggregate time (%s): %.4fs", layer, t_end - t_start)
-            t_build_start = time.perf_counter()
-            layer_deltas = self._build_deltas(
-                partition.items, df_agg, grouped_dfs, layer=layer
+        bg_specs: list[AggregationSpec | GroupedAggregationSpec] = []
+        bg_items: list[_AggregationTrace] = []
+        fg_jobs = []
+        for partition, specs in specs_by_partition:
+            layers = self._overlay_layers(
+                event=event,
+                partition=partition,
+                has_active_selections=has_active_selections,
+                changed_axes=changed_axes,
             )
-            t_build_end = time.perf_counter()
-            logger.info(
-                "Overlay build deltas time (%s): %.4fs",
-                layer,
-                t_build_end - t_build_start,
+            if "bg" in layers:
+                # An owner figure never shows a foreground, so its background
+                # must carry every trace, filtered_only ones included.
+                foreground_shown = has_active_selections and partition.owner is None
+                bg_specs += self._background_specs(specs, foreground_shown)
+                bg_items += partition.items
+            if "fg" in layers and partition.filter_exprs:
+                fg_jobs.append((partition, specs))
+        # The background is unfiltered in every partition, so one pass over the
+        # source serves all of them.
+        deltas = self._aggregate_layer([], bg_specs, bg_items, "bg") if bg_specs else []
+        for partition, specs in fg_jobs:
+            deltas += self._aggregate_layer(
+                partition.filter_exprs, specs, partition.items, "fg"
             )
-            deltas.extend(layer_deltas)
         return deltas
 
     def _build_deltas(

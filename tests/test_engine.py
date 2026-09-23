@@ -377,6 +377,36 @@ class TestEngineViewportKeys:
         assert {d.uid for d in deltas} == {h_a.uid, h_b.uid}
         assert calls == [False]
 
+    def test_overlay_backgrounds_of_all_partitions_share_one_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The background is unfiltered in every partition, so owner partitions
+        do not each scan the source again."""
+        hists = {fig: Histogram(x="val", bins=10) for fig in "abc"}
+        engine, infos = self._engine({fig: [h] for fig, h in hists.items()})
+        calls: list[tuple[int, int]] = []
+        aggregate = LFQueryBuilder.aggregate
+
+        def counting(self, filter_exprs, specs):
+            calls.append((len(filter_exprs), len(specs)))
+            return aggregate(self, filter_exprs, specs)
+
+        monkeypatch.setattr(LFQueryBuilder, "aggregate", counting)
+        event = InteractionEvent(
+            type="viewport",
+            viewport_keys=["a/x", "b/x", "c/x"],
+            selections=[
+                _ts_range_selection("b", 20, 60),
+                _ts_range_selection("c", 40, 80),
+            ],
+        )
+        deltas = engine.process(event, infos, {}, cross_filter_mode="overlay")
+
+        assert calls == [(0, 3), (2, 1)]
+        assert sorted((d.uid, d.layer) for d in deltas) == sorted(
+            [(h.uid, "bg") for h in hists.values()] + [(hists["a"].uid, "fg")]
+        )
+
     @pytest.mark.parametrize("state", [{}, {"x": None}], ids=["absent", "none"])
     def test_listed_key_without_a_range_is_the_full_range(self, state):
         line = LinePlot(x="ts", y="val", n_points=50)

@@ -31,6 +31,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   URLs, export, import and `flexvizApply`. Log axes, count axes, bars and maps
   cannot be linked, and after a double-click autorange each member autoranges
   on its own data.
+- In overlay mode, the unfiltered backgrounds of all re-aggregated figures run
+  in one pass over the source.
 - `flexviz history` records share URLs under a number in
   `.flexviz/history.jsonl`, with `add`, `list` and `show`. `history show N`
   prints the compact state, `--url` prints the share URL. An agent then works

@@ -846,7 +846,10 @@ FlexEngine
       8. In update mode: aggregate once per partition with its filters
       9. In overlay mode, per partition: an owner partition computes only bg,
          with every trace (the renderer draws no fg for a selection's source
-         figure). Other partitions filter agg specs per layer via overlay_style
+         figure). The bg layer is unfiltered in every partition, so the bg
+         specs of all partitions run in one aggregate pass; fg runs once per
+         partition with its own filters. Other partitions filter agg specs
+         per layer via overlay_style
          (with an active selection, traces with "filtered_only" reuse their
          cached unfiltered layer instead of recomputing bg; init/deselect
          still emit that sole unfiltered layer for every trace) and execute
