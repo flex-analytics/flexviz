@@ -395,3 +395,61 @@ def test_cube_encoder_codes_columnar_not_per_row(
         f"the columnar dim dictionary took {shipped_ms:.1f} ms against "
         f"{legacy_ms:.1f} ms per-row, under {ENCODER_SPEEDUP}x"
     )
+
+
+def test_overlay_backgrounds_share_one_aggregate_call() -> None:
+    """Decision: in overlay mode the engine runs the unfiltered background of
+    every partition (each selection-owning figure is its own partition) in one
+    `LFQueryBuilder.aggregate` call, instead of one call per partition.
+
+    Evidence: a linked zoom over three figures, two of them owning a
+    selection, on a resident 20M-row frame (M5, release plugin, machine under
+    load, old and new engine interleaved in separate processes, median of 9):
+    three histograms 75-80 ms -> 59 ms, three hist2d 65-79 -> 55-58 ms, three
+    sorted lines 52-62 -> 49-51 ms. Specs that share the source's select read
+    it once; a spec with its own plan (scan sources) still scans on its own,
+    so scans gain nothing but lose nothing.
+
+    Check: the background runs as one unfiltered call carrying every trace;
+    no wall assertion, because a ~20% gap at ~50 ms is within runner noise.
+    """
+    from flexviz.engine import FlexEngine, TraceInfo
+    from flexviz.events import InteractionEvent
+    from flexviz.spec import ClauseFilter, SelectionPredicate, SelectionState
+    from flexviz.trace.hist import Histogram
+
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame({"ts": np.arange(100_000), "v": rng.standard_normal(100_000)})
+    hists = {fig: Histogram(x="ts", bins=50) for fig in "abc"}
+    engine = FlexEngine(LFQueryBuilder(df), {h.uid: h for h in hists.values()})
+    infos = [
+        TraceInfo(uid=h.uid, axes=("x", "y"), trace_type="histogram", figure_uid=f)
+        for f, h in hists.items()
+    ]
+
+    def owned(fig: str) -> SelectionState:
+        clause = ClauseFilter(column="v", range=(-0.5, 0.5))
+        return SelectionState(
+            source_figure_uid=fig,
+            predicates=[SelectionPredicate(clauses=[clause])],
+        )
+
+    event = InteractionEvent(
+        type="viewport",
+        viewport_keys=["a/x", "b/x", "c/x"],
+        selections=[owned("b"), owned("c")],
+    )
+    calls: list[tuple[int, int]] = []
+    original = LFQueryBuilder.aggregate
+
+    def tracked(self, filter_exprs, specs):
+        calls.append((len(filter_exprs), len(specs)))
+        return original(self, filter_exprs, specs)
+
+    LFQueryBuilder.aggregate = tracked
+    try:
+        engine.process(event, infos, {}, cross_filter_mode="overlay")
+    finally:
+        LFQueryBuilder.aggregate = original
+
+    assert [c for c in calls if c[0] == 0] == [(0, 3)]

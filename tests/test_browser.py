@@ -6797,6 +6797,26 @@ class TestLinkedAxesBrowser:
             values = page.evaluate(f"divs[{idx}].data[0].{prop}")
             assert 100 <= min(values) and max(values) <= 200, (idx, values[:3])
 
+    def test_real_drag_moves_every_linked_axis(self, page: Page, server_port: int):
+        """A mouse drag emits the indexed range form, not the array form that
+        Plotly.relayout sends."""
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        box = page.locator("#fv-plot-0 .nsewdrag").first.bounding_box()
+        assert box is not None
+        y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] * 0.3, y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * 0.6, y + 3, steps=10)
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1, [p["event"] for p in posts]
+        assert len(posts[0]["event"]["viewport_keys"]) == 4
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"] == shown[1]["x"] == shown[2]["x"] == shown[3]["y"]
+        assert shown[0]["x"][0] > 0 and shown[0]["x"][1] < 499
+
     def test_display_only_link_redraws_without_a_post(
         self, page: Page, server_port: int
     ):
