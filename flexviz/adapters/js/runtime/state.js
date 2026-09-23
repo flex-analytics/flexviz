@@ -28,6 +28,13 @@ window.flexvizApply = async function(obj) {
     console.warn(`flexviz: flexvizApply ignores the key '${key}'`);
     delete patch[key];
   }
+  // A rejected patch must leave the page as it was. The restore clears the
+  // runtime caches before it requests, so rolling back re-restores the old spec.
+  const snapshot = structuredClone({
+    state: DASHBOARD_SPEC.state,
+    client_state: DASHBOARD_SPEC.client_state,
+    layout: DASHBOARD_SPEC.layout,
+  });
   // `state` and `client_state` merge one level deep: a patch that carries only
   // `selections` must keep `viewport` and `group_domains`, which several readers
   // dereference without a guard (delta.js ensureGroupColor, plotly relayout).
@@ -35,17 +42,24 @@ window.flexvizApply = async function(obj) {
     state: { ...DASHBOARD_SPEC.state, ...patch.state },
     client_state: { ...DASHBOARD_SPEC.client_state, ...patch.client_state },
   });
+  if (!(await _fvApplySpecToPage())) {
+    const reason = _fvLastUpdateError;
+    Object.assign(DASHBOARD_SPEC, snapshot);
+    await _fvApplySpecToPage();
+    throw new Error(`flexviz: dashboard update failed${reason ? ` (${reason})` : ''}`);
+  }
+  return _fvCompactState();
+};
+
+async function _fvApplySpecToPage() {
   // Grid layout first: the panels must be sized before the re-render.
   window._fvRestoreGridLayout?.();
   window.fvSetGridEditable?.((DASHBOARD_SPEC.layout && DASHBOARD_SPEC.layout.grid_editable) === true);
   window.fvUpdateGridButton?.();
   // fvRestoreFromSpec owns the rest: runtime cache, hover lookups, cross-filter
   // button and selection summary, all before it re-requests.
-  if (!(await window.fvRestoreFromSpec())) {
-    throw new Error('flexviz: dashboard update failed');
-  }
-  return _fvCompactState();
-};
+  return window.fvRestoreFromSpec();
+}
 
 let _fvRevision = 0;
 let _fvRevisionKey = null;

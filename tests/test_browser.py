@@ -3867,7 +3867,69 @@ class TestAgentReadback:
         # `force_update` bypasses the client cache, so the route is really hit.
         message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
                 .then(() => null, err => err.message)""")
-        assert message == "flexviz: dashboard update failed"
+        assert message == "flexviz: dashboard update failed (status 500)"
+
+    _LAYER_SIZES = """() => Object.values(layerDataByUid)
+            .map(l => (l.base.x || l.base.y || l.base.z || []).length)"""
+
+    def test_apply_rolls_back_a_rejected_patch(self, page: Page, server_port: int):
+        """A patch the server rejects leaves spec, data and later gestures working."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        state_before = page.evaluate("window.flexvizState().state")
+        sizes_before = page.evaluate(self._LAYER_SIZES)
+        assert all(sizes_before), sizes_before
+
+        message = page.evaluate("""() => {
+                const key = DASHBOARD_SPEC.figures[0].uid + '/x';
+                return window.flexvizApply({state: {viewport: {[key]: 'bad'}}})
+                  .then(() => null, err => err.message);
+            }""")
+        assert message.startswith("flexviz: dashboard update failed (status 422: ")
+        assert page.evaluate("window.flexvizState().state") == state_before
+        assert page.evaluate(self._LAYER_SIZES) == sizes_before
+
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
+    def test_apply_rolls_back_when_the_second_request_fails(
+        self, page: Page, server_port: int
+    ):
+        """A patch with selections restores in two requests (init, then
+        selection). A failure on the second one still restores the old page."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        state_before = page.evaluate("window.flexvizState().state")
+        sizes_before = page.evaluate(self._LAYER_SIZES)
+
+        calls = [0]
+
+        def fail_second(route) -> None:
+            calls[0] += 1
+            if calls[0] == 2:
+                route.fulfill(status=500)
+            else:
+                route.continue_()
+
+        page.route("**/dashboard/update", fail_second)
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+              }]}}).then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed (status 500)"
+        assert calls[0] >= 3, "the rollback must restore the old spec"
+        assert page.evaluate("window.flexvizState().state") == state_before
+        assert page.evaluate(self._LAYER_SIZES) == sizes_before
 
     def test_failed_first_load_logs_an_error(self, page: Page, server_port: int):
         """The first page carries empty stubs only, so a failed init must say so."""

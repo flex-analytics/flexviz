@@ -316,8 +316,10 @@ Coding agents drive FlexViz through the same stateless surface humans use.
   `client_state` merged one level deeper so a partial patch keeps the sibling
   keys. Every other key is ignored with a console warning. It then re-renders
   through `fvRestoreFromSpec` and resolves with the compact state once the
-  re-request has completed. It rejects when that re-request fails, and the
-  merged state is then ahead of the page. It changes only the tab the caller
+  re-request has completed. When a re-request fails, it restores the pre-patch
+  `state`, `client_state` and `layout`, re-renders them through the same
+  restore, and rejects with the server's reason (`postDashboardUpdate` keeps
+  the last failure's status and `detail`). It changes only the tab the caller
   drives. The Import button is a thin wrapper around it. Structure changes
   (adding or removing a figure) still need a new share URL, because panels
   are built server-side.

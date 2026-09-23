@@ -26,6 +26,16 @@ function setGroupedLayerData(figUid, parentUid, layerKey, groupResults) {
   groupedDataByParent[figUid][parentUid][layerKey] = cloneObj(groupResults || []);
 }
 
+// Why the last failed request failed, for callers that report it
+// (flexvizApply). Only the latest failure is kept.
+let _fvLastUpdateError = null;
+
+function _fvErrorDetail(body) {
+  const detail = body && body.detail;
+  if (Array.isArray(detail)) return detail.map(d => (d && d.msg) || String(d)).join('; ');
+  return detail ? String(detail) : '';
+}
+
 async function postDashboardUpdate(event) {
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
@@ -42,11 +52,14 @@ async function postDashboardUpdate(event) {
         body:    JSON.stringify({ spec: DASHBOARD_SPEC, event }),
       });
       if (!resp.ok) {
-        console.warn('flexviz /dashboard/update returned', resp.status);
+        const detail = _fvErrorDetail(await resp.json().catch(() => null));
+        _fvLastUpdateError = `status ${resp.status}${detail ? ': ' + detail : ''}`;
+        console.warn('flexviz /dashboard/update returned', _fvLastUpdateError);
         return false;
       }
       data = await resp.json();
     } catch (e) {
+      _fvLastUpdateError = String(e);
       console.warn('flexviz /dashboard/update request failed', e);
       return false;
     }
