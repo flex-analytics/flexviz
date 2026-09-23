@@ -150,6 +150,24 @@ function fvTryLockAxis(figUid, axisId) {
   window.fvStoreAxisLockRanges(figUid, ranges);
   return true;
 }
+// Lock an axis and every axis linked to it at the range this figure shows. A
+// group keeps one range (the spec validator rejects unequal lock ranges), so a
+// member that autoranged to other data takes this figure's range. Returns the
+// other figures whose display changed.
+function fvLockAxisGroup(figUid, axisId) {
+  const range = (window.fvCaptureAxisDisplayRanges?.(figUid, axisId) || {})[axisId];
+  if (!fvTryLockAxis(figUid, axisId)) return [];
+  const others = [];
+  for (const key of fvLinkedKeys(figUid + '/' + axisId)) {
+    const memberFigUid = key.slice(0, key.indexOf('/'));
+    if (memberFigUid === figUid) continue;
+    const memberAxisId = key.slice(key.indexOf('/') + 1);
+    window.fvSetAxisLocked(memberFigUid, memberAxisId, true);
+    if (range) window.fvStoreAxisLockRanges(memberFigUid, { [memberAxisId]: range });
+    others.push(memberFigUid);
+  }
+  return others;
+}
 window.fvOnToggleAxisLocks = async function(figUid) {
   if (!figUid) return;
   const availableAxes = fvCurrentLockableAxes(figUid);
@@ -158,24 +176,29 @@ window.fvOnToggleAxisLocks = async function(figUid) {
     return;
   }
   const shouldLock = availableAxes.some(axis => !window.fvIsAxisLocked(figUid, axis));
-  // A link group locks as one (the server rejects mixed locks in a group), so
-  // the toggle also reaches every axis linked to this figure's axes. Each
-  // member stores its own displayed range.
-  const targets = [...new Set(
+  // A link group locks and unlocks as one (the server rejects mixed locks in a
+  // group), so the toggle also reaches every axis linked to this figure's axes.
+  const keys = [...new Set(
     availableAxes.flatMap(axisId => fvLinkedKeys(figUid + '/' + axisId))
-  )].map(key => [key.slice(0, key.indexOf('/')), key.slice(key.indexOf('/') + 1)]);
-  const touchedFigUids = fvFiguresOfKeys(targets.map(([f, a]) => f + '/' + a));
-  for (const [targetFigUid, axisId] of targets) {
-    if (shouldLock) fvTryLockAxis(targetFigUid, axisId);
-    else window.fvSetAxisLocked(targetFigUid, axisId, false);
+  )];
+  const touchedFigUids = fvFiguresOfKeys(keys);
+  const moved = new Set();
+  if (shouldLock) {
+    for (const axisId of availableAxes) {
+      fvLockAxisGroup(figUid, axisId).forEach(other => moved.add(other));
+    }
+  } else {
+    for (const key of keys) {
+      const i = key.indexOf('/');
+      window.fvSetAxisLocked(key.slice(0, i), key.slice(i + 1), false);
+    }
+    touchedFigUids.forEach(touched => moved.add(touched));
   }
   for (const touched of touchedFigUids) {
     window.fvUpdateAxisLockButtons?.(touched);
     window.fvSyncFigureModeForAxisLocks?.(touched);
   }
-  if (!shouldLock) {
-    await Promise.all(touchedFigUids.map(touched => window.fvApplyAxisLocks?.(touched)));
-  }
+  await Promise.all([...moved].map(touched => window.fvApplyAxisLocks?.(touched)));
   window.fvUpdateLockAllAxesButton?.();
 };
 // ── Global "Lock All Axes" toolbar button ──────────────────────────────────
@@ -207,13 +230,16 @@ window.fvOnLockAllAxes = async function() {
   const uids = Object.keys(figUidToIdx);
   if (!uids.length) return;
   const shouldLock = !window.fvAreAllFiguresLocked();
-  const unlockPromises = [];
+  const applyPromises = [];
   for (const figUid of uids) {
     const availableAxes = fvCurrentLockableAxes(figUid);
     if (!availableAxes.length) continue;
     if (shouldLock) {
       for (const axisId of availableAxes) {
-        fvTryLockAxis(figUid, axisId);
+        // An earlier group member already locked this axis at the group range.
+        if (window.fvIsAxisLocked(figUid, axisId)) continue;
+        fvLockAxisGroup(figUid, axisId)
+          .forEach(other => applyPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(other))));
       }
       window.fvUpdateAxisLockButtons?.(figUid);
       window.fvSyncFigureModeForAxisLocks?.(figUid);
@@ -223,10 +249,10 @@ window.fvOnLockAllAxes = async function() {
       }
       window.fvUpdateAxisLockButtons?.(figUid);
       window.fvSyncFigureModeForAxisLocks?.(figUid);
-      unlockPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(figUid)));
+      applyPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(figUid)));
     }
   }
-  await Promise.all(unlockPromises);
+  await Promise.all(applyPromises);
   window.fvUpdateLockAllAxesButton?.();
 };
 

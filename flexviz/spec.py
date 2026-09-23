@@ -614,6 +614,9 @@ class DashboardSpec(BaseModel):
             locks = {self.client_state.axis_locks.get(key, False) for key in group}
             if len(locks) > 1:
                 raise ValueError(f"linked axes {group} must be locked together")
+            lock_ranges = [self.client_state.axis_lock_ranges.get(key) for key in group]
+            if any(rng != lock_ranges[0] for rng in lock_ranges):
+                raise ValueError(f"linked axes {group} must be locked at one range")
         return self
 
 

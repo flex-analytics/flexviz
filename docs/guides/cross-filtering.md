@@ -103,10 +103,12 @@ Rules and limits:
   map, a log or category axis and a time-of-day or duration axis cannot.
   Numeric and temporal axes do not mix; date and datetime axes do, if they
   share one time zone. A reversed axis links only to reversed axes.
-- Locking the axes of one figure locks every axis linked to them.
-- After a double-click autorange, each figure autoranges to its own data. On
-  one shared column the ranges usually match; on a filtered figure or a
-  histogram they can differ slightly until the next zoom.
+- Locking the axes of one figure locks every axis linked to them, at the range
+  that figure shows.
+- After a double-click autorange, each figure autoranges to its own data, so
+  linked ranges can differ until the next zoom. In update mode a figure
+  filtered by another figure's selection fits its filtered rows, while the
+  figure that owns the selection fits all of them.
 - A linked y of a line is display-only: the line does not re-aggregate on y.
 - The links live in `client_state.axis_links`, so they survive
   [shared URLs](sharing.md), export and import. A spec whose linked axes hold

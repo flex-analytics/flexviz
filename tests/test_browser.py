@@ -6920,6 +6920,75 @@ class TestLinkedAxesBrowser:
             locks.get(key) for key in (f"{uids[0]}/x", f"{uids[3]}/y", f"{uids[0]}/y")
         ), locks
 
+    @staticmethod
+    def _brush_b(page: Page, uids: list[str]) -> None:
+        """B brushes ts 200..300, so A (filtered) autoranges to 200..300 while
+        B (the owner, unfiltered) autoranges to the full data."""
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [200, 300]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+
+    def test_lock_pins_one_range_on_members_that_autoranged_apart(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        self._brush_b(page, uids)
+        before = page.evaluate(_SHOWN_RANGES)
+        assert before[0]["x"] != before[1]["x"], before
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(800)
+
+        group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        ranges = page.evaluate("DASHBOARD_SPEC.client_state.axis_lock_ranges")
+        assert len({json.dumps(ranges[key], sort_keys=True) for key in group}) == 1
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"] == shown[1]["x"] == shown[2]["x"] == shown[3]["y"]
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate(
+            "() => postDashboardUpdate({type: 'deselect', selections: [],"
+            " force_update: true})"
+        )
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
+    def test_lock_all_keeps_linked_groups_valid(self, page: Page, server_port: int):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        self._brush_b(page, uids)
+
+        page.click("#fv-btn-lock-all")
+        page.wait_for_timeout(800)
+
+        ranges = page.evaluate("DASHBOARD_SPEC.client_state.axis_lock_ranges")
+        group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        assert len({json.dumps(ranges[key], sort_keys=True) for key in group}) == 1
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate(
+            "() => postDashboardUpdate({type: 'deselect', selections: [],"
+            " force_update: true})"
+        )
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
     def test_overlay_owner_in_the_group_gets_its_background(
         self, page: Page, server_port: int
     ):

@@ -347,6 +347,18 @@ class TestAxisLinks:
         with pytest.raises(ValidationError, match="equal ranges"):
             DashboardSpec.model_validate(data)
 
+    def test_group_locked_at_two_ranges_is_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["client_state"]["axis_locks"] = {f"{a}/x": True, f"{b}/x": True}
+        data["client_state"]["axis_lock_ranges"] = {
+            f"{a}/x": {"min": 200, "max": 300},
+            f"{b}/x": {"min": 0, "max": 999},
+        }
+        with pytest.raises(ValidationError, match="locked at one range"):
+            DashboardSpec.model_validate(data)
+
     def test_partly_locked_group_is_rejected(self):
         data = _linked_dashboard()
         a, b, *_ = _uids(data)
