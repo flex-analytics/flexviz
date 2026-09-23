@@ -265,3 +265,26 @@ class TestRoundTrip:
         url = dash.share_url(source_name="data")
         shared = decode_spec(encoded_spec_from_url(url))
         assert shared.client_state.axis_links == expected
+
+
+def test_a_spec_without_links_reads_no_schema(tmp_path, monkeypatch):
+    """Building a spec touches no data; only links need the column types."""
+    path = tmp_path / "s.parquet"
+    pl.DataFrame({"ts": [1, 2, 3], "v": [1.0, 2.0, 3.0]}).write_parquet(path)
+    calls = []
+    collect_schema = pl.LazyFrame.collect_schema
+    monkeypatch.setattr(
+        pl.LazyFrame,
+        "collect_schema",
+        lambda self: calls.append(1) or collect_schema(self),
+    )
+    dash = Dashboard(pl.scan_parquet(path))
+    a = dash.add_figure()
+    a.add_line(x="ts", y="v")
+    b = dash.add_figure()
+    b.add_line(x="ts", y="v")
+    dash.to_spec()
+    assert calls == []
+
+    dash.link_axes(a, b, axis="x").to_spec()
+    assert calls == [1]

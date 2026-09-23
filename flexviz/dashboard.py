@@ -299,7 +299,8 @@ class Dashboard:
                 # LayoutSpec, which would leak into the next dashboard reusing it.
                 layout=(layout or LayoutSpec()).model_copy(deep=True),
             )
-            if self._backend_lf is not None:
+            # The schema is only needed for links: a spec build touches no data.
+            if spec.client_state.axis_links and self._backend_lf is not None:
                 check_axis_link_types(spec, {src: self._backend_lf.schema})
         except ValidationError as exc:
             messages = [e["msg"].removeprefix("Value error, ") for e in exc.errors()]
