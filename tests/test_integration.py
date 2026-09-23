@@ -2640,3 +2640,16 @@ class TestAxisLinkValidation:
         )
         assert resp.status_code == 422
         assert "mix numeric and temporal" in resp.text
+
+    def test_share_rejects_a_spec_that_view_would_reject(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/x"]]
+        payload = spec.model_dump(mode="json")
+        payload["state"]["viewport"] = {f"{a}/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "equal ranges" in resp.text

@@ -438,9 +438,14 @@ async def share(req: ShareRequest) -> dict[str, str]:
 
     The spec is gzip-compressed and base64url-encoded so it fits in a URL
     query parameter.  Returns ``{"url": "<server_url>/view?spec=<encoded>"}``."""
-    from flexviz.spec import encode_spec
+    from flexviz.spec import decode_spec, encode_spec
 
     encoded = encode_spec(req.spec)
+    # Decode what /view will decode, so an invalid spec fails here, not later.
+    try:
+        decode_spec(encoded)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
     url = f"{req.server_url.rstrip('/')}/view?spec={encoded}"
     return {"url": url}
 
