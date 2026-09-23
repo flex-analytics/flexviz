@@ -74,6 +74,7 @@ from flexviz.spec import (
     DashboardSpec,
     FigureSpec,
     InteractionState,
+    check_axis_link_types,
 )
 
 logger = logging.getLogger(__name__)
@@ -584,6 +585,15 @@ async def dashboard_update(
                     source_map[name] = get_source(name)
                 except KeyError as exc:
                     raise HTTPException(status_code=404, detail=str(exc))
+
+    # Linked axes need the source schemas, which the spec validator cannot see.
+    try:
+        check_axis_link_types(
+            req.spec,
+            {name: lf.schema for name, lf in source_map.items() if lf is not None},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # -- 2. reconstruct FlexTrace objects; build uid → figure_uid map ----------
     uid_to_fig_uid: dict[str, str] = {}

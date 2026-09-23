@@ -2614,3 +2614,29 @@ class TestAxisLinkValidation:
         )
         assert resp.status_code == 422
         assert "equal ranges" in resp.text
+
+    def test_update_rejects_a_numeric_to_date_link(self, client: TestClient):
+        """The type rule needs the source schema, so the server runs it for
+        imported specs that never met the builder."""
+        import datetime as dt
+
+        df = pl.DataFrame(
+            {
+                "n": [1, 2, 3],
+                "d": [dt.date(2024, 1, i) for i in (1, 2, 3)],
+                "v": [1.0] * 3,
+            }
+        )
+        register_source("_integ_dates", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="n", y="v")
+        dash.add_figure().add_line(x="d", y="v")
+        spec = dash.to_spec(source_name="_integ_dates")
+        a, b = (fig.uid for fig in spec.figures)
+        spec.client_state.axis_links = [[f"{a}/x", f"{b}/x"]]
+        resp = client.post(
+            "/dashboard/update",
+            json={"spec": spec.model_dump(mode="json"), "event": {"type": "init"}},
+        )
+        assert resp.status_code == 422
+        assert "mix numeric and temporal" in resp.text

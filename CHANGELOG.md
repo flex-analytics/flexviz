@@ -28,9 +28,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   figures), by axis (`link_axes(a, b, axis="x")`) or by explicit
   `(figure, axis)` pairs. Calls that share an axis merge. A lock on any member
   pins the group. The links live in `client_state.axis_links` and survive share
-  URLs, export, import and `flexvizApply`. Log axes, count axes, bars and maps
-  cannot be linked, and after a double-click autorange each member autoranges
-  on its own data.
+  URLs, export, import and `flexvizApply`. Log axes, count axes, bars, maps,
+  time-of-day and duration axes cannot be linked, nor two axes of one figure.
+  After a double-click autorange each member autoranges on its own data.
 - In overlay mode, the unfiltered backgrounds of all re-aggregated figures run
   in one pass over the source.
 - `flexviz history` records share URLs under a number in

@@ -275,8 +275,17 @@ class TestAxisLinks:
             ),
             (lambda a, b, h, hy: [[f"{a}/x2", f"{b}/x"]], "only x and y"),
             (lambda a, b, h, hy: [[f"{a}/x", f"{h}/y"]], "shows no data column"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/y"]], "two axes of one figure"),
         ],
-        ids=["single", "duplicate", "unknown-figure", "overlap", "x2", "count-axis"],
+        ids=[
+            "single",
+            "duplicate",
+            "unknown-figure",
+            "overlap",
+            "x2",
+            "count-axis",
+            "same-figure",
+        ],
     )
     def test_invalid_groups_are_rejected(self, links, match):
         data = _linked_dashboard()

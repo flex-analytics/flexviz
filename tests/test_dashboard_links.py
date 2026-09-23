@@ -170,7 +170,28 @@ class TestErrors:
         b = dash.add_figure()
         b.add_line(x="ts", y="val")
         dash.link_axes(a, b, axis="x")
-        with pytest.raises(ValueError, match="only numeric and temporal"):
+        with pytest.raises(ValueError, match="only numeric, Date and Datetime"):
+            dash.to_spec()
+
+    @pytest.mark.parametrize("col", ["tod", "took"])
+    def test_time_and_duration_axes(self, df, col):
+        """Plotly draws these as category axes, whose ranges are positions."""
+        df = df.with_columns(
+            tod=pl.col("at").dt.time(), took=pl.col("at") - pl.col("at").min()
+        )
+        dash = Dashboard(df)
+        a = dash.add_figure()
+        a.add_line(x=col, y="val")
+        b = dash.add_figure()
+        b.add_line(x=col, y="val")
+        dash.link_axes(on=col)
+        with pytest.raises(ValueError, match="only numeric, Date and Datetime"):
+            dash.to_spec()
+
+    def test_two_axes_of_one_figure(self, df):
+        dash, a, *_ = _four(df)
+        dash.link_axes((a, "x"), (a, "y"))
+        with pytest.raises(ValueError, match="two axes of one figure"):
             dash.to_spec()
 
     def test_numeric_and_temporal_do_not_mix(self, df):

@@ -574,6 +574,11 @@ class DashboardSpec(BaseModel):
                 if key in seen:
                     raise ValueError(f"axis {key!r} is in two link groups")
                 seen.add(key)
+                if sum(k.partition("/")[0] == fig_uid for k in group) > 1:
+                    raise ValueError(
+                        f"link group {group} holds two axes of one figure; link "
+                        "axes across figures"
+                    )
                 if axis_id not in ("x", "y"):
                     raise ValueError(f"only x and y axes can be linked, not {key!r}")
                 if axis_id not in figure_axis_columns(figure):
@@ -603,6 +608,42 @@ class DashboardSpec(BaseModel):
 
 def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
     return figure.layout.get(f"{axis_id}axis") or {}
+
+
+def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
+    """Check linked axes against the data types, which the spec cannot see.
+
+    ``schemas`` maps each figure source name to its Polars schema; a source
+    without one is skipped. Only numeric, ``Date`` and ``Datetime`` columns can
+    be linked: ``Time`` and ``Duration`` render as category axes, whose ranges
+    are positions, not values. A group must not mix numeric and temporal axes,
+    because a copied range would not parse. The builder and the server both run
+    this, so an imported spec gets the same rule. Raises ``ValueError``.
+    """
+    import polars as pl
+
+    figures = {fig.uid: fig for fig in spec.figures}
+    for group in spec.client_state.axis_links:
+        kinds = set()
+        for key in group:
+            fig_uid, _, axis_id = key.partition("/")
+            figure = figures[fig_uid]
+            schema = schemas.get(figure.source) or {}
+            for col in figure_axis_columns(figure).get(axis_id, ()):
+                dtype = schema.get(col)
+                if dtype is None:
+                    continue
+                if dtype.is_numeric():
+                    kinds.add("numeric")
+                elif isinstance(dtype, (pl.Date, pl.Datetime)):
+                    kinds.add("temporal")
+                else:
+                    raise ValueError(
+                        f"linked axis {key!r} shows {col!r} of type {dtype}; only "
+                        "numeric, Date and Datetime axes can be linked"
+                    )
+        if len(kinds) > 1:
+            raise ValueError(f"linked axes {group} mix numeric and temporal columns")
 
 
 # ---------------------------------------------------------------------------

@@ -98,8 +98,9 @@ dashboard is built, so figures added after the call count too.
 
 Rules and limits:
 
-- Only x and y axes that show a numeric or temporal column can be linked.
-  A histogram's count axis, a bar, a map and a log axis cannot. Numeric and
+- Only x and y axes that show a numeric, date or datetime column can be
+  linked, one axis per figure in a group. A histogram's count axis, a bar, a
+  map, a log axis and a time-of-day or duration axis cannot. Numeric and
   temporal axes do not mix; date and datetime axes do.
 - Locking the axes of one figure locks every axis linked to them.
 - After a double-click autorange, each figure autoranges to its own data. On

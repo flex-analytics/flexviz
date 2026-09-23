@@ -47,6 +47,7 @@ from .spec import (
     InteractionState,
     LayoutSpec,
     _auto_grid_items,
+    check_axis_link_types,
     encode_spec,
     figure_axis_columns,
 )
@@ -202,11 +203,9 @@ class Dashboard:
                 keys |= group
                 groups.remove(group)
             groups.append(keys)
-        resolved = [
+        return [
             sorted(g, key=lambda k: (order[k.partition("/")[0]], k)) for g in groups
         ]
-        self._check_link_kinds(resolved, figure_specs)
-        return resolved
 
     @staticmethod
     def _keys_showing(
@@ -235,39 +234,6 @@ class Dashboard:
             raise ValueError(f"link_axes(on={column!r}) found fewer than two axes")
         return keys
 
-    def _check_link_kinds(
-        self, groups: list[list[str]], figure_specs: list[FigureSpec]
-    ) -> None:
-        """Numeric and temporal axes do not mix: a copied range would not parse.
-
-        Needs the data schema, so it runs here and not in the spec validator.
-        """
-        if self._backend_lf is None:
-            return
-        schema = self._backend_lf.schema
-        by_uid = {spec.uid: spec for spec in figure_specs}
-        for group in groups:
-            kinds = set()
-            for key in group:
-                fig_uid, _, axis_id = key.partition("/")
-                for col in figure_axis_columns(by_uid[fig_uid]).get(axis_id, ()):
-                    dtype = schema.get(col)
-                    if dtype is None:
-                        continue
-                    if dtype.is_temporal():
-                        kinds.add("temporal")
-                    elif dtype.is_numeric():
-                        kinds.add("numeric")
-                    else:
-                        raise ValueError(
-                            f"linked axis {key!r} shows {col!r} of type {dtype}; "
-                            "only numeric and temporal axes can be linked"
-                        )
-            if len(kinds) > 1:
-                raise ValueError(
-                    f"linked axes {group} mix numeric and temporal columns"
-                )
-
     # ------------------------------------------------------------------
     # Spec serialisation
     # ------------------------------------------------------------------
@@ -295,7 +261,7 @@ class Dashboard:
         """
         src = source_name if self._backend_lf is not None else None
         figure_specs = [fig.to_spec(source=src).figure for fig in self._figures]
-        return DashboardSpec(
+        spec = DashboardSpec(
             figures=figure_specs,
             state=InteractionState(),
             client_state=ClientState(axis_links=self._resolve_axis_links(figure_specs)),
@@ -303,6 +269,9 @@ class Dashboard:
             # LayoutSpec, which would leak into the next dashboard reusing it.
             layout=(layout or LayoutSpec()).model_copy(deep=True),
         )
+        if self._backend_lf is not None:
+            check_axis_link_types(spec, {src: self._backend_lf.schema})
+        return spec
 
     def save_spec(
         self,
