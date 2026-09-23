@@ -432,12 +432,13 @@ class TestPlotlyHtml:
     def test_panel_reset_event_type_adapts_to_selection(self, html):
         # When the panel sourced a cross-filter, reset-panel must send a
         # 'selection'/'deselect' event (so other panels update), not 'viewport'.
-        # When no selection existed, 'viewport' is still correct.
+        # When no selection existed, the viewport commit sends a 'viewport'
+        # event, and only if a cleared axis re-aggregates a trace.
         body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
         assert "selectionChanged" in body
         assert "'selection'" in body
         assert "'deselect'" in body
-        assert "'viewport'" in body
+        assert "fvCommitViewportChange(null, clearedKeys)" in body
 
     def test_axis_lock_controls_present(self, html):
         assert 'data-action="lock-axes"' in html

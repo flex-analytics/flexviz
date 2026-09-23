@@ -45,8 +45,11 @@ window.flexvizApply = async function(obj) {
   if (!(await _fvApplySpecToPage())) {
     const reason = _fvLastUpdateError;
     Object.assign(DASHBOARD_SPEC, snapshot);
-    await _fvApplySpecToPage();
-    throw new Error(`flexviz: dashboard update failed${reason ? ` (${reason})` : ''}`);
+    const restored = await _fvApplySpecToPage();
+    throw new Error(
+      `flexviz: dashboard update failed${reason ? ` (${reason})` : ''}`
+      + (restored ? '' : '; restoring the previous state failed too, reload the page')
+    );
   }
   return _fvCompactState();
 };

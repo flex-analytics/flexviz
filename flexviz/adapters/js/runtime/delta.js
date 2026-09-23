@@ -38,9 +38,11 @@ function _fvErrorDetail(body) {
 
 // After a gesture on `sourceFigUid` wrote `keys` (linked keys included): redraw
 // the other figures it moved, since rendering follows state and the gesture's
-// own figure already shows its range. Then re-aggregate, in one request, every
-// figure where a changed axis binds a trace (a line's x, not its y). Mirrors
-// the server gate. Plotly.react fires no relayout, so the redraws post nothing.
+// own figure already shows its range (pass null to redraw them all). Then
+// re-aggregate, in one request, every figure where a changed axis binds a trace
+// (a line's x, not its y). Mirrors the server gate. The redraws post nothing:
+// the relayout handler ignores what Plotly.react emits. Returns the request's
+// promise, or undefined when nothing needs a fetch.
 function fvCommitViewportChange(sourceFigUid, keys) {
   if (!keys.length) return;
   const figUids = fvFiguresOfKeys(keys);
@@ -52,7 +54,7 @@ function fvCommitViewportChange(sourceFigUid, keys) {
     keys.filter(k => k.startsWith(figUid + '/')).map(k => k.slice(figUid.length + 1))
   ));
   if (!needsFetch) return;
-  postDashboardUpdate({
+  return postDashboardUpdate({
     type: 'viewport',
     viewport_keys: keys,
     selections: DASHBOARD_SPEC.state.selections || [],
@@ -61,6 +63,7 @@ function fvCommitViewportChange(sourceFigUid, keys) {
 }
 
 async function postDashboardUpdate(event) {
+  _fvLastUpdateError = null;
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
   // Whole-dashboard blob first (init / reset / deselect); then the figure-scoped
@@ -149,6 +152,7 @@ async function postDashboardUpdate(event) {
         .forEach(figUid => dirtyFigUids.add(figUid));
     }
   } catch (e) {
+    _fvLastUpdateError = `applying the response failed: ${e}`;
     console.warn('flexviz /dashboard/update delta apply failed', e);
     return false;
   }

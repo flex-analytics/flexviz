@@ -259,14 +259,19 @@ window.fvOnResetPanel = async function(figUid) {
   // and the case where other figures keep cross-filtering F.
   if (!wasZoomed && !selectionChanged) return;
   window.fvSetSelectionState?.(remaining);
-  // A cleared axis that no trace aggregates on (a line's y) yields no delta,
-  // and only figures with deltas re-render, so apply the autorange here.
+  if (!selectionChanged) {
+    // Viewport only: redraw every cleared figure (a cleared axis that no trace
+    // aggregates on, like a line's y, yields no delta) and re-aggregate only
+    // where a cleared axis binds a trace.
+    await fvCommitViewportChange(null, clearedKeys);
+    return;
+  }
   for (const clearedFigUid of fvFiguresOfKeys(clearedKeys)) _fvRenderFigure(clearedFigUid);
   await postDashboardUpdate({
-    type: selectionChanged ? (remaining.length ? 'selection' : 'deselect') : 'viewport',
+    type: remaining.length ? 'selection' : 'deselect',
     viewport_keys: clearedKeys,
     selections: remaining,
-    force_update: selectionChanged,
+    force_update: true,
   });
 };
 window.fvOnReset = async function() {

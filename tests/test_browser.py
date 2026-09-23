@@ -3867,7 +3867,7 @@ class TestAgentReadback:
         # `force_update` bypasses the client cache, so the route is really hit.
         message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
                 .then(() => null, err => err.message)""")
-        assert message == "flexviz: dashboard update failed (status 500)"
+        assert message.startswith("flexviz: dashboard update failed (status 500)")
 
     _LAYER_SIZES = """() => Object.values(layerDataByUid)
             .map(l => (l.base.x || l.base.y || l.base.z || []).length)"""
@@ -3900,6 +3900,19 @@ class TestAgentReadback:
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
         page.wait_for_timeout(1_000)
         assert statuses == [200]
+
+    def test_apply_says_when_the_rollback_fails_too(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)""")
+        assert message == (
+            "flexviz: dashboard update failed (status 500); restoring the previous"
+            " state failed too, reload the page"
+        )
 
     def test_apply_rolls_back_when_the_second_request_fails(
         self, page: Page, server_port: int
@@ -6837,6 +6850,23 @@ class TestLinkedAxesBrowser:
         assert [s["source_figure_uid"] for s in selections] == [uids[1]]
         shown = page.evaluate(_SHOWN_RANGES)
         assert shown[1]["x"][1] >= 499 and shown[3]["y"][1] >= 499
+
+    def test_panel_reset_of_a_display_only_link_posts_nothing(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        page.evaluate("() => Plotly.relayout(divs[0], {'yaxis.range': [10, 20]})")
+        page.wait_for_timeout(800)
+        assert page.evaluate(_SHOWN_RANGES)[1]["y"] == [10, 20]
+
+        page.evaluate(f"() => fvOnResetPanel('{uids[0]}')")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["y"] != [10, 20] and shown[1]["y"] != [10, 20]
 
     def test_a_lock_pins_the_whole_group(self, page: Page, server_port: int):
         url, uids = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
