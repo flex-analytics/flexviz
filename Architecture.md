@@ -172,7 +172,7 @@ DashboardSpec
 ├── client_state: ClientState             ← client-only; the engine never reads it
 │   ├── hover_mode, live_brush, axis_locks, axis_lock_ranges
 │   └── axis_links: List[List[str]]       ← groups of linked viewport keys
-│                                            ("{figure_uid}/x" | "/y")
+│                                            ("{figure_uid}/x" or "{figure_uid}/y")
 └── layout: LayoutSpec
     ├── gap: str
     ├── draggable: bool                   ← enables GridStack layout rendering
