@@ -105,8 +105,9 @@ print(history.add(url, note="data.parquet: line + histogram, initial view", acto
   process answers every interaction.
 - `source_name` must match the served stem, and `cache=True` must match
   `--cache`.
-- Several figures over one time axis? Add `dash.link_axes(on="timestamp")`, so a
-  zoom on one moves them all.
+- Two or more figures that show the same time column? Add
+  `dash.link_axes(on="timestamp")`, so a zoom on one moves them all. With only
+  one such figure there is nothing to link, and the call raises.
 - No categorical column to `group_by`? Split metrics across figures instead,
   and use `add_histogram2d` to relate numeric columns. Add at most one
   `add_corr_heatmap` for the whole dashboard, and only when many numeric columns
