@@ -6691,3 +6691,235 @@ def test_report_page_sanitizes_the_markdown_html(
     chart.first.wait_for(timeout=20_000)
     assert page.title() == "FlexViz report"
     assert page.evaluate("() => !!document.querySelector('img[onerror]')") is False
+
+
+# ---------------------------------------------------------------------------
+# Linked axes (ClientState.axis_links)
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_url_linked(
+    port: int, *, mode: str = "update", viewport: dict | None = None
+) -> tuple[str, list[str]]:
+    """Two lines on ts, a vertical and a horizontal histogram of ts.
+
+    The x group links the four ts axes (the horizontal histogram shows ts on
+    y); a second group links the two lines' y. ``viewport`` maps a figure
+    index + axis ("0/x") to a range, written for every key of its group.
+    """
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import AxisRange, encode_spec
+
+    df = pl.DataFrame({"ts": list(range(500)), "val": [float(i) for i in range(500)]})
+    register_source("_browser_test", df)
+    dash = Dashboard(df)
+    dash.add_figure(title="A").add_line(x="ts", y="val", n_points=200)
+    dash.add_figure(title="B").add_line(x="ts", y="val", n_points=200)
+    dash.add_figure(title="H").add_histogram(x="ts", bins=50)
+    dash.add_figure(title="HY").add_histogram(y="ts", bins=50)
+    spec = dash.to_spec(source_name="_browser_test")
+    uids = [f.uid for f in spec.figures]
+    x_group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+    y_group = [f"{uids[0]}/y", f"{uids[1]}/y"]
+    spec.client_state.axis_links = [x_group, y_group]
+    spec.state.cross_filter_mode = mode
+    for short, (lo, hi) in (viewport or {}).items():
+        idx, axis = short.split("/")
+        key = f"{uids[int(idx)]}/{axis}"
+        group = next(g for g in (x_group, y_group) if key in g)
+        spec.state.viewport.update(dict.fromkeys(group, AxisRange(min=lo, max=hi)))
+    return (
+        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly",
+        uids,
+    )
+
+
+_SHOWN_RANGES = """() => [...document.querySelectorAll('.js-plotly-plot')].map(gd => ({
+    x: gd._fullLayout.xaxis.range.map(Math.round),
+    y: gd._fullLayout.yaxis.range.map(Math.round),
+  }))"""
+
+
+@pytest.mark.browser
+class TestLinkedAxesBrowser:
+    @staticmethod
+    def _open(page: Page, url: str) -> list[dict]:
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}"))
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        posts.clear()
+        return posts
+
+    def test_zoom_moves_every_linked_axis_in_one_post(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_500)
+
+        # One request for the whole gesture; the redraws of B, H and HY post nothing.
+        assert len(posts) == 1, [p["event"] for p in posts]
+        keys = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        assert sorted(posts[0]["event"]["viewport_keys"]) == sorted(keys)
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert all(viewport[k] == {"min": 100, "max": 200} for k in keys), viewport
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert [shown[i]["x"] for i in range(3)] == [[100, 200]] * 3
+        assert shown[3]["y"] == [100, 200]
+        # B re-downsampled and H re-binned inside the linked range.
+        for idx, prop in ((1, "x"), (2, "x"), (3, "y")):
+            values = page.evaluate(f"divs[{idx}].data[0].{prop}")
+            assert 100 <= min(values) and max(values) <= 200, (idx, values[:3])
+
+    def test_display_only_link_redraws_without_a_post(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'yaxis.range': [10, 20]})")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate(_SHOWN_RANGES)[1]["y"] == [10, 20]
+
+    def test_autorange_on_any_member_resets_the_group(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        posts = self._open(page, url)
+        assert page.evaluate(_SHOWN_RANGES)[1]["x"] == [100, 200]
+
+        page.evaluate("() => Plotly.relayout(divs[2], {'xaxis.autorange': true})")
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"][1] >= 499 and shown[1]["x"][1] >= 499
+        assert shown[3]["y"][1] >= 499
+
+    def test_panel_reset_clears_the_group_and_keeps_other_state(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        self._open(page, url)
+        # HY's count axis is not linked; B sources a selection.
+        page.evaluate("() => Plotly.relayout(divs[3], {'xaxis.range': [0, 5]})")
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [120, 180]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+
+        page.evaluate(f"() => fvOnResetPanel('{uids[0]}')")
+        page.wait_for_timeout(1_500)
+
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert list(viewport) == [f"{uids[3]}/x"]
+        selections = page.evaluate("DASHBOARD_SPEC.state.selections")
+        assert [s["source_figure_uid"] for s in selections] == [uids[1]]
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[1]["x"][1] >= 499 and shown[3]["y"][1] >= 499
+
+    def test_a_lock_pins_the_whole_group(self, page: Page, server_port: int):
+        url, uids = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        posts = self._open(page, url)
+
+        page.click("#fv-bar-1 .fv-mode-action-btn[data-action='lock-axes']")
+        locks = page.evaluate("DASHBOARD_SPEC.client_state.axis_locks")
+        for key in (f"{uids[0]}/x", f"{uids[2]}/x", f"{uids[3]}/y", f"{uids[0]}/y"):
+            assert locks.get(key) is True, key
+        assert not locks.get(f"{uids[3]}/x")
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
+        page.wait_for_timeout(1_000)
+        assert posts == []
+        assert page.evaluate(_SHOWN_RANGES)[0]["x"] == [100, 200]
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport")[f"{uids[0]}/x"] == {
+            "min": 100,
+            "max": 200,
+        }
+
+        # A reset keeps the locked group, and the next request is still valid.
+        page.evaluate(f"() => fvOnResetPanel('{uids[2]}')")
+        page.evaluate("() => Plotly.relayout(divs[3], {'xaxis.range': [0, 5]})")
+        page.wait_for_timeout(1_000)
+        assert page.evaluate(_SHOWN_RANGES)[1]["x"] == [100, 200]
+
+        # Unlocking B releases the whole group again.
+        page.click("#fv-bar-1 .fv-mode-action-btn[data-action='lock-axes']")
+        locks = page.evaluate("DASHBOARD_SPEC.client_state.axis_locks")
+        assert not any(
+            locks.get(key) for key in (f"{uids[0]}/x", f"{uids[3]}/y", f"{uids[0]}/y")
+        ), locks
+
+    def test_overlay_owner_in_the_group_gets_its_background(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port, mode="overlay")
+        posts = self._open(page, url)
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [150, 180]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+        responses: list = []
+        page.on(
+            "response",
+            lambda r: responses.append(r) if "/dashboard/update" in r.url else None,
+        )
+        posts.clear()
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1
+        deltas = responses[-1].json()["figure_deltas"]
+        assert {d["layer"] for d in deltas[uids[1]]} == {"bg"}
+        assert {d["layer"] for d in deltas[uids[0]]} == {"bg", "fg"}
+        owner_x = page.evaluate("divs[1].data[0].x")
+        assert 100 <= min(owner_x) and max(owner_x) <= 200
+
+    def test_share_url_restores_the_linked_range(self, page: Page, server_port: int):
+        url, _ = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        self._open(page, url)
+
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert [shown[i]["x"] for i in range(3)] == [[100, 200]] * 3
+        assert shown[3]["y"] == [100, 200]
+        values = page.evaluate("divs[1].data[0].x")
+        assert 100 <= min(values) and max(values) <= 200
+
+    def test_apply_refuses_a_patch_that_breaks_a_link(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        before = page.evaluate("window.flexvizState().state")
+
+        message = page.evaluate(
+            """(key) => window.flexvizApply({state: {viewport: {[key]: {min: 1, max: 2}}}})
+                .then(() => null, err => err.message)""",
+            f"{uids[0]}/x",
+        )
+
+        assert "equal ranges" in message
+        assert page.evaluate("window.flexvizState().state") == before

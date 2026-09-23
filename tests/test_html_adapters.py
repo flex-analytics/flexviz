@@ -344,9 +344,7 @@ class TestPlotlyHtml:
         # Per-figure reset cases 3c/3d: the no-op guard must short-circuit before
         # posting, gated on no cleared viewport key and no selection change.
         body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
-        assert (
-            "const clearedKeys = window.fvClearFigureViewport?.(figUid) || [];" in body
-        )
+        assert "fvWriteViewport(key, null)" in body
         assert "if (!wasZoomed && !selectionChanged) return;" in body
         assert "viewport_keys: clearedKeys" in body
 
@@ -476,7 +474,8 @@ class TestPlotlyHtml:
         assert "fvPruneAxisRangesForLocks" in body
         assert "touchedLockedAxes" in body
         assert "fvApplyAxisLocks" in body
-        assert "viewport_keys: Object.keys(unlockedComplete)" in body
+        assert "fvWriteViewport(figUid + '/' + k" in body
+        assert "fvCommitViewportChange(figUid, changed)" in body
         assert "axis_ranges" not in body
 
     def test_panel_reset_preserves_locked_axis_ranges(self, html):

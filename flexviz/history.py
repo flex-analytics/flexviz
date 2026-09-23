@@ -18,7 +18,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from flexviz.spec import (
-    ClientState,
     DashboardSpec,
     InteractionState,
     VisualizationSpec,
@@ -103,9 +102,18 @@ def _state_url(n: int, state: dict, client_state: dict | None = None) -> str:
         # Only a dashboard holds client_state, and /view renders a single
         # figure through the same wrap.
         spec = DashboardSpec(figures=[spec.figure], state=spec.state)
-    spec.state = InteractionState.model_validate(state)
-    if client_state is not None:
-        spec.client_state = ClientState.model_validate(client_state)
+    # Validate the whole spec, not each field: assignment skips the
+    # cross-field checks (viewport figures, axis links). client_state merges
+    # one level deep, as flexvizApply does, so a partial one keeps its links.
+    merged_client = spec.client_state.model_dump()
+    merged_client.update(client_state or {})
+    spec = DashboardSpec.model_validate(
+        {
+            **spec.model_dump(),
+            "state": InteractionState.model_validate(state).model_dump(),
+            "client_state": merged_client,
+        }
+    )
     parts = urlsplit(url)
     query = parse_qs(parts.query)
     query["spec"] = [encode_spec(spec)]
@@ -123,6 +131,8 @@ def record_state(
     """Record the dashboard of entry ``n`` with a different interaction state.
 
     A browser page cannot write this file, so an agent that reads the live
-    state back has to record it. Returns the new entry number.
+    state back has to record it. ``state`` replaces the entry's state;
+    ``client_state`` merges one level deep into the entry's, so omitted keys
+    (such as ``axis_links``) are kept. Returns the new entry number.
     """
     return add(_state_url(n, state, client_state), note=note, actor=actor)

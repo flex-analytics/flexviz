@@ -274,38 +274,24 @@ function handleRelayout(relayout, figUid) {
     // axis keeps its key and snaps back to its lock range.
     const unlockedAuto = autoAxes.filter(ax => !window.fvIsAxisLocked?.(figUid, ax));
     if (unlockedAuto.length < autoAxes.length) window.fvApplyAxisLocks?.(figUid);
-    for (const ax of unlockedAuto) window.fvClearFigureAxisViewport?.(figUid, ax);
-    // Only round-trip if an autoranged axis re-aggregates a trace. The
-    // cleared keys are listed as changed: absent from state means full range.
-    if (!unlockedAuto.length || !fvNeedsFetch(figUid, unlockedAuto)) return;
-    postDashboardUpdate({
-      type: 'viewport',
-      viewport_keys: unlockedAuto.map(ax => figUid + '/' + ax),
-      force_update: false,
-      selections: DASHBOARD_SPEC.state.selections || [],
-    });
+    // The cleared keys are listed as changed: absent from state means full range.
+    fvCommitViewportChange(
+      figUid, unlockedAuto.flatMap(ax => fvWriteViewport(figUid + '/' + ax, null))
+    );
     return;
   }
   if (Object.keys(complete).length === 0) return;
   const unlockedComplete = window.fvPruneAxisRangesForLocks?.(figUid, complete) || complete;
   const touchedLockedAxes = Object.keys(complete).some(k => window.fvIsAxisLocked?.(figUid, k));
-  for (const [k, v] of Object.entries(unlockedComplete)) {
-    DASHBOARD_SPEC.state.viewport[figUid + '/' + k] = { min: v[0], max: v[1] };
-  }
-  if (Object.keys(unlockedComplete).length === 0) {
+  const changed = Object.entries(unlockedComplete).flatMap(
+    ([k, v]) => fvWriteViewport(figUid + '/' + k, { min: v[0], max: v[1] })
+  );
+  if (!changed.length) {
     window.fvApplyAxisLocks?.(figUid);
     return;
   }
   if (touchedLockedAxes) window.fvApplyAxisLocks?.(figUid);
-  // Viewport is persisted above regardless; only round-trip when a changed axis
-  // re-aggregates a trace (e.g. a line's x, not its y). Mirrors the server gate.
-  if (!fvNeedsFetch(figUid, Object.keys(unlockedComplete))) return;
-  postDashboardUpdate({
-    type: 'viewport',
-    viewport_keys: Object.keys(unlockedComplete).map(k => figUid + '/' + k),
-    selections: DASHBOARD_SPEC.state.selections,
-    force_update: false,
-  });
+  fvCommitViewportChange(figUid, changed);
 }
 
 // The TRUE category value of a selected bar point: the trace's underlying

@@ -145,7 +145,7 @@ serialized state differs from the previous read; it does not say who changed it.
     "predicates": [{"clauses": [{"column": "value", "range": [10.0, 25.0]}]}]}],
   "group_domains": {}, "cross_filter_mode": "update"},
  "client_state": {"hover_mode": "off", "live_brush": "auto",
-  "axis_locks": {}, "axis_lock_ranges": {}}}
+  "axis_locks": {}, "axis_lock_ranges": {}, "axis_links": []}}
 ```
 
 - `version`/`revision`: the spec version, and a counter that increases when the serialized state differs from the previous read.

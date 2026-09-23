@@ -225,6 +225,97 @@ class TestViewportKeys:
             DashboardSpec.model_validate(data)
 
 
+def _linked_dashboard(**layouts) -> dict:
+    """Four figures on one frame: two lines on ts, a vertical and a horizontal
+    histogram of ts. Dumped, so a test can edit it and validate again."""
+    from flexviz.dashboard import Dashboard
+
+    df = pl.DataFrame({"ts": [1, 2, 3], "val": [1.0, 2.0, 3.0]})
+    dash = Dashboard(df)
+    dash.add_figure().add_line(x="ts", y="val")
+    dash.add_figure().add_line(x="ts", y="val")
+    dash.add_figure().add_histogram(x="ts")
+    dash.add_figure().add_histogram(y="ts")
+    data = dash.to_spec().model_dump()
+    for fig in data["figures"]:
+        fig["layout"].update(layouts)
+    return data
+
+
+def _uids(data: dict) -> list[str]:
+    return [fig["uid"] for fig in data["figures"]]
+
+
+class TestAxisLinks:
+    def test_valid_group_round_trips(self):
+        data = _linked_dashboard()
+        a, b, h, hy = _uids(data)
+        group = [f"{a}/x", f"{b}/x", f"{h}/x", f"{hy}/y"]
+        data["client_state"]["axis_links"] = [group, [f"{a}/y", f"{b}/y"]]
+        data["state"]["viewport"] = {k: _RANGE for k in group}
+        spec = DashboardSpec.model_validate(data)
+        assert decode_spec(encode_spec(spec)) == spec
+
+    def test_none_value_equals_an_absent_key(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["state"]["viewport"] = {f"{a}/x": None}
+        DashboardSpec.model_validate(data)
+
+    @pytest.mark.parametrize(
+        ("links", "match"),
+        [
+            (lambda a, b, h, hy: [[f"{a}/x"]], "two or more distinct"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/x"]], "two or more distinct"),
+            (lambda a, b, h, hy: [[f"{a}/x", "nope/x"]], "names no figure"),
+            (
+                lambda a, b, h, hy: [[f"{a}/x", f"{b}/x"], [f"{b}/x", f"{h}/x"]],
+                "two link groups",
+            ),
+            (lambda a, b, h, hy: [[f"{a}/x2", f"{b}/x"]], "only x and y"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{h}/y"]], "shows no data column"),
+        ],
+        ids=["single", "duplicate", "unknown-figure", "overlap", "x2", "count-axis"],
+    )
+    def test_invalid_groups_are_rejected(self, links, match):
+        data = _linked_dashboard()
+        data["client_state"]["axis_links"] = links(*_uids(data))
+        with pytest.raises(ValidationError, match=match):
+            DashboardSpec.model_validate(data)
+
+    def test_log_axis_is_rejected(self):
+        data = _linked_dashboard(xaxis={"type": "log"})
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match="log axis"):
+            DashboardSpec.model_validate(data)
+
+    def test_mixed_reversed_axes_are_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["figures"][0]["layout"]["xaxis"] = {"autorange": "reversed"}
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match="reversed"):
+            DashboardSpec.model_validate(data)
+
+    def test_unequal_linked_ranges_are_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["state"]["viewport"] = {f"{a}/x": _RANGE}
+        with pytest.raises(ValidationError, match="equal ranges"):
+            DashboardSpec.model_validate(data)
+
+    def test_partly_locked_group_is_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["client_state"]["axis_locks"] = {f"{a}/x": True}
+        with pytest.raises(ValidationError, match="locked together"):
+            DashboardSpec.model_validate(data)
+
+
 class TestTypedDicts:
     def test_trace_display_accepts_known_keys(self):
         d: TraceDisplay = {"name": "My Trace", "color": "#ff0000"}

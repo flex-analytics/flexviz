@@ -261,6 +261,23 @@ class FigureSpec(BaseModel):
     traces: list[TraceSpec] = Field(default_factory=list)
 
 
+def figure_axis_columns(figure: FigureSpec) -> dict[str, set[str]]:
+    """Map each cartesian axis id of ``figure`` to the columns its traces show.
+
+    Roles follow the trace convention: ``axes[0]`` shows ``backend_data["x"]``
+    and ``axes[1]`` shows ``backend_data["y"]``. An axis without a column (a
+    histogram's count axis, a bar's value axis) is absent.
+    """
+    columns: dict[str, set[str]] = {}
+    for trace in figure.traces:
+        for axis_id, role in zip(trace.axes or (), ("x", "y")):
+            col = trace.backend_data.get(role)
+            cols = [col] if isinstance(col, str) else list(col or [])
+            if cols:
+                columns.setdefault(axis_id, set()).update(cols)
+    return columns
+
+
 class GroupDomainState(BaseModel):
     """Client-owned group→color mapping for one group_by domain.
 
@@ -315,7 +332,8 @@ class ClientState(BaseModel):
     """Client-only persistent state not read by the server engine.
 
     Included in every POST body to ``/dashboard/update`` and in
-    share/export/import serialisation, but the server silently ignores it.
+    share/export/import serialisation. The engine ignores it; only the
+    ``DashboardSpec`` validator reads ``axis_links``.
 
     This is the designated home for client-only-but-persistent state:
     hover mode, annotation visibility, panel collapse state, axis locks, etc.
@@ -329,12 +347,19 @@ class ClientState(BaseModel):
     (default) binds ``plotly_selecting`` on range-geometry figures and slices
     client-side cubes during the drag; ``"off"`` never binds it — today's
     mouseup-only behavior bit-for-bit. The server never reads this field.
+
+    ``axis_links`` holds groups of linked axes as viewport keys
+    (``"{figure_uid}/{axis_id}"``). The client writes one range into every key
+    of a group, so linked axes zoom, pan, autorange and reset together. The
+    engine never reads it; ``DashboardSpec`` validates it (see
+    ``_check_axis_links``) so no spec can carry a link the client cannot keep.
     """
 
     hover_mode: HoverToggle = "off"
     live_brush: Literal["auto", "off"] = "auto"
     axis_locks: dict[str, bool] = Field(default_factory=dict)
     axis_lock_ranges: dict[str, AxisRange] = Field(default_factory=dict)
+    axis_links: list[list[str]] = Field(default_factory=list)
 
 
 class VisualizationSpec(BaseModel):
@@ -522,6 +547,62 @@ class DashboardSpec(BaseModel):
             if key.partition("/")[0] not in fig_uids:
                 raise ValueError(f"viewport key {key!r} names no figure in this spec")
         return self
+
+    @model_validator(mode="after")
+    def _check_axis_links(self) -> DashboardSpec:
+        """Reject links the client cannot keep equal or the engine cannot use.
+
+        Every spec entry point (builder, share URL, import, each request) runs
+        this, so a hand-built or patched spec gets the same rules as
+        ``Dashboard.link_axes``. The builder adds the one check that needs the
+        data schema: numeric and temporal axes do not mix.
+        """
+        figures = {fig.uid: fig for fig in self.figures}
+        seen: set[str] = set()
+        for group in self.client_state.axis_links:
+            if len(set(group)) != len(group) or len(group) < 2:
+                raise ValueError(
+                    f"axis link group {group} needs two or more distinct axes"
+                )
+            for key in group:
+                fig_uid, _, axis_id = key.partition("/")
+                figure = figures.get(fig_uid)
+                if figure is None:
+                    raise ValueError(
+                        f"linked axis {key!r} names no figure in this spec"
+                    )
+                if key in seen:
+                    raise ValueError(f"axis {key!r} is in two link groups")
+                seen.add(key)
+                if axis_id not in ("x", "y"):
+                    raise ValueError(f"only x and y axes can be linked, not {key!r}")
+                if axis_id not in figure_axis_columns(figure):
+                    raise ValueError(
+                        f"linked axis {key!r} shows no data column (count axes, "
+                        "categorical traces and maps cannot be linked)"
+                    )
+                if _layout_axis(figure, axis_id).get("type") == "log":
+                    raise ValueError(f"log axis {key!r} cannot be linked")
+            reversed_axes = {
+                _layout_axis(figures[key.partition("/")[0]], key.partition("/")[2]).get(
+                    "autorange"
+                )
+                == "reversed"
+                for key in group
+            }
+            if len(reversed_axes) > 1:
+                raise ValueError(f"linked axes {group} mix reversed and normal axes")
+            values = [self.state.viewport.get(key) for key in group]
+            if any(value != values[0] for value in values):
+                raise ValueError(f"linked viewport keys {group} must hold equal ranges")
+            locks = {self.client_state.axis_locks.get(key, False) for key in group}
+            if len(locks) > 1:
+                raise ValueError(f"linked axes {group} must be locked together")
+        return self
+
+
+def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
+    return figure.layout.get(f"{axis_id}axis") or {}
 
 
 # ---------------------------------------------------------------------------

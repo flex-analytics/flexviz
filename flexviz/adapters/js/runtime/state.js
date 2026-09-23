@@ -247,6 +247,30 @@ function _updateBgYExtent(figUid, yArr) {
     ? [Math.min(prev[0], mn), Math.max(prev[1], mx)]
     : [mn, mx];
 }
+// The viewport keys linked with `key` (ClientState.axis_links), itself included.
+function fvLinkedKeys(key) {
+  const groups = (DASHBOARD_SPEC.client_state && DASHBOARD_SPEC.client_state.axis_links) || [];
+  return groups.find(group => group.includes(key)) || [key];
+}
+
+// The one writer for gesture viewport changes: linked axes hold equal ranges by
+// construction (the server rejects a spec where they differ). `value` null
+// deletes the keys (autorange). Returns every key written.
+function fvWriteViewport(key, value) {
+  const viewport = DASHBOARD_SPEC.state.viewport;
+  const keys = fvLinkedKeys(key);
+  for (const k of keys) {
+    if (value == null) delete viewport[k];
+    else viewport[k] = { ...value };
+  }
+  return keys;
+}
+
+// Figure uids of viewport keys, deduplicated in order.
+function fvFiguresOfKeys(keys) {
+  return [...new Set(keys.map(key => key.slice(0, key.indexOf('/'))))];
+}
+
 function figureViewportRanges(figUid) {
   const viewport = (DASHBOARD_SPEC.state && DASHBOARD_SPEC.state.viewport) || {};
   const ranges = {};

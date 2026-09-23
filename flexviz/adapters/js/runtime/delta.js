@@ -36,6 +36,30 @@ function _fvErrorDetail(body) {
   return detail ? String(detail) : '';
 }
 
+// After a gesture on `sourceFigUid` wrote `keys` (linked keys included): redraw
+// the other figures it moved, since rendering follows state and the gesture's
+// own figure already shows its range. Then re-aggregate, in one request, every
+// figure where a changed axis binds a trace (a line's x, not its y). Mirrors
+// the server gate. Plotly.react fires no relayout, so the redraws post nothing.
+function fvCommitViewportChange(sourceFigUid, keys) {
+  if (!keys.length) return;
+  const figUids = fvFiguresOfKeys(keys);
+  for (const figUid of figUids) {
+    if (figUid !== sourceFigUid) _fvRenderFigure(figUid);
+  }
+  const needsFetch = figUids.some(figUid => fvNeedsFetch(
+    figUid,
+    keys.filter(k => k.startsWith(figUid + '/')).map(k => k.slice(figUid.length + 1))
+  ));
+  if (!needsFetch) return;
+  postDashboardUpdate({
+    type: 'viewport',
+    viewport_keys: keys,
+    selections: DASHBOARD_SPEC.state.selections || [],
+    force_update: false,
+  });
+}
+
 async function postDashboardUpdate(event) {
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.

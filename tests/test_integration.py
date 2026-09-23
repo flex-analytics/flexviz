@@ -2576,3 +2576,41 @@ class TestClientStatePassthrough:
         }
         resp = client.post("/dashboard/update", json=payload)
         assert resp.status_code == 200
+
+
+class TestAxisLinkValidation:
+    """Every spec entry point enforces the link rules, not only the builder."""
+
+    @staticmethod
+    def _linked_spec(integ_df: pl.DataFrame):
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_line(x="ts", y="val")
+        dash.add_figure().add_histogram(x="val")
+        spec = dash.to_spec(source_name=_SRC)
+        return spec, [fig.uid for fig in spec.figures]
+
+    def test_view_rejects_a_link_on_a_count_axis(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/y"]]
+        resp = client.get("/view", params={"spec": encode_spec(spec)})
+        assert resp.status_code == 400
+        assert "shows no data column" in resp.text
+
+    def test_update_rejects_unequal_linked_ranges(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/x"]]
+        payload = spec.model_dump()
+        payload["state"]["viewport"] = {f"{a}/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/dashboard/update",
+            json={
+                "spec": payload,
+                "event": {"type": "viewport", "viewport_keys": [f"{a}/x"]},
+            },
+        )
+        assert resp.status_code == 422
+        assert "equal ranges" in resp.text
