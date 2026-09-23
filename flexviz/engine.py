@@ -49,7 +49,7 @@ class TraceInfo:
     uid: str
     axes: tuple | None  # (x_anchor, y_anchor) for cartesian
     trace_type: str
-    figure_uid: str | None = None  # dashboard figure uid; None for single-figure use
+    figure_uid: str  # dashboard figure uid
 
 
 @dataclass(frozen=True)
@@ -276,25 +276,25 @@ class FlexEngine:
             cross_filter_mode=cross_filter_mode,
         )
 
+        if not partitions:
+            return []
+
         t_agg_start = time.perf_counter()
-        agg_specs = self._collect_aggregation_specs(
-            aggregation_traces=aggregation_traces,
-            backend_schema=backend_schema,
-            domains_by_uid=domains_by_uid,
-        )
+        specs_by_partition = [
+            (
+                partition,
+                self._collect_aggregation_specs(
+                    aggregation_traces=partition.items,
+                    backend_schema=backend_schema,
+                    domains_by_uid=domains_by_uid,
+                ),
+            )
+            for partition in partitions
+        ]
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
 
-        if not agg_specs:
-            return []
-
         t_start = time.perf_counter()
-        specs_by_partition = []
-        for partition in partitions:
-            uids = {item.info.uid for item in partition.items}
-            part_specs = [spec for spec in agg_specs if spec.uid in uids]
-            if part_specs:
-                specs_by_partition.append((partition, part_specs))
         if cross_filter_mode == "overlay":
             deltas = self._process_overlay_mode(
                 specs_by_partition,
@@ -854,7 +854,7 @@ class FlexEngine:
         ``recompute_axes`` is anchor-space and unifies cartesian
         (``x``/``y2``/…) and map (``coordinates``) traces.
         """
-        changed = changed_axes.get(trace_info.figure_uid or "", set())
+        changed = changed_axes.get(trace_info.figure_uid, set())
         return bool(
             changed.intersection(self._scalable_traces[trace_info.uid].recompute_axes)
         )
@@ -881,7 +881,7 @@ class FlexEngine:
         trace_info: TraceInfo,
         viewports_by_figure: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        viewport = viewports_by_figure.get(trace_info.figure_uid or "", {})
+        viewport = viewports_by_figure.get(trace_info.figure_uid, {})
         # Hand the trace only the ranges for axes it actually aggregates on, so
         # a non-binding axis (e.g. a line's y) is never fed into its agg spec.
         binding = self._scalable_traces[trace_info.uid].recompute_axes

@@ -281,7 +281,11 @@ class TestBoundsFreshness:
         try:
             hist = Histogram(x="a", bins=4)
             engine = FlexEngine(backend_lf=builder, scalable_traces={hist.uid: hist})
-            infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="hist")]
+            infos = [
+                TraceInfo(
+                    uid=hist.uid, axes=("x", "y"), trace_type="hist", figure_uid="fig"
+                )
+            ]
             _init(engine, infos)
             assert len(collects.minmax) == 1
             _init(engine, infos)

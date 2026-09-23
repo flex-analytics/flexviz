@@ -1691,7 +1691,9 @@ class TestBucketsByXWidth:
 def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
     """Drive one line trace through the engine, the way a request does."""
     engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-    infos = [TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line")]
+    infos = [
+        TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line", figure_uid="fig")
+    ]
     return engine.process(InteractionEvent(type="init", force_update=True), infos)
 
 

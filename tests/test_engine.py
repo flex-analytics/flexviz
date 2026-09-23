@@ -1036,7 +1036,11 @@ class TestBarPlotCrossFilter:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=1000)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
 
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
@@ -1048,7 +1052,11 @@ class TestBarPlotCrossFilter:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=1000)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
 
         event = InteractionEvent(type="deselect", force_update=True, selections=[])
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
@@ -1276,7 +1284,9 @@ class TestEngineBar:
 
         bar = BarPlot(labels="cat", values="val", agg="sum")
         engine = FlexEngine(backend_lf=lf, scalable_traces={bar.uid: bar})
-        infos = [TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar")]
+        infos = [
+            TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig")
+        ]
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos)
         assert len(deltas) == 1
@@ -1300,7 +1310,9 @@ class TestEngineBar:
 
         bar = BarPlot(labels="label", values="val", agg="sum", group_by="region")
         engine = FlexEngine(backend_lf=lf, scalable_traces={bar.uid: bar})
-        infos = [TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar")]
+        infos = [
+            TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig")
+        ]
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos)
         assert len(deltas) == 1
@@ -1396,7 +1408,11 @@ class TestEngineGroupedLine:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=20, group_by="sensor")
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
         event = InteractionEvent(type="init", force_update=True)
         deltas = engine.process(event, infos)
         assert len(deltas) == 1
@@ -1421,7 +1437,11 @@ class TestEngineGroupedLine:
         lf = LFQueryBuilder(df)
         line = LinePlot(x="ts", y="val", n_points=10, group_by="sensor")
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
         event = InteractionEvent(type="init", force_update=True)
         d1 = engine.process(event, infos)[0]
         d2 = engine.process(event, infos)[0]
@@ -1532,7 +1552,11 @@ class TestEngineGroupedHistAndBox:
         lf = LFQueryBuilder(df)
         hist = Histogram(x="val", bins=5, group_by="cat")
         engine = FlexEngine(backend_lf=lf, scalable_traces={hist.uid: hist})
-        infos = [TraceInfo(uid=hist.uid, axes=("x", "y"), trace_type="histogram")]
+        infos = [
+            TraceInfo(
+                uid=hist.uid, axes=("x", "y"), trace_type="histogram", figure_uid="fig"
+            )
+        ]
         deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
         assert {cr.group_value_key for cr in deltas[0].group_results} == {"A", "B"}
 
@@ -1546,7 +1570,9 @@ class TestEngineGroupedHistAndBox:
         lf = LFQueryBuilder(df)
         box = BoxPlot(y="val", group_by="region")
         engine = FlexEngine(backend_lf=lf, scalable_traces={box.uid: box})
-        infos = [TraceInfo(uid=box.uid, axes=("x", "y"), trace_type="box")]
+        infos = [
+            TraceInfo(uid=box.uid, axes=("x", "y"), trace_type="box", figure_uid="fig")
+        ]
         deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
         assert {cr.group_value_key for cr in deltas[0].group_results} == {"N", "S"}
 
@@ -2606,7 +2632,9 @@ class TestResidencySeam:
         assert lf.is_scan
         bar = BarPlot(labels="cat", values="val", agg="sum")
         engine = FlexEngine(backend_lf=lf, scalable_traces={bar.uid: bar})
-        infos = [TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar")]
+        infos = [
+            TraceInfo(uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig")
+        ]
         deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
         assert deltas[0].updates["x"] == ["a", "b"]
         assert deltas[0].updates["y"] == [4.0, 6.0]
@@ -2616,7 +2644,11 @@ class TestResidencySeam:
         lf = LFQueryBuilder(src)
         line = LinePlot(x="ts", y="val", n_points=n_points)
         engine = FlexEngine(backend_lf=lf, scalable_traces={line.uid: line})
-        infos = [TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
         deltas = engine.process(InteractionEvent(type="init", force_update=True), infos)
         return deltas[0].updates, lf.is_scan
 
@@ -2878,7 +2910,11 @@ class TestResidentLineXWidth:
     @staticmethod
     def _process(lf: LFQueryBuilder, trace: LinePlot):
         engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-        infos = [TraceInfo(uid=trace.uid, axes=("x", "y"), trace_type="line")]
+        infos = [
+            TraceInfo(
+                uid=trace.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
         return (
             engine.process(InteractionEvent(type="init", force_update=True), infos),
             infos,
@@ -3182,7 +3218,9 @@ class TestResidentLineXWidth:
             cache_backend=cache_backend,
         )
         infos = [
-            TraceInfo(uid=line.uid, axes=("x", "y"), trace_type="line")
+            TraceInfo(
+                uid=line.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
             for line in lines
         ]
         event = InteractionEvent(type="init", force_update=True)

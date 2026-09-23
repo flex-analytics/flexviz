@@ -379,7 +379,9 @@ def test_grouped_payload_is_uid_agnostic_and_restamps():
     assert "uid" not in payload["group_results"][0]
 
     item = _AggregationTrace(
-        info=TraceInfo(uid="parentB", axes=("x", "y"), trace_type="line"),
+        info=TraceInfo(
+            uid="parentB", axes=("x", "y"), trace_type="line", figure_uid="fig"
+        ),
         trace=_line_trace(),
         update_range={},
     )
