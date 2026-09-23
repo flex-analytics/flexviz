@@ -41,11 +41,14 @@ from .figure import (
 )
 from .LF import LFQueryBuilder, polars_lf_from
 from .spec import (
+    ClientState,
     DashboardSpec,
+    FigureSpec,
     InteractionState,
     LayoutSpec,
     _auto_grid_items,
     encode_spec,
+    figure_axis_columns,
 )
 
 
@@ -91,6 +94,9 @@ class Dashboard:
             self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
         self._figures: list[Figure] = []
+        # Raw link_axes calls, resolved in to_spec against the finished figures,
+        # so traces and figures added after the call still count.
+        self._link_requests: list[tuple[tuple[Figure, ...], str | None, tuple]] = []
 
     # ------------------------------------------------------------------
     # Figure management
@@ -132,6 +138,136 @@ class Dashboard:
         self._figures.append(fig)
         return fig
 
+    def link_axes(
+        self,
+        *targets: Figure | tuple[Figure, str],
+        on: str | None = None,
+        axis: str | None = None,
+    ) -> Dashboard:
+        """Link axes so they zoom, pan, autorange and reset together.
+
+        Three forms, one result:
+
+        - ``link_axes(on="ts")`` links the axis showing column ``ts`` in every
+          figure that shows it; ``link_axes(a, b, on="ts")`` only in ``a`` and
+          ``b``, each of which must show it.
+        - ``link_axes(a, b, axis="x")`` links the same axis of each figure.
+        - ``link_axes((a, "x"), (h, "y"))`` links the named axes, for example a
+          line's x with a horizontal histogram's y.
+
+        Calls that share an axis merge into one group. Only x and y axes that
+        show a numeric or temporal column can be linked (not a histogram's
+        count axis, a bar, a map or a log axis), and numeric and temporal axes
+        do not mix. Links are resolved when the spec is built, so figures and
+        traces added later count too. Raises ``ValueError`` on a bad link.
+
+        Returns
+        -------
+        Dashboard
+            ``self``, for chaining.
+        """
+        pairs = tuple(t for t in targets if isinstance(t, tuple))
+        figures = tuple(t for t in targets if not isinstance(t, tuple))
+        if pairs and figures:
+            raise ValueError("pass figures or (figure, axis) pairs, not both")
+        if pairs:
+            if on is not None or axis is not None:
+                raise ValueError("(figure, axis) pairs name their axes; drop on=/axis=")
+            if len(pairs) < 2:
+                raise ValueError("link_axes needs two or more (figure, axis) pairs")
+            if any(len(p) != 2 or not isinstance(p[1], str) for p in pairs):
+                raise ValueError("each pair must be (figure, axis_id)")
+            figures = tuple(fig for fig, _ in pairs)
+        elif (on is None) == (axis is None):
+            raise ValueError("pass exactly one of on= or axis=")
+        elif axis is not None and len(figures) < 2:
+            raise ValueError("link_axes(axis=...) needs two or more figures")
+        for fig in figures:
+            if not any(fig is own for own in self._figures):
+                raise ValueError("link_axes got a figure that is not in this dashboard")
+        members = pairs or tuple((fig, axis) for fig in figures if axis is not None)
+        self._link_requests.append((figures, on, members))
+        return self
+
+    def _resolve_axis_links(self, figure_specs: list[FigureSpec]) -> list[list[str]]:
+        """Turn the link_axes calls into merged groups of viewport keys."""
+        order = {spec.uid: i for i, spec in enumerate(figure_specs)}
+        groups: list[set[str]] = []
+        for figures, on, members in self._link_requests:
+            if on is None:
+                keys = {f"{fig._uid}/{axis_id}" for fig, axis_id in members}
+            else:
+                keys = self._keys_showing(on, figures, figure_specs)
+            for group in [g for g in groups if g & keys]:
+                keys |= group
+                groups.remove(group)
+            groups.append(keys)
+        resolved = [
+            sorted(g, key=lambda k: (order[k.partition("/")[0]], k)) for g in groups
+        ]
+        self._check_link_kinds(resolved, figure_specs)
+        return resolved
+
+    @staticmethod
+    def _keys_showing(
+        column: str, figures: tuple[Figure, ...], figure_specs: list[FigureSpec]
+    ) -> set[str]:
+        wanted = {fig._uid for fig in figures}
+        keys: set[str] = set()
+        for spec in figure_specs:
+            if wanted and spec.uid not in wanted:
+                continue
+            axes = sorted(
+                ax for ax, cols in figure_axis_columns(spec).items() if column in cols
+            )
+            if len(axes) > 1:
+                raise ValueError(
+                    f"a figure shows {column!r} on axes {axes}; name one with "
+                    "(figure, axis) pairs"
+                )
+            if axes:
+                keys.add(f"{spec.uid}/{axes[0]}")
+            elif wanted:
+                raise ValueError(
+                    f"a figure passed to link_axes shows no {column!r} axis"
+                )
+        if len(keys) < 2:
+            raise ValueError(f"link_axes(on={column!r}) found fewer than two axes")
+        return keys
+
+    def _check_link_kinds(
+        self, groups: list[list[str]], figure_specs: list[FigureSpec]
+    ) -> None:
+        """Numeric and temporal axes do not mix: a copied range would not parse.
+
+        Needs the data schema, so it runs here and not in the spec validator.
+        """
+        if self._backend_lf is None:
+            return
+        schema = self._backend_lf.schema
+        by_uid = {spec.uid: spec for spec in figure_specs}
+        for group in groups:
+            kinds = set()
+            for key in group:
+                fig_uid, _, axis_id = key.partition("/")
+                for col in figure_axis_columns(by_uid[fig_uid]).get(axis_id, ()):
+                    dtype = schema.get(col)
+                    if dtype is None:
+                        continue
+                    if dtype.is_temporal():
+                        kinds.add("temporal")
+                    elif dtype.is_numeric():
+                        kinds.add("numeric")
+                    else:
+                        raise ValueError(
+                            f"linked axis {key!r} shows {col!r} of type {dtype}; "
+                            "only numeric and temporal axes can be linked"
+                        )
+            if len(kinds) > 1:
+                raise ValueError(
+                    f"linked axes {group} mix numeric and temporal columns"
+                )
+
     # ------------------------------------------------------------------
     # Spec serialisation
     # ------------------------------------------------------------------
@@ -162,6 +298,7 @@ class Dashboard:
         return DashboardSpec(
             figures=figure_specs,
             state=InteractionState(),
+            client_state=ClientState(axis_links=self._resolve_axis_links(figure_specs)),
             # Copy so rendering never stamps grid_items onto a caller's
             # LayoutSpec, which would leak into the next dashboard reusing it.
             layout=(layout or LayoutSpec()).model_copy(deep=True),

@@ -22,6 +22,15 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Added
 
+- Linked axes: `Dashboard.link_axes` links axes across figures, so they zoom,
+  pan, autorange and reset together, and every linked figure re-aggregates in
+  one request. Link by column (`link_axes(on="ts")`, optionally for given
+  figures), by axis (`link_axes(a, b, axis="x")`) or by explicit
+  `(figure, axis)` pairs. Calls that share an axis merge. A lock on any member
+  pins the group. The links live in `client_state.axis_links` and survive share
+  URLs, export, import and `flexvizApply`. Log axes, count axes, bars and maps
+  cannot be linked, and after a double-click autorange each member autoranges
+  on its own data.
 - `flexviz history` records share URLs under a number in
   `.flexviz/history.jsonl`, with `add`, `list` and `show`. `history show N`
   prints the compact state, `--url` prints the share URL. An agent then works

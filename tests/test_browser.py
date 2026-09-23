@@ -6703,8 +6703,8 @@ def _dashboard_url_linked(
 ) -> tuple[str, list[str]]:
     """Two lines on ts, a vertical and a horizontal histogram of ts.
 
-    The x group links the four ts axes (the horizontal histogram shows ts on
-    y); a second group links the two lines' y. ``viewport`` maps a figure
+    ``link_axes(on="ts")`` links the four ts axes (the horizontal histogram
+    shows ts on y); a second call links the two lines' y. ``viewport`` maps a figure
     index + axis ("0/x") to a range, written for every key of its group.
     """
     from flexviz.dashboard import Dashboard
@@ -6714,15 +6714,17 @@ def _dashboard_url_linked(
     df = pl.DataFrame({"ts": list(range(500)), "val": [float(i) for i in range(500)]})
     register_source("_browser_test", df)
     dash = Dashboard(df)
-    dash.add_figure(title="A").add_line(x="ts", y="val", n_points=200)
-    dash.add_figure(title="B").add_line(x="ts", y="val", n_points=200)
+    a = dash.add_figure(title="A")
+    a.add_line(x="ts", y="val", n_points=200)
+    b = dash.add_figure(title="B")
+    b.add_line(x="ts", y="val", n_points=200)
     dash.add_figure(title="H").add_histogram(x="ts", bins=50)
     dash.add_figure(title="HY").add_histogram(y="ts", bins=50)
+    dash.link_axes(on="ts").link_axes(a, b, axis="y")
     spec = dash.to_spec(source_name="_browser_test")
     uids = [f.uid for f in spec.figures]
-    x_group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
-    y_group = [f"{uids[0]}/y", f"{uids[1]}/y"]
-    spec.client_state.axis_links = [x_group, y_group]
+    x_group, y_group = spec.client_state.axis_links
+    assert x_group == [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
     spec.state.cross_filter_mode = mode
     for short, (lo, hi) in (viewport or {}).items():
         idx, axis = short.split("/")
