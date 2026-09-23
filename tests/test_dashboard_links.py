@@ -147,8 +147,40 @@ class TestErrors:
         dash = Dashboard(df)
         dash.add_figure().add_line(x="ts", y="val")
         dash.link_axes(on="ts")
-        with pytest.raises(ValueError, match="fewer than two"):
+        with pytest.raises(ValueError, match="only one figure shows 'ts'"):
             dash.to_spec()
+
+    def test_unknown_column(self, df):
+        dash, *_ = _four(df)
+        dash.link_axes(on="tss")
+        with pytest.raises(ValueError, match="no figure shows 'tss'"):
+            dash.to_spec()
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda d, a, h: d.link_axes([a, "x"], [h, "x"]),
+            lambda d, a, h: d.link_axes("temp", "hist", axis="x"),
+        ],
+        ids=["list-pairs", "string-figures"],
+    )
+    def test_targets_of_the_wrong_type(self, df, call):
+        dash, a, _, h, _ = _four(df)
+        with pytest.raises(TypeError, match="figures or \\(figure, axis\\) tuples"):
+            call(dash, a, h)
+
+    def test_spec_errors_name_the_figure_not_its_uid(self, df):
+        dash = Dashboard(df)
+        a = dash.add_figure(title="temp")
+        a.add_line(x="ts", y="val")
+        h = dash.add_figure(title="hist")
+        h.add_histogram(x="ts")
+        dash.link_axes((a, "y"), (h, "y"))
+        with pytest.raises(ValueError) as info:
+            dash.to_spec()
+        message = str(info.value)
+        assert message.startswith("linked axis 'figure 2 (hist)/y' shows no data")
+        assert h._uid not in message and "validation error" not in message
 
     def test_count_axis(self, df):
         dash, a, _, h, _ = _four(df)
