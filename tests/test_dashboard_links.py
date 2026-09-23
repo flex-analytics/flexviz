@@ -188,6 +188,21 @@ class TestErrors:
         with pytest.raises(ValueError, match="only numeric, Date and Datetime"):
             dash.to_spec()
 
+    def test_mixed_time_zones(self, df):
+        """A range is copied as wall-clock text: one window, two instants."""
+        df = df.with_columns(
+            utc=pl.col("at").dt.replace_time_zone("UTC"),
+            bxl=pl.col("at").dt.replace_time_zone("Europe/Brussels"),
+        )
+        dash = Dashboard(df)
+        a = dash.add_figure()
+        a.add_line(x="utc", y="val")
+        b = dash.add_figure()
+        b.add_line(x="bxl", y="val")
+        dash.link_axes(a, b, axis="x")
+        with pytest.raises(ValueError, match="mix time zones"):
+            dash.to_spec()
+
     def test_two_axes_of_one_figure(self, df):
         dash, a, *_ = _four(df)
         dash.link_axes((a, "x"), (a, "y"))

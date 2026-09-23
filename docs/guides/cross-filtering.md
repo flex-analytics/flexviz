@@ -100,8 +100,9 @@ Rules and limits:
 
 - Only x and y axes that show a numeric, date or datetime column can be
   linked, one axis per figure in a group. A histogram's count axis, a bar, a
-  map, a log axis and a time-of-day or duration axis cannot. Numeric and
-  temporal axes do not mix; date and datetime axes do.
+  map, a log or category axis and a time-of-day or duration axis cannot.
+  Numeric and temporal axes do not mix; date and datetime axes do, if they
+  share one time zone. A reversed axis links only to reversed axes.
 - Locking the axes of one figure locks every axis linked to them.
 - After a double-click autorange, each figure autoranges to its own data. On
   one shared column the ranges usually match; on a filtered figure or a

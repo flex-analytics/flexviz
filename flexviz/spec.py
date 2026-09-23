@@ -586,13 +586,16 @@ class DashboardSpec(BaseModel):
                         f"linked axis {key!r} shows no data column (count axes, "
                         "categorical traces and maps cannot be linked)"
                     )
-                if _layout_axis(figure, axis_id).get("type") == "log":
-                    raise ValueError(f"log axis {key!r} cannot be linked")
+                axis_type = _layout_axis(figure, axis_id).get("type")
+                if axis_type not in _LINKABLE_AXIS_TYPES:
+                    raise ValueError(
+                        f"{axis_type} axis {key!r} cannot be linked: its range is "
+                        "not in data units"
+                    )
             reversed_axes = {
-                _layout_axis(figures[key.partition("/")[0]], key.partition("/")[2]).get(
-                    "autorange"
+                _axis_reversed(
+                    _layout_axis(figures[key.partition("/")[0]], key.partition("/")[2])
                 )
-                == "reversed"
                 for key in group
             }
             if len(reversed_axes) > 1:
@@ -606,8 +609,29 @@ class DashboardSpec(BaseModel):
         return self
 
 
+# Plotly axis types whose range is in data units. A log range is in log10
+# units and a category range in positions, so copying one would be wrong.
+_LINKABLE_AXIS_TYPES = (None, "-", "linear", "date")
+
+
 def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
-    return figure.layout.get(f"{axis_id}axis") or {}
+    axis = figure.layout.get(f"{axis_id}axis")
+    return axis if isinstance(axis, dict) else {}
+
+
+def _axis_reversed(axis: dict[str, Any]) -> bool:
+    """Whether Plotly draws the axis high to low: a "reversed" autorange
+    variant, or a fixed range given high to low."""
+    autorange = axis.get("autorange")
+    if isinstance(autorange, str) and "reversed" in autorange:
+        return True
+    rng = axis.get("range")
+    if isinstance(rng, (list, tuple)) and len(rng) == 2 and None not in rng:
+        try:
+            return rng[0] > rng[1]
+        except TypeError:
+            return False
+    return False
 
 
 def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
@@ -617,7 +641,9 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
     without one is skipped. Only numeric, ``Date`` and ``Datetime`` columns can
     be linked: ``Time`` and ``Duration`` render as category axes, whose ranges
     are positions, not values. A group must not mix numeric and temporal axes,
-    because a copied range would not parse. The builder and the server both run
+    because a copied range would not parse, nor time zones (``Date`` and a
+    naive ``Datetime`` count as no zone), because it is copied as wall-clock
+    text. The builder and the server both run
     this, so an imported spec gets the same rule. Raises ``ValueError``.
     """
     import polars as pl
@@ -625,6 +651,7 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
     figures = {fig.uid: fig for fig in spec.figures}
     for group in spec.client_state.axis_links:
         kinds = set()
+        zones = set()
         for key in group:
             fig_uid, _, axis_id = key.partition("/")
             figure = figures[fig_uid]
@@ -637,6 +664,7 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
                     kinds.add("numeric")
                 elif isinstance(dtype, (pl.Date, pl.Datetime)):
                     kinds.add("temporal")
+                    zones.add(getattr(dtype, "time_zone", None))
                 else:
                     raise ValueError(
                         f"linked axis {key!r} shows {col!r} of type {dtype}; only "
@@ -644,6 +672,12 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
                     )
         if len(kinds) > 1:
             raise ValueError(f"linked axes {group} mix numeric and temporal columns")
+        if len(zones) > 1:
+            # A range is copied as wall-clock text, so one window would be a
+            # different instant in each zone.
+            raise ValueError(
+                f"linked axes {group} mix time zones {sorted(map(str, zones))}"
+            )
 
 
 # ---------------------------------------------------------------------------

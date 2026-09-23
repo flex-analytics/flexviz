@@ -300,13 +300,38 @@ class TestAxisLinks:
         with pytest.raises(ValidationError, match="log axis"):
             DashboardSpec.model_validate(data)
 
-    def test_mixed_reversed_axes_are_rejected(self):
+    @pytest.mark.parametrize(
+        "xaxis",
+        [
+            {"autorange": "reversed"},
+            {"autorange": "min reversed"},
+            {"autorange": "max reversed"},
+            {"autorange": False, "range": [3, 1]},
+        ],
+        ids=["reversed", "min-reversed", "max-reversed", "descending-range"],
+    )
+    def test_mixed_reversed_axes_are_rejected(self, xaxis):
         data = _linked_dashboard()
         a, b, *_ = _uids(data)
-        data["figures"][0]["layout"]["xaxis"] = {"autorange": "reversed"}
+        data["figures"][0]["layout"]["xaxis"] = xaxis
         data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
         with pytest.raises(ValidationError, match="reversed"):
             DashboardSpec.model_validate(data)
+
+    @pytest.mark.parametrize("axis_type", ["log", "category", "multicategory"])
+    def test_axis_types_outside_data_units_are_rejected(self, axis_type):
+        data = _linked_dashboard(xaxis={"type": axis_type})
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match=f"{axis_type} axis"):
+            DashboardSpec.model_validate(data)
+
+    def test_non_dict_axis_layout_is_ignored(self):
+        """Plotly ignores it too; it must not crash validation."""
+        data = _linked_dashboard(xaxis="oops")
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        DashboardSpec.model_validate(data)
 
     def test_unequal_linked_ranges_are_rejected(self):
         data = _linked_dashboard()
