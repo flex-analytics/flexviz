@@ -274,15 +274,6 @@ window.fvOnResetPanel = async function(figUid) {
     force_update: true,
   });
 };
-window.fvOnReset = async function() {
-  window.fvClearUnlockedViewports?.();
-  window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'init', selections: [], force_update: true});
-};
-window.fvOnDeselect = async function() {
-  window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
-};
 window.fvOnCfMode = async function() {
   if (!DASHBOARD_SPEC.state) DASHBOARD_SPEC.state = {};
   const mode = DASHBOARD_SPEC.state.cross_filter_mode || 'update';

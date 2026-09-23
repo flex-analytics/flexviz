@@ -91,12 +91,8 @@ function fvCachePut(event, figureDeltas) {
 // needed: the whole-dashboard blob is only ever written when every figure is
 // cacheable (see fvCacheActive), so a present blob already contains each
 // figure's exact unfiltered slice.
-function _fvEventFigureUids(event) {
-  return [...new Set((event.viewport_keys || []).map(key => key.split('/')[0]))];
-}
-
 function _fvFigureCacheEligible(event) {
-  const figUids = _fvEventFigureUids(event);
+  const figUids = fvFiguresOfKeys(event.viewport_keys || []);
   return (
     _fvCacheableSources.size > 0 &&
     event.type === 'viewport' &&
@@ -113,7 +109,7 @@ function fvCacheGetFigure(event) {
   const blob = _fvResponseCache.get(_fvCacheKey(event));
   if (!blob) return null;
   const out = {};
-  for (const figUid of _fvEventFigureUids(event)) {
+  for (const figUid of fvFiguresOfKeys(event.viewport_keys || [])) {
     if (!blob[figUid]) return null;
     out[figUid] = cloneObj(blob[figUid]);
   }
