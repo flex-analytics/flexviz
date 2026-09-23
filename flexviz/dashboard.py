@@ -61,6 +61,7 @@ def _name_figures(message: str, figure_specs: list[FigureSpec]) -> str:
         if isinstance(title, dict):
             title = title.get("text")
         label = f"figure {number}" + (f" ({title})" if title else "")
+        message = message.replace(f"{spec.uid}/", f"{label}, axis ")
         message = message.replace(spec.uid, label)
     return message
 

@@ -78,6 +78,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   own selection, including when it is re-aggregated together with others.
 - `state.viewport` keys must have the form `"<figure_uid>/<axis_id>"` and name
   a figure of the spec. Bare axis keys are rejected.
+- A figure uid cannot contain `/`.
+- `decode_spec` and `/share` refuse a spec of another spec version, with an
+  error that names both versions. Before, such a spec failed on a field or
+  loaded with missing state.
+- `encode_spec` takes a spec model only, not a dict.
 - In overlay mode, zooming a figure that sources a selection now refreshes all
   of its traces. Before, its heatmap-like traces kept stale data.
 - ECharts (deprecated): zoom no longer re-aggregates.

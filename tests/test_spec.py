@@ -28,6 +28,7 @@ from flexviz.spec import (
     _auto_grid_items,
     decode_spec,
     encode_spec,
+    parse_spec,
 )
 
 # ---- helpers ---------------------------------------------------------------
@@ -224,6 +225,11 @@ class TestViewportKeys:
         with pytest.raises(ValidationError, match="other/x"):
             VisualizationSpec.model_validate(spec)
 
+    def test_figure_uid_cannot_hold_a_slash(self):
+        """A viewport key splits at its one slash."""
+        with pytest.raises(ValidationError, match="uid"):
+            FigureSpec(uid="fig/1")
+
     def test_dashboard_rejects_key_of_unknown_figure(self):
         data = _make_dashboard_spec().model_dump()
         data["state"]["viewport"] = {"fig-1/x": _RANGE, "fig-9/x": _RANGE}
@@ -272,8 +278,8 @@ class TestAxisLinks:
     @pytest.mark.parametrize(
         ("links", "match"),
         [
-            (lambda a, b, h, hy: [[f"{a}/x"]], "two or more distinct"),
-            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/x"]], "two or more distinct"),
+            (lambda a, b, h, hy: [[f"{a}/x"]], "two or more figures"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/x"]], "two or more figures"),
             (lambda a, b, h, hy: [[f"{a}/x", "nope/x"]], "names no figure"),
             (
                 lambda a, b, h, hy: [[f"{a}/x", f"{b}/x"], [f"{b}/x", f"{h}/x"]],
@@ -403,13 +409,19 @@ class TestEncodeDecodeSpec:
         assert decoded.layout.grid_items is not None
         assert decoded.layout.grid_items[1].x == 6
 
-    def test_encode_plain_dict(self):
+    def test_parse_plain_dict(self):
         original = _make_viz_spec()
         raw = json.loads(original.model_dump_json())
-        decoded = decode_spec(encode_spec(raw))
+        parsed = parse_spec(raw)
 
-        assert isinstance(decoded, VisualizationSpec)
-        assert decoded.figure.uid == original.figure.uid
+        assert isinstance(parsed, VisualizationSpec)
+        assert parsed.figure.uid == original.figure.uid
+
+    def test_other_spec_version_is_refused(self):
+        raw = json.loads(_make_dashboard_spec().model_dump_json())
+        raw["version"] = "0.5"
+        with pytest.raises(ValueError, match="spec version '0.5' is not supported"):
+            parse_spec(raw)
 
     def test_auto_detect_dashboard(self):
         """decode_spec detects DashboardSpec by the 'figures' key."""

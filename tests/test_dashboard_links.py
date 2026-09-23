@@ -179,7 +179,7 @@ class TestErrors:
         with pytest.raises(ValueError) as info:
             dash.to_spec()
         message = str(info.value)
-        assert message.startswith("linked axis 'figure 2 (hist)/y' shows no data")
+        assert message.startswith("linked axis 'figure 2 (hist), axis y' shows no data")
         assert h._uid not in message and "validation error" not in message
 
     def test_count_axis(self, df):
@@ -232,7 +232,9 @@ class TestErrors:
         b = dash.add_figure()
         b.add_line(x="bxl", y="val")
         dash.link_axes(a, b, axis="x")
-        with pytest.raises(ValueError, match="mix time zones"):
+        with pytest.raises(
+            ValueError, match="mix Europe/Brussels time on a date axis and UTC time"
+        ):
             dash.to_spec()
 
     def test_numeric_column_on_a_date_axis(self, df):
@@ -244,7 +246,7 @@ class TestErrors:
         b = dash.add_figure()
         b.add_line(x="ts", y="val")
         dash.link_axes(a, b, axis="x")
-        with pytest.raises(ValueError, match="numeric 'ts' on a date axis"):
+        with pytest.raises(ValueError, match="'ts' of type Int64 on a date axis"):
             dash.to_spec()
 
     def test_date_and_linear_axis_types_do_not_mix(self, df):
@@ -256,7 +258,10 @@ class TestErrors:
         b = dash.add_figure()
         b.add_line(x="at", y="val")
         dash.link_axes(a, b, axis="x")
-        with pytest.raises(ValueError, match="mix date and linear axis types"):
+        with pytest.raises(
+            ValueError,
+            match="mix naive time on a date axis and naive time on a linear axis",
+        ):
             dash.to_spec()
 
     def test_two_axes_of_one_figure(self, df):
@@ -272,7 +277,9 @@ class TestErrors:
         b = dash.add_figure()
         b.add_line(x="day", y="val")
         dash.link_axes(a, b, axis="x")
-        with pytest.raises(ValueError, match="mix numeric and temporal"):
+        with pytest.raises(
+            ValueError, match="mix naive time on a date axis and numeric"
+        ):
             dash.to_spec()
 
 

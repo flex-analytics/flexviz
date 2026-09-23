@@ -2615,9 +2615,9 @@ class TestAxisLinkValidation:
         assert resp.status_code == 422
         assert "equal ranges" in resp.text
 
-    def test_update_rejects_a_numeric_to_date_link(self, client: TestClient):
-        """The type rule needs the source schema, so the server runs it for
-        imported specs that never met the builder."""
+    @staticmethod
+    def _numeric_to_date_link() -> DashboardSpec:
+        """A hand-built link that only the source schema shows is invalid."""
         import datetime as dt
 
         df = pl.DataFrame(
@@ -2634,12 +2634,33 @@ class TestAxisLinkValidation:
         spec = dash.to_spec(source_name="_integ_dates")
         a, b = (fig.uid for fig in spec.figures)
         spec.client_state.axis_links = [[f"{a}/x", f"{b}/x"]]
+        return spec
+
+    def test_update_rejects_a_numeric_to_date_link(self, client: TestClient):
+        """The type rule needs the source schema, so the server runs it for
+        imported specs that never met the builder."""
+        spec = self._numeric_to_date_link()
         resp = client.post(
             "/dashboard/update",
             json={"spec": spec.model_dump(mode="json"), "event": {"type": "init"}},
         )
         assert resp.status_code == 422
-        assert "mix numeric and temporal" in resp.text
+        assert "mix naive time on a date axis and numeric" in resp.text
+
+    def test_share_rejects_a_numeric_to_date_link(self, client: TestClient):
+        """Else /share issues a URL whose page fails on its first request."""
+        payload = self._numeric_to_date_link().model_dump(mode="json")
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "mix naive time on a date axis and numeric" in resp.text
+
+    def test_view_rejects_a_numeric_to_date_link(self, client: TestClient):
+        spec = self._numeric_to_date_link()
+        resp = client.get("/view", params={"spec": encode_spec(spec)})
+        assert resp.status_code == 400
+        assert "mix naive time on a date axis and numeric" in resp.text
 
     def test_share_rejects_a_single_figure_key_of_another_figure(
         self, client: TestClient, integ_df: pl.DataFrame

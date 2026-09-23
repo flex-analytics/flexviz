@@ -614,14 +614,14 @@ class TestPlotlyHtml:
     def test_plotly_uid_handlers_use_json_string_literals(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 
-        uid = "fig');window.__fv_xss=1;//"
+        uid = "fig');window.__fv_xss=1;('"
         spec = DashboardSpec(figures=[FigureSpec(uid=uid, traces=[])])
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url="http://test")
         # In the bundle architecture, handlers receive figUid from the forEach loop
         # (never as an inline literal), so the injection string is only in _fvAllFigUids.
-        assert "handleRelayout(rd, 'fig');window.__fv_xss=1;//')" not in html
+        assert "handleRelayout(rd, 'fig');window.__fv_xss=1;('')" not in html
         # UID appears JSON-encoded in the _fvAllFigUids array
-        assert "fig');window.__fv_xss=1;//" in html  # present but only in the array
+        assert "fig');window.__fv_xss=1;('" in html  # present but only in the array
 
     def test_layout_gap_is_sanitized_for_style_blocks(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter

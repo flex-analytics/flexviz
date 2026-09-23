@@ -152,6 +152,17 @@ def get_source(name: str) -> LFQueryBuilder:
         raise KeyError(f"Unknown source {name!r}. Registered: {list(_sources)}")
 
 
+def _check_link_types(spec: DashboardSpec) -> None:
+    """Check linked axes against the registered source schemas.
+
+    The spec validator cannot see the data types. A source that is not
+    registered is skipped. Raises ``ValueError``.
+    """
+    if spec.client_state.axis_links:
+        names = {fig.source for fig in spec.figures} & _sources.keys()
+        check_axis_link_types(spec, {name: _sources[name].schema for name in names})
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -438,15 +449,16 @@ async def share(req: ShareRequest) -> dict[str, str]:
 
     The spec is gzip-compressed and base64url-encoded so it fits in a URL
     query parameter.  Returns ``{"url": "<server_url>/view?spec=<encoded>"}``."""
-    from flexviz.spec import decode_spec, encode_spec
+    from flexviz.spec import encode_spec, parse_spec
 
-    encoded = encode_spec(req.spec)
-    # Decode what /view will decode, so an invalid spec fails here, not later.
+    # Apply the checks of /view, so an invalid spec fails here, not later.
     try:
-        decode_spec(encoded)
+        spec = parse_spec(req.spec)
+        if isinstance(spec, DashboardSpec):
+            _check_link_types(spec)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
-    url = f"{req.server_url.rstrip('/')}/view?spec={encoded}"
+    url = f"{req.server_url.rstrip('/')}/view?spec={encode_spec(spec)}"
     return {"url": url}
 
 
@@ -467,6 +479,7 @@ def _render_spec_html(spec: str, renderer: str, server_url: str) -> HTMLResponse
         else:
             # Wrap single-figure spec into a 1-figure dashboard.
             dash_spec = _DashboardSpec(figures=[decoded.figure], state=decoded.state)
+        _check_link_types(dash_spec)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
     from flexviz.adapters import build_adapter, validate_dashboard_renderer
@@ -591,12 +604,8 @@ async def dashboard_update(
                 except KeyError as exc:
                     raise HTTPException(status_code=404, detail=str(exc))
 
-    # Linked axes need the source schemas, which the spec validator cannot see.
     try:
-        check_axis_link_types(
-            req.spec,
-            {name: lf.schema for name, lf in source_map.items() if lf is not None},
-        )
+        _check_link_types(req.spec)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
