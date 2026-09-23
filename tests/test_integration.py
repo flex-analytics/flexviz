@@ -2641,6 +2641,19 @@ class TestAxisLinkValidation:
         assert resp.status_code == 422
         assert "mix numeric and temporal" in resp.text
 
+    def test_share_rejects_a_single_figure_key_of_another_figure(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        fig = Figure(integ_df)
+        fig.add_line(x="ts", y="val")
+        payload = fig.to_spec(source=_SRC).model_dump(mode="json")
+        payload["state"]["viewport"] = {"other/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "other/x" in resp.text
+
     def test_share_rejects_a_spec_that_view_would_reject(
         self, client: TestClient, integ_df: pl.DataFrame
     ):

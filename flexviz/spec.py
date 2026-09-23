@@ -308,8 +308,8 @@ class InteractionState(BaseModel):
         cls, viewport: dict[str, ViewportStateValue]
     ) -> dict[str, ViewportStateValue]:
         for key in viewport:
-            fig_uid, sep, axis_id = key.partition("/")
-            if not (fig_uid and sep and axis_id):
+            fig_uid, _, axis_id = key.partition("/")
+            if key.count("/") != 1 or not (fig_uid and axis_id):
                 raise ValueError(
                     f"viewport key {key!r} must have the form '<figure_uid>/<axis_id>'"
                 )
@@ -373,6 +373,14 @@ class VisualizationSpec(BaseModel):
     version: str = _SPEC_VERSION
     figure: FigureSpec = Field(default_factory=FigureSpec)
     state: InteractionState = Field(default_factory=InteractionState)
+
+    @model_validator(mode="after")
+    def _check_viewport_figure(self) -> VisualizationSpec:
+        # Same rule as DashboardSpec, which /view wraps this spec into.
+        for key in self.state.viewport:
+            if key.partition("/")[0] != self.figure.uid:
+                raise ValueError(f"viewport key {key!r} names no figure in this spec")
+        return self
 
 
 _GRIDSTACK_CELL_HEIGHT_PX: int = 80
