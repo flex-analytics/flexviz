@@ -1691,7 +1691,9 @@ class TestBucketsByXWidth:
 def _run_line(lf: LFQueryBuilder, trace: LinePlot) -> list:
     """Drive one line trace through the engine, the way a request does."""
     engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-    infos = [TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line")]
+    infos = [
+        TraceInfo(uid=trace.uid, axes=trace._axes, trace_type="line", figure_uid="fig")
+    ]
     return engine.process(InteractionEvent(type="init", force_update=True), infos)
 
 
@@ -1994,12 +1996,10 @@ class TestNthScanPlan:
             )
             deltas = engine.process(event, infos)
         elif x_range is None:
-            event = InteractionEvent(type="init", force_update=True, figure_uid="fig")
+            event = InteractionEvent(type="init", force_update=True)
             deltas = engine.process(event, infos)
         else:
-            event = InteractionEvent(
-                type="viewport", axis_ranges={"x": x_range}, figure_uid="fig"
-            )
+            event = InteractionEvent(type="viewport", viewport_keys=["fig/x"])
             deltas = engine.process(
                 event, infos, viewports_by_figure={"fig": {"x": x_range}}
             )

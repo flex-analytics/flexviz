@@ -222,8 +222,8 @@ class TestPredicateDashboard:
                 };
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
-                    type: 'selection', axis_ranges: {},
-                    selections: [sel], force_update: true, figure_uid: fig.uid
+                    type: 'selection',
+                    selections: [sel], force_update: true
                 });
             }""")
         page.wait_for_timeout(800)
@@ -252,8 +252,8 @@ class TestPredicateDashboard:
                 };
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
-                    type: 'selection', axis_ranges: {},
-                    selections: [sel], force_update: true, figure_uid: fig.uid
+                    type: 'selection',
+                    selections: [sel], force_update: true
                 });
             }""")
         page.wait_for_timeout(800)
@@ -370,8 +370,8 @@ class TestPredicateDashboard:
                     // posting (postDashboardUpdate does not sync state from the event).
                     DASHBOARD_SPEC.state.selections = selections;
                     await postDashboardUpdate({
-                        type: 'selection', axis_ranges: {},
-                        selections, force_update: true, figure_uid: fig.uid
+                        type: 'selection',
+                        selections, force_update: true
                     });
                 }""")
             page.wait_for_function(
@@ -381,8 +381,8 @@ class TestPredicateDashboard:
                     const fig = DASHBOARD_SPEC.figures[2];
                     DASHBOARD_SPEC.state.selections = [];
                     await postDashboardUpdate({
-                        type: 'deselect', axis_ranges: {},
-                        selections: [], force_update: true, figure_uid: fig.uid
+                        type: 'deselect',
+                        selections: [], force_update: true
                     });
                 }""")
             page.wait_for_function(

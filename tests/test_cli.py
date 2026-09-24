@@ -433,6 +433,28 @@ def test_record_state_wraps_a_single_figure_entry(monkeypatch, tmp_path):
     assert spec.client_state.hover_mode == "on"
 
 
+def test_record_state_keeps_links_and_checks_them(monkeypatch, tmp_path):
+    """A client_state patch without ``axis_links`` keeps the entry's links, and
+    a state that breaks a link is refused before it is recorded."""
+    monkeypatch.chdir(tmp_path)
+    spec = _demo_dashboard().to_spec(source_name="demo")
+    keys = [f"{fig.uid}/x" for fig in spec.figures]
+    spec.client_state.axis_links = [keys]
+    first = history.add(f"http://127.0.0.1:8000/view?spec={encode_spec(spec)}")
+
+    rng = {"min": 1.0, "max": 2.0}
+    n = history.record_state(
+        first, {"viewport": {key: rng for key in keys}}, {"hover_mode": "on"}
+    )
+    recorded = decode_spec(encoded_spec_from_url(history.entry(n)["url"]))
+    assert recorded.client_state.axis_links == [keys]
+    assert recorded.client_state.hover_mode == "on"
+
+    with pytest.raises(ValueError, match="equal ranges"):
+        history.record_state(first, {"viewport": {keys[0]: rng}})
+    assert len(history.entries()) == 2
+
+
 def test_history_show_unknown_number_exits_nonzero(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):

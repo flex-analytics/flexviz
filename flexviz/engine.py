@@ -37,7 +37,7 @@ from .trace.hist import _HIST_BIN_EPSILON
 # only events cached in Phase 1: the engine forces them to drop all
 # selections (`_active_selections`), so the result is the unfiltered base — a
 # float-free, content-addressable computation shared across reloads/viewers.
-_CACHEABLE_EVENT_TYPES = frozenset({"init", "reset", "deselect"})
+_CACHEABLE_EVENT_TYPES = frozenset({"init", "deselect"})
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class TraceInfo:
     uid: str
     axes: tuple | None  # (x_anchor, y_anchor) for cartesian
     trace_type: str
-    figure_uid: str | None = None  # dashboard figure uid; None for single-figure use
+    figure_uid: str  # dashboard figure uid
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,29 @@ def _union_shared_domains(
         return None
     union = (min(b[0] for b in bounds), max(b[1] for b in bounds))
     return {**domains, **{c: union for c in sibling_cols}}
+
+
+def _changed_axes_by_figure(viewport_keys: list[str]) -> dict[str, set[str]]:
+    """Split ``"<figure_uid>/<axis_id>"`` state keys into axis ids per figure."""
+    changed: dict[str, set[str]] = {}
+    for key in viewport_keys:
+        figure_uid, _, axis_id = key.partition("/")
+        changed.setdefault(figure_uid, set()).add(axis_id)
+    return changed
+
+
+@dataclass(frozen=True)
+class _Partition:
+    """Traces that share one selection filter set.
+
+    ``owner`` is the figure whose own selection is left out of ``filter_exprs``
+    (a figure is never filtered by its own selection), or ``None`` for traces
+    of figures that own no active selection.
+    """
+
+    owner: str | None
+    items: list[_AggregationTrace]
+    filter_exprs: list[pl.Expr]
 
 
 def _normalize_axis_ranges(ranges: dict[str, Any]) -> dict[str, Any]:
@@ -170,6 +193,7 @@ class FlexEngine:
         backend_schema = (
             self._backend_lf.schema if self._backend_lf is not None else None
         )
+        changed_axes = _changed_axes_by_figure(event.viewport_keys)
         active_selections = self._active_selections(event)
         selection_fig_uids = {
             sel.source_figure_uid
@@ -177,16 +201,11 @@ class FlexEngine:
             if sel.source_figure_uid is not None
         }
 
-        filter_exprs = self._selection_filter_exprs(
-            active_selections=active_selections,
-            backend_schema=backend_schema,
-            event=event,
-        )
-
         aggregation_traces = self._aggregation_traces(
             event=event,
             trace_infos=trace_infos,
             selection_fig_uids=selection_fig_uids,
+            changed_axes=changed_axes,
             viewports_by_figure=viewports_by_figure,
         )
 
@@ -194,11 +213,11 @@ class FlexEngine:
         # grouping feeds both the aggregation specs and the cache key (an
         # entry computed for a different sibling set is a different result).
         # ``data_axis_zoomed`` is "has a real viewport range", not merely
-        # "key present": an autorange/reset posts ``{axis: null}`` (unzoomed),
-        # which must NOT drop the histogram from its shared-domain group — else
-        # siblings fall back to per-column domains and misalign. Mirrors the
-        # cube caller's ``anchor_range is not None`` and ``get_aggregation_spec``
-        # itself, which treat ``None`` as unzoomed.
+        # "key present": a ``None`` state value is unzoomed and must NOT drop
+        # the histogram from its shared-domain group — else siblings fall back
+        # to per-column domains and misalign. Mirrors the cube caller's
+        # ``anchor_range is not None`` and ``get_aggregation_spec`` itself,
+        # which treat ``None`` as unzoomed.
         histogram_domains = self._histogram_domain_cols_by_uid(
             (
                 (
@@ -242,50 +261,55 @@ class FlexEngine:
             for item in aggregation_traces:
                 item.trace.check_source(self._backend_lf)
 
+        partitions = self._partitions(
+            aggregation_traces, active_selections, selection_fig_uids, backend_schema
+        )
+
         # Resolved only here, past the fast-path: a fully cached request needs
         # no min/max scan at all. Both overlay layers reuse these specs, so the
         # mode decides the scope: in overlay mode every column resolves
         # unfiltered, because the background layer pins the axis.
         domains_by_uid = self._resolve_domains(
-            aggregation_traces,
+            partitions,
             histogram_domains,
             backend_schema,
-            filter_exprs=filter_exprs,
             cross_filter_mode=cross_filter_mode,
         )
 
+        if not partitions:
+            return []
+
         t_agg_start = time.perf_counter()
-        agg_specs = self._collect_aggregation_specs(
-            aggregation_traces=aggregation_traces,
-            backend_schema=backend_schema,
-            domains_by_uid=domains_by_uid,
-        )
+        specs_by_partition = [
+            (
+                partition,
+                self._collect_aggregation_specs(
+                    aggregation_traces=partition.items,
+                    backend_schema=backend_schema,
+                    domains_by_uid=domains_by_uid,
+                ),
+            )
+            for partition in partitions
+        ]
         t_agg_end = time.perf_counter()
         logger.info(f"Total get agg_spec time: {t_agg_end - t_agg_start:.4f}s")
-
-        if not agg_specs:
-            return []
 
         t_start = time.perf_counter()
         if cross_filter_mode == "overlay":
             deltas = self._process_overlay_mode(
-                agg_specs=agg_specs,
-                filter_exprs=filter_exprs,
+                specs_by_partition,
                 has_active_selections=bool(active_selections),
-                trace_infos=trace_infos,
                 event=event,
-                selection_fig_uids=selection_fig_uids,
-                viewports_by_figure=viewports_by_figure,
+                changed_axes=changed_axes,
             )
         else:
-            deltas = self._process_update_mode(
-                agg_specs=agg_specs,
-                filter_exprs=filter_exprs,
-                trace_infos=trace_infos,
-                event=event,
-                selection_fig_uids=selection_fig_uids,
-                viewports_by_figure=viewports_by_figure,
-            )
+            deltas = [
+                delta
+                for partition, part_specs in specs_by_partition
+                for delta in self._aggregate_layer(
+                    partition.filter_exprs, part_specs, partition.items
+                )
+            ]
 
         if cache_items:
             self._store_in_cache(cache_items, deltas)
@@ -759,7 +783,7 @@ class FlexEngine:
         return tuple(dims)
 
     def _active_selections(self, event: InteractionEvent) -> list[Any]:
-        if event.type in ("deselect", "reset", "init"):
+        if event.type in ("deselect", "init"):
             return []
         return list(event.selections)
 
@@ -767,25 +791,23 @@ class FlexEngine:
         self,
         active_selections: list[Any],
         backend_schema: pl.Schema | None,
-        event: InteractionEvent,
+        owner: str | None,
     ) -> list[pl.Expr]:
-        """Build filter expressions from non-self selections' predicates.
+        """Build filter expressions from every selection except ``owner``'s.
 
-        Each non-self selection contributes one Polars expression (its
-        predicates ORed together).  All such expressions are returned
-        in a list — the caller passes them as positional args to
-        ``LazyFrame.filter(*exprs)`` which ANDs them.
+        Each selection contributes one Polars expression (its predicates ORed
+        together).  All such expressions are returned in a list — the caller
+        passes them as positional args to ``LazyFrame.filter(*exprs)`` which
+        ANDs them.  A figure is never filtered by its own selection.
         """
         if not active_selections or self._backend_lf is None:
             return []
-
-        ignore_source_uid = event.figure_uid if event.type == "viewport" else None
 
         filter_exprs: list[pl.Expr] = []
         for sel in active_selections:
             if sel.source_figure_uid is None:
                 continue
-            if sel.source_figure_uid == ignore_source_uid:
+            if sel.source_figure_uid == owner:
                 continue
             if not sel.predicates:
                 continue
@@ -796,69 +818,81 @@ class FlexEngine:
             )
         return filter_exprs
 
+    def _partitions(
+        self,
+        aggregation_traces: list[_AggregationTrace],
+        active_selections: list[Any],
+        selection_fig_uids: set[str | None],
+        backend_schema: pl.Schema | None,
+    ) -> list[_Partition]:
+        """Group traces by the selection they must ignore: their own figure's.
+
+        One partition, one pass, unless a re-aggregated figure owns
+        an active selection, e.g. a linked zoom that reaches an owner figure.
+        """
+        items_by_owner: dict[str | None, list[_AggregationTrace]] = {}
+        for item in aggregation_traces:
+            fig_uid = item.info.figure_uid
+            owner = fig_uid if fig_uid in selection_fig_uids else None
+            items_by_owner.setdefault(owner, []).append(item)
+        return [
+            _Partition(
+                owner=owner,
+                items=items,
+                filter_exprs=self._selection_filter_exprs(
+                    active_selections, backend_schema, owner
+                ),
+            )
+            for owner, items in items_by_owner.items()
+        ]
+
+    def _viewport_changed(
+        self, trace_info: TraceInfo, changed_axes: dict[str, set[str]]
+    ) -> bool:
+        """Whether the event moved one of the trace's data-binding axes.
+
+        ``recompute_axes`` is anchor-space and unifies cartesian
+        (``x``/``y2``/…) and map (``coordinates``) traces.
+        """
+        changed = changed_axes.get(trace_info.figure_uid, set())
+        return bool(
+            changed.intersection(self._scalable_traces[trace_info.uid].recompute_axes)
+        )
+
     def _should_process_trace(
         self,
         event: InteractionEvent,
         trace_info: TraceInfo,
         selection_fig_uids: set[str | None],
-        viewports_by_figure: dict[str, dict[str, Any]],
+        changed_axes: dict[str, set[str]],
     ) -> bool:
-        if (
-            selection_fig_uids
-            and trace_info.figure_uid in selection_fig_uids
-            and (event.type == "selection" or trace_info.figure_uid != event.figure_uid)
-        ):
+        if self._viewport_changed(trace_info, changed_axes):
+            return True
+        if not event.force_update:
             return False
-
-        scalable = self._scalable_traces[trace_info.uid]
-        changed_axes = self._trace_event_ranges(
-            event=event,
-            figure_uid=trace_info.figure_uid,
-            viewports_by_figure=viewports_by_figure,
+        # A selection event leaves its source figures as they are: their own
+        # selection never filters them, so their data did not change.
+        return not (
+            event.type == "selection" and trace_info.figure_uid in selection_fig_uids
         )
-        # A viewport change only re-aggregates this trace if it moved one of the
-        # trace's data-binding axes. ``recompute_axes`` is anchor-space and
-        # unifies cartesian (``x``/``y2``/…) and map (``coordinates``) traces.
-        needs_zoom = bool(set(scalable.recompute_axes) & set(changed_axes))
-        return bool(event.force_update or needs_zoom)
-
-    def _trace_event_ranges(
-        self,
-        event: InteractionEvent,
-        figure_uid: str | None,
-        viewports_by_figure: dict[str, dict[str, Any]],
-    ) -> dict[str, Any]:
-        if event.type == "viewport":
-            return _normalize_axis_ranges(event.axis_ranges)
-        if figure_uid is None:
-            return {}
-        return dict(viewports_by_figure.get(figure_uid, {}))
 
     def _trace_update_range(
         self,
-        event: InteractionEvent,
         trace_info: TraceInfo,
         viewports_by_figure: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        if event.type == "reset":
-            return {}
-        update_range = self._trace_event_ranges(
-            event=event,
-            figure_uid=trace_info.figure_uid,
-            viewports_by_figure=viewports_by_figure,
-        )
+        viewport = viewports_by_figure.get(trace_info.figure_uid, {})
         # Hand the trace only the ranges for axes it actually aggregates on, so
         # a non-binding axis (e.g. a line's y) is never fed into its agg spec.
         binding = self._scalable_traces[trace_info.uid].recompute_axes
-        return {ax: update_range[ax] for ax in binding if ax in update_range}
+        return {ax: viewport[ax] for ax in binding if ax in viewport}
 
     def _resolve_domains(
         self,
-        aggregation_traces: list[_AggregationTrace],
+        partitions: list[_Partition],
         histogram_domains: dict[str, tuple[str, ...]],
         schema: pl.Schema | None,
         *,
-        filter_exprs: list[pl.Expr],
         cross_filter_mode: str,
     ) -> dict[str, dict[str, tuple[Any, Any]]]:
         """Resolve the ``(min, max)`` bounds of this request, per trace.
@@ -867,12 +901,12 @@ class FlexEngine:
         unzoomed histogram instead takes the union its same-figure siblings
         share, so their bars line up.
 
-        Two scopes, one collect each, and a column may sit in both. Histogram
-        bin edges must not move when a cross-filter narrows the data, so they
-        take the unfiltered frame. A trace with ``domain_follows_filter``
-        instead takes the filtered rows' extent, but only in update mode: in
-        overlay mode the unfiltered background layer pins the axis, and both
-        layers share one spec list.
+        Histogram bin edges must not move when a cross-filter narrows the data,
+        so they take the unfiltered frame: one collect for every partition. A
+        trace with ``domain_follows_filter`` instead takes its partition's
+        filtered rows' extent (one collect per partition that has any), but
+        only in update mode: in overlay mode the unfiltered background layer
+        pins the axis, and both layers share one spec list.
 
         The builder memoizes the unfiltered bounds when it is ``static``. An
         uncached scan resolves again, so a reset can see changed data on disk.
@@ -880,39 +914,50 @@ class FlexEngine:
         """
         if self._backend_lf is None:
             return {}
-        domain_cols = {
-            item.info.uid: histogram_domains.get(item.info.uid)
-            or item.trace.domain_cols(item.update_range)
-            for item in aggregation_traces
-        }
-        follows: set[str] = set()
-        if filter_exprs and cross_filter_mode == "update":
-            follows = {
-                item.info.uid
-                for item in aggregation_traces
-                if item.trace.domain_follows_filter
-            }
-        filtered_cols: set[str] = set()
         unfiltered_cols: set[str] = set()
-        for uid, cols in domain_cols.items():
-            (filtered_cols if uid in follows else unfiltered_cols).update(cols)
+        filtered_scopes: list[
+            tuple[list[pl.Expr], set[str], dict[str, tuple[str, ...]]]
+        ] = []
+        unfiltered_uids: dict[str, tuple[str, ...]] = {}
+        for partition in partitions:
+            follow = bool(partition.filter_exprs) and cross_filter_mode == "update"
+            filtered_cols: set[str] = set()
+            filtered_uids: dict[str, tuple[str, ...]] = {}
+            for item in partition.items:
+                cols = histogram_domains.get(item.info.uid) or item.trace.domain_cols(
+                    item.update_range
+                )
+                if follow and item.trace.domain_follows_filter:
+                    filtered_cols.update(cols)
+                    filtered_uids[item.info.uid] = cols
+                else:
+                    unfiltered_cols.update(cols)
+                    unfiltered_uids[item.info.uid] = cols
+            if filtered_cols:
+                filtered_scopes.append(
+                    (partition.filter_exprs, filtered_cols, filtered_uids)
+                )
 
-        filtered = (
-            self._backend_lf.physical_minmax(
-                sorted(filtered_cols), schema, filter_exprs=filter_exprs
-            )
-            if filtered_cols
-            else {}
-        )
         unfiltered = (
             self._backend_lf.physical_minmax(sorted(unfiltered_cols), schema)
             if unfiltered_cols
             else {}
         )
-        return {
-            uid: {c: (filtered if uid in follows else unfiltered)[c] for c in cols}
-            for uid, cols in domain_cols.items()
+        domains = {
+            uid: {c: unfiltered[c] for c in cols}
+            for uid, cols in unfiltered_uids.items()
         }
+        for filter_exprs, cols, uids in filtered_scopes:
+            filtered = self._backend_lf.physical_minmax(
+                sorted(cols), schema, filter_exprs=filter_exprs
+            )
+            domains.update(
+                {
+                    uid: {c: filtered[c] for c in uid_cols}
+                    for uid, uid_cols in uids.items()
+                }
+            )
+        return domains
 
     def _collect_aggregation_specs(
         self,
@@ -950,7 +995,7 @@ class FlexEngine:
     def _cache_active(self, event: InteractionEvent) -> bool:
         """Whether the per-trace cache applies to this request.
 
-        Only the unfiltered ``init``/``reset``/``deselect`` computation is
+        Only the unfiltered ``init``/``deselect`` computation is
         cached in Phase 1, and only when the engine was given a cache backend
         for a source that opted in.
         """
@@ -1057,30 +1102,23 @@ class FlexEngine:
         event: InteractionEvent,
         trace_infos: list[TraceInfo],
         selection_fig_uids: set[str | None],
+        changed_axes: dict[str, set[str]],
         viewports_by_figure: dict[str, dict[str, Any]],
     ) -> list[_AggregationTrace]:
-        aggregation_traces: list[_AggregationTrace] = []
-        for ti in trace_infos:
-            if not self._should_process_trace(
+        return [
+            _AggregationTrace(
+                info=ti,
+                trace=self._scalable_traces[ti.uid],
+                update_range=self._trace_update_range(ti, viewports_by_figure),
+            )
+            for ti in trace_infos
+            if self._should_process_trace(
                 event=event,
                 trace_info=ti,
                 selection_fig_uids=selection_fig_uids,
-                viewports_by_figure=viewports_by_figure,
-            ):
-                continue
-
-            aggregation_traces.append(
-                _AggregationTrace(
-                    info=ti,
-                    trace=self._scalable_traces[ti.uid],
-                    update_range=self._trace_update_range(
-                        event=event,
-                        trace_info=ti,
-                        viewports_by_figure=viewports_by_figure,
-                    ),
-                )
+                changed_axes=changed_axes,
             )
-        return aggregation_traces
+        ]
 
     def _histogram_domain_cols_by_uid(
         self,
@@ -1154,58 +1192,57 @@ class FlexEngine:
             layer=layer,
         )
 
-    def _process_update_mode(
+    def _aggregate_layer(
         self,
-        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
         filter_exprs: list[pl.Expr],
-        trace_infos: list[TraceInfo],
-        event: InteractionEvent,
-        selection_fig_uids: set[str | None],
-        viewports_by_figure: dict[str, dict[str, Any]],
+        specs: list[AggregationSpec | GroupedAggregationSpec],
+        items: list[_AggregationTrace],
+        layer: Literal["bg", "fg"] | None = None,
     ) -> list[TraceDelta]:
         t_start = time.perf_counter()
-        df_agg, grouped_dfs = self._backend_lf.aggregate(filter_exprs, agg_specs)
+        df_agg, grouped_dfs = self._backend_lf.aggregate(filter_exprs, specs)
         t_end = time.perf_counter()
-        logger.info(f"Aggregate time: {t_end - t_start:.4f}s")
-        t_build_start = time.perf_counter()
-        deltas = self._build_deltas(
-            event=event,
-            trace_infos=trace_infos,
-            selection_fig_uids=selection_fig_uids,
-            viewports_by_figure=viewports_by_figure,
-            df_agg=df_agg,
-            grouped_dfs=grouped_dfs,
-        )
-        t_build_end = time.perf_counter()
-        logger.info(f"Build deltas time: {t_build_end - t_build_start:.4f}s")
-        return deltas
+        logger.info("Aggregate time (%s): %.4fs", layer or "update", t_end - t_start)
+        return self._build_deltas(items, df_agg, grouped_dfs, layer=layer)
 
-    def _overlay_layers_for_event(
+    def _overlay_layers(
         self,
         event: InteractionEvent,
+        partition: _Partition,
         has_active_selections: bool,
+        changed_axes: dict[str, set[str]],
     ) -> tuple[Literal["bg", "fg"], ...]:
+        if partition.owner is not None:
+            # A selection's source figure draws only the unfiltered background
+            # in overlay mode (the renderer shows no fg for it).
+            return ("bg",)
         if event.type == "selection":
-            return ("fg",)
-        if event.type in ("init", "deselect", "reset"):
+            viewport_changed = any(
+                self._viewport_changed(item.info, changed_axes)
+                for item in partition.items
+            )
+            # ponytail: bg recomputed for the whole partition when any key
+            # changed in a selection event; split if measured costly.
+            return ("bg", "fg") if viewport_changed else ("fg",)
+        if event.type in ("init", "deselect"):
             return ("bg",)
         if event.type == "viewport":
             return ("bg", "fg") if has_active_selections else ("bg",)
         raise ValueError(f"Unsupported interaction event type: {event.type!r}")
 
-    def _specs_for_layer(
+    def _background_specs(
         self,
         specs: list[AggregationSpec | GroupedAggregationSpec],
-        layer: Literal["bg", "fg"],
-        has_active_selections: bool,
+        foreground_shown: bool,
     ) -> list[AggregationSpec | GroupedAggregationSpec]:
-        """Filter aggregation specs based on per-trace overlay policy.
+        """Filter background specs based on per-trace overlay policy.
 
-        Every trace needs the sole unfiltered layer used by init/reset/deselect.
-        With an active filtered foreground, ``filtered_only`` traces reuse that
-        cached unfiltered data instead of recomputing a duplicate background.
+        Every trace needs the sole unfiltered layer used by init/deselect.
+        While a filtered foreground is shown, ``filtered_only`` traces reuse
+        that cached unfiltered data instead of recomputing a duplicate
+        background.
         """
-        if layer == "fg" or not has_active_selections:
+        if not foreground_shown:
             return specs
         return [
             s
@@ -1220,80 +1257,63 @@ class FlexEngine:
 
     def _process_overlay_mode(
         self,
-        agg_specs: list[AggregationSpec | GroupedAggregationSpec],
-        filter_exprs: list[pl.Expr],
+        specs_by_partition: list[
+            tuple[_Partition, list[AggregationSpec | GroupedAggregationSpec]]
+        ],
         has_active_selections: bool,
-        trace_infos: list[TraceInfo],
         event: InteractionEvent,
-        selection_fig_uids: set[str | None],
-        viewports_by_figure: dict[str, dict[str, Any]],
+        changed_axes: dict[str, set[str]],
     ) -> list[TraceDelta]:
-        requested_layers = self._overlay_layers_for_event(
-            event=event,
-            has_active_selections=has_active_selections,
-        )
-        deltas: list[TraceDelta] = []
-        for layer in requested_layers:
-            if layer == "fg" and not filter_exprs:
-                continue
-            layer_specs = self._specs_for_layer(agg_specs, layer, has_active_selections)
-            if not layer_specs:
-                continue
-            t_start = time.perf_counter()
-            layer_filters = [] if layer == "bg" else filter_exprs
-            df_agg, grouped_dfs = self._backend_lf.aggregate(layer_filters, layer_specs)
-            t_end = time.perf_counter()
-            logger.info("Overlay aggregate time (%s): %.4fs", layer, t_end - t_start)
-            t_build_start = time.perf_counter()
-            layer_deltas = self._build_deltas(
+        bg_specs: list[AggregationSpec | GroupedAggregationSpec] = []
+        bg_items: list[_AggregationTrace] = []
+        fg_jobs = []
+        for partition, specs in specs_by_partition:
+            layers = self._overlay_layers(
                 event=event,
-                trace_infos=trace_infos,
-                selection_fig_uids=selection_fig_uids,
-                viewports_by_figure=viewports_by_figure,
-                df_agg=df_agg,
-                grouped_dfs=grouped_dfs,
-                layer=layer,
+                partition=partition,
+                has_active_selections=has_active_selections,
+                changed_axes=changed_axes,
             )
-            t_build_end = time.perf_counter()
-            logger.info(
-                "Overlay build deltas time (%s): %.4fs",
-                layer,
-                t_build_end - t_build_start,
+            if "bg" in layers:
+                # Only a partition with filters gets a foreground, and an owner
+                # figure never shows one: otherwise the background must carry
+                # every trace, filtered_only ones included.
+                foreground_shown = partition.owner is None and bool(
+                    partition.filter_exprs
+                )
+                bg_specs += self._background_specs(specs, foreground_shown)
+                bg_items += partition.items
+            if "fg" in layers and partition.filter_exprs:
+                fg_jobs.append((partition, specs))
+        # The background is unfiltered in every partition, so one aggregate call
+        # serves all of them: specs that share the source's select read it once
+        # (a spec with its own plan still scans on its own).
+        deltas = self._aggregate_layer([], bg_specs, bg_items, "bg") if bg_specs else []
+        for partition, specs in fg_jobs:
+            deltas += self._aggregate_layer(
+                partition.filter_exprs, specs, partition.items, "fg"
             )
-            deltas.extend(layer_deltas)
         return deltas
 
     def _build_deltas(
         self,
-        event: InteractionEvent,
-        trace_infos: list[TraceInfo],
-        selection_fig_uids: set[str | None],
-        viewports_by_figure: dict[str, dict[str, Any]],
+        items: list[_AggregationTrace],
         df_agg: pl.DataFrame,
         grouped_dfs: dict[str, pl.DataFrame],
         layer: Literal["bg", "fg"] | None = None,
     ) -> list[TraceDelta]:
         deltas: list[TraceDelta] = []
-        for ti in trace_infos:
-            if not self._should_process_trace(
-                event=event,
-                trace_info=ti,
-                selection_fig_uids=selection_fig_uids,
-                viewports_by_figure=viewports_by_figure,
-            ):
-                continue
-
-            trace = self._scalable_traces[ti.uid]
-            if ti.uid in grouped_dfs:
+        for item in items:
+            uid = item.info.uid
+            trace = item.trace
+            if uid in grouped_dfs:
                 deltas.append(
                     self._to_trace_delta(
-                        ti.uid,
-                        trace._to_grouped_update(grouped_dfs[ti.uid]),
-                        layer=layer,
+                        uid, trace._to_grouped_update(grouped_dfs[uid]), layer=layer
                     )
                 )
-            elif ti.uid in df_agg.columns:
+            elif uid in df_agg.columns:
                 deltas.append(
-                    self._to_trace_delta(ti.uid, trace._to_update(df_agg), layer=layer)
+                    self._to_trace_delta(uid, trace._to_update(df_agg), layer=layer)
                 )
         return deltas

@@ -44,7 +44,14 @@ def make_frame(n: int) -> pl.DataFrame:
 def init_call(lf: LFQueryBuilder, trace) -> tuple[FlexEngine, InteractionEvent, list]:
     """``(engine, event, infos)`` for one trace's init aggregation."""
     engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
-    infos = [TraceInfo(uid=trace.uid, axes=trace._axes, trace_type=trace.trace_type)]
+    infos = [
+        TraceInfo(
+            uid=trace.uid,
+            axes=trace._axes,
+            trace_type=trace.trace_type,
+            figure_uid="fig",
+        )
+    ]
     return engine, InteractionEvent(type="init", force_update=True), infos
 
 

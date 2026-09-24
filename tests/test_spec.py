@@ -28,6 +28,7 @@ from flexviz.spec import (
     _auto_grid_items,
     decode_spec,
     encode_spec,
+    parse_spec,
 )
 
 # ---- helpers ---------------------------------------------------------------
@@ -203,6 +204,178 @@ class TestDashboardSpecState:
         assert restored.selection.axis_columns == {"x": "ts"}
 
 
+_RANGE = {"min": 0.0, "max": 1.0}
+
+
+class TestViewportKeys:
+    @pytest.mark.parametrize("key", ["x", "/x", "fig-1/", "fig-1/x/y", "fig-1//x"])
+    def test_key_without_figure_and_axis_is_rejected(self, key):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {key: _RANGE}
+        with pytest.raises(ValidationError, match="<figure_uid>/<axis_id>"):
+            DashboardSpec.model_validate(data)
+
+    def test_dashboard_accepts_keys_of_its_figures(self):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {"fig-1/x": _RANGE, "fig-2/y": _RANGE}
+        spec = DashboardSpec.model_validate(data)
+        assert set(spec.state.viewport) == {"fig-1/x", "fig-2/y"}
+
+    def test_single_figure_spec_rejects_key_of_another_figure(self):
+        spec = _make_viz_spec().model_dump()
+        spec["state"]["viewport"] = {"other/x": _RANGE}
+        with pytest.raises(ValidationError, match="other/x"):
+            VisualizationSpec.model_validate(spec)
+
+    def test_figure_uid_cannot_hold_a_slash(self):
+        """A viewport key splits at its one slash."""
+        with pytest.raises(ValidationError, match="uid"):
+            FigureSpec(uid="fig/1")
+
+    def test_dashboard_rejects_key_of_unknown_figure(self):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {"fig-1/x": _RANGE, "fig-9/x": _RANGE}
+        with pytest.raises(ValidationError, match="fig-9/x"):
+            DashboardSpec.model_validate(data)
+
+
+def _linked_dashboard(**layouts) -> dict:
+    """Four figures on one frame: two lines on ts, a vertical and a horizontal
+    histogram of ts. Dumped, so a test can edit it and validate again."""
+    from flexviz.dashboard import Dashboard
+
+    df = pl.DataFrame({"ts": [1, 2, 3], "val": [1.0, 2.0, 3.0]})
+    dash = Dashboard(df)
+    dash.add_figure().add_line(x="ts", y="val")
+    dash.add_figure().add_line(x="ts", y="val")
+    dash.add_figure().add_histogram(x="ts")
+    dash.add_figure().add_histogram(y="ts")
+    data = dash.to_spec().model_dump()
+    for fig in data["figures"]:
+        fig["layout"].update(layouts)
+    return data
+
+
+def _uids(data: dict) -> list[str]:
+    return [fig["uid"] for fig in data["figures"]]
+
+
+class TestAxisLinks:
+    def test_valid_group_round_trips(self):
+        data = _linked_dashboard()
+        a, b, h, hy = _uids(data)
+        group = [f"{a}/x", f"{b}/x", f"{h}/x", f"{hy}/y"]
+        data["client_state"]["axis_links"] = [group, [f"{a}/y", f"{b}/y"]]
+        data["state"]["viewport"] = {k: _RANGE for k in group}
+        spec = DashboardSpec.model_validate(data)
+        assert decode_spec(encode_spec(spec)) == spec
+
+    def test_none_value_equals_an_absent_key(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["state"]["viewport"] = {f"{a}/x": None}
+        DashboardSpec.model_validate(data)
+
+    @pytest.mark.parametrize(
+        ("links", "match"),
+        [
+            (lambda a, b, h, hy: [[f"{a}/x"]], "two or more figures"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/x"]], "two or more figures"),
+            (lambda a, b, h, hy: [[f"{a}/x", "nope/x"]], "names no figure"),
+            (
+                lambda a, b, h, hy: [[f"{a}/x", f"{b}/x"], [f"{b}/x", f"{h}/x"]],
+                "two link groups",
+            ),
+            (lambda a, b, h, hy: [[f"{a}/x2", f"{b}/x"]], "only x and y"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{h}/y"]], "shows no data column"),
+            (lambda a, b, h, hy: [[f"{a}/x", f"{a}/y"]], "two axes of one figure"),
+        ],
+        ids=[
+            "single",
+            "duplicate",
+            "unknown-figure",
+            "overlap",
+            "x2",
+            "count-axis",
+            "same-figure",
+        ],
+    )
+    def test_invalid_groups_are_rejected(self, links, match):
+        data = _linked_dashboard()
+        data["client_state"]["axis_links"] = links(*_uids(data))
+        with pytest.raises(ValidationError, match=match):
+            DashboardSpec.model_validate(data)
+
+    def test_log_axis_is_rejected(self):
+        data = _linked_dashboard(xaxis={"type": "log"})
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match="log axis"):
+            DashboardSpec.model_validate(data)
+
+    @pytest.mark.parametrize(
+        "xaxis",
+        [
+            {"autorange": "reversed"},
+            {"autorange": "min reversed"},
+            {"autorange": "max reversed"},
+            {"autorange": False, "range": [3, 1]},
+        ],
+        ids=["reversed", "min-reversed", "max-reversed", "descending-range"],
+    )
+    def test_mixed_reversed_axes_are_rejected(self, xaxis):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["figures"][0]["layout"]["xaxis"] = xaxis
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match="reversed"):
+            DashboardSpec.model_validate(data)
+
+    @pytest.mark.parametrize("axis_type", ["log", "category", "multicategory"])
+    def test_axis_types_outside_data_units_are_rejected(self, axis_type):
+        data = _linked_dashboard(xaxis={"type": axis_type})
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        with pytest.raises(ValidationError, match=f"{axis_type} axis"):
+            DashboardSpec.model_validate(data)
+
+    def test_non_dict_axis_layout_is_ignored(self):
+        """Plotly ignores it too; it must not crash validation."""
+        data = _linked_dashboard(xaxis="oops")
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        DashboardSpec.model_validate(data)
+
+    def test_unequal_linked_ranges_are_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["state"]["viewport"] = {f"{a}/x": _RANGE}
+        with pytest.raises(ValidationError, match="equal ranges"):
+            DashboardSpec.model_validate(data)
+
+    def test_group_locked_at_two_ranges_is_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["client_state"]["axis_locks"] = {f"{a}/x": True, f"{b}/x": True}
+        data["client_state"]["axis_lock_ranges"] = {
+            f"{a}/x": {"min": 200, "max": 300},
+            f"{b}/x": {"min": 0, "max": 999},
+        }
+        with pytest.raises(ValidationError, match="locked at one range"):
+            DashboardSpec.model_validate(data)
+
+    def test_partly_locked_group_is_rejected(self):
+        data = _linked_dashboard()
+        a, b, *_ = _uids(data)
+        data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
+        data["client_state"]["axis_locks"] = {f"{a}/x": True}
+        with pytest.raises(ValidationError, match="locked together"):
+            DashboardSpec.model_validate(data)
+
+
 class TestTypedDicts:
     def test_trace_display_accepts_known_keys(self):
         d: TraceDisplay = {"name": "My Trace", "color": "#ff0000"}
@@ -238,13 +411,27 @@ class TestEncodeDecodeSpec:
         assert decoded.layout.grid_items is not None
         assert decoded.layout.grid_items[1].x == 6
 
-    def test_encode_plain_dict(self):
+    def test_parse_plain_dict(self):
         original = _make_viz_spec()
         raw = json.loads(original.model_dump_json())
-        decoded = decode_spec(encode_spec(raw))
+        parsed = parse_spec(raw)
 
-        assert isinstance(decoded, VisualizationSpec)
-        assert decoded.figure.uid == original.figure.uid
+        assert isinstance(parsed, VisualizationSpec)
+        assert parsed.figure.uid == original.figure.uid
+
+    def test_other_spec_version_is_refused(self):
+        raw = json.loads(_make_dashboard_spec().model_dump_json())
+        raw["version"] = "0.5"
+        with pytest.raises(ValueError, match="spec version '0.5' is not supported"):
+            parse_spec(raw)
+
+    @pytest.mark.parametrize("model", [DashboardSpec, VisualizationSpec])
+    def test_each_spec_model_refuses_another_version(self, model):
+        """Loaders and requests validate the model directly, not via parse_spec."""
+        with pytest.raises(
+            ValidationError, match="spec version '0.5' is not supported"
+        ):
+            model.model_validate({"version": "0.5"})
 
     def test_auto_detect_dashboard(self):
         """decode_spec detects DashboardSpec by the 'figures' key."""
@@ -1023,10 +1210,10 @@ class TestEncodeDecodeFullState:
 
     def test_roundtrip_preserves_viewport(self):
         spec = _make_viz_spec()
-        spec.state.viewport = {"x": AxisRange(min=100.0, max=200.0)}
+        spec.state.viewport = {"fig-bbb/x": AxisRange(min=100.0, max=200.0)}
         decoded = decode_spec(encode_spec(spec))
         assert isinstance(decoded, VisualizationSpec)
-        vp = decoded.state.viewport["x"]
+        vp = decoded.state.viewport["fig-bbb/x"]
         assert isinstance(vp, AxisRange)
         assert vp.min == 100.0
         assert vp.max == 200.0

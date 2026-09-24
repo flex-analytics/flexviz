@@ -1185,9 +1185,9 @@ class TestPlotlyBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[1],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -1209,10 +1209,11 @@ class TestPlotlyBrowser:
     def test_cached_source_locked_figure_reset_served_from_cache(
         self, page: Page, server_port: int
     ):
-        """Axis locks are view-only (pruned from server requests, re-applied on
-        render), so a per-figure reset of a locked figure back to full autorange
-        is served from the figure-scoped client cache just like an unlocked one —
-        no /dashboard/update — and the lock range survives."""
+        """A lock taken at autorange writes no viewport key (it pins the display
+        and is re-applied on render), so a per-figure reset of a locked figure
+        back to full autorange is served from the figure-scoped client cache
+        just like an unlocked one — no /dashboard/update — and the lock range
+        survives."""
         url = _dashboard_url_cached(server_port, "plotly")
         update_requests: list[str] = []
 
@@ -1349,10 +1350,8 @@ class TestPlotlyBrowser:
             window.fvSetSelectionState([sel]);
             return postDashboardUpdate({
                 type: 'selection',
-                axis_ranges: {},
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
-                figure_uid: figUid,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -1396,10 +1395,8 @@ class TestPlotlyBrowser:
             ]);
             return postDashboardUpdate({
                 type: 'selection',
-                axis_ranges: {},
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
-                figure_uid: figUids[0],
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -1780,7 +1777,10 @@ class TestPlotlyBrowser:
             if body.get("event", {}).get("type") == "viewport"
         ]
         assert len(viewport_events) >= 1, update_bodies[initial_req_count:]
-        assert viewport_events[-1]["event"]["axis_ranges"]["coordinates"] == coords
+        last = viewport_events[-1]
+        key = f"{last['spec']['figures'][0]['uid']}/coordinates"
+        assert last["event"]["viewport_keys"] == [key]
+        assert last["spec"]["state"]["viewport"][key] == coords
         assert 200 in response_statuses[initial_resp_count:], response_statuses[
             initial_resp_count:
         ]
@@ -1974,12 +1974,12 @@ class TestGroupedBrowser:
 
         page.evaluate("""async () => {
               const figUid = DASHBOARD_SPEC.figures[0].uid;
+              DASHBOARD_SPEC.state.viewport[figUid + '/x'] = {min: 0, max: 60};
               await postDashboardUpdate({
                 type: 'viewport',
-                axis_ranges: { x: [0, 60] },
+                viewport_keys: [figUid + '/x'],
                 selections: DASHBOARD_SPEC.state.selections,
                 force_update: false,
-                figure_uid: figUid,
               });
             }""")
         page.wait_for_timeout(2_000)
@@ -2357,10 +2357,8 @@ class TestDemoEChartsBrowser:
                 window.fvSetSelectionState?.([selection]);
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: [selection],
                   force_update: true,
-                  figure_uid: figUid,
                 });
             }""")
         page.wait_for_function("""() => {
@@ -2477,9 +2475,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(2_000)
@@ -2515,9 +2513,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2563,9 +2561,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2628,9 +2626,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2661,7 +2659,8 @@ class TestCrossFilterBrowser:
         viewport_events = [
             b for b in post if b.get("event", {}).get("type") == "viewport"
         ]
-        assert viewport_events[-1]["event"].get("figure_uid") == fig1_uid
+        keys = viewport_events[-1]["event"]["viewport_keys"]
+        assert keys and all(k.startswith(f"{fig1_uid}/") for k in keys), keys
 
     def test_reset_clears_zoom_and_filter(
         self, page: Page, server_port: int, renderer: str
@@ -2689,9 +2688,9 @@ class TestCrossFilterBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2741,9 +2740,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2783,9 +2782,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2825,9 +2824,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -2889,9 +2888,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_000)
@@ -2947,9 +2946,9 @@ class TestOverlayBrowser:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_500)
@@ -3017,9 +3016,8 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [100, 200] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', axis_ranges: {},
-                selections: DASHBOARD_SPEC.state.selections, force_update: true,
-                figure_uid: figUids[0]});
+            return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
         page.click("#fv-btn-reset")
@@ -3030,9 +3028,8 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [150, 300] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection', axis_ranges: {},
-                selections: DASHBOARD_SPEC.state.selections, force_update: true,
-                figure_uid: figUids[0]});
+            return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true});
         }""")
         page.wait_for_timeout(1_500)
 
@@ -3091,9 +3088,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_function("""() => {
@@ -3174,9 +3171,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -3214,9 +3211,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_200)
@@ -3261,9 +3258,9 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             };
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_timeout(1_400)
@@ -3426,10 +3423,8 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
-                  figure_uid: uidA,
                 });
 
                 // Allow the selection response to apply.
@@ -3613,10 +3608,9 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.viewport[uidA + '/x'] = {min: 100, max: 300};
                 await postDashboardUpdate({
                   type: 'viewport',
-                  axis_ranges: {x: [100, 300]},
+                  viewport_keys: [uidA + '/x'],
                   selections: DASHBOARD_SPEC.state.selections,
-                  force_update: true,
-                  figure_uid: uidA,
+                  force_update: false,
                 });
 
                 // Step 2: cross-filter on A
@@ -3627,10 +3621,8 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  axis_ranges: {},
                   selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
-                  figure_uid: uidA,
                 });
 
                 // Step 3: Share
@@ -3829,9 +3821,9 @@ class TestAgentReadback:
                 predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
             }];
             return postDashboardUpdate({
-                type: 'selection', axis_ranges: {},
+                type: 'selection',
                 selections: DASHBOARD_SPEC.state.selections,
-                force_update: true, figure_uid: figUids[0],
+                force_update: true,
             });
         }""")
         page.wait_for_function(f"() => ({total}) < {unfiltered}")
@@ -3876,7 +3868,130 @@ class TestAgentReadback:
         # `force_update` bypasses the client cache, so the route is really hit.
         message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
                 .then(() => null, err => err.message)""")
-        assert message == "flexviz: dashboard update failed"
+        assert message.startswith("flexviz: dashboard update failed (status 500)")
+
+    _LAYER_SIZES = """() => Object.values(layerDataByUid)
+            .map(l => (l.base.x || l.base.y || l.base.z || []).length)"""
+
+    def test_apply_rolls_back_a_rejected_patch(self, page: Page, server_port: int):
+        """A patch the server rejects leaves spec, data and later gestures working."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        state_before = page.evaluate("window.flexvizState().state")
+        sizes_before = page.evaluate(self._LAYER_SIZES)
+        assert all(sizes_before), sizes_before
+
+        message = page.evaluate("""() => {
+                const key = DASHBOARD_SPEC.figures[0].uid + '/x';
+                return window.flexvizApply({state: {viewport: {[key]: 'bad'}}})
+                  .then(() => null, err => err.message);
+            }""")
+        assert message.startswith("flexviz: dashboard update failed (status 422: ")
+        assert page.evaluate("window.flexvizState().state") == state_before
+        assert page.evaluate(self._LAYER_SIZES) == sizes_before
+
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
+    def test_apply_says_when_the_rollback_fails_too(self, page: Page, server_port: int):
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.route("**/dashboard/update", lambda route: route.fulfill(status=500))
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: []}})
+                .then(() => null, err => err.message)""")
+        assert message == (
+            "flexviz: dashboard update failed (status 500); restoring the previous"
+            " state failed too, reload the page"
+        )
+
+    def test_apply_rolls_back_when_the_second_request_fails(
+        self, page: Page, server_port: int
+    ):
+        """A patch with selections restores in two requests (init, then
+        selection). A failure on the second one still restores the old page."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        state_before = page.evaluate("window.flexvizState().state")
+        sizes_before = page.evaluate(self._LAYER_SIZES)
+
+        calls = [0]
+
+        def fail_second(route) -> None:
+            calls[0] += 1
+            if calls[0] == 2:
+                route.fulfill(status=500)
+            else:
+                route.continue_()
+
+        page.route("**/dashboard/update", fail_second)
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+              }]}}).then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed (status 500)"
+        assert calls[0] >= 3, "the rollback must restore the old spec"
+        assert page.evaluate("window.flexvizState().state") == state_before
+        assert page.evaluate(self._LAYER_SIZES) == sizes_before
+
+    def test_apply_stops_after_a_failed_init(self, page: Page, server_port: int):
+        """A failed init skips the selection request, so the error keeps its
+        reason and the rollback follows at once."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        event_types: list[str] = []
+
+        def fail_first(route) -> None:
+            event_types.append(json.loads(route.request.post_data)["event"]["type"])
+            if len(event_types) == 1:
+                route.fulfill(status=500)
+            else:
+                route.continue_()
+
+        page.route("**/dashboard/update", fail_first)
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+              }]}}).then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed (status 500)"
+        assert event_types == ["init", "init"], "failed init, then the rollback"
+
+    def test_apply_updates_the_lock_controls(self, page: Page, server_port: int):
+        """An applied lock shows on the panel button and leaves zoom mode."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.evaluate("""() => {
+                const uid = DASHBOARD_SPEC.figures[0].uid;
+                return window.flexvizApply({client_state: {
+                  axis_locks: {[uid + '/x']: true, [uid + '/y']: true},
+                  axis_lock_ranges: {
+                    [uid + '/x']: {min: 100, max: 200},
+                    [uid + '/y']: {min: 0, max: 1},
+                  },
+                }});
+            }""")
+        page.wait_for_function(
+            "() => divs[0]._fullLayout.dragmode === 'select'", timeout=5_000
+        )
+        label = page.text_content(
+            "#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']"
+        )
+        assert label == "Unlock Axes"
 
     def test_failed_first_load_logs_an_error(self, page: Page, server_port: int):
         """The first page carries empty stubs only, so a failed init must say so."""
@@ -5264,9 +5379,9 @@ _INJECT_SELECTION_JS = """() => {
     };
     DASHBOARD_SPEC.state.selections = [sel];
     return postDashboardUpdate({
-        type: 'selection', axis_ranges: {},
+        type: 'selection',
         selections: DASHBOARD_SPEC.state.selections,
-        force_update: true, figure_uid: figUids[0],
+        force_update: true,
     });
 }"""
 
@@ -5594,7 +5709,6 @@ class TestResetCleanupBrowser:
         page.evaluate("""async () => {
                 await postDashboardUpdate({
                   type: 'init',
-                  axis_ranges: {},
                   selections: [],
                   force_update: true,
                 });
@@ -5780,7 +5894,7 @@ class TestResetCleanupBrowser:
     ):
         """The positive case of the fvNeedsFetch gate: with y locked, a
         relayout touching both axes still POSTs (the line's x re-aggregates)
-        and the POSTed axis_ranges carry only the unlocked x."""
+        and the POSTed event names only the unlocked x as changed."""
         url = _dashboard_url(server_port, "plotly", n_figures=1)
         update_bodies: list[dict] = []
 
@@ -5831,8 +5945,7 @@ class TestResetCleanupBrowser:
         assert len(update_bodies) > count_before
         event = update_bodies[-1]["event"]
         assert event["type"] == "viewport"
-        assert event["axis_ranges"]["x"] == [50, 100]
-        assert "y" not in event["axis_ranges"]
+        assert event["viewport_keys"] == [f"{state['figUid']}/x"]
         assert state["viewport"][f"{state['figUid']}/x"] == {
             "min": 50,
             "max": 100,
@@ -5867,13 +5980,13 @@ class TestResetCleanupBrowser:
         page.click("#fv-btn-reset")
         page.wait_for_function("""() => {
                 const figUid = DASHBOARD_SPEC.figures[0].uid;
-                return Object.keys(DASHBOARD_SPEC.state.viewport).length === 0
-                  && DASHBOARD_SPEC.state.selections.length === 0
+                return DASHBOARD_SPEC.state.selections.length === 0
                   && DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'] === true;
             }""")
         state = page.evaluate("""() => {
                 const figUid = DASHBOARD_SPEC.figures[0].uid;
                 return {
+                  figUid,
                   lockRange: DASHBOARD_SPEC.client_state.axis_lock_ranges[figUid + '/x'],
                   locked: DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'],
                   viewport: DASHBOARD_SPEC.state.viewport,
@@ -5882,8 +5995,72 @@ class TestResetCleanupBrowser:
             }""")
         assert state["locked"] is True
         assert state["lockRange"] == locked_x
-        assert state["viewport"] == {}
+        # The locked axis keeps its key, so aggregation matches the lock.
+        assert list(state["viewport"]) == [f"{state['figUid']}/x"]
         assert state["selections"] == []
+
+    @staticmethod
+    def _zoom_and_lock(page: Page) -> str:
+        """Zoom figure 0 to x 100..200, then lock its axes. Returns its uid."""
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_function(
+            "() => DASHBOARD_SPEC.state.viewport[DASHBOARD_SPEC.figures[0].uid + '/x']"
+        )
+        page.wait_for_timeout(500)
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        return page.evaluate("""() => {
+                const figUid = DASHBOARD_SPEC.figures[0].uid;
+                return DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'] ? figUid : null;
+            }""")
+
+    @staticmethod
+    def _shown(page: Page) -> dict:
+        return page.evaluate("""() => ({
+                range: divs[0]._fullLayout.xaxis.range,
+                x: divs[0].data[0].x,
+                viewport: DASHBOARD_SPEC.state.viewport,
+              })""")
+
+    def test_resets_keep_a_locked_zoomed_axis(self, page: Page, server_port: int):
+        """Panel reset, global reset and double-click leave a locked, zoomed axis
+        at its lock range, and the data stays aggregated inside that range."""
+        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}"))
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        fig_uid = self._zoom_and_lock(page)
+        assert fig_uid
+
+        for label, act in [
+            ("panel", "() => fvOnResetPanel(DASHBOARD_SPEC.figures[0].uid)"),
+            ("autorange", "() => Plotly.relayout(divs[0], {'xaxis.autorange': true})"),
+            ("global", "() => fvOnReset()"),
+        ]:
+            page.evaluate(act)
+            page.wait_for_timeout(800)
+            shown = self._shown(page)
+            assert shown["viewport"][f"{fig_uid}/x"] == {"min": 100, "max": 200}, label
+            assert [round(v) for v in shown["range"]] == [100, 200], label
+            assert shown["x"] and min(shown["x"]) >= 100 and max(shown["x"]) <= 200, (
+                label,
+                min(shown["x"]),
+                max(shown["x"]),
+            )
+
+        # The global reset re-aggregated at the locked range.
+        init = [p for p in posts if p["event"]["type"] == "init"][-1]
+        assert init["spec"]["state"]["viewport"][f"{fig_uid}/x"] == {
+            "min": 100,
+            "max": 200,
+        }
 
 
 @pytest.mark.browser
@@ -5911,10 +6088,9 @@ class TestLegendVisibilityBrowser:
                 DASHBOARD_SPEC.state.viewport[figUid + '/x'] = {min: 5, max: 25};
                 await postDashboardUpdate({
                     type: 'viewport',
-                    axis_ranges: {x: [5, 25]},
+                    viewport_keys: [figUid + '/x'],
                     selections: DASHBOARD_SPEC.state.selections || [],
-                    force_update: true,
-                    figure_uid: figUid,
+                    force_update: false,
                 });
             }""")
 
@@ -6577,3 +6753,343 @@ def test_report_page_sanitizes_the_markdown_html(
     chart.first.wait_for(timeout=20_000)
     assert page.title() == "FlexViz report"
     assert page.evaluate("() => !!document.querySelector('img[onerror]')") is False
+
+
+# ---------------------------------------------------------------------------
+# Linked axes (ClientState.axis_links)
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_url_linked(
+    port: int, *, mode: str = "update", viewport: dict | None = None
+) -> tuple[str, list[str]]:
+    """Two lines on ts, a vertical and a horizontal histogram of ts.
+
+    ``link_axes(on="ts")`` links the four ts axes (the horizontal histogram
+    shows ts on y); a second call links the two lines' y. ``viewport`` maps a figure
+    index + axis ("0/x") to a range, written for every key of its group.
+    """
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import AxisRange, encode_spec
+
+    df = pl.DataFrame({"ts": list(range(500)), "val": [float(i) for i in range(500)]})
+    register_source("_browser_test", df)
+    dash = Dashboard(df)
+    a = dash.add_figure(title="A")
+    a.add_line(x="ts", y="val", n_points=200)
+    b = dash.add_figure(title="B")
+    b.add_line(x="ts", y="val", n_points=200)
+    dash.add_figure(title="H").add_histogram(x="ts", bins=50)
+    dash.add_figure(title="HY").add_histogram(y="ts", bins=50)
+    dash.link_axes(on="ts").link_axes(a, b, axis="y")
+    spec = dash.to_spec(source_name="_browser_test")
+    uids = [f.uid for f in spec.figures]
+    x_group, y_group = spec.client_state.axis_links
+    assert x_group == [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+    spec.state.cross_filter_mode = mode
+    for short, (lo, hi) in (viewport or {}).items():
+        idx, axis = short.split("/")
+        key = f"{uids[int(idx)]}/{axis}"
+        group = next(g for g in (x_group, y_group) if key in g)
+        spec.state.viewport.update(dict.fromkeys(group, AxisRange(min=lo, max=hi)))
+    return (
+        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly",
+        uids,
+    )
+
+
+_SHOWN_RANGES = """() => [...document.querySelectorAll('.js-plotly-plot')].map(gd => ({
+    x: gd._fullLayout.xaxis.range.map(Math.round),
+    y: gd._fullLayout.yaxis.range.map(Math.round),
+  }))"""
+
+
+@pytest.mark.browser
+class TestLinkedAxesBrowser:
+    @staticmethod
+    def _open(page: Page, url: str) -> list[dict]:
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}"))
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        posts.clear()
+        return posts
+
+    def test_zoom_moves_every_linked_axis_in_one_post(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_500)
+
+        # One request for the whole gesture; the redraws of B, H and HY post nothing.
+        assert len(posts) == 1, [p["event"] for p in posts]
+        keys = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        assert sorted(posts[0]["event"]["viewport_keys"]) == sorted(keys)
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert all(viewport[k] == {"min": 100, "max": 200} for k in keys), viewport
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert [shown[i]["x"] for i in range(3)] == [[100, 200]] * 3
+        assert shown[3]["y"] == [100, 200]
+        # B re-downsampled and H re-binned inside the linked range.
+        for idx, prop in ((1, "x"), (2, "x"), (3, "y")):
+            values = page.evaluate(f"divs[{idx}].data[0].{prop}")
+            assert 100 <= min(values) and max(values) <= 200, (idx, values[:3])
+
+    def test_real_drag_moves_every_linked_axis(self, page: Page, server_port: int):
+        """A mouse drag emits the indexed range form, not the array form that
+        Plotly.relayout sends."""
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        box = page.locator("#fv-plot-0 .nsewdrag").first.bounding_box()
+        assert box is not None
+        y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] * 0.3, y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * 0.6, y + 3, steps=10)
+        page.mouse.up()
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1, [p["event"] for p in posts]
+        assert len(posts[0]["event"]["viewport_keys"]) == 4
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"] == shown[1]["x"] == shown[2]["x"] == shown[3]["y"]
+        assert shown[0]["x"][0] > 0 and shown[0]["x"][1] < 499
+
+    def test_display_only_link_redraws_without_a_post(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'yaxis.range': [10, 20]})")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate(_SHOWN_RANGES)[1]["y"] == [10, 20]
+
+    def test_autorange_on_any_member_resets_the_group(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        posts = self._open(page, url)
+        assert page.evaluate(_SHOWN_RANGES)[1]["x"] == [100, 200]
+
+        page.evaluate("() => Plotly.relayout(divs[2], {'xaxis.autorange': true})")
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"][1] >= 499 and shown[1]["x"][1] >= 499
+        assert shown[3]["y"][1] >= 499
+
+    def test_panel_reset_clears_the_group_and_keeps_other_state(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        self._open(page, url)
+        # HY's count axis is not linked; B sources a selection.
+        page.evaluate("() => Plotly.relayout(divs[3], {'xaxis.range': [0, 5]})")
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [120, 180]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+
+        page.evaluate(f"() => fvOnResetPanel('{uids[0]}')")
+        page.wait_for_timeout(1_500)
+
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert list(viewport) == [f"{uids[3]}/x"]
+        selections = page.evaluate("DASHBOARD_SPEC.state.selections")
+        assert [s["source_figure_uid"] for s in selections] == [uids[1]]
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[1]["x"][1] >= 499 and shown[3]["y"][1] >= 499
+
+    def test_panel_reset_of_a_display_only_link_posts_nothing(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        page.evaluate("() => Plotly.relayout(divs[0], {'yaxis.range': [10, 20]})")
+        page.wait_for_timeout(800)
+        assert page.evaluate(_SHOWN_RANGES)[1]["y"] == [10, 20]
+
+        page.evaluate(f"() => fvOnResetPanel('{uids[0]}')")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["y"] != [10, 20] and shown[1]["y"] != [10, 20]
+
+    def test_a_lock_pins_the_whole_group(self, page: Page, server_port: int):
+        url, uids = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        posts = self._open(page, url)
+
+        page.click("#fv-bar-1 .fv-mode-action-btn[data-action='lock-axes']")
+        locks = page.evaluate("DASHBOARD_SPEC.client_state.axis_locks")
+        for key in (f"{uids[0]}/x", f"{uids[2]}/x", f"{uids[3]}/y", f"{uids[0]}/y"):
+            assert locks.get(key) is True, key
+        assert not locks.get(f"{uids[3]}/x")
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
+        page.wait_for_timeout(1_000)
+        assert posts == []
+        assert page.evaluate(_SHOWN_RANGES)[0]["x"] == [100, 200]
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport")[f"{uids[0]}/x"] == {
+            "min": 100,
+            "max": 200,
+        }
+
+        # A reset keeps the locked group, and the next request is still valid.
+        page.evaluate(f"() => fvOnResetPanel('{uids[2]}')")
+        page.evaluate("() => Plotly.relayout(divs[3], {'xaxis.range': [0, 5]})")
+        page.wait_for_timeout(1_000)
+        assert page.evaluate(_SHOWN_RANGES)[1]["x"] == [100, 200]
+
+        # Unlocking B releases the whole group again.
+        page.click("#fv-bar-1 .fv-mode-action-btn[data-action='lock-axes']")
+        locks = page.evaluate("DASHBOARD_SPEC.client_state.axis_locks")
+        assert not any(
+            locks.get(key) for key in (f"{uids[0]}/x", f"{uids[3]}/y", f"{uids[0]}/y")
+        ), locks
+
+    @staticmethod
+    def _brush_b(page: Page, uids: list[str]) -> None:
+        """B brushes ts 200..300, so A (filtered) autoranges to 200..300 while
+        B (the owner, unfiltered) autoranges to the full data."""
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [200, 300]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+
+    def test_lock_pins_one_range_on_members_that_autoranged_apart(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        self._brush_b(page, uids)
+        before = page.evaluate(_SHOWN_RANGES)
+        assert before[0]["x"] != before[1]["x"], before
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(800)
+
+        group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        ranges = page.evaluate("DASHBOARD_SPEC.client_state.axis_lock_ranges")
+        assert len({json.dumps(ranges[key], sort_keys=True) for key in group}) == 1
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert shown[0]["x"] == shown[1]["x"] == shown[2]["x"] == shown[3]["y"]
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate(
+            "() => postDashboardUpdate({type: 'deselect', selections: [],"
+            " force_update: true})"
+        )
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
+    def test_lock_all_keeps_linked_groups_valid(self, page: Page, server_port: int):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        self._brush_b(page, uids)
+
+        page.click("#fv-btn-lock-all")
+        page.wait_for_timeout(800)
+
+        ranges = page.evaluate("DASHBOARD_SPEC.client_state.axis_lock_ranges")
+        group = [f"{uids[0]}/x", f"{uids[1]}/x", f"{uids[2]}/x", f"{uids[3]}/y"]
+        assert len({json.dumps(ranges[key], sort_keys=True) for key in group}) == 1
+        statuses: list[int] = []
+        page.on(
+            "response",
+            lambda r: (
+                statuses.append(r.status) if "/dashboard/update" in r.url else None
+            ),
+        )
+        page.evaluate(
+            "() => postDashboardUpdate({type: 'deselect', selections: [],"
+            " force_update: true})"
+        )
+        page.wait_for_timeout(1_000)
+        assert statuses == [200]
+
+    def test_overlay_owner_in_the_group_gets_its_background(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port, mode="overlay")
+        posts = self._open(page, url)
+        page.evaluate(
+            """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
+                predicates: [{clauses: [{column: 'ts', range: [150, 180]}]}]}]);
+              return postDashboardUpdate({type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+            uids[1],
+        )
+        page.wait_for_timeout(1_000)
+        responses: list = []
+        page.on(
+            "response",
+            lambda r: responses.append(r) if "/dashboard/update" in r.url else None,
+        )
+        posts.clear()
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1
+        deltas = responses[-1].json()["figure_deltas"]
+        assert {d["layer"] for d in deltas[uids[1]]} == {"bg"}
+        assert {d["layer"] for d in deltas[uids[0]]} == {"bg", "fg"}
+        owner_x = page.evaluate("divs[1].data[0].x")
+        assert 100 <= min(owner_x) and max(owner_x) <= 200
+
+    def test_share_url_restores_the_linked_range(self, page: Page, server_port: int):
+        url, _ = _dashboard_url_linked(server_port, viewport={"0/x": (100, 200)})
+        self._open(page, url)
+
+        shown = page.evaluate(_SHOWN_RANGES)
+        assert [shown[i]["x"] for i in range(3)] == [[100, 200]] * 3
+        assert shown[3]["y"] == [100, 200]
+        values = page.evaluate("divs[1].data[0].x")
+        assert 100 <= min(values) and max(values) <= 200
+
+    def test_apply_refuses_a_patch_that_breaks_a_link(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked(server_port)
+        self._open(page, url)
+        before = page.evaluate("window.flexvizState().state")
+
+        message = page.evaluate(
+            """(key) => window.flexvizApply({state: {viewport: {[key]: {min: 1, max: 2}}}})
+                .then(() => null, err => err.message)""",
+            f"{uids[0]}/x",
+        )
+
+        assert "equal ranges" in message
+        assert page.evaluate("window.flexvizState().state") == before

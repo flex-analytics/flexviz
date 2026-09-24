@@ -151,8 +151,11 @@ await window.flexvizApply({state: {viewport: {...}}})   // via browser evaluate
 `state`, `client_state` and `layout` keys and ignores every other key with a
 console warning. `state` and `client_state` merge one level deep, so a patch
 that carries only `selections` keeps your viewport and colors. The page
-re-renders and resolves with the compact state. It rejects when the re-request
-to the server fails, and the merged state is then ahead of the page. It changes
+re-renders and resolves with the compact state. When the server rejects the
+patch, it restores the previous state and page, then rejects with the server's
+reason, for example an invalid viewport value. With
+[linked axes](cross-filtering.md#linked-axes), a viewport patch must set every
+key of a link group to the same range. It changes
 only the tab the agent drives, so with separate browsers the agent records the
 new state and hands you the new `/h/N` instead. Adding or removing a figure is a
 structure change, not a state change: the agent rebuilds the spec in Python,

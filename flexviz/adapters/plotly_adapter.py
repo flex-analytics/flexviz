@@ -8,19 +8,17 @@ Interaction loop
 1. ``show_dashboard`` builds a self-contained HTML page with Plotly.js 3.
 2. The page fetches initial data from ``/dashboard/update`` on load and
    calls ``Plotly.react``.
-3. Every zoom/pan (``relayoutData``) is parsed into an ``InteractionEvent``
-   and posted to ``/dashboard/update``; returned deltas are applied via
-   ``Plotly.react``.
+3. Every zoom/pan writes ``state.viewport`` in the browser and posts an
+   ``InteractionEvent`` naming the changed keys to ``/dashboard/update``;
+   returned deltas are applied via ``Plotly.react``.
 
 """
 
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
-from ..events import InteractionEvent
 from ..spec import DashboardSpec, FigureSpec
 from .base import (
     AbstractAdapter,
@@ -36,9 +34,6 @@ from .runtime import (
 )
 
 _HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
-_PLOTLY_RANGE_INDEX_RE = re.compile(r"(x|y)axis(\d*)\.range\[([01])\]$")
-_PLOTLY_RANGE_ARRAY_RE = re.compile(r"(x|y)axis(\d*)\.range$")
-_PLOTLY_AUTORANGE_RE = re.compile(r"(x|y)axis(\d*)\.autorange$")
 _PLOTLY_MAP_TRACE_TYPES = {"geo_histogram2d", "geo_line"}
 
 
@@ -265,92 +260,8 @@ def _plotly_geo_line_trace_obj(ts: Any, name: str) -> dict:
     return obj
 
 
-def _plotly_axis_ranges(
-    relayout_data: dict[str, Any],
-) -> tuple[dict[str, tuple[Any, Any]], bool]:
-    """Collect complete Plotly axis ranges from a ``relayoutData`` dict."""
-    axis_ranges: dict[str, list[Any | None]] = {}
-    has_autorange = False
-
-    for key, value in relayout_data.items():
-        indexed = _PLOTLY_RANGE_INDEX_RE.match(key)
-        if indexed:
-            axis_id = f"{indexed.group(1)}{indexed.group(2)}"
-            axis_ranges.setdefault(axis_id, [None, None])[int(indexed.group(3))] = value
-            continue
-
-        array = _PLOTLY_RANGE_ARRAY_RE.match(key)
-        if array:
-            if isinstance(value, (list, tuple)) and len(value) == 2:
-                axis_id = f"{array.group(1)}{array.group(2)}"
-                axis_ranges[axis_id] = [value[0], value[1]]
-            continue
-
-        if _PLOTLY_AUTORANGE_RE.match(key):
-            has_autorange = True
-
-    complete = {
-        axis_id: (range_values[0], range_values[1])
-        for axis_id, range_values in axis_ranges.items()
-        if range_values[0] is not None and range_values[1] is not None
-    }
-    return complete, has_autorange
-
-
 class PlotlyAdapter(AbstractAdapter):
     """Adapter that renders flexviz figures with Plotly.js."""
-
-    # ------------------------------------------------------------------
-    # parse_event
-    # ------------------------------------------------------------------
-
-    def parse_event(self, relayout_data: dict[str, Any]) -> InteractionEvent | None:
-        """Parse Plotly ``relayoutData`` into an ``InteractionEvent``.
-
-        Handles:
-        - ``xaxis.range`` array patterns → ``"viewport"``
-        - ``xaxis.range[0]`` / ``xaxis.range[1]`` patterns → ``"viewport"``
-        - ``xaxis.autorange`` / ``autosize`` / ``dragmode`` → ``"reset"``
-          or ignored respectively.
-        """
-        if not relayout_data:
-            return None
-
-        # If the caller already built a typed event dict (e.g. from a Dash
-        # callback or programmatic use), construct directly without parsing.
-        if "type" in relayout_data:
-            try:
-                return InteractionEvent(**relayout_data)
-            except Exception:
-                pass
-
-        # Ignore drag-mode changes (no data update needed)
-        if list(relayout_data.keys()) == ["dragmode"]:
-            return None
-
-        # Full reset (autorange button)
-        if relayout_data.get("autosize") is True:
-            return InteractionEvent(type="reset", force_update=True)
-
-        for key, value in relayout_data.items():
-            if re.match(r"map\d*\._derived$", key):
-                coordinates = (
-                    value.get("coordinates") if isinstance(value, dict) else None
-                )
-                if coordinates:
-                    return InteractionEvent(
-                        type="viewport",
-                        axis_ranges={"coordinates": coordinates},
-                    )
-
-        complete, has_autorange = _plotly_axis_ranges(relayout_data)
-        if has_autorange and not complete:
-            return InteractionEvent(type="reset", force_update=True)
-
-        if not complete:
-            return None
-
-        return InteractionEvent(type="viewport", axis_ranges=complete)
 
     # ------------------------------------------------------------------
     # show_dashboard

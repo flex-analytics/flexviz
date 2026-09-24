@@ -26,10 +26,47 @@ function setGroupedLayerData(figUid, parentUid, layerKey, groupResults) {
   groupedDataByParent[figUid][parentUid][layerKey] = cloneObj(groupResults || []);
 }
 
+// Why the last failed request failed, for callers that report it
+// (flexvizApply). Only the latest failure is kept.
+let _fvLastUpdateError = null;
+
+function _fvErrorDetail(body) {
+  const detail = body && body.detail;
+  if (Array.isArray(detail)) return detail.map(d => (d && d.msg) || String(d)).join('; ');
+  return detail ? String(detail) : '';
+}
+
+// After a gesture on `sourceFigUid` wrote `keys` (linked keys included): redraw
+// the other figures it moved, since rendering follows state and the gesture's
+// own figure already shows its range (pass null to redraw them all). Then
+// re-aggregate, in one request, every figure where a changed axis binds a trace
+// (a line's x, not its y). Mirrors the server gate. The redraws post nothing:
+// the relayout handler ignores what Plotly.react emits. Returns the request's
+// promise, or undefined when nothing needs a fetch.
+function fvCommitViewportChange(sourceFigUid, keys) {
+  if (!keys.length) return;
+  const figUids = fvFiguresOfKeys(keys);
+  for (const figUid of figUids) {
+    if (figUid !== sourceFigUid) _fvRenderFigure(figUid);
+  }
+  const needsFetch = figUids.some(figUid => fvNeedsFetch(
+    figUid,
+    keys.filter(k => k.startsWith(figUid + '/')).map(k => k.slice(figUid.length + 1))
+  ));
+  if (!needsFetch) return;
+  return postDashboardUpdate({
+    type: 'viewport',
+    viewport_keys: keys,
+    selections: DASHBOARD_SPEC.state.selections || [],
+    force_update: false,
+  });
+}
+
 async function postDashboardUpdate(event) {
+  _fvLastUpdateError = null;
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
-  // Whole-dashboard blob first (init / reset / deselect); then the figure-scoped
+  // Whole-dashboard blob first (init / deselect); then the figure-scoped
   // slice (a per-figure reset or autorange to full range with no other filters).
   const cachedFigureDeltas = fvCacheGet(event) || fvCacheGetFigure(event);
   if (cachedFigureDeltas) {
@@ -42,11 +79,14 @@ async function postDashboardUpdate(event) {
         body:    JSON.stringify({ spec: DASHBOARD_SPEC, event }),
       });
       if (!resp.ok) {
-        console.warn('flexviz /dashboard/update returned', resp.status);
+        const detail = _fvErrorDetail(await resp.json().catch(() => null));
+        _fvLastUpdateError = `status ${resp.status}${detail ? ': ' + detail : ''}`;
+        console.warn('flexviz /dashboard/update returned', _fvLastUpdateError);
         return false;
       }
       data = await resp.json();
     } catch (e) {
+      _fvLastUpdateError = String(e);
       console.warn('flexviz /dashboard/update request failed', e);
       return false;
     }
@@ -58,7 +98,7 @@ async function postDashboardUpdate(event) {
     for (const [figUid, deltas] of Object.entries(data.figure_deltas)) {
       const sourceFigure = figureHasSelectionSource(figUid, event.selections || []);
       let sawBackground = false;
-      if (['deselect', 'reset', 'init'].includes(event.type)) {
+      if (['deselect', 'init'].includes(event.type)) {
         bgYExtentByFig[figUid] = null;
       }
       for (const delta of deltas) {
@@ -105,18 +145,19 @@ async function postDashboardUpdate(event) {
       }
       if (deltas.length) dirtyFigUids.add(figUid);
     }
-    if (['selection', 'deselect', 'reset', 'init'].includes(event.type)) {
+    if (['selection', 'deselect', 'init'].includes(event.type)) {
       _fvAllFigUids.forEach(figUid => dirtyFigUids.add(figUid));
     } else {
       selectionSourceFigureUids(DASHBOARD_SPEC.state.selections || [])
         .forEach(figUid => dirtyFigUids.add(figUid));
     }
   } catch (e) {
+    _fvLastUpdateError = `applying the response failed: ${e}`;
     console.warn('flexviz /dashboard/update delta apply failed', e);
     return false;
   }
 
-  if (['deselect', 'reset', 'init'].includes(event.type)) {
+  if (['deselect', 'init'].includes(event.type)) {
     _resetTreemapLevel = true;
   }
   for (const figUid of dirtyFigUids) {

@@ -11,10 +11,8 @@ function clearFigureSelection(figUid) {
   window.fvSetSelectionState?.(remainingSelections);
   postDashboardUpdate({
     type: remainingSelections.length ? 'selection' : 'deselect',
-    axis_ranges: {},
     selections: remainingSelections,
     force_update: true,
-    figure_uid: figUid,
   });
 }
 
@@ -110,9 +108,9 @@ function handleClick(eventData, figUid) {
     return false;
   }
   postDashboardUpdate({
-    type: 'selection', axis_ranges: {},
+    type: 'selection',
     selections: nextSelections,
-    force_update: true, figure_uid: figUid,
+    force_update: true,
   });
   return false;
 }
@@ -226,14 +224,7 @@ function handleRelayout(relayout, figUid) {
   if (isMapEvent) {
     const coords = mapCoordinatesFromRelayout(relayout) || extractMapBounds(figUid);
     if (coords) {
-      DASHBOARD_SPEC.state.viewport[figUid + '/coordinates'] = coords;  // persist always
-      if (fvNeedsFetch(figUid, ['coordinates'])) {
-        postDashboardUpdate({
-          type: 'viewport', axis_ranges: { coordinates: coords },
-          selections: DASHBOARD_SPEC.state.selections,
-          force_update: false, figure_uid: figUid
-        });
-      }
+      fvCommitViewportChange(figUid, fvWriteViewport(figUid + '/coordinates', coords));
     }
     return;
   }
@@ -272,39 +263,24 @@ function handleRelayout(relayout, figUid) {
   }
   if (hasAuto && Object.keys(complete).length === 0) {
     // Per-axis autorange (double-click): clear only the autoranged axes locally
-    // so a still-zoomed sibling axis is untouched (persist always).
-    for (const ax of autoAxes) window.fvClearFigureAxisViewport?.(figUid, ax);
-    // Only round-trip if an autoranged axis re-aggregates a trace.
-    if (!fvNeedsFetch(figUid, autoAxes)) return;
-    // null marks "reset to full range" so the engine recomputes full-range for
-    // binding traces; remaining axes keep their stored zoom.
-    const axisRanges = figureViewportRanges(figUid);
-    for (const ax of autoAxes) axisRanges[ax] = null;
-    postDashboardUpdate({
-      type: 'viewport',
-      axis_ranges: axisRanges,
-      force_update: false,
-      selections: DASHBOARD_SPEC.state.selections || [],
-      figure_uid: figUid,
-    });
+    // so a still-zoomed sibling axis is untouched (persist always). A locked
+    // axis keeps its key and snaps back to its lock range.
+    const unlockedAuto = autoAxes.filter(ax => !window.fvIsAxisLocked?.(figUid, ax));
+    if (unlockedAuto.length < autoAxes.length) window.fvApplyAxisLocks?.(figUid);
+    // The cleared keys are listed as changed: absent from state means full range.
+    fvCommitViewportChange(
+      figUid, unlockedAuto.flatMap(ax => fvWriteViewport(figUid + '/' + ax, null))
+    );
     return;
   }
   if (Object.keys(complete).length === 0) return;
   const unlockedComplete = window.fvPruneAxisRangesForLocks?.(figUid, complete) || complete;
   const touchedLockedAxes = Object.keys(complete).some(k => window.fvIsAxisLocked?.(figUid, k));
-  for (const [k, v] of Object.entries(unlockedComplete)) {
-    DASHBOARD_SPEC.state.viewport[figUid + '/' + k] = { min: v[0], max: v[1] };
-  }
-  const axisRanges = window.fvPruneAxisRangesForLocks?.(figUid, figureViewportRanges(figUid)) || figureViewportRanges(figUid);
-  if (Object.keys(unlockedComplete).length === 0) {
-    window.fvApplyAxisLocks?.(figUid);
-    return;
-  }
+  const changed = Object.entries(unlockedComplete).flatMap(
+    ([k, v]) => fvWriteViewport(figUid + '/' + k, { min: v[0], max: v[1] })
+  );
   if (touchedLockedAxes) window.fvApplyAxisLocks?.(figUid);
-  // Viewport is persisted above regardless; only round-trip when a changed axis
-  // re-aggregates a trace (e.g. a line's x, not its y). Mirrors the server gate.
-  if (!fvNeedsFetch(figUid, Object.keys(unlockedComplete))) return;
-  postDashboardUpdate({ type: 'viewport', axis_ranges: axisRanges, selections: DASHBOARD_SPEC.state.selections, force_update: false, figure_uid: figUid });
+  fvCommitViewportChange(figUid, changed);
 }
 
 // The TRUE category value of a selected bar point: the trace's underlying
@@ -506,7 +482,7 @@ function _fvCubeEnsureOverlayBg(gesture) {
   }
   if (!needed.size) return;
   const blob = fvCacheGet({
-    type: 'init', axis_ranges: {}, selections: [], force_update: true,
+    type: 'init', selections: [], force_update: true,
   });
   if (!blob) return; // cold cache — degrade (skipPost bg conjunct)
   for (const figUid of needed) {
@@ -1093,10 +1069,8 @@ async function _fvCubeFetchAndStore(figUid, source, targets, onServed) {
   const data = await fvCubeRequest(
     {
       type: 'cube_request',
-      axis_ranges: figureViewportRanges(figUid),
       selections: DASHBOARD_SPEC.state.selections || [],
       force_update: false,
-      figure_uid: figUid,
     },
     { figure_uid: figUid, column: source.column, trace_uid: source.traceUid }
   );
@@ -1954,9 +1928,9 @@ function handleSelected(eventData, figUid) {
     return;
   }
   postDashboardUpdate({
-    type: 'selection', axis_ranges: {},
+    type: 'selection',
     selections: nextSelections,
-    force_update: true, figure_uid: figUid,
+    force_update: true,
   });
 }
 

@@ -1,6 +1,6 @@
 """Server/engine ``request_cube`` path tests (cube Phases 1–2).
 
-Covers the ``cube_request`` protocol on ``/update`` and ``/dashboard/update``,
+Covers the ``cube_request`` protocol on ``/dashboard/update``,
 the engine's ``build_cubes`` flow (source lookup, passive guard, target
 enumeration, domain resolution, dedup), the byte-bounded cube cache, and
 end-to-end slice parity against a direct Polars recompute — for range (hist)
@@ -21,7 +21,6 @@ import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 from flexviz.cache import get_cache, get_cube_cache
 from flexviz.cube import decode_cube_bundle, decode_fvcube_header
 from flexviz.dashboard import Dashboard
-from flexviz.figure import Figure
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
 from flexviz.trace.bin_grid import snap_range
@@ -35,7 +34,7 @@ _P = 2048
 
 
 def _cube_body(resp) -> dict:
-    """Normalize a ``/update`` or ``/dashboard/update`` response to a dict.
+    """Normalize a ``/dashboard/update`` response to a dict.
 
     A ``cube_request`` is answered with a binary cube bundle
     (``application/octet-stream``); decode it into the ``{"cubes": [b64...],
@@ -119,13 +118,11 @@ def _two_hist_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     return dash.to_spec(source_name=_SRC)
 
 
-def _cube_event(figure_uid: str, selections: list | None = None) -> dict:
+def _cube_event(selections: list | None = None) -> dict:
     return {
         "type": "cube_request",
-        "axis_ranges": {},
         "selections": selections or [],
         "force_update": False,
-        "figure_uid": figure_uid,
     }
 
 
@@ -138,7 +135,7 @@ def _cube_payload(
         trace_uid = src_fig.traces[0].uid
     return {
         "spec": spec.model_dump(),
-        "event": _cube_event(source_fig_uid),
+        "event": _cube_event(),
         "request_cube": True,
         "active_source": {
             "figure_uid": source_fig_uid,
@@ -153,7 +150,6 @@ def _init_payload(spec) -> dict:
         "spec": spec.model_dump(),
         "event": {
             "type": "init",
-            "axis_ranges": {},
             "selections": [],
             "force_update": True,
         },
@@ -644,7 +640,6 @@ class TestDashboardCubeRequest:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -658,50 +653,24 @@ class TestDashboardCubeRequest:
 
 
 # ---------------------------------------------------------------------------
-# Single-figure /update plumbing
+# Single-figure plumbing
 # ---------------------------------------------------------------------------
 
 
 class TestSingleFigureCubeRequest:
     def test_update_cube_request_returns_empty_cubes(self, client, df):
         """A single figure has no cross-filter targets besides itself, so the
-        /update cube path is plumbed but trivially empty."""
-        fig = Figure(df)
-        fig.add_histogram(x="a", bins=16)
-        spec = fig.to_spec(source=_SRC)
-        payload = {
-            "spec": spec.model_dump(),
-            "event": _cube_event(spec.figure.uid),
-            "request_cube": True,
-            "active_source": {
-                "figure_uid": spec.figure.uid,
-                "column": "a",
-                "trace_uid": spec.figure.traces[0].uid,
-            },
-        }
-        resp = client.post("/update", json=payload)
+        cube path is plumbed but trivially empty."""
+        dash = Dashboard(df)
+        dash.add_figure(title="Solo").add_histogram(x="a", bins=16)
+        spec = dash.to_spec(source_name=_SRC)
+        resp = client.post(
+            "/dashboard/update", json=_cube_payload(spec, spec.figures[0].uid)
+        )
         assert resp.status_code == 200
         body = _cube_body(resp)
         assert body["cubes"] == []
         assert body["trace_cubes"] == {}
-
-    def test_update_without_request_cube_unchanged(self, client, df):
-        fig = Figure(df)
-        fig.add_histogram(x="a", bins=16)
-        spec = fig.to_spec(source=_SRC)
-        payload = {
-            "spec": spec.model_dump(),
-            "event": {
-                "type": "init",
-                "axis_ranges": {},
-                "selections": [],
-                "force_update": True,
-            },
-        }
-        resp = client.post("/update", json=payload)
-        body = _cube_body(resp)
-        assert len(body["deltas"]) == 1
-        assert "cubes" not in body
 
 
 # ---------------------------------------------------------------------------

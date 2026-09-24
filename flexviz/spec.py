@@ -15,11 +15,12 @@ from __future__ import annotations
 import base64
 import gzip
 import json as _json
-from typing import Any, Literal, TypeAlias, TypedDict
+from typing import Annotated, Any, Literal, TypeAlias, TypedDict
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     Field,
     field_serializer,
@@ -27,6 +28,19 @@ from pydantic import (
 )
 
 _SPEC_VERSION = "0.6"
+
+
+def _check_spec_version(version: str) -> str:
+    # Specs round-trip only within one spec version (pre-1.0 policy).
+    if version != _SPEC_VERSION:
+        raise ValueError(
+            f"spec version {version!r} is not supported; this FlexViz reads "
+            f"spec version {_SPEC_VERSION!r}"
+        )
+    return version
+
+
+SpecVersion: TypeAlias = Annotated[str, AfterValidator(_check_spec_version)]
 
 # Per-trace hover *capabilities* (what a trace can emit/receive as a source or
 # target). These are declared by each trace and consumed by the client runtime,
@@ -220,7 +234,7 @@ class TraceSpec(BaseModel):
     display: dict[str, Any] = Field(default_factory=dict)
     # Anchor ids whose viewport range parameterizes this trace's aggregation
     # (e.g. ``("x",)`` for a line, ``("coordinates",)`` for a map trace).
-    # Read by both the client (to suppress no-op /update POSTs) and the engine
+    # Read by both the client (to suppress no-op viewport POSTs) and the engine
     # (to gate per-trace recompute).  Current producers must emit a concrete
     # tuple: populated means "these viewport anchors re-aggregate the trace",
     # while an explicit empty tuple means deliberately frozen.  ``None`` is only
@@ -254,10 +268,28 @@ class FigureSpec(BaseModel):
     to route trace deltas back to the correct renderer div.
     """
 
-    uid: str = Field(default_factory=lambda: str(uuid4()))
+    # No "/": viewport keys are "<figure_uid>/<axis_id>".
+    uid: str = Field(default_factory=lambda: str(uuid4()), pattern=r"^[^/]+$")
     source: str | None = None
     layout: dict[str, Any] = Field(default_factory=dict)
     traces: list[TraceSpec] = Field(default_factory=list)
+
+
+def figure_axis_columns(figure: FigureSpec) -> dict[str, set[str]]:
+    """Map each cartesian axis id of ``figure`` to the columns its traces show.
+
+    Roles follow the trace convention: ``axes[0]`` shows ``backend_data["x"]``
+    and ``axes[1]`` shows ``backend_data["y"]``. An axis without a column (a
+    histogram's count axis, a bar's value axis) is absent.
+    """
+    columns: dict[str, set[str]] = {}
+    for trace in figure.traces:
+        for axis_id, role in zip(trace.axes or (), ("x", "y")):
+            col = trace.backend_data.get(role)
+            cols = [col] if isinstance(col, str) else list(col or [])
+            if cols:
+                columns.setdefault(axis_id, set()).update(cols)
+    return columns
 
 
 class GroupDomainState(BaseModel):
@@ -301,26 +333,36 @@ class ClientState(BaseModel):
     """Client-only persistent state not read by the server engine.
 
     Included in every POST body to ``/dashboard/update`` and in
-    share/export/import serialisation, but the server silently ignores it.
+    share/export/import serialisation. The engine ignores it. The
+    ``DashboardSpec`` validator reads ``axis_links``, ``axis_locks`` and
+    ``axis_lock_ranges`` to check the links.
 
     This is the designated home for client-only-but-persistent state:
     hover mode, annotation visibility, panel collapse state, axis locks, etc.
 
-    ``axis_locks`` maps ``"{figure_uid}/{axis_family}"`` → locked flag and
-    ``axis_lock_ranges`` maps the same keys → the pinned ``AxisRange``. Both are
-    applied entirely client-side (JS pins the viewport); the server never reads
-    them.
+    ``axis_locks`` maps ``"{figure_uid}/{axis_family}"`` → locked flag, where
+    the family ``x`` also covers ``x2``. ``axis_lock_ranges`` maps
+    ``"{figure_uid}/{axis_id}"`` → the pinned ``AxisRange`` of each locked
+    axis. Both are applied entirely client-side (JS pins the viewport); only
+    the link validator reads them.
 
     ``live_brush`` gates the cube live-brush loop (spec §2.5): ``"auto"``
     (default) binds ``plotly_selecting`` on range-geometry figures and slices
     client-side cubes during the drag; ``"off"`` never binds it — today's
     mouseup-only behavior bit-for-bit. The server never reads this field.
+
+    ``axis_links`` holds groups of linked axes as viewport keys
+    (``"{figure_uid}/{axis_id}"``). The client writes one range into every key
+    of a group, so linked axes zoom, pan, autorange and reset together. The
+    engine never reads it; ``DashboardSpec`` validates it (see
+    ``_check_axis_links``) so no spec can carry a link the client cannot keep.
     """
 
     hover_mode: HoverToggle = "off"
     live_brush: Literal["auto", "off"] = "auto"
     axis_locks: dict[str, bool] = Field(default_factory=dict)
     axis_lock_ranges: dict[str, AxisRange] = Field(default_factory=dict)
+    axis_links: list[list[str]] = Field(default_factory=list)
 
 
 class VisualizationSpec(BaseModel):
@@ -331,9 +373,28 @@ class VisualizationSpec(BaseModel):
     the client.
     """
 
-    version: str = _SPEC_VERSION
+    version: SpecVersion = _SPEC_VERSION
     figure: FigureSpec = Field(default_factory=FigureSpec)
     state: InteractionState = Field(default_factory=InteractionState)
+
+    @model_validator(mode="after")
+    def _check_viewport_figures(self) -> VisualizationSpec:
+        _check_viewport_figures(self.state.viewport, {self.figure.uid})
+        return self
+
+
+def _check_viewport_figures(
+    viewport: dict[str, ViewportStateValue], fig_uids: set[str]
+) -> None:
+    # A figure uid holds no "/", so a key splits at its one slash.
+    for key in viewport:
+        fig_uid, _, axis_id = key.partition("/")
+        if not fig_uid or not axis_id or "/" in axis_id:
+            raise ValueError(
+                f"viewport key {key!r} must have the form '<figure_uid>/<axis_id>'"
+            )
+        if fig_uid not in fig_uids:
+            raise ValueError(f"viewport key {key!r} names no figure in this spec")
 
 
 _GRIDSTACK_CELL_HEIGHT_PX: int = 80
@@ -495,11 +556,150 @@ class DashboardSpec(BaseModel):
         Layout hints (gap, draggable/grid editability, and ``grid_items``).
     """
 
-    version: str = _SPEC_VERSION
+    version: SpecVersion = _SPEC_VERSION
     figures: list[FigureSpec] = Field(default_factory=list)
     state: InteractionState = Field(default_factory=InteractionState)
     layout: LayoutSpec = Field(default_factory=LayoutSpec)
     client_state: ClientState = Field(default_factory=ClientState)
+
+    @model_validator(mode="after")
+    def _check_viewport_figures(self) -> DashboardSpec:
+        _check_viewport_figures(self.state.viewport, {fig.uid for fig in self.figures})
+        return self
+
+    @model_validator(mode="after")
+    def _check_axis_links(self) -> DashboardSpec:
+        """Reject links the client cannot keep equal or the engine cannot use.
+
+        Every spec entry point (builder, share URL, import, each request) runs
+        this, so a hand-built or patched spec gets the same rules as
+        ``Dashboard.link_axes``. The rules that need the data schema are in
+        ``check_axis_link_types``.
+        """
+        figures = {fig.uid: fig for fig in self.figures}
+        viewport = self.state.viewport
+        # Links are x or y only, so a linked axis id is also its lock family,
+        # the key form of axis_locks.
+        locks = self.client_state.axis_locks
+        lock_ranges = self.client_state.axis_lock_ranges
+        seen: set[str] = set()
+        for group in self.client_state.axis_links:
+            fig_uids = {key.partition("/")[0] for key in group}
+            if len(group) < 2 or len(fig_uids) != len(group):
+                raise ValueError(
+                    f"axis link group {group} needs axes of two or more figures, "
+                    "one axis each; it cannot hold two axes of one figure"
+                )
+            if shared := seen.intersection(group):
+                raise ValueError(f"axes {sorted(shared)} are in two link groups")
+            seen.update(group)
+            is_reversed: dict[str, bool] = {}
+            for key in group:
+                fig_uid, _, axis_id = key.partition("/")
+                figure = figures.get(fig_uid)
+                if figure is None:
+                    raise ValueError(
+                        f"linked axis {key!r} names no figure in this spec"
+                    )
+                if axis_id not in ("x", "y"):
+                    raise ValueError(f"only x and y axes can be linked, not {key!r}")
+                if axis_id not in figure_axis_columns(figure):
+                    raise ValueError(
+                        f"linked axis {key!r} shows no data column (count axes, "
+                        "categorical traces and maps cannot be linked)"
+                    )
+                axis = _layout_axis(figure, axis_id)
+                if axis.get("type") not in _LINKABLE_AXIS_TYPES:
+                    raise ValueError(
+                        f"{axis.get('type')} axis {key!r} cannot be linked: its "
+                        "range is not in data units"
+                    )
+                is_reversed[key] = _axis_reversed(axis)
+            for rule, value_of in (
+                ("all be reversed or all be normal", is_reversed.get),
+                ("hold equal ranges", viewport.get),
+                ("be locked together", lambda key: locks.get(key, False)),
+                ("be locked at one range", lock_ranges.get),
+            ):
+                values = [value_of(key) for key in group]
+                if any(value != values[0] for value in values):
+                    raise ValueError(f"linked axes {group} must {rule}")
+        return self
+
+
+# Plotly axis types whose range is in data units. A log range is in log10
+# units and a category range in positions, so copying one would be wrong.
+_LINKABLE_AXIS_TYPES = (None, "-", "linear", "date")
+
+
+def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
+    axis = figure.layout.get(f"{axis_id}axis")
+    return axis if isinstance(axis, dict) else {}
+
+
+def _axis_reversed(axis: dict[str, Any]) -> bool:
+    """Whether Plotly draws the axis high to low: a "reversed" autorange
+    variant, or a fixed range given high to low."""
+    autorange = axis.get("autorange")
+    if isinstance(autorange, str) and "reversed" in autorange:
+        return True
+    rng = axis.get("range")
+    if isinstance(rng, (list, tuple)) and len(rng) == 2 and None not in rng:
+        try:
+            return rng[0] > rng[1]
+        except TypeError:
+            return False
+    return False
+
+
+def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
+    """Check linked axes against the data types, which the spec cannot see.
+
+    ``schemas`` maps each figure source name to its Polars schema; a source
+    without one is skipped. The builder and the server both run this. Raises
+    ``ValueError``.
+
+    Only numeric, ``Date`` and ``Datetime`` columns can be linked: ``Time`` and
+    ``Duration`` render as category axes, whose ranges are positions. A numeric
+    column on a ``date`` axis is refused: its zoom sends dates the column
+    cannot compare. The axes of a group must then agree on three things, as the
+    client copies one range to all of them:
+
+    - numeric or temporal, because a range of one does not parse as the other;
+    - the time zone (``Date`` and a naive ``Datetime`` have none), because the
+      range is wall-clock text, so one window would be two instants;
+    - the Plotly axis type, because a ``date`` axis reports date strings and a
+      ``linear`` one numbers.
+    """
+    import polars as pl
+
+    figures = {fig.uid: fig for fig in spec.figures}
+    for group in spec.client_state.axis_links:
+        kinds: set[str] = set()
+        for key in group:
+            fig_uid, _, axis_id = key.partition("/")
+            figure = figures[fig_uid]
+            schema = schemas.get(figure.source) or {}
+            axis_type = _layout_axis(figure, axis_id).get("type")
+            for col in figure_axis_columns(figure)[axis_id]:
+                dtype = schema.get(col)
+                if dtype is None:
+                    continue
+                if dtype.is_numeric() and axis_type != "date":
+                    kinds.add("numeric on a linear axis")
+                elif isinstance(dtype, (pl.Date, pl.Datetime)):
+                    zone = getattr(dtype, "time_zone", None) or "naive"
+                    shown = "linear" if axis_type == "linear" else "date"
+                    kinds.add(f"{zone} time on a {shown} axis")
+                else:
+                    raise ValueError(
+                        f"linked axis {key!r} shows {col!r} of type {dtype} on a "
+                        f"{axis_type or 'default'} axis; only numeric, Date and "
+                        "Datetime columns can be linked, and a numeric one not "
+                        "on a date axis"
+                    )
+        if len(kinds) > 1:
+            raise ValueError(f"linked axes {group} mix {' and '.join(sorted(kinds))}")
 
 
 # ---------------------------------------------------------------------------
@@ -507,57 +707,33 @@ class DashboardSpec(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def encode_spec(spec: VisualizationSpec | DashboardSpec | dict) -> str:
+def encode_spec(spec: VisualizationSpec | DashboardSpec) -> str:
     """Encode a spec to a compact, URL-safe string.
 
     The spec is JSON-serialised, gzip-compressed (level 9), and
     base64url-encoded without ``=`` padding so the result is safe in a URL
     query parameter.
-
-    Parameters
-    ----------
-    spec:
-        A ``VisualizationSpec``, ``DashboardSpec``, or any JSON-serialisable
-        ``dict``.
-
-    Returns
-    -------
-    str
-        URL-safe encoded string.
     """
-    if isinstance(spec, (VisualizationSpec, DashboardSpec)):
-        raw: bytes = spec.model_dump_json().encode()
-    elif isinstance(spec, dict):
-        raw = _json.dumps(spec).encode()
-    else:
-        raise TypeError(f"encode_spec: unsupported type {type(spec)!r}")
-    compressed = gzip.compress(raw, compresslevel=9)
+    compressed = gzip.compress(spec.model_dump_json().encode(), compresslevel=9)
     return base64.urlsafe_b64encode(compressed).rstrip(b"=").decode()
 
 
 def decode_spec(encoded: str) -> VisualizationSpec | DashboardSpec:
     """Decode a string produced by :func:`encode_spec` into a spec model.
 
-    The spec type is detected from the decoded JSON: a dict containing the
-    key ``"figures"`` is treated as a ``DashboardSpec``; otherwise a
-    ``VisualizationSpec`` is returned.
-
-    Parameters
-    ----------
-    encoded:
-        URL-safe base64-encoded gzip-compressed JSON string.
-
-    Returns
-    -------
-    VisualizationSpec | DashboardSpec
+    See :func:`parse_spec` for the model choice.
     """
-    # Re-add stripped padding so base64 decoding succeeds.
-    padding = 4 - len(encoded) % 4
-    if padding != 4:
-        encoded += "=" * padding
-    compressed = base64.urlsafe_b64decode(encoded)
-    raw = gzip.decompress(compressed)
-    data: dict = _json.loads(raw)
+    padded = encoded + "=" * (-len(encoded) % 4)
+    raw = gzip.decompress(base64.urlsafe_b64decode(padded))
+    return parse_spec(_json.loads(raw))
+
+
+def parse_spec(data: dict[str, Any]) -> VisualizationSpec | DashboardSpec:
+    """Validate a spec dict: a ``DashboardSpec`` when it has ``"figures"``,
+    else a ``VisualizationSpec``.
+
+    Both models refuse a spec of another version. Raises ``ValueError``.
+    """
     if "figures" in data:
         return DashboardSpec.model_validate(data)
     return VisualizationSpec.model_validate(data)

@@ -40,7 +40,7 @@ register_source("trips", lf)
 mount_into(app, prefix="/flexviz")
 ```
 
-The FlexViz endpoints (`/update`, `/dashboard/update`, `/share`, `/view`,
+The FlexViz endpoints (`/dashboard/update`, `/share`, `/view`,
 `/sources`) then live under the prefix. The mounted app brings its own gzip
 middleware, so responses are compressed regardless of the host app's setup.
 For Flask or other WSGI hosts, use

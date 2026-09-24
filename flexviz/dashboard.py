@@ -31,6 +31,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import polars as pl
+from pydantic import ValidationError
 
 from .figure import (
     Figure,
@@ -41,12 +42,28 @@ from .figure import (
 )
 from .LF import LFQueryBuilder, polars_lf_from
 from .spec import (
+    ClientState,
     DashboardSpec,
+    FigureSpec,
     InteractionState,
     LayoutSpec,
     _auto_grid_items,
+    check_axis_link_types,
     encode_spec,
+    figure_axis_columns,
 )
+
+
+def _name_figures(message: str, figure_specs: list[FigureSpec]) -> str:
+    """Replace figure uids in a builder error with "figure N (title)"."""
+    for number, spec in enumerate(figure_specs, 1):
+        title = spec.layout.get("title")
+        if isinstance(title, dict):
+            title = title.get("text")
+        label = f"figure {number}" + (f" ({title})" if title else "")
+        message = message.replace(f"{spec.uid}/", f"{label}, axis ")
+        message = message.replace(spec.uid, label)
+    return message
 
 
 class Dashboard:
@@ -91,6 +108,9 @@ class Dashboard:
             self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
 
         self._figures: list[Figure] = []
+        # Raw link_axes calls, resolved in to_spec against the finished figures,
+        # so traces and figures added after the call still count.
+        self._link_requests: list[tuple[tuple[Figure, ...], str | None, tuple]] = []
 
     # ------------------------------------------------------------------
     # Figure management
@@ -132,6 +152,116 @@ class Dashboard:
         self._figures.append(fig)
         return fig
 
+    def link_axes(
+        self,
+        *targets: Figure | tuple[Figure, str],
+        on: str | None = None,
+        axis: str | None = None,
+    ) -> Dashboard:
+        """Link axes so they zoom, pan, autorange and reset together.
+
+        Three forms, one result:
+
+        - ``link_axes(on="ts")`` links the axis showing column ``ts`` in every
+          figure that shows it; ``link_axes(a, b, on="ts")`` only in ``a`` and
+          ``b``, each of which must show it.
+        - ``link_axes(a, b, axis="x")`` links the same axis of each figure.
+        - ``link_axes((a, "x"), (h, "y"))`` links the named axes, for example a
+          line's x with a horizontal histogram's y.
+
+        Calls that share an axis merge into one group. Only x and y axes that
+        show a numeric or temporal column can be linked (not a histogram's
+        count axis, a bar, a map or a log axis), and numeric and temporal axes
+        do not mix. Links are resolved when the spec is built, so figures and
+        traces added later count too. Raises ``TypeError`` for a target that is
+        not a figure or a tuple, and ``ValueError`` on a bad link.
+
+        Returns
+        -------
+        Dashboard
+            ``self``, for chaining.
+        """
+        for target in targets:
+            if not isinstance(target, (Figure, tuple)):
+                raise TypeError(
+                    "link_axes takes figures or (figure, axis) tuples, not "
+                    f"{type(target).__name__}"
+                )
+        pairs = tuple(t for t in targets if isinstance(t, tuple))
+        figures = tuple(t for t in targets if isinstance(t, Figure))
+        if pairs and figures:
+            raise ValueError("pass figures or (figure, axis) pairs, not both")
+        if pairs:
+            if on is not None or axis is not None:
+                raise ValueError("(figure, axis) pairs name their axes; drop on=/axis=")
+            if len(pairs) < 2:
+                raise ValueError("link_axes needs two or more (figure, axis) pairs")
+            if any(
+                len(p) != 2 or not isinstance(p[0], Figure) or not isinstance(p[1], str)
+                for p in pairs
+            ):
+                raise ValueError("each pair must be (figure, axis_id)")
+        elif (on is None) == (axis is None):
+            raise ValueError("pass exactly one of on= or axis=")
+        elif axis is not None and len(figures) < 2:
+            raise ValueError("link_axes(axis=...) needs two or more figures")
+        for fig in figures or tuple(fig for fig, _ in pairs):
+            if not any(fig is own for own in self._figures):
+                raise ValueError("link_axes got a figure that is not in this dashboard")
+        if on is not None:
+            self._link_requests.append((figures, on, ()))
+        else:
+            members = pairs or tuple((fig, axis) for fig in figures)
+            self._link_requests.append(((), None, members))
+        return self
+
+    def _resolve_axis_links(self, figure_specs: list[FigureSpec]) -> list[list[str]]:
+        """Turn the link_axes calls into merged groups of viewport keys."""
+        order = {spec.uid: i for i, spec in enumerate(figure_specs)}
+        groups: list[set[str]] = []
+        for figures, on, members in self._link_requests:
+            if on is None:
+                keys = {f"{fig._uid}/{axis_id}" for fig, axis_id in members}
+            else:
+                keys = self._keys_showing(on, figures, figure_specs)
+            for group in [g for g in groups if g & keys]:
+                keys |= group
+                groups.remove(group)
+            groups.append(keys)
+        return [
+            sorted(g, key=lambda k: (order[k.partition("/")[0]], k)) for g in groups
+        ]
+
+    @staticmethod
+    def _keys_showing(
+        column: str, figures: tuple[Figure, ...], figure_specs: list[FigureSpec]
+    ) -> set[str]:
+        wanted = {fig._uid for fig in figures}
+        keys: set[str] = set()
+        for spec in figure_specs:
+            if wanted and spec.uid not in wanted:
+                continue
+            axes = sorted(
+                ax for ax, cols in figure_axis_columns(spec).items() if column in cols
+            )
+            if len(axes) > 1:
+                raise ValueError(
+                    f"{spec.uid} shows {column!r} on axes {axes}; name one with "
+                    "(figure, axis) pairs"
+                )
+            if axes:
+                keys.add(f"{spec.uid}/{axes[0]}")
+            elif wanted:
+                raise ValueError(f"{spec.uid} shows no {column!r} axis")
+        if not keys:
+            raise ValueError(f"link_axes(on={column!r}): no figure shows {column!r}")
+        if len(keys) < 2:
+            raise ValueError(
+                f"link_axes(on={column!r}): only one figure shows {column!r}, "
+                "so there is nothing to link"
+            )
+        return keys
+
     # ------------------------------------------------------------------
     # Spec serialisation
     # ------------------------------------------------------------------
@@ -159,13 +289,26 @@ class Dashboard:
         """
         src = source_name if self._backend_lf is not None else None
         figure_specs = [fig.to_spec(source=src).figure for fig in self._figures]
-        return DashboardSpec(
-            figures=figure_specs,
-            state=InteractionState(),
-            # Copy so rendering never stamps grid_items onto a caller's
-            # LayoutSpec, which would leak into the next dashboard reusing it.
-            layout=(layout or LayoutSpec()).model_copy(deep=True),
-        )
+        try:
+            spec = DashboardSpec(
+                figures=figure_specs,
+                state=InteractionState(),
+                client_state=ClientState(
+                    axis_links=self._resolve_axis_links(figure_specs)
+                ),
+                # Copy so rendering never stamps grid_items onto a caller's
+                # LayoutSpec, which would leak into the next dashboard reusing it.
+                layout=(layout or LayoutSpec()).model_copy(deep=True),
+            )
+            # The schema is only needed for links: a spec build touches no data.
+            if spec.client_state.axis_links and self._backend_lf is not None:
+                check_axis_link_types(spec, {src: self._backend_lf.schema})
+        except ValidationError as exc:
+            messages = [e["msg"].removeprefix("Value error, ") for e in exc.errors()]
+            raise ValueError(_name_figures("; ".join(messages), figure_specs)) from None
+        except ValueError as exc:
+            raise ValueError(_name_figures(str(exc), figure_specs)) from None
+        return spec
 
     def save_spec(
         self,

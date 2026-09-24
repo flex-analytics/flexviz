@@ -28,6 +28,13 @@ window.flexvizApply = async function(obj) {
     console.warn(`flexviz: flexvizApply ignores the key '${key}'`);
     delete patch[key];
   }
+  // A rejected patch must leave the page as it was. The restore clears the
+  // runtime caches before it requests, so rolling back re-restores the old spec.
+  const snapshot = structuredClone({
+    state: DASHBOARD_SPEC.state,
+    client_state: DASHBOARD_SPEC.client_state,
+    layout: DASHBOARD_SPEC.layout,
+  });
   // `state` and `client_state` merge one level deep: a patch that carries only
   // `selections` must keep `viewport` and `group_domains`, which several readers
   // dereference without a guard (delta.js ensureGroupColor, plotly relayout).
@@ -35,17 +42,27 @@ window.flexvizApply = async function(obj) {
     state: { ...DASHBOARD_SPEC.state, ...patch.state },
     client_state: { ...DASHBOARD_SPEC.client_state, ...patch.client_state },
   });
+  if (!(await _fvApplySpecToPage())) {
+    const reason = _fvLastUpdateError;
+    Object.assign(DASHBOARD_SPEC, snapshot);
+    const restored = await _fvApplySpecToPage();
+    throw new Error(
+      `flexviz: dashboard update failed${reason ? ` (${reason})` : ''}`
+      + (restored ? '' : '; restoring the previous state failed too, reload the page')
+    );
+  }
+  return _fvCompactState();
+};
+
+async function _fvApplySpecToPage() {
   // Grid layout first: the panels must be sized before the re-render.
   window._fvRestoreGridLayout?.();
   window.fvSetGridEditable?.((DASHBOARD_SPEC.layout && DASHBOARD_SPEC.layout.grid_editable) === true);
   window.fvUpdateGridButton?.();
   // fvRestoreFromSpec owns the rest: runtime cache, hover lookups, cross-filter
   // button and selection summary, all before it re-requests.
-  if (!(await window.fvRestoreFromSpec())) {
-    throw new Error('flexviz: dashboard update failed');
-  }
-  return _fvCompactState();
-};
+  return window.fvRestoreFromSpec();
+}
 
 let _fvRevision = 0;
 let _fvRevisionKey = null;
@@ -201,11 +218,11 @@ function figureHasSelectionSource(figUid, selections) {
   return selectionSourceFigureUids(selections).has(figUid);
 }
 function requestHasActiveSelections(event) {
-  return !['init', 'deselect', 'reset'].includes(event.type)
+  return !['init', 'deselect'].includes(event.type)
     && !!(event.selections && event.selections.length);
 }
 function isUnfilteredBaseForFigure(event, figUid) {
-  if (['init', 'deselect', 'reset'].includes(event.type)) return true;
+  if (['init', 'deselect'].includes(event.type)) return true;
   if (!requestHasActiveSelections(event)) return true;
   return figureHasSelectionSource(figUid, event.selections || []);
 }
@@ -233,15 +250,37 @@ function _updateBgYExtent(figUid, yArr) {
     ? [Math.min(prev[0], mn), Math.max(prev[1], mx)]
     : [mn, mx];
 }
+// The viewport keys linked with `key` (ClientState.axis_links), itself included.
+function fvLinkedKeys(key) {
+  const groups = (DASHBOARD_SPEC.client_state && DASHBOARD_SPEC.client_state.axis_links) || [];
+  return groups.find(group => group.includes(key)) || [key];
+}
+
+// The one writer of state.viewport: linked axes hold equal ranges by
+// construction (the server rejects a spec where they differ). `value` is an
+// axis range or map coordinates; null deletes the keys (autorange). Returns
+// every key written.
+function fvWriteViewport(key, value) {
+  const viewport = DASHBOARD_SPEC.state.viewport;
+  const keys = fvLinkedKeys(key);
+  for (const k of keys) {
+    if (value == null) delete viewport[k];
+    else viewport[k] = cloneObj(value);
+  }
+  return keys;
+}
+
+// Figure uids of viewport keys, deduplicated in order.
+function fvFiguresOfKeys(keys) {
+  return [...new Set(keys.map(key => key.split('/')[0]))];
+}
+
 function figureViewportRanges(figUid) {
   const viewport = (DASHBOARD_SPEC.state && DASHBOARD_SPEC.state.viewport) || {};
   const ranges = {};
   for (const [key, value] of Object.entries(viewport)) {
-    const slashIdx = key.indexOf('/');
-    if (slashIdx === -1) continue;
-    const currentFigUid = key.slice(0, slashIdx);
-    if (currentFigUid !== figUid || !value) continue;
-    const axisId = key.slice(slashIdx + 1);
+    const [keyFigUid, axisId] = key.split('/');
+    if (keyFigUid !== figUid || !axisId || !value) continue;
     if (axisId === 'coordinates' && Array.isArray(value)) {
       ranges.coordinates = cloneObj(value);
       continue;
@@ -273,4 +312,3 @@ function fvNeedsFetch(figUid, changedAxisIds) {
   const binding = fvFigureRecomputeAxes(figUid);
   return (changedAxisIds || []).some(ax => binding.has(ax));
 }
-window.figureViewportRanges = figureViewportRanges;

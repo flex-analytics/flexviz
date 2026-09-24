@@ -22,6 +22,18 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Added
 
+- Linked axes: `Dashboard.link_axes` links axes across figures, so they zoom,
+  pan, autorange and reset together, and every linked figure re-aggregates in
+  one request. Link by column (`link_axes(on="ts")`, optionally for given
+  figures), by axis (`link_axes(a, b, axis="x")`) or by explicit
+  `(figure, axis)` pairs. Calls that share an axis merge. A lock on any member
+  pins the group. The links live in `client_state.axis_links` and survive share
+  URLs, export, import and `flexvizApply`. Log and category axes, count axes,
+  bars, maps, time-of-day and duration axes cannot be linked, nor two axes of
+  one figure, nor axes in different time zones.
+  After a double-click autorange each member autoranges on its own data.
+- In overlay mode, the unfiltered backgrounds of all re-aggregated figures run
+  in one pass over the source.
 - `flexviz history` records share URLs under a number in
   `.flexviz/history.jsonl`, with `add`, `list` and `show`. `history show N`
   prints the compact state, `--url` prints the share URL. An agent then works
@@ -59,6 +71,28 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   share one key. `legend()` and `update_layout(legend={...})` now work in
   either order, and a placement dict survives `legend(False)`. Specs encoded
   at version 0.5 carry the old key and do not round-trip.
+- Viewport events name the `state.viewport` keys they changed
+  (`InteractionEvent.viewport_keys`) instead of carrying `axis_ranges` and
+  `figure_uid`. The engine reads every range from `state.viewport`, so one
+  event can re-aggregate several figures. A figure is never filtered by its
+  own selection, including when it is re-aggregated together with others.
+- `state.viewport` keys must have the form `"<figure_uid>/<axis_id>"` and name
+  a figure of the spec. Bare axis keys are rejected.
+- A figure uid cannot contain `/`.
+- `decode_spec` and `/share` refuse a spec of another spec version, with an
+  error that names both versions. Before, such a spec failed on a field or
+  loaded with missing state.
+- `encode_spec` takes a spec model only, not a dict.
+- In overlay mode, zooming a figure that sources a selection now refreshes all
+  of its traces. Before, its heatmap-like traces kept stale data.
+- ECharts (deprecated): zoom no longer re-aggregates.
+
+### Removed
+
+- `POST /update`. A single figure is shown and updated as a one-figure
+  dashboard through `POST /dashboard/update`.
+- `parse_event` on `AbstractAdapter` and `PlotlyAdapter`, and the `"reset"`
+  event type. No client sent them.
 
 ## [0.1.0b3] - 2026-09-09
 

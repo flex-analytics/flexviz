@@ -15,7 +15,9 @@ from flexviz.dashboard import Dashboard
 from flexviz.figure import Figure
 from flexviz.server import app, register_source
 from flexviz.spec import (
+    AxisRange,
     DashboardSpec,
+    FigureSpec,
     GridItem,
     LayoutSpec,
     SelectionState,
@@ -47,27 +49,6 @@ def client(integ_df: pl.DataFrame) -> TestClient:
 # ---- helpers ---------------------------------------------------------------
 
 
-def _make_single_figure_payload(
-    df: pl.DataFrame,
-    event_type: str = "init",
-    force: bool = True,
-    axis_ranges: dict | None = None,
-    n_points: int = 200,
-) -> dict:
-    fig = Figure(df)
-    fig.add_line(x="ts", y="val", n_points=n_points)
-    spec = fig.to_spec(source=_SRC)
-    return {
-        "spec": spec.model_dump(),
-        "event": {
-            "type": event_type,
-            "axis_ranges": axis_ranges or {},
-            "selections": [],
-            "force_update": force,
-        },
-    }
-
-
 def _make_dashboard_and_spec(
     df: pl.DataFrame,
     n_figures: int = 2,
@@ -77,68 +58,6 @@ def _make_dashboard_and_spec(
         fig = dash.add_figure(title=f"Fig{i}")
         fig.add_line(x="ts", y="val", name=f"L{i}", n_points=200)
     return dash, dash.to_spec(source_name=_SRC)
-
-
-# ===========================================================================
-# POST /update
-# ===========================================================================
-
-
-class TestPostUpdate:
-    def test_init_returns_xy_data(self, client: TestClient, integ_df: pl.DataFrame):
-        payload = _make_single_figure_payload(integ_df)
-        resp = client.post("/update", json=payload)
-        assert resp.status_code == 200
-        deltas = resp.json()["deltas"]
-        assert len(deltas) == 1
-        assert len(deltas[0]["updates"]["x"]) > 0
-        assert len(deltas[0]["updates"]["y"]) > 0
-
-    def test_viewport_returns_fewer_points(
-        self, client: TestClient, integ_df: pl.DataFrame
-    ):
-        init_payload = _make_single_figure_payload(integ_df, n_points=5000)
-        init_resp = client.post("/update", json=init_payload)
-        init_count = len(init_resp.json()["deltas"][0]["updates"]["x"])
-
-        vp_payload = _make_single_figure_payload(
-            integ_df,
-            event_type="viewport",
-            force=False,
-            axis_ranges={"x": [1000, 2000]},
-            n_points=5000,
-        )
-        vp_resp = client.post("/update", json=vp_payload)
-        vp_count = len(vp_resp.json()["deltas"][0]["updates"]["x"])
-
-        assert vp_count < init_count
-
-    def test_selection_returns_no_deltas_for_single_figure(
-        self, client: TestClient, integ_df: pl.DataFrame
-    ):
-        fig = Figure(integ_df)
-        fig.add_line(x="ts", y="val", n_points=1000)
-        spec = fig.to_spec(source=_SRC)
-        payload = {
-            "spec": spec.model_dump(),
-            "event": {
-                "type": "selection",
-                "axis_ranges": {},
-                "selections": [
-                    {
-                        "source_figure_uid": spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [100, 300]}]}
-                        ],
-                    }
-                ],
-                "force_update": True,
-                "figure_uid": spec.figure.uid,
-            },
-        }
-        resp = client.post("/update", json=payload)
-        assert resp.status_code == 200
-        assert resp.json()["deltas"] == []
 
 
 class TestViewportStateHelpers:
@@ -176,7 +95,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -189,6 +107,38 @@ class TestPostDashboardUpdate:
             assert len(deltas) > 0
             assert "trace_index" not in deltas[0]
 
+    def test_other_spec_version_is_refused(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        """A page built by another FlexViz version must not get empty deltas."""
+        _, spec = _make_dashboard_and_spec(integ_df)
+        payload = {
+            "spec": {**spec.model_dump(), "version": "0.5"},
+            "event": {"type": "init", "force_update": True},
+        }
+        resp = client.post("/dashboard/update", json=payload)
+        assert resp.status_code == 422
+        assert "spec version '0.5' is not supported" in resp.text
+
+    def test_viewport_returns_fewer_points(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_line(x="ts", y="val", n_points=5000)
+        spec = dash.to_spec(source_name=_SRC).model_dump()
+        uid = spec["figures"][0]["uid"]
+
+        def x_count(event: dict) -> int:
+            resp = client.post("/dashboard/update", json={"spec": spec, "event": event})
+            assert resp.status_code == 200
+            return len(resp.json()["figure_deltas"][uid][0]["updates"]["x"])
+
+        init_count = x_count({"type": "init", "force_update": True})
+        spec["state"]["viewport"] = {f"{uid}/x": {"min": 1000, "max": 2000}}
+        vp_count = x_count({"type": "viewport", "viewport_keys": [f"{uid}/x"]})
+
+        assert vp_count < init_count
+
     def test_viewport_only_updates_named_figure(
         self, client: TestClient, integ_df: pl.DataFrame
     ):
@@ -196,14 +146,17 @@ class TestPostDashboardUpdate:
         fig_a_uid = spec.figures[0].uid
         fig_b_uid = spec.figures[1].uid
 
+        spec.state.viewport = {
+            f"{fig_a_uid}/x": AxisRange(min=1000, max=2000),
+            f"{fig_b_uid}/x": AxisRange(min=0, max=500),
+        }
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "viewport",
-                "axis_ranges": {"x": [1000, 2000]},
+                "viewport_keys": [f"{fig_a_uid}/x"],
                 "selections": [],
                 "force_update": False,
-                "figure_uid": fig_a_uid,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -211,21 +164,21 @@ class TestPostDashboardUpdate:
         assert len(body["figure_deltas"].get(fig_a_uid, [])) > 0
         assert len(body["figure_deltas"].get(fig_b_uid, [])) == 0
 
-    def test_reset_only_updates_named_figure(
+    def test_panel_reset_only_updates_named_figure(
         self, client: TestClient, integ_df: pl.DataFrame
     ):
+        """A panel reset clears the figure's viewport keys and lists them."""
         _, spec = _make_dashboard_and_spec(integ_df)
         fig_a_uid = spec.figures[0].uid
         fig_b_uid = spec.figures[1].uid
 
+        spec.state.viewport = {f"{fig_b_uid}/x": AxisRange(min=0, max=500)}
         payload = {
             "spec": spec.model_dump(),
             "event": {
-                "type": "reset",
-                "axis_ranges": {},
+                "type": "viewport",
+                "viewport_keys": [f"{fig_a_uid}/x"],
                 "selections": [],
-                "force_update": True,
-                "figure_uid": fig_a_uid,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -247,7 +200,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": fig_b_uid,
@@ -257,7 +209,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": fig_b_uid,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -280,7 +231,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uids[1],
@@ -296,7 +246,6 @@ class TestPostDashboardUpdate:
                     },
                 ],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -339,7 +288,6 @@ class TestPostDashboardUpdate:
         xs = _post(
             {
                 "type": "selection",
-                "figure_uid": src_uid,
                 "force_update": True,
                 "selections": [
                     {
@@ -376,7 +324,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": fig_a_uid,
@@ -386,7 +333,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": fig_a_uid,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -424,10 +370,8 @@ class TestPostDashboardUpdate:
             "spec": spec_with_b.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [b_sel, c_sel],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -452,7 +396,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -467,7 +410,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": fig_a_uid,
@@ -477,7 +419,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         sel_resp = client.post("/dashboard/update", json=sel_payload)
@@ -491,10 +432,8 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "deselect",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         desel_resp = client.post("/dashboard/update", json=desel_payload)
@@ -523,7 +462,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": hist_uid,
@@ -533,7 +471,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -547,8 +484,6 @@ class TestPostDashboardUpdate:
     def test_selection_uses_stored_target_viewport(
         self, client: TestClient, integ_df: pl.DataFrame
     ):
-        from flexviz.spec import AxisRange
-
         dash = Dashboard(integ_df)
         for _ in range(2):
             f = dash.add_figure()
@@ -561,7 +496,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -571,7 +505,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -594,7 +527,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -604,7 +536,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -626,12 +557,13 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         uid_a, uid_b = [f.uid for f in spec.figures]
         spec.state.cross_filter_mode = "overlay"
+        spec.state.viewport = {f"{uid_b}/x": AxisRange(min=1000, max=3000)}
 
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "viewport",
-                "axis_ranges": {"x": [1000, 3000]},
+                "viewport_keys": [f"{uid_b}/x"],
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -641,7 +573,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_b,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -668,31 +599,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "deselect",
-                "axis_ranges": {},
-                "selections": [],
-                "force_update": True,
-            },
-        }
-        resp = client.post("/dashboard/update", json=payload)
-        assert resp.status_code == 200
-        for deltas in resp.json()["figure_deltas"].values():
-            assert {d["layer"] for d in deltas} == {"bg"}
-
-    def test_overlay_reset_returns_bg_only(
-        self, client: TestClient, integ_df: pl.DataFrame
-    ):
-        dash = Dashboard(integ_df)
-        for _ in range(2):
-            f = dash.add_figure()
-            f.add_line(x="ts", y="val", n_points=10_000)
-        spec = dash.to_spec(source_name=_SRC)
-        spec.state.cross_filter_mode = "overlay"
-
-        payload = {
-            "spec": spec.model_dump(),
-            "event": {
-                "type": "reset",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -716,7 +622,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -735,12 +640,14 @@ class TestPostDashboardUpdate:
             f.add_line(x="ts", y="val", n_points=10_000)
         spec = dash.to_spec(source_name=_SRC)
         spec.state.cross_filter_mode = "overlay"
+        vp_keys = [f"{f.uid}/x" for f in spec.figures]
+        spec.state.viewport = {key: AxisRange(min=1000, max=4000) for key in vp_keys}
 
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "viewport",
-                "axis_ranges": {"x": [1000, 4000]},
+                "viewport_keys": vp_keys,
                 "selections": [],
                 "force_update": True,
             },
@@ -748,6 +655,7 @@ class TestPostDashboardUpdate:
         resp = client.post("/dashboard/update", json=payload)
         assert resp.status_code == 200
         for deltas in resp.json()["figure_deltas"].values():
+            assert deltas
             assert all(d["layer"] == "bg" for d in deltas)
 
     def test_update_mode_no_layer_field(
@@ -764,7 +672,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -774,7 +681,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -807,7 +713,6 @@ class TestPostDashboardUpdate:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -822,9 +727,7 @@ class TestPostDashboardUpdate:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": uid_line,
                 "selections": [
                     {
                         "source_figure_uid": uid_line,
@@ -860,7 +763,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -868,7 +770,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -891,18 +792,21 @@ class TestPostDashboardUpdate:
         line_spec = fig_line.to_spec(source=_SRC)
         hist_spec = fig_hist.to_spec(source=_SRC)
 
-        dash_spec = DashboardSpec(
-            figures=[line_spec.figure, hist_spec.figure],
-            state=InteractionState(cross_filter_mode="overlay"),
-        )
         uid_line = line_spec.figure.uid
         uid_hist = hist_spec.figure.uid
+        dash_spec = DashboardSpec(
+            figures=[line_spec.figure, hist_spec.figure],
+            state=InteractionState(
+                cross_filter_mode="overlay",
+                viewport={f"{uid_hist}/x": AxisRange(min=0, max=4999)},
+            ),
+        )
 
         payload = {
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "viewport",
-                "axis_ranges": {"x": [0, 4999]},
+                "viewport_keys": [f"{uid_hist}/x"],
                 "selections": [
                     {
                         "source_figure_uid": uid_line,
@@ -912,7 +816,6 @@ class TestPostDashboardUpdate:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_hist,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -953,7 +856,6 @@ class TestCrossFilterScenarios:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -963,7 +865,6 @@ class TestCrossFilterScenarios:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -994,10 +895,8 @@ class TestCrossFilterScenarios:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [sel_a, sel_b],
                 "force_update": True,
-                "figure_uid": None,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -1019,7 +918,6 @@ class TestCrossFilterScenarios:
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "init",
-                    "axis_ranges": {},
                     "selections": [],
                     "force_update": True,
                 },
@@ -1032,7 +930,6 @@ class TestCrossFilterScenarios:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -1042,7 +939,6 @@ class TestCrossFilterScenarios:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         sel_resp = client.post("/dashboard/update", json=sel_payload)
@@ -1056,7 +952,6 @@ class TestCrossFilterScenarios:
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "deselect",
-                    "axis_ranges": {},
                     "selections": [],
                     "force_update": True,
                 },
@@ -1080,7 +975,6 @@ class TestCrossFilterScenarios:
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "init",
-                    "axis_ranges": {},
                     "selections": [],
                     "force_update": True,
                 },
@@ -1089,36 +983,33 @@ class TestCrossFilterScenarios:
         init_b_count = len(init_resp.json()["figure_deltas"][uid_b][0]["updates"]["x"])
 
         # Zoom figure A + cross-filter from A.
+        selections = [
+            {
+                "source_figure_uid": uid_a,
+                "predicates": [{"clauses": [{"column": "ts", "range": [500, 1500]}]}],
+            }
+        ]
+        zoomed_spec = spec.model_dump()
+        zoomed_spec["state"]["viewport"] = {f"{uid_a}/x": {"min": 500, "max": 1500}}
+        zoomed_spec["state"]["selections"] = selections
         zoomed = {
-            "spec": spec.model_dump(),
+            "spec": zoomed_spec,
             "event": {
                 "type": "selection",
-                "axis_ranges": {"x": [500, 1500]},
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [500, 1500]}]}
-                        ],
-                    }
-                ],
+                "selections": selections,
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
-        client.post("/dashboard/update", json=zoomed)
+        zoomed_resp = client.post("/dashboard/update", json=zoomed)
+        zoomed_b = zoomed_resp.json()["figure_deltas"][uid_b][0]["updates"]["x"]
+        assert len(zoomed_b) < init_b_count
 
-        # Global reset must return all figures with full data.
+        # The toolbar reset clears the state and re-inits every figure.
         reset_resp = client.post(
             "/dashboard/update",
             json={
                 "spec": spec.model_dump(),
-                "event": {
-                    "type": "reset",
-                    "axis_ranges": {},
-                    "selections": [],
-                    "force_update": True,
-                },
+                "event": {"type": "init", "selections": [], "force_update": True},
             },
         )
         body = reset_resp.json()
@@ -1391,10 +1282,7 @@ class TestShareStatePreservation:
             viewport={"f1/x": {"min": 100, "max": 500}},
             selections=[],
         )
-        dash = DashboardSpec(
-            figures=[],
-            state=state,
-        )
+        dash = DashboardSpec(figures=[FigureSpec(uid="f1")], state=state)
         encoded = encode_spec(dash)
         decoded = decode_spec(encoded)
         vp = decoded.state.viewport["f1/x"]
@@ -1448,7 +1336,9 @@ class TestShareStatePreservation:
             },
             selections=[sel],
         )
-        dash = DashboardSpec(figures=[], state=state)
+        dash = DashboardSpec(
+            figures=[FigureSpec(uid="fig-a"), FigureSpec(uid="fig-b")], state=state
+        )
         encoded = encode_spec(dash)
         decoded = decode_spec(encoded)
         assert decoded.state.viewport["fig-a/x"] == AxisRange(min=0, max=4999)
@@ -1497,7 +1387,6 @@ class TestShareStatePreservation:
                 "spec": decoded.model_dump(),
                 "event": {
                     "type": "init",
-                    "axis_ranges": {},
                     "selections": [],
                     "force_update": True,
                 },
@@ -1511,7 +1400,6 @@ class TestShareStatePreservation:
             "spec": decoded.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": s.source_figure_uid,
@@ -1520,7 +1408,6 @@ class TestShareStatePreservation:
                     for s in decoded.state.selections
                 ],
                 "force_update": True,
-                "figure_uid": uid_a,
             },
         }
         sel_resp = client.post("/dashboard/update", json=selection_payload)
@@ -1704,7 +1591,7 @@ class TestSpecRoundTripWithState:
         original = Figure(integ_df)
         original.add_line(x="ts", y="val", name="Sig", n_points=100)
         spec = original.to_spec(source="s")
-        spec.state.viewport = {"x": {"min": 200, "max": 800}}
+        spec.state.viewport = {f"{spec.figure.uid}/x": {"min": 200, "max": 800}}
 
         restored = Figure.from_spec(spec)
         new_spec = restored.to_spec(source="s")
@@ -1898,7 +1785,6 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -1921,7 +1807,6 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "selections": [
                     {
                         "source_figure_uid": fig_a_uid,
@@ -1938,7 +1823,6 @@ class TestDatetimeCrossFiltering:
                     }
                 ],
                 "force_update": True,
-                "figure_uid": fig_a_uid,
             },
         }
 
@@ -1996,7 +1880,6 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -2007,14 +1890,14 @@ class TestDatetimeCrossFiltering:
 
         start_time = "2026-03-21 17:00:20"
         end_time = "2026-03-21 17:01:20"
+        spec.state.viewport = {f"{fig_uid}/x": AxisRange(min=start_time, max=end_time)}
         zoom_payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "viewport",
-                "axis_ranges": {"x": [start_time, end_time]},
+                "viewport_keys": [f"{fig_uid}/x"],
                 "selections": [],
                 "force_update": False,
-                "figure_uid": fig_uid,
             },
         }
 
@@ -2076,7 +1959,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -2100,7 +1982,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -2143,7 +2024,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -2158,9 +2038,7 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": line_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": line_spec.figure.uid,
@@ -2200,9 +2078,7 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": line_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": line_spec.figure.uid,
@@ -2247,9 +2123,7 @@ class TestBarCrossFilterIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": bar_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": bar_spec.figure.uid,
@@ -2298,7 +2172,6 @@ class TestBarCrossFilterIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "deselect",
-                "axis_ranges": {},
                 "force_update": True,
                 "selections": [],
             },
@@ -2348,7 +2221,6 @@ class TestCrossFilterEdgeCases:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "force_update": True,
                 "selections": [],
             },
@@ -2363,9 +2235,7 @@ class TestCrossFilterEdgeCases:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": bar_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": bar_spec.figure.uid,
@@ -2402,9 +2272,7 @@ class TestCrossFilterEdgeCases:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": bar_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": bar_spec.figure.uid,
@@ -2446,9 +2314,7 @@ class TestCrossFilterEdgeCases:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": line_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": line_spec.figure.uid,
@@ -2516,18 +2382,14 @@ class TestEventSequences:
             return r.json()["figure_deltas"]
 
         # Step 1: init
-        init_result = _post(
-            {"type": "init", "axis_ranges": {}, "force_update": True, "selections": []}
-        )
+        init_result = _post({"type": "init", "force_update": True, "selections": []})
         full_y_count = len(init_result[line_spec.figure.uid][0]["updates"]["y"])
 
         # Step 2: selection — filter to cat=A only
         sel_result = _post(
             {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": bar_spec.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": bar_spec.figure.uid,
@@ -2545,7 +2407,6 @@ class TestEventSequences:
         desel_result = _post(
             {
                 "type": "deselect",
-                "axis_ranges": {},
                 "force_update": True,
                 "selections": [],
             }
@@ -2584,9 +2445,7 @@ class TestEventSequences:
         sel_result = _post(
             {
                 "type": "selection",
-                "axis_ranges": {},
                 "force_update": True,
-                "figure_uid": spec_a.figure.uid,
                 "selections": [
                     {
                         "source_figure_uid": spec_a.figure.uid,
@@ -2605,7 +2464,6 @@ class TestEventSequences:
         desel_result = _post(
             {
                 "type": "deselect",
-                "axis_ranges": {},
                 "force_update": True,
                 "selections": [],
             }
@@ -2666,9 +2524,7 @@ class TestEventSequences:
                     "spec": spec.model_dump(),
                     "event": {
                         "type": "selection",
-                        "axis_ranges": {},
                         "force_update": True,
-                        "figure_uid": bar_spec.figure.uid,
                         "selections": [s.model_dump() for s in spec.state.selections],
                     },
                 },
@@ -2705,7 +2561,6 @@ class TestClientStatePassthrough:
             "spec": spec_dict,
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
@@ -2728,10 +2583,120 @@ class TestClientStatePassthrough:
             "spec": spec_dict,
             "event": {
                 "type": "init",
-                "axis_ranges": {},
                 "selections": [],
                 "force_update": True,
             },
         }
         resp = client.post("/dashboard/update", json=payload)
         assert resp.status_code == 200
+
+
+class TestAxisLinkValidation:
+    """Every spec entry point enforces the link rules, not only the builder."""
+
+    @staticmethod
+    def _linked_spec(integ_df: pl.DataFrame):
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_line(x="ts", y="val")
+        dash.add_figure().add_histogram(x="val")
+        spec = dash.to_spec(source_name=_SRC)
+        return spec, [fig.uid for fig in spec.figures]
+
+    def test_view_rejects_a_link_on_a_count_axis(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/y"]]
+        resp = client.get("/view", params={"spec": encode_spec(spec)})
+        assert resp.status_code == 400
+        assert "shows no data column" in resp.text
+
+    def test_update_rejects_unequal_linked_ranges(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/x"]]
+        payload = spec.model_dump()
+        payload["state"]["viewport"] = {f"{a}/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/dashboard/update",
+            json={
+                "spec": payload,
+                "event": {"type": "viewport", "viewport_keys": [f"{a}/x"]},
+            },
+        )
+        assert resp.status_code == 422
+        assert "equal ranges" in resp.text
+
+    @staticmethod
+    def _numeric_to_date_link() -> DashboardSpec:
+        """A hand-built link that only the source schema shows is invalid."""
+        import datetime as dt
+
+        df = pl.DataFrame(
+            {
+                "n": [1, 2, 3],
+                "d": [dt.date(2024, 1, i) for i in (1, 2, 3)],
+                "v": [1.0] * 3,
+            }
+        )
+        register_source("_integ_dates", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="n", y="v")
+        dash.add_figure().add_line(x="d", y="v")
+        spec = dash.to_spec(source_name="_integ_dates")
+        a, b = (fig.uid for fig in spec.figures)
+        spec.client_state.axis_links = [[f"{a}/x", f"{b}/x"]]
+        return spec
+
+    def test_update_rejects_a_numeric_to_date_link(self, client: TestClient):
+        """The type rule needs the source schema, so the server runs it for
+        imported specs that never met the builder."""
+        spec = self._numeric_to_date_link()
+        resp = client.post(
+            "/dashboard/update",
+            json={"spec": spec.model_dump(mode="json"), "event": {"type": "init"}},
+        )
+        assert resp.status_code == 422
+        assert "mix naive time on a date axis and numeric" in resp.text
+
+    def test_share_rejects_a_numeric_to_date_link(self, client: TestClient):
+        """Else /share issues a URL whose page fails on its first request."""
+        payload = self._numeric_to_date_link().model_dump(mode="json")
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "mix naive time on a date axis and numeric" in resp.text
+
+    def test_view_rejects_a_numeric_to_date_link(self, client: TestClient):
+        spec = self._numeric_to_date_link()
+        resp = client.get("/view", params={"spec": encode_spec(spec)})
+        assert resp.status_code == 400
+        assert "mix naive time on a date axis and numeric" in resp.text
+
+    def test_share_rejects_a_single_figure_key_of_another_figure(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        fig = Figure(integ_df)
+        fig.add_line(x="ts", y="val")
+        payload = fig.to_spec(source=_SRC).model_dump(mode="json")
+        payload["state"]["viewport"] = {"other/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "other/x" in resp.text
+
+    def test_share_rejects_a_spec_that_view_would_reject(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        spec, (a, h) = self._linked_spec(integ_df)
+        spec.client_state.axis_links = [[f"{a}/x", f"{h}/x"]]
+        payload = spec.model_dump(mode="json")
+        payload["state"]["viewport"] = {f"{a}/x": {"min": 1.0, "max": 2.0}}
+        resp = client.post(
+            "/share", json={"spec": payload, "server_url": "http://127.0.0.1:1"}
+        )
+        assert resp.status_code == 400
+        assert "equal ranges" in resp.text

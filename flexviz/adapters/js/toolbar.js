@@ -118,43 +118,50 @@ window.fvAxisLockRangesForFigure = function(figUid) {
   }
   return out;
 };
+// A locked axis keeps its key: the lock pins the displayed range, and the
+// engine aggregates at the state range, so clearing it would split the two.
+function fvIsViewportKeyLocked(key) {
+  const [figUid, axisId] = key.split('/');
+  return window.fvIsAxisLocked(figUid, axisId);
+}
+// Linked axes reset together: clearing a key clears its whole link group.
+// Returns the cleared state keys: a viewport event lists them as changed.
 window.fvClearFigureViewport = function(figUid) {
-  if (!figUid) return;
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  for (const key of Object.keys(viewport)) {
-    if (!key.startsWith(figUid + '/')) continue;
-    delete viewport[key];
-  }
-  state.viewport = viewport;
-};
-// True when this figure has any stored viewport (zoom/pan) range. Used by the
-// per-figure reset no-op guard, which must sample zoom state *before* clearing.
-window.fvFigureHasViewport = function(figUid) {
-  if (!figUid) return false;
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  return Object.keys(viewport).some(key => key.startsWith(figUid + '/'));
-};
-// Clear a single axis' stored range (used by per-axis autorange / double-click),
-// leaving any other still-zoomed axis on the same figure untouched.
-window.fvClearFigureAxisViewport = function(figUid, axisId) {
-  if (!figUid || !axisId) return;
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  delete viewport[figUid + '/' + axisId];
-  state.viewport = viewport;
+  if (!figUid) return [];
+  const unlocked = Object.keys(fvEnsureState().viewport)
+    .filter(key => key.startsWith(figUid + '/') && !fvIsViewportKeyLocked(key));
+  return [...new Set(unlocked.flatMap(key => fvWriteViewport(key, null)))];
 };
 window.fvClearUnlockedViewports = function() {
-  const state = fvEnsureState();
-  state.viewport = {};
+  for (const key of Object.keys(fvEnsureState().viewport)) {
+    if (!fvIsViewportKeyLocked(key)) fvWriteViewport(key, null);
+  }
 };
+// Returns the captured display ranges, or null when the axis shows none.
 function fvTryLockAxis(figUid, axisId) {
   const ranges = window.fvCaptureAxisDisplayRanges?.(figUid, axisId) || {};
-  if (!Object.keys(ranges).length) return false;
+  if (!Object.keys(ranges).length) return null;
   window.fvSetAxisLocked(figUid, axisId, true);
   window.fvStoreAxisLockRanges(figUid, ranges);
-  return true;
+  return ranges;
+}
+// Lock an axis and every axis linked to it at the range this figure shows. A
+// group keeps one range (the spec validator rejects unequal lock ranges), so a
+// member that autoranged to other data takes this figure's range. Returns the
+// other figures whose display changed.
+function fvLockAxisGroup(figUid, axisId) {
+  const ranges = fvTryLockAxis(figUid, axisId);
+  if (!ranges) return [];
+  const range = ranges[axisId];
+  const others = [];
+  for (const key of fvLinkedKeys(figUid + '/' + axisId)) {
+    const [memberFigUid, memberAxisId] = key.split('/');
+    if (memberFigUid === figUid) continue;
+    window.fvSetAxisLocked(memberFigUid, memberAxisId, true);
+    if (range) window.fvStoreAxisLockRanges(memberFigUid, { [memberAxisId]: range });
+    others.push(memberFigUid);
+  }
+  return others;
 }
 window.fvOnToggleAxisLocks = async function(figUid) {
   if (!figUid) return;
@@ -164,20 +171,30 @@ window.fvOnToggleAxisLocks = async function(figUid) {
     return;
   }
   const shouldLock = availableAxes.some(axis => !window.fvIsAxisLocked(figUid, axis));
+  // A link group locks and unlocks as one (the server rejects mixed locks in a
+  // group), so the toggle also reaches every axis linked to this figure's axes.
+  const keys = [...new Set(
+    availableAxes.flatMap(axisId => fvLinkedKeys(figUid + '/' + axisId))
+  )];
+  const touchedFigUids = fvFiguresOfKeys(keys);
+  const moved = new Set();
   if (shouldLock) {
     for (const axisId of availableAxes) {
-      fvTryLockAxis(figUid, axisId);
+      fvLockAxisGroup(figUid, axisId).forEach(other => moved.add(other));
     }
-    window.fvUpdateAxisLockButtons?.(figUid);
-    window.fvSyncFigureModeForAxisLocks?.(figUid);
-    return;
+  } else {
+    for (const key of keys) {
+      const [keyFigUid, axisId] = key.split('/');
+      window.fvSetAxisLocked(keyFigUid, axisId, false);
+    }
+    touchedFigUids.forEach(touched => moved.add(touched));
   }
-  for (const axisId of availableAxes) {
-    window.fvSetAxisLocked(figUid, axisId, false);
+  for (const touched of touchedFigUids) {
+    window.fvUpdateAxisLockButtons?.(touched);
+    window.fvSyncFigureModeForAxisLocks?.(touched);
   }
-  window.fvUpdateAxisLockButtons?.(figUid);
-  window.fvSyncFigureModeForAxisLocks?.(figUid);
-  await Promise.resolve(window.fvApplyAxisLocks?.(figUid));
+  await Promise.all([...moved].map(touched => window.fvApplyAxisLocks?.(touched)));
+  window.fvUpdateLockAllAxesButton?.();
 };
 // ── Global "Lock All Axes" toolbar button ──────────────────────────────────
 // Returns true only when every figure with lockable axes is fully locked.
@@ -208,13 +225,16 @@ window.fvOnLockAllAxes = async function() {
   const uids = Object.keys(figUidToIdx);
   if (!uids.length) return;
   const shouldLock = !window.fvAreAllFiguresLocked();
-  const unlockPromises = [];
+  const applyPromises = [];
   for (const figUid of uids) {
     const availableAxes = fvCurrentLockableAxes(figUid);
     if (!availableAxes.length) continue;
     if (shouldLock) {
       for (const axisId of availableAxes) {
-        fvTryLockAxis(figUid, axisId);
+        // An earlier group member already locked this axis at the group range.
+        if (window.fvIsAxisLocked(figUid, axisId)) continue;
+        fvLockAxisGroup(figUid, axisId)
+          .forEach(other => applyPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(other))));
       }
       window.fvUpdateAxisLockButtons?.(figUid);
       window.fvSyncFigureModeForAxisLocks?.(figUid);
@@ -224,10 +244,10 @@ window.fvOnLockAllAxes = async function() {
       }
       window.fvUpdateAxisLockButtons?.(figUid);
       window.fvSyncFigureModeForAxisLocks?.(figUid);
-      unlockPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(figUid)));
+      applyPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(figUid)));
     }
   }
-  await Promise.all(unlockPromises);
+  await Promise.all(applyPromises);
   window.fvUpdateLockAllAxesButton?.();
 };
 
@@ -241,13 +261,12 @@ window.fvOnLockAllAxes = async function() {
 // engine keys its recompute/scoping on event type:
 //   * selection removed, others remain  -> 'selection' (re-apply remaining filters)
 //   * selection removed, none remain     -> 'deselect'  (whole dashboard unfiltered)
-//   * no selection changed (viewport-only reset) -> 'viewport' (scoped to this figure)
+//   * no selection changed (viewport-only reset) -> 'viewport' (names the
+//     cleared keys, so only this figure re-aggregates)
 window.fvOnResetPanel = async function(figUid) {
   if (!figUid) return;
-  // Sample zoom state before clearing — the no-op guard below needs to know
-  // whether the reset actually removes anything.
-  const wasZoomed = window.fvFigureHasViewport?.(figUid) || false;
-  window.fvClearFigureViewport?.(figUid);
+  const clearedKeys = window.fvClearFigureViewport?.(figUid) || [];
+  const wasZoomed = clearedKeys.length > 0;
   const before = window.fvSelectionState?.() || [];
   const remaining = window.fvClearFigureSelectionFromList?.(figUid, before) || before;
   const selectionChanged = remaining.length !== before.length;
@@ -255,29 +274,23 @@ window.fvOnResetPanel = async function(figUid) {
   // no selection, so it is already at full autorange, filtered only by *other*
   // figures (which this reset does not touch). Skip the round-trip and the
   // redundant re-render entirely. Covers the case with no other cross-filters
-  // and the case where other figures keep cross-filtering F. Axis locks are
-  // view-only (pruned from server requests, re-applied on render), so a locked
-  // figure is no different here — its lock is already holding, and a reset that
-  // clears nothing leaves it untouched.
+  // and the case where other figures keep cross-filtering F.
   if (!wasZoomed && !selectionChanged) return;
   window.fvSetSelectionState?.(remaining);
-  const axisRanges = window.figureViewportRanges?.(figUid) || {};
+  if (!selectionChanged) {
+    // Viewport only: redraw every cleared figure (a cleared axis that no trace
+    // aggregates on, like a line's y, yields no delta) and re-aggregate only
+    // where a cleared axis binds a trace.
+    await fvCommitViewportChange(null, clearedKeys);
+    return;
+  }
+  for (const clearedFigUid of fvFiguresOfKeys(clearedKeys)) _fvRenderFigure(clearedFigUid);
   await postDashboardUpdate({
-    type: selectionChanged ? (remaining.length ? 'selection' : 'deselect') : 'viewport',
-    axis_ranges: axisRanges,
+    type: remaining.length ? 'selection' : 'deselect',
+    viewport_keys: clearedKeys,
     selections: remaining,
     force_update: true,
-    figure_uid: figUid,
   });
-};
-window.fvOnReset = async function() {
-  window.fvClearUnlockedViewports?.();
-  window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'init', axis_ranges: {}, selections: [], force_update: true});
-};
-window.fvOnDeselect = async function() {
-  window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'deselect', axis_ranges: {}, selections: [], force_update: true});
 };
 window.fvOnCfMode = async function() {
   if (!DASHBOARD_SPEC.state) DASHBOARD_SPEC.state = {};
@@ -291,7 +304,6 @@ window.fvOnCfMode = async function() {
   }
   await postDashboardUpdate({
     type: selections.length ? 'selection' : 'deselect',
-    axis_ranges: {},
     selections,
     force_update: true,
   });

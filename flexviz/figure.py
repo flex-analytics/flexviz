@@ -281,7 +281,8 @@ class Figure:
             (MinMaxLTTB), ``"fpcs"``, or ``"nth"``.  All four work grouped.
         axes:
             Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
-            cartesian axis.  Use ``("x2", "y2")`` for a second axis.
+            cartesian axis.  Other anchor ids only change the routing
+            key; the renderer does not draw a second axis for them yet.
         assume_sorted_x:
             The engine reads x for nulls, NaN and ascending order, and raises
             `ValueError` when the column fails. That pass runs once per source
@@ -802,7 +803,7 @@ class Figure:
         ----------
         source:
             Data source name as registered with ``register_source()`` on the
-            server.  Clients include this in every ``/update`` request so the
+            server.  Clients include this in every ``/dashboard/update`` request so the
             server knows which ``LFQueryBuilder`` to use.
         """
         domain_source = source or self._uid

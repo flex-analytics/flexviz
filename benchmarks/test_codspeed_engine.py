@@ -39,8 +39,8 @@ def test_viewport(
     benchmark, frame: pl.DataFrame, name: str, axis_range: list[float]
 ) -> None:
     engine, _, infos = init_call(LFQueryBuilder(frame), TRACES[name]())
-    event = InteractionEvent(type="viewport", axis_ranges={"x": axis_range})
-    deltas = benchmark(engine.process, event, infos)
+    event = InteractionEvent(type="viewport", viewport_keys=["fig/x"])
+    deltas = benchmark(engine.process, event, infos, {"fig": {"x": axis_range}})
     assert has_data(deltas)
 
 

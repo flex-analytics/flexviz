@@ -258,7 +258,8 @@ class TestPlotlyHtml:
         body = _js_function_body(html, "function clearFigureSelection(figUid)")
         assert "type: remainingSelections.length ? 'selection' : 'deselect'" in body
         assert "selections: remainingSelections" in body
-        assert "figure_uid: figUid" in body
+        # Events no longer carry a figure uid; the selections say who owns what.
+        assert "figure_uid" not in body
 
     def test_click_toggle_uses_figure_scoped_clear(self, html):
         body = _js_function_body(html, "function handleClick(eventData, figUid)")
@@ -341,10 +342,15 @@ class TestPlotlyHtml:
 
     def test_runtime_ships_panel_reset_noop_guard(self, html):
         # Per-figure reset cases 3c/3d: the no-op guard must short-circuit before
-        # posting, gated on no zoom and no selection change. (Axis locks are
-        # view-only, so they need no special-casing here.)
-        assert "window.fvFigureHasViewport" in html
-        assert "if (!wasZoomed && !selectionChanged) return;" in html
+        # posting, gated on no cleared viewport key and no selection change.
+        body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
+        assert "fvClearFigureViewport" in body
+        assert "if (!wasZoomed && !selectionChanged) return;" in body
+        assert "viewport_keys: clearedKeys" in body
+        clear = _js_function_body(
+            html, "window.fvClearFigureViewport = function(figUid)"
+        )
+        assert "fvWriteViewport(key, null)" in clear
 
     def test_overlay_runtime_exposes_cache_helpers(self, html):
         assert "window.fvEnsureOverlayBackground" in html
@@ -430,12 +436,13 @@ class TestPlotlyHtml:
     def test_panel_reset_event_type_adapts_to_selection(self, html):
         # When the panel sourced a cross-filter, reset-panel must send a
         # 'selection'/'deselect' event (so other panels update), not 'viewport'.
-        # When no selection existed, 'viewport' is still correct.
+        # When no selection existed, the viewport commit sends a 'viewport'
+        # event, and only if a cleared axis re-aggregates a trace.
         body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
         assert "selectionChanged" in body
         assert "'selection'" in body
         assert "'deselect'" in body
-        assert "'viewport'" in body
+        assert "fvCommitViewportChange(null, clearedKeys)" in body
 
     def test_axis_lock_controls_present(self, html):
         assert 'data-action="lock-axes"' in html
@@ -467,12 +474,14 @@ class TestPlotlyHtml:
         assert "plotlyDataExtentForAxis" not in html
         assert "plotlyHeatmapAxisExtent" not in html
 
-    def test_handlerelayout_prunes_and_merges_locked_axis_ranges(self, html):
+    def test_handlerelayout_prunes_locked_axes_and_names_changed_keys(self, html):
         body = _js_function_body(html, "function handleRelayout(relayout, figUid)")
         assert "fvPruneAxisRangesForLocks" in body
         assert "touchedLockedAxes" in body
         assert "fvApplyAxisLocks" in body
-        assert "axis_ranges: axisRanges" in body
+        assert "fvWriteViewport(figUid + '/' + k" in body
+        assert "fvCommitViewportChange(figUid, changed)" in body
+        assert "axis_ranges" not in body
 
     def test_panel_reset_preserves_locked_axis_ranges(self, html):
         assert "fvClearFigureViewport" in html
@@ -609,14 +618,14 @@ class TestPlotlyHtml:
     def test_plotly_uid_handlers_use_json_string_literals(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 
-        uid = "fig');window.__fv_xss=1;//"
+        uid = "fig');window.__fv_xss=1;('"
         spec = DashboardSpec(figures=[FigureSpec(uid=uid, traces=[])])
         html = PlotlyAdapter()._build_dashboard_html(spec, server_url="http://test")
         # In the bundle architecture, handlers receive figUid from the forEach loop
         # (never as an inline literal), so the injection string is only in _fvAllFigUids.
-        assert "handleRelayout(rd, 'fig');window.__fv_xss=1;//')" not in html
+        assert "handleRelayout(rd, 'fig');window.__fv_xss=1;('')" not in html
         # UID appears JSON-encoded in the _fvAllFigUids array
-        assert "fig');window.__fv_xss=1;//" in html  # present but only in the array
+        assert "fig');window.__fv_xss=1;('" in html  # present but only in the array
 
     def test_layout_gap_is_sanitized_for_style_blocks(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
@@ -1221,7 +1230,7 @@ class TestTreeMapPlotly:
         assert "_resetTreemapLevel" in html
         assert "_resetTreemapLevel = true" in html
         assert "_resetTreemapLevel = false" in html
-        assert "['deselect', 'reset', 'init'].includes(event.type)" in html
+        assert "['deselect', 'init'].includes(event.type)" in html
 
     def test_treemap_reset_level_fn_present(self, html):
         # resetTreemapLevel must be defined and call _fvRenderFigure (not

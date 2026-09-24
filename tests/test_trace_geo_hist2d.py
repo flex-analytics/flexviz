@@ -329,8 +329,7 @@ class TestGeoHist2DEngine:
         ]
         event = InteractionEvent(
             type="viewport",
-            axis_ranges={"coordinates": coords},
-            figure_uid="fig_map",
+            viewport_keys=["fig_map/coordinates"],
         )
         viewports = {"fig_map": {"coordinates": coords}}
         deltas = engine.process(event, infos, viewports_by_figure=viewports)
@@ -418,8 +417,7 @@ class TestGeoHist2DEngine:
         ]
         event = InteractionEvent(
             type="viewport",
-            axis_ranges={"coordinates": coords},
-            figure_uid="fig_map",
+            viewport_keys=["fig_map/coordinates"],
             selections=[
                 SelectionState(
                     source_figure_uid="fig_map",

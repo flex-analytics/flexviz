@@ -1,4 +1,4 @@
-"""Unit tests for adapter Python APIs: parse_event, shared toolbar, and
+"""Unit tests for adapter Python APIs: shared toolbar and
 ECharts ``_build_initial_option``.
 
 Covers PlotlyAdapter and EChartsAdapter, plus the shared toolbar building
@@ -19,114 +19,12 @@ from flexviz.spec import (
     TraceSpec,
 )
 
-# ---- parse_event -----------------------------------------------------------
+# ---- shared toolbar --------------------------------------------------------
 
 
 class _DummyAdapter(AbstractAdapter):
-    def parse_event(self, raw_event):
-        return None
-
     def show_dashboard(self, spec, server_url="http://127.0.0.1:8000", **kwargs):
         return None
-
-
-class TestPlotlyParseEvent:
-    @pytest.fixture()
-    def adapter(self):
-        from flexviz.adapters.plotly_adapter import PlotlyAdapter
-
-        return PlotlyAdapter()
-
-    def test_viewport_x_range(self, adapter):
-        raw = {"xaxis.range[0]": 10, "xaxis.range[1]": 50}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["x"] == (10, 50)
-
-    def test_viewport_x2_range(self, adapter):
-        raw = {"xaxis2.range[0]": 5, "xaxis2.range[1]": 25}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["x2"] == (5, 25)
-
-    def test_viewport_x_range_array(self, adapter):
-        raw = {"xaxis.range": [10, 50]}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["x"] == (10, 50)
-
-    def test_viewport_y_range(self, adapter):
-        raw = {"yaxis.range[0]": 0, "yaxis.range[1]": 100}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["y"] == (0, 100)
-
-    def test_map_derived_coordinates(self, adapter):
-        coords = [[-73.5, 40.5], [-72.5, 40.5], [-72.5, 41.5], [-73.5, 41.5]]
-        raw = {"map._derived": {"coordinates": coords}}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["coordinates"] == coords
-
-    def test_autorange_reset(self, adapter):
-        raw = {"xaxis.autorange": True}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "reset"
-        assert event.force_update is True
-
-    def test_autosize_reset(self, adapter):
-        raw = {"autosize": True}
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "reset"
-        assert event.force_update is True
-
-    def test_dragmode_ignored(self, adapter):
-        raw = {"dragmode": "select"}
-        event = adapter.parse_event(raw)
-        assert event is None
-
-    def test_partial_range_ignored(self, adapter):
-        raw = {"xaxis.range[0]": 10}
-        event = adapter.parse_event(raw)
-        assert event is None
-
-    def test_empty_data_ignored(self, adapter):
-        event = adapter.parse_event({})
-        assert event is None
-
-    def test_typed_event_passthrough(self, adapter):
-        raw = {
-            "type": "init",
-            "force_update": True,
-            "axis_ranges": {},
-            "selections": [],
-        }
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "init"
-
-    def test_multiple_axes(self, adapter):
-        raw = {
-            "xaxis.range[0]": 1,
-            "xaxis.range[1]": 10,
-            "yaxis.range[0]": 0,
-            "yaxis.range[1]": 100,
-        }
-        event = adapter.parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["x"] == (1, 10)
-        assert event.axis_ranges["y"] == (0, 100)
-
-
-# ---- shared toolbar --------------------------------------------------------
 
 
 class TestSharedToolbar:
@@ -325,28 +223,6 @@ class TestPlotlyModebarConfig:
 
 
 class TestEChartsParseEvent:
-    def test_datazoom_shorthand(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        raw = {"startValue": 100.0, "endValue": 500.0}
-        event = EChartsAdapter().parse_event(raw)
-        assert event is not None
-        assert event.type == "viewport"
-        assert event.axis_ranges["x"] == (100.0, 500.0)
-
-    def test_typed_passthrough(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        raw = {
-            "type": "reset",
-            "force_update": True,
-            "axis_ranges": {},
-            "selections": [],
-        }
-        event = EChartsAdapter().parse_event(raw)
-        assert event is not None
-        assert event.type == "reset"
-
     def test_empty_returns_none(self):
         from flexviz.adapters.echarts_adapter import EChartsAdapter
 
