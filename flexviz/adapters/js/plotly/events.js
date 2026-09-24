@@ -515,7 +515,7 @@ function _fvCubeEnsureOverlayBg(gesture) {
         _updateBgYExtent(figUid, (delta.updates || {}).y);
       }
     }
-    hasBgByFigure[figUid] = true;
+    setHasBackground(figUid, true);
     (gesture.createdBg = gesture.createdBg || []).push({
       figUid, restores, prevYExtent,
     });
@@ -1385,7 +1385,7 @@ function _fvCubeGestureAbort(figUid) {
     dirty.add(saved.figUid);
   }
   for (const created of (gesture.createdBg || [])) {
-    hasBgByFigure[created.figUid] = false;
+    setHasBackground(created.figUid, false);
     bgYExtentByFig[created.figUid] = created.prevYExtent;
     for (const r of created.restores) {
       if (r.grouped) {

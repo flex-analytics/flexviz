@@ -7093,3 +7093,98 @@ class TestLinkedAxesBrowser:
 
         assert "equal ranges" in message
         assert page.evaluate("window.flexvizState().state") == before
+
+
+# ---------------------------------------------------------------------------
+# Response order and the programmatic guard
+# ---------------------------------------------------------------------------
+
+
+def _hold_first_update(page: Page) -> list:
+    """Hold back the next /dashboard/update request, so its response arrives
+    late. Returns the list that receives its route: continue it to release."""
+    held: list = []
+
+    def hold_first(route) -> None:
+        if held:
+            route.continue_()
+        else:
+            held.append(route)
+
+    page.route("**/dashboard/update", hold_first)
+    return held
+
+
+def _release(page: Page, held: list) -> None:
+    with page.expect_response("**/dashboard/update"):
+        held[0].continue_()
+    page.wait_for_timeout(500)
+
+
+_X_SPAN = """(i) => {
+    const x = divs[i].data[0].x;
+    return [Math.min(...x), Math.max(...x)];
+  }"""
+
+
+@pytest.mark.browser
+class TestResponseOrderBrowser:
+    @staticmethod
+    def _open(page: Page, url: str) -> list[dict]:
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}")["event"])
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        posts.clear()
+        return posts
+
+    def test_a_late_response_does_not_overwrite_a_newer_zoom(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        held = _hold_first_update(page)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
+        page.wait_for_timeout(1_000)
+        _release(page, held)
+
+        assert len(posts) == 2
+        for idx in (0, 1):
+            lo, hi = page.evaluate(_X_SPAN, idx)
+            assert 300 <= lo and hi <= 400, (idx, lo, hi)
+
+    def test_a_late_response_still_updates_what_a_newer_request_left_alone(
+        self, page: Page, server_port: int
+    ):
+        """A brush on C re-aggregates A and B. A zoom on A before that response
+        re-aggregates only A. The late brush response must still filter B."""
+        url = _dashboard_url(server_port, "plotly", n_figures=3)
+        posts = self._open(page, url)
+        held = _hold_first_update(page)
+
+        page.evaluate("""() => {
+            window.fvSetSelectionState([{
+              source_figure_uid: DASHBOARD_SPEC.figures[2].uid,
+              predicates: [{clauses: [{column: 'ts', range: [100, 300]}]}],
+            }]);
+            postDashboardUpdate({type: 'selection',
+              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+          }""")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [200, 400]})")
+        page.wait_for_timeout(1_000)
+        _release(page, held)
+
+        assert [p["type"] for p in posts] == ["selection", "viewport"]
+        lo, hi = page.evaluate(_X_SPAN, 0)
+        assert 200 <= lo and hi <= 300, ("A", lo, hi)
+        lo, hi = page.evaluate(_X_SPAN, 1)
+        assert 100 <= lo and hi <= 300, ("B", lo, hi)

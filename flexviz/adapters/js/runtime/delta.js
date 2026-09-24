@@ -18,12 +18,36 @@ function ensureGroupColor(parentSpec, groupValueKey) {
   return domain.mapping[groupValueKey];
 }
 
-function setLayerData(uid, layerKey, updates) {
-  const layers = ensureLayerData(uid);
-  layers[layerKey] = cloneObj(updates || {});
+// Every write of figure data carries a number from one counter: a request's
+// number, taken when it is sent, or a new number for a client-side write. Each
+// slot (a trace layer, a figure's background flag) keeps the number of the
+// data it holds and refuses an older write. So responses can arrive in any
+// order: the newest data wins, and a late response still fills the slots
+// that newer requests did not re-aggregate.
+let _fvWriteSeq = 0;
+const _fvSlotSeq = {};
+
+function fvNextWriteSeq() {
+  return ++_fvWriteSeq;
 }
-function setGroupedLayerData(figUid, parentUid, layerKey, groupResults) {
+
+function _fvClaimSlot(slot, seq) {
+  if ((_fvSlotSeq[slot] || 0) > seq) return false;
+  _fvSlotSeq[slot] = seq;
+  return true;
+}
+
+function setLayerData(uid, layerKey, updates, seq = fvNextWriteSeq()) {
+  if (!_fvClaimSlot(uid + '|' + layerKey, seq)) return;
+  ensureLayerData(uid)[layerKey] = cloneObj(updates || {});
+}
+function setGroupedLayerData(figUid, parentUid, layerKey, groupResults, seq = fvNextWriteSeq()) {
+  if (!_fvClaimSlot(parentUid + '|' + layerKey, seq)) return;
   groupedDataByParent[figUid][parentUid][layerKey] = cloneObj(groupResults || []);
+}
+function setHasBackground(figUid, hasBackground, seq = fvNextWriteSeq()) {
+  if (!_fvClaimSlot(figUid + '|hasBg', seq)) return;
+  hasBgByFigure[figUid] = hasBackground;
 }
 
 // Why the last failed request failed, for callers that report it
@@ -64,6 +88,9 @@ function fvCommitViewportChange(sourceFigUid, keys) {
 
 async function postDashboardUpdate(event) {
   _fvLastUpdateError = null;
+  // Taken in the same synchronous step that serializes the spec, so the
+  // number orders the requests by the state they carry.
+  const seq = fvNextWriteSeq();
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
   // Whole-dashboard blob first (init / deselect); then the figure-scoped
@@ -107,41 +134,41 @@ async function postDashboardUpdate(event) {
           for (const cr of delta.group_results || []) {
             childUidToParentUid[cr.uid] = delta.uid;
           }
-          setGroupedLayerData(figUid, delta.uid, layerKey, delta.group_results || []);
+          setGroupedLayerData(figUid, delta.uid, layerKey, delta.group_results || [], seq);
           if (layerKey === 'bg') {
-            setGroupedLayerData(figUid, delta.uid, 'base', delta.group_results || []);
+            setGroupedLayerData(figUid, delta.uid, 'base', delta.group_results || [], seq);
             sawBackground = true;
             for (const cr of delta.group_results || []) {
               _updateBgYExtent(figUid, (cr.updates || {}).y);
             }
           } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, figUid)) {
-            setGroupedLayerData(figUid, delta.uid, 'bg', delta.group_results || []);
+            setGroupedLayerData(figUid, delta.uid, 'bg', delta.group_results || [], seq);
             sawBackground = true;
             for (const cr of delta.group_results || []) {
               _updateBgYExtent(figUid, (cr.updates || {}).y);
             }
           }
         } else {
-          setLayerData(delta.uid, layerKey, delta.updates || {});
+          setLayerData(delta.uid, layerKey, delta.updates || {}, seq);
           if (layerKey === 'bg') {
-            setLayerData(delta.uid, 'base', delta.updates || {});
+            setLayerData(delta.uid, 'base', delta.updates || {}, seq);
             sawBackground = true;
             _updateBgYExtent(figUid, (delta.updates || {}).y);
           } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, figUid)) {
-            setLayerData(delta.uid, 'bg', delta.updates || {});
+            setLayerData(delta.uid, 'bg', delta.updates || {}, seq);
             sawBackground = true;
             _updateBgYExtent(figUid, (delta.updates || {}).y);
           }
         }
       }
       if (sawBackground) {
-        hasBgByFigure[figUid] = true;
+        setHasBackground(figUid, true, seq);
       } else if (
         event.type === 'viewport'
         && requestHasActiveSelections(event)
         && !sourceFigure
       ) {
-        hasBgByFigure[figUid] = false;
+        setHasBackground(figUid, false, seq);
       }
       if (deltas.length) dirtyFigUids.add(figUid);
     }
