@@ -45,6 +45,11 @@ async function restoreDashboardFromSpec() {
     });
   }
   window.fvRefreshSelectionSummary?.();
+  // The spec can carry other axis locks (an apply, a rollback, a shared URL).
+  for (const figUid of _fvAllFigUids) {
+    window.fvUpdateAxisLockButtons?.(figUid);
+    window.fvSyncFigureModeForAxisLocks?.(figUid);
+  }
   return ok;
 }
 window.fvRestoreFromSpec = restoreDashboardFromSpec;

@@ -3968,6 +3968,30 @@ class TestAgentReadback:
         assert message == "flexviz: dashboard update failed (status 500)"
         assert event_types == ["init", "init"], "failed init, then the rollback"
 
+    def test_apply_updates_the_lock_controls(self, page: Page, server_port: int):
+        """An applied lock shows on the panel button and leaves zoom mode."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.evaluate("""() => {
+                const uid = DASHBOARD_SPEC.figures[0].uid;
+                return window.flexvizApply({client_state: {
+                  axis_locks: {[uid + '/x']: true, [uid + '/y']: true},
+                  axis_lock_ranges: {
+                    [uid + '/x']: {min: 100, max: 200},
+                    [uid + '/y']: {min: 0, max: 1},
+                  },
+                }});
+            }""")
+        page.wait_for_function(
+            "() => divs[0]._fullLayout.dragmode === 'select'", timeout=5_000
+        )
+        label = page.text_content(
+            "#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']"
+        )
+        assert label == "Unlock Axes"
+
     def test_failed_first_load_logs_an_error(self, page: Page, server_port: int):
         """The first page carries empty stubs only, so a failed init must say so."""
         url = _dashboard_url_selection_duplicate_repro(server_port)
