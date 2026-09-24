@@ -107,6 +107,19 @@ class TestPostDashboardUpdate:
             assert len(deltas) > 0
             assert "trace_index" not in deltas[0]
 
+    def test_other_spec_version_is_refused(
+        self, client: TestClient, integ_df: pl.DataFrame
+    ):
+        """A page built by another FlexViz version must not get empty deltas."""
+        _, spec = _make_dashboard_and_spec(integ_df)
+        payload = {
+            "spec": {**spec.model_dump(), "version": "0.5"},
+            "event": {"type": "init", "force_update": True},
+        }
+        resp = client.post("/dashboard/update", json=payload)
+        assert resp.status_code == 422
+        assert "spec version '0.5' is not supported" in resp.text
+
     def test_viewport_returns_fewer_points(
         self, client: TestClient, integ_df: pl.DataFrame
     ):

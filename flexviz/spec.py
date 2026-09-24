@@ -15,11 +15,12 @@ from __future__ import annotations
 import base64
 import gzip
 import json as _json
-from typing import Any, Literal, TypeAlias, TypedDict
+from typing import Annotated, Any, Literal, TypeAlias, TypedDict
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     Field,
     field_serializer,
@@ -28,6 +29,19 @@ from pydantic import (
 )
 
 _SPEC_VERSION = "0.6"
+
+
+def _check_spec_version(version: str) -> str:
+    # Specs round-trip only within one spec version (pre-1.0 policy).
+    if version != _SPEC_VERSION:
+        raise ValueError(
+            f"spec version {version!r} is not supported; this FlexViz reads "
+            f"spec version {_SPEC_VERSION!r}"
+        )
+    return version
+
+
+SpecVersion: TypeAlias = Annotated[str, AfterValidator(_check_spec_version)]
 
 # Per-trace hover *capabilities* (what a trace can emit/receive as a source or
 # target). These are declared by each trace and consumed by the client runtime,
@@ -372,7 +386,7 @@ class VisualizationSpec(BaseModel):
     the client.
     """
 
-    version: str = _SPEC_VERSION
+    version: SpecVersion = _SPEC_VERSION
     figure: FigureSpec = Field(default_factory=FigureSpec)
     state: InteractionState = Field(default_factory=InteractionState)
 
@@ -549,7 +563,7 @@ class DashboardSpec(BaseModel):
         Layout hints (gap, draggable/grid editability, and ``grid_items``).
     """
 
-    version: str = _SPEC_VERSION
+    version: SpecVersion = _SPEC_VERSION
     figures: list[FigureSpec] = Field(default_factory=list)
     state: InteractionState = Field(default_factory=InteractionState)
     layout: LayoutSpec = Field(default_factory=LayoutSpec)
@@ -714,7 +728,7 @@ def encode_spec(spec: VisualizationSpec | DashboardSpec) -> str:
 def decode_spec(encoded: str) -> VisualizationSpec | DashboardSpec:
     """Decode a string produced by :func:`encode_spec` into a spec model.
 
-    See :func:`parse_spec` for the model choice and the version check.
+    See :func:`parse_spec` for the model choice.
     """
     padded = encoded + "=" * (-len(encoded) % 4)
     raw = gzip.decompress(base64.urlsafe_b64decode(padded))
@@ -725,15 +739,8 @@ def parse_spec(data: dict[str, Any]) -> VisualizationSpec | DashboardSpec:
     """Validate a spec dict: a ``DashboardSpec`` when it has ``"figures"``,
     else a ``VisualizationSpec``.
 
-    Specs round-trip only within one spec version (pre-1.0 policy), so a spec
-    of another version is refused. Raises ``ValueError``.
+    Both models refuse a spec of another version. Raises ``ValueError``.
     """
-    version = data.get("version", _SPEC_VERSION)
-    if version != _SPEC_VERSION:
-        raise ValueError(
-            f"spec version {version!r} is not supported; this FlexViz reads "
-            f"spec version {_SPEC_VERSION!r}"
-        )
     if "figures" in data:
         return DashboardSpec.model_validate(data)
     return VisualizationSpec.model_validate(data)

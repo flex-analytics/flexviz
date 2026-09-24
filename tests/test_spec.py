@@ -423,6 +423,14 @@ class TestEncodeDecodeSpec:
         with pytest.raises(ValueError, match="spec version '0.5' is not supported"):
             parse_spec(raw)
 
+    @pytest.mark.parametrize("model", [DashboardSpec, VisualizationSpec])
+    def test_each_spec_model_refuses_another_version(self, model):
+        """Loaders and requests validate the model directly, not via parse_spec."""
+        with pytest.raises(
+            ValidationError, match="spec version '0.5' is not supported"
+        ):
+            model.model_validate({"version": "0.5"})
+
     def test_auto_detect_dashboard(self):
         """decode_spec detects DashboardSpec by the 'figures' key."""
         dash = _make_dashboard_spec()

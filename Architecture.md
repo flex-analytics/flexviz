@@ -217,7 +217,7 @@ SelectionState      = OR(predicates)
 Engine filter       = AND(selection_states from other figures)
 ```
 
-`encode_spec` / `decode_spec` in `spec.py` provide gzip + base64url round-trip. `decode_spec` passes the JSON to `parse_spec`, which refuses another spec version and picks `DashboardSpec` when the dict has `figures`, else `VisualizationSpec`. `/share` runs `parse_spec` on the client's dict and encodes the validated model.
+`encode_spec` / `decode_spec` in `spec.py` provide gzip + base64url round-trip. `decode_spec` passes the JSON to `parse_spec`, which picks `DashboardSpec` when the dict has `figures`, else `VisualizationSpec`. The `version` field of both models refuses another spec version, so every entry point (codec, `/dashboard/update`, `load_spec`) applies the check. `/share` runs `parse_spec` on the client's dict and encodes the validated model.
 
 Overlay caches are runtime-only adapter state:
 
