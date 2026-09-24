@@ -121,8 +121,8 @@ window.fvAxisLockRangesForFigure = function(figUid) {
 // A locked axis keeps its key: the lock pins the displayed range, and the
 // engine aggregates at the state range, so clearing it would split the two.
 function fvIsViewportKeyLocked(key) {
-  const slashIdx = key.indexOf('/');
-  return window.fvIsAxisLocked(key.slice(0, slashIdx), key.slice(slashIdx + 1));
+  const [figUid, axisId] = key.split('/');
+  return window.fvIsAxisLocked(figUid, axisId);
 }
 // Linked axes reset together: clearing a key clears its whole link group.
 // Returns the cleared state keys: a viewport event lists them as changed.
@@ -155,9 +155,8 @@ function fvLockAxisGroup(figUid, axisId) {
   const range = ranges[axisId];
   const others = [];
   for (const key of fvLinkedKeys(figUid + '/' + axisId)) {
-    const memberFigUid = key.slice(0, key.indexOf('/'));
+    const [memberFigUid, memberAxisId] = key.split('/');
     if (memberFigUid === figUid) continue;
-    const memberAxisId = key.slice(key.indexOf('/') + 1);
     window.fvSetAxisLocked(memberFigUid, memberAxisId, true);
     if (range) window.fvStoreAxisLockRanges(memberFigUid, { [memberAxisId]: range });
     others.push(memberFigUid);
@@ -185,8 +184,8 @@ window.fvOnToggleAxisLocks = async function(figUid) {
     }
   } else {
     for (const key of keys) {
-      const i = key.indexOf('/');
-      window.fvSetAxisLocked(key.slice(0, i), key.slice(i + 1), false);
+      const [keyFigUid, axisId] = key.split('/');
+      window.fvSetAxisLocked(keyFigUid, axisId, false);
     }
     touchedFigUids.forEach(touched => moved.add(touched));
   }

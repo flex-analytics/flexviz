@@ -272,18 +272,15 @@ function fvWriteViewport(key, value) {
 
 // Figure uids of viewport keys, deduplicated in order.
 function fvFiguresOfKeys(keys) {
-  return [...new Set(keys.map(key => key.slice(0, key.indexOf('/'))))];
+  return [...new Set(keys.map(key => key.split('/')[0]))];
 }
 
 function figureViewportRanges(figUid) {
   const viewport = (DASHBOARD_SPEC.state && DASHBOARD_SPEC.state.viewport) || {};
   const ranges = {};
   for (const [key, value] of Object.entries(viewport)) {
-    const slashIdx = key.indexOf('/');
-    if (slashIdx === -1) continue;
-    const currentFigUid = key.slice(0, slashIdx);
-    if (currentFigUid !== figUid || !value) continue;
-    const axisId = key.slice(slashIdx + 1);
+    const [keyFigUid, axisId] = key.split('/');
+    if (keyFigUid !== figUid || !axisId || !value) continue;
     if (axisId === 'coordinates' && Array.isArray(value)) {
       ranges.coordinates = cloneObj(value);
       continue;
