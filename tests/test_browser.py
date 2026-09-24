@@ -7115,10 +7115,31 @@ def _hold_first_update(page: Page) -> list:
     return held
 
 
-def _release(page: Page, held: list) -> None:
-    with page.expect_response("**/dashboard/update"):
-        held[0].continue_()
-    page.wait_for_timeout(500)
+def _wait_held(page: Page, held: list) -> None:
+    deadline = time.time() + 5
+    while not held:
+        assert time.time() < deadline, "no request was held"
+        page.wait_for_timeout(20)
+
+
+# Counts the updates that have applied their response and redrawn. The
+# handlers call postDashboardUpdate by its global name, so the wrapper sees
+# every update, cache hits included.
+_COUNT_SETTLED_UPDATES = """() => {
+    const base = postDashboardUpdate;
+    window.__fvSettled = 0;
+    window.postDashboardUpdate = (...args) =>
+      base(...args).finally(() => { window.__fvSettled++; });
+  }"""
+
+
+def _wait_settled(page: Page, count: int) -> None:
+    page.wait_for_function(f"() => window.__fvSettled >= {count}", timeout=5_000)
+
+
+def _release(page: Page, held: list, settled: int) -> None:
+    held[0].continue_()
+    _wait_settled(page, settled)
 
 
 _X_SPAN = """(i) => {
@@ -7142,6 +7163,7 @@ class TestResponseOrderBrowser:
         )
         page.goto(url)
         _wait_for_init(page, "plotly")
+        page.evaluate(_COUNT_SETTLED_UPDATES)
         posts.clear()
         return posts
 
@@ -7153,9 +7175,10 @@ class TestResponseOrderBrowser:
         held = _hold_first_update(page)
 
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        _wait_held(page, held)
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
-        page.wait_for_timeout(1_000)
-        _release(page, held)
+        _wait_settled(page, 1)
+        _release(page, held, settled=2)
 
         assert len(posts) == 2
         for idx in (0, 1):
@@ -7179,9 +7202,10 @@ class TestResponseOrderBrowser:
             postDashboardUpdate({type: 'selection',
               selections: DASHBOARD_SPEC.state.selections, force_update: true});
           }""")
+        _wait_held(page, held)
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [200, 400]})")
-        page.wait_for_timeout(1_000)
-        _release(page, held)
+        _wait_settled(page, 1)
+        _release(page, held, settled=2)
 
         assert [p["type"] for p in posts] == ["selection", "viewport"]
         lo, hi = page.evaluate(_X_SPAN, 0)
@@ -7204,20 +7228,20 @@ class TestResponseOrderBrowser:
         posts = self._open(page, url)
         uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
-        page.wait_for_timeout(1_000)
+        _wait_settled(page, 1)
         held = _hold_first_update(page)
         posts.clear()
 
         page.click(button)
-        page.wait_for_timeout(300)
+        _wait_held(page, held)
         page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [300, 400]})")
-        page.wait_for_timeout(1_000)
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert viewport.get(f"{uids[1]}/x") == {"min": 300, "max": 400}, viewport
+        _wait_settled(page, 2)
 
         assert len(posts) == 2, posts
         assert posts[1]["viewport_keys"] == [f"{uids[1]}/x"]
-        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
-        assert viewport[f"{uids[1]}/x"] == {"min": 300, "max": 400}
-        _release(page, held)
+        _release(page, held, settled=3)
         lo, hi = page.evaluate(_X_SPAN, 1)
         assert 300 <= lo and hi <= 400, (lo, hi)
 
@@ -7226,24 +7250,27 @@ class TestResponseOrderBrowser:
     ):
         url = _dashboard_url(server_port, "plotly", n_figures=2)
         posts = self._open(page, url)
-        page.evaluate("""() => {
-            const uid = DASHBOARD_SPEC.figures[0].uid;
+        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        page.evaluate(
+            """(uid) => {
             window.__fvRelease = [];
-            for (let i = 0; i < 2; i++) {
-              fvRunProgrammaticPlotlyOp(uid, () => new Promise(r => window.__fvRelease.push(r)));
-            }
+            window.__fvOps = [0, 1].map(() => fvRunProgrammaticPlotlyOp(
+              uid, () => new Promise(r => window.__fvRelease.push(r))));
             window.__fvRelease[0]();
-          }""")
+            return window.__fvOps[0];
+          }""",
+            uids[0],
+        )
 
+        # A relayout posts synchronously, so the zoom on 0 would post first.
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
         page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [100, 200]})")
-        page.wait_for_timeout(500)
-        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        _wait_settled(page, 1)
         assert [p["viewport_keys"] for p in posts] == [[f"{uids[1]}/x"]]
 
-        page.evaluate("() => window.__fvRelease[1]()")
+        page.evaluate("() => { window.__fvRelease[1](); return window.__fvOps[1]; }")
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
-        page.wait_for_timeout(500)
+        _wait_settled(page, 2)
         assert [p["viewport_keys"] for p in posts][1:] == [[f"{uids[0]}/x"]]
 
     def test_a_late_response_does_not_enter_the_init_cache(
@@ -7254,16 +7281,17 @@ class TestResponseOrderBrowser:
         url = _dashboard_url_cached(server_port)
         posts = self._open(page, url)
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
-        page.wait_for_timeout(1_000)
+        _wait_settled(page, 1)
         held = _hold_first_update(page)
         posts.clear()
 
         page.click("#fv-btn-deselect")
+        _wait_held(page, held)
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.autorange': true})")
-        page.wait_for_timeout(500)
-        _release(page, held)
+        _wait_settled(page, 2)
+        _release(page, held, settled=3)
         page.click("#fv-btn-deselect")
-        page.wait_for_timeout(500)
+        _wait_settled(page, 4)
 
         assert [p["type"] for p in posts] == ["deselect"], "the rest is cached"
         lo, hi = page.evaluate(_X_SPAN, 0)
