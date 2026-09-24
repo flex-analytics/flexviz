@@ -286,10 +286,6 @@ function handleRelayout(relayout, figUid) {
   const changed = Object.entries(unlockedComplete).flatMap(
     ([k, v]) => fvWriteViewport(figUid + '/' + k, { min: v[0], max: v[1] })
   );
-  if (!changed.length) {
-    window.fvApplyAxisLocks?.(figUid);
-    return;
-  }
   if (touchedLockedAxes) window.fvApplyAxisLocks?.(figUid);
   fvCommitViewportChange(figUid, changed);
 }

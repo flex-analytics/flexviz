@@ -143,20 +143,22 @@ window.fvClearUnlockedViewports = function() {
   }
   state.viewport = viewport;
 };
+// Returns the captured display ranges, or null when the axis shows none.
 function fvTryLockAxis(figUid, axisId) {
   const ranges = window.fvCaptureAxisDisplayRanges?.(figUid, axisId) || {};
-  if (!Object.keys(ranges).length) return false;
+  if (!Object.keys(ranges).length) return null;
   window.fvSetAxisLocked(figUid, axisId, true);
   window.fvStoreAxisLockRanges(figUid, ranges);
-  return true;
+  return ranges;
 }
 // Lock an axis and every axis linked to it at the range this figure shows. A
 // group keeps one range (the spec validator rejects unequal lock ranges), so a
 // member that autoranged to other data takes this figure's range. Returns the
 // other figures whose display changed.
 function fvLockAxisGroup(figUid, axisId) {
-  const range = (window.fvCaptureAxisDisplayRanges?.(figUid, axisId) || {})[axisId];
-  if (!fvTryLockAxis(figUid, axisId)) return [];
+  const ranges = fvTryLockAxis(figUid, axisId);
+  if (!ranges) return [];
+  const range = ranges[axisId];
   const others = [];
   for (const key of fvLinkedKeys(figUid + '/' + axisId)) {
     const memberFigUid = key.slice(0, key.indexOf('/'));

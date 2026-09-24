@@ -314,4 +314,3 @@ function fvNeedsFetch(figUid, changedAxisIds) {
   const binding = fvFigureRecomputeAxes(figUid);
   return (changedAxisIds || []).some(ax => binding.has(ax));
 }
-window.figureViewportRanges = figureViewportRanges;
