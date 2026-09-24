@@ -256,15 +256,16 @@ function fvLinkedKeys(key) {
   return groups.find(group => group.includes(key)) || [key];
 }
 
-// The one writer for gesture viewport changes: linked axes hold equal ranges by
-// construction (the server rejects a spec where they differ). `value` null
-// deletes the keys (autorange). Returns every key written.
+// The one writer of state.viewport: linked axes hold equal ranges by
+// construction (the server rejects a spec where they differ). `value` is an
+// axis range or map coordinates; null deletes the keys (autorange). Returns
+// every key written.
 function fvWriteViewport(key, value) {
   const viewport = DASHBOARD_SPEC.state.viewport;
   const keys = fvLinkedKeys(key);
   for (const k of keys) {
     if (value == null) delete viewport[k];
-    else viewport[k] = { ...value };
+    else viewport[k] = cloneObj(value);
   }
   return keys;
 }

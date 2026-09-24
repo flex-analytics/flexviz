@@ -344,9 +344,13 @@ class TestPlotlyHtml:
         # Per-figure reset cases 3c/3d: the no-op guard must short-circuit before
         # posting, gated on no cleared viewport key and no selection change.
         body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
-        assert "fvWriteViewport(key, null)" in body
+        assert "fvClearFigureViewport" in body
         assert "if (!wasZoomed && !selectionChanged) return;" in body
         assert "viewport_keys: clearedKeys" in body
+        clear = _js_function_body(
+            html, "window.fvClearFigureViewport = function(figUid)"
+        )
+        assert "fvWriteViewport(key, null)" in clear
 
     def test_overlay_runtime_exposes_cache_helpers(self, html):
         assert "window.fvEnsureOverlayBackground" in html

@@ -224,14 +224,7 @@ function handleRelayout(relayout, figUid) {
   if (isMapEvent) {
     const coords = mapCoordinatesFromRelayout(relayout) || extractMapBounds(figUid);
     if (coords) {
-      DASHBOARD_SPEC.state.viewport[figUid + '/coordinates'] = coords;  // persist always
-      if (fvNeedsFetch(figUid, ['coordinates'])) {
-        postDashboardUpdate({
-          type: 'viewport', viewport_keys: [figUid + '/coordinates'],
-          selections: DASHBOARD_SPEC.state.selections,
-          force_update: false,
-        });
-      }
+      fvCommitViewportChange(figUid, fvWriteViewport(figUid + '/coordinates', coords));
     }
     return;
   }

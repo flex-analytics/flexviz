@@ -124,24 +124,18 @@ function fvIsViewportKeyLocked(key) {
   const slashIdx = key.indexOf('/');
   return window.fvIsAxisLocked(key.slice(0, slashIdx), key.slice(slashIdx + 1));
 }
+// Linked axes reset together: clearing a key clears its whole link group.
 // Returns the cleared state keys: a viewport event lists them as changed.
 window.fvClearFigureViewport = function(figUid) {
   if (!figUid) return [];
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  const cleared = Object.keys(viewport)
+  const unlocked = Object.keys(fvEnsureState().viewport)
     .filter(key => key.startsWith(figUid + '/') && !fvIsViewportKeyLocked(key));
-  for (const key of cleared) delete viewport[key];
-  state.viewport = viewport;
-  return cleared;
+  return [...new Set(unlocked.flatMap(key => fvWriteViewport(key, null)))];
 };
 window.fvClearUnlockedViewports = function() {
-  const state = fvEnsureState();
-  const viewport = state.viewport || {};
-  for (const key of Object.keys(viewport)) {
-    if (!fvIsViewportKeyLocked(key)) delete viewport[key];
+  for (const key of Object.keys(fvEnsureState().viewport)) {
+    if (!fvIsViewportKeyLocked(key)) fvWriteViewport(key, null);
   }
-  state.viewport = viewport;
 };
 // Returns the captured display ranges, or null when the axis shows none.
 function fvTryLockAxis(figUid, axisId) {
@@ -272,10 +266,7 @@ window.fvOnLockAllAxes = async function() {
 //     cleared keys, so only this figure re-aggregates)
 window.fvOnResetPanel = async function(figUid) {
   if (!figUid) return;
-  // Linked axes reset together: clearing a key clears its whole link group.
-  const clearedKeys = [...new Set(
-    (window.fvClearFigureViewport?.(figUid) || []).flatMap(key => fvWriteViewport(key, null))
-  )];
+  const clearedKeys = window.fvClearFigureViewport?.(figUid) || [];
   const wasZoomed = clearedKeys.length > 0;
   const before = window.fvSelectionState?.() || [];
   const remaining = window.fvClearFigureSelectionFromList?.(figUid, before) || before;
