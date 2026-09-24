@@ -26,24 +26,18 @@ function bindPlotlyResizeObserver(gd) {
   gd._fvResizeObserver = observer;
 }
 
-// Plotly-specific override: wrap with _programmaticOp guard
-const _fvBaseOnResetPanel = window.fvOnResetPanel;
-window.fvOnResetPanel = async function(figUid) {
-  await fvRunProgrammaticPlotlyOp(() => _fvBaseOnResetPanel?.(figUid));
-};
+// No programmatic guard here: it would stay on for the whole round trip and
+// drop the user's zooms. The redraw uses Plotly.react, which emits no
+// relayout.
 window.fvOnReset = async function() {
-  await fvRunProgrammaticPlotlyOp(async function() {
-    window.fvClearUnlockedViewports?.();
-    window.fvSetSelectionState?.([]);
-    window.fvResetRuntimeCache?.();
-    await postDashboardUpdate({type: 'init', selections: [], force_update: true});
-  });
+  window.fvClearUnlockedViewports?.();
+  window.fvSetSelectionState?.([]);
+  window.fvResetRuntimeCache?.();
+  await postDashboardUpdate({type: 'init', selections: [], force_update: true});
 };
 window.fvOnDeselect = async function() {
-  await fvRunProgrammaticPlotlyOp(async function() {
-    window.fvSetSelectionState?.([]);
-    await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
-  });
+  window.fvSetSelectionState?.([]);
+  await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
 };
 
 // Wire one figure's Plotly event handlers, resize observer and panel controls.

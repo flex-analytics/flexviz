@@ -5423,13 +5423,19 @@ class TestResetCleanupBrowser:
         }""")
         assert all_cleared, "Plotly.react must clear selection rectangles on reset"
 
-    def test_reset_fires_exactly_one_server_call(self, page: Page, server_port: int):
-        """The toolbar Reset button must fire exactly one reset event.
-
-        Bug B (missing _programmaticOp guard in handleRelayout) caused a
-        spurious second server call when Plotly fired plotly_relayout during
-        fvOnReset's Plotly.react call.
-        """
+    @pytest.mark.parametrize(
+        "button",
+        [
+            "#fv-btn-reset",
+            "#fv-btn-deselect",
+            "#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']",
+        ],
+    )
+    def test_reset_fires_exactly_one_server_call(
+        self, page: Page, server_port: int, button: str
+    ):
+        """A reset button posts one request, although no guard is on while the
+        response redraws the figures and clears the selection box."""
         url = _dashboard_url(server_port, "plotly", n_figures=2)
         update_bodies: list[dict] = []
 
@@ -5448,18 +5454,12 @@ class TestResetCleanupBrowser:
         page.wait_for_timeout(1_500)
 
         count_before = len(update_bodies)
-        page.click("#fv-btn-reset")
+        page.click(button)
         page.wait_for_timeout(2_000)
 
-        reset_events = [
-            b
-            for b in update_bodies[count_before:]
-            if b.get("event", {}).get("type") == "init"
-        ]
-        assert len(reset_events) == 1, (
-            f"Expected exactly 1 init event from toolbar Reset, got {len(reset_events)}. "
-            "Spurious duplicates indicate _programmaticOp guard is missing from handleRelayout."
-        )
+        events = [b["event"]["type"] for b in update_bodies[count_before:]]
+        assert len(events) == 1, events
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
 
     def test_modebar_home_preserves_selections(self, page: Page, server_port: int):
         """The Plotly modebar Reset-axes button must preserve cross-filter selections.
@@ -7188,3 +7188,35 @@ class TestResponseOrderBrowser:
         assert 200 <= lo and hi <= 300, ("A", lo, hi)
         lo, hi = page.evaluate(_X_SPAN, 1)
         assert 100 <= lo and hi <= 300, ("B", lo, hi)
+
+    @pytest.mark.parametrize(
+        "button",
+        [
+            "#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']",
+            "#fv-btn-reset",
+            "#fv-btn-deselect",
+        ],
+    )
+    def test_a_zoom_while_a_reset_is_pending_posts_and_keeps_its_data(
+        self, page: Page, server_port: int, button: str
+    ):
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        posts = self._open(page, url)
+        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_000)
+        held = _hold_first_update(page)
+        posts.clear()
+
+        page.click(button)
+        page.wait_for_timeout(300)
+        page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [300, 400]})")
+        page.wait_for_timeout(1_000)
+
+        assert len(posts) == 2, posts
+        assert posts[1]["viewport_keys"] == [f"{uids[1]}/x"]
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert viewport[f"{uids[1]}/x"] == {"min": 300, "max": 400}
+        _release(page, held)
+        lo, hi = page.evaluate(_X_SPAN, 1)
+        assert 300 <= lo and hi <= 400, (lo, hi)
