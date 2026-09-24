@@ -7221,27 +7221,30 @@ class TestResponseOrderBrowser:
         lo, hi = page.evaluate(_X_SPAN, 1)
         assert 300 <= lo and hi <= 400, (lo, hi)
 
-    def test_the_guard_stays_on_until_the_last_programmatic_operation_ends(
+    def test_the_guard_ignores_only_its_figure_until_its_last_operation_ends(
         self, page: Page, server_port: int
     ):
         url = _dashboard_url(server_port, "plotly", n_figures=2)
         posts = self._open(page, url)
         page.evaluate("""() => {
+            const uid = DASHBOARD_SPEC.figures[0].uid;
             window.__fvRelease = [];
             for (let i = 0; i < 2; i++) {
-              fvRunProgrammaticPlotlyOp(() => new Promise(r => window.__fvRelease.push(r)));
+              fvRunProgrammaticPlotlyOp(uid, () => new Promise(r => window.__fvRelease.push(r)));
             }
             window.__fvRelease[0]();
           }""")
 
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [100, 200]})")
         page.wait_for_timeout(500)
-        assert posts == []
+        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        assert [p["viewport_keys"] for p in posts] == [[f"{uids[1]}/x"]]
 
         page.evaluate("() => window.__fvRelease[1]()")
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
         page.wait_for_timeout(500)
-        assert [p["type"] for p in posts] == ["viewport"]
+        assert [p["viewport_keys"] for p in posts][1:] == [[f"{uids[0]}/x"]]
 
     def test_a_late_response_does_not_enter_the_init_cache(
         self, page: Page, server_port: int

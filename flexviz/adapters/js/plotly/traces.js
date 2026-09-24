@@ -212,7 +212,7 @@ window.fvFinalizeHeatmapOverlayColorbars = function(figUid) {
     return Promise.all(steps);
   };
   return typeof fvRunProgrammaticPlotlyOp === 'function'
-    ? fvRunProgrammaticPlotlyOp(restyle)
+    ? fvRunProgrammaticPlotlyOp(figUid, restyle)
     : Promise.resolve(restyle());
 };
 
