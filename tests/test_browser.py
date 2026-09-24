@@ -7242,3 +7242,26 @@ class TestResponseOrderBrowser:
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
         page.wait_for_timeout(500)
         assert [p["type"] for p in posts] == ["viewport"]
+
+    def test_a_late_response_does_not_enter_the_init_cache(
+        self, page: Page, server_port: int
+    ):
+        """A deselect sent while zoomed has zoomed data. If the zoom is reset
+        before it arrives, it must not become the cached unfiltered response."""
+        url = _dashboard_url_cached(server_port)
+        posts = self._open(page, url)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.wait_for_timeout(1_000)
+        held = _hold_first_update(page)
+        posts.clear()
+
+        page.click("#fv-btn-deselect")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.autorange': true})")
+        page.wait_for_timeout(500)
+        _release(page, held)
+        page.click("#fv-btn-deselect")
+        page.wait_for_timeout(500)
+
+        assert [p["type"] for p in posts] == ["deselect"], "the rest is cached"
+        lo, hi = page.evaluate(_X_SPAN, 0)
+        assert lo <= 10 and hi >= 490, (lo, hi)

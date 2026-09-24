@@ -91,6 +91,7 @@ async function postDashboardUpdate(event) {
   // Taken in the same synchronous step that serializes the spec, so the
   // number orders the requests by the state they carry.
   const seq = fvNextWriteSeq();
+  const cacheKey = fvCacheKeyFor(event);
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
   // Whole-dashboard blob first (init / deselect); then the figure-scoped
@@ -117,7 +118,7 @@ async function postDashboardUpdate(event) {
       console.warn('flexviz /dashboard/update request failed', e);
       return false;
     }
-    fvCachePut(event, data.figure_deltas);
+    fvCachePut(cacheKey, data.figure_deltas);
   }
 
   const dirtyFigUids = new Set();

@@ -75,9 +75,16 @@ function fvCacheGet(event) {
   return hit ? cloneObj(hit) : null;
 }
 
-function fvCachePut(event, figureDeltas) {
-  if (!fvCacheActive(event) || !figureDeltas) return;
-  _fvResponseCache.set(_fvCacheKey(event), cloneObj(figureDeltas));
+// The key under which to cache this event's response, or null when it must
+// not be cached. Take it when the request is sent: the viewport and the
+// cross-filter mode can change before the response arrives.
+function fvCacheKeyFor(event) {
+  return fvCacheActive(event) ? _fvCacheKey(event) : null;
+}
+
+function fvCachePut(key, figureDeltas) {
+  if (!key || !figureDeltas) return;
+  _fvResponseCache.set(key, cloneObj(figureDeltas));
 }
 
 // === Figure-scoped reset cache (per-figure reset or autorange, case 3a) ===
