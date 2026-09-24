@@ -37,10 +37,12 @@ async function restoreDashboardFromSpec() {
   let ok = await postDashboardUpdate({
     type: 'init', selections: savedSelections, force_update: true,
   });
+  // Stop here: a second request would clear the error reason of the first.
+  if (!ok) return false;
   if (savedSelections.length) {
     ok = await postDashboardUpdate({
       type: 'selection', selections: savedSelections, force_update: true,
-    }) && ok;
+    });
   }
   window.fvRefreshSelectionSummary?.();
   return ok;

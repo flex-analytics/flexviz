@@ -3944,6 +3944,30 @@ class TestAgentReadback:
         assert page.evaluate("window.flexvizState().state") == state_before
         assert page.evaluate(self._LAYER_SIZES) == sizes_before
 
+    def test_apply_stops_after_a_failed_init(self, page: Page, server_port: int):
+        """A failed init skips the selection request, so the error keeps its
+        reason and the rollback follows at once."""
+        url = _dashboard_url_selection_duplicate_repro(server_port)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        event_types: list[str] = []
+
+        def fail_first(route) -> None:
+            event_types.append(json.loads(route.request.post_data)["event"]["type"])
+            if len(event_types) == 1:
+                route.fulfill(status=500)
+            else:
+                route.continue_()
+
+        page.route("**/dashboard/update", fail_first)
+        message = page.evaluate("""() => window.flexvizApply({state: {selections: [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'x', range: [100, 200] }] }],
+              }]}}).then(() => null, err => err.message)""")
+        assert message == "flexviz: dashboard update failed (status 500)"
+        assert event_types == ["init", "init"], "failed init, then the rollback"
+
     def test_failed_first_load_logs_an_error(self, page: Page, server_port: int):
         """The first page carries empty stubs only, so a failed init must say so."""
         url = _dashboard_url_selection_duplicate_repro(server_port)
