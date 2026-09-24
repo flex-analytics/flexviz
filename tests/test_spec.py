@@ -208,10 +208,12 @@ _RANGE = {"min": 0.0, "max": 1.0}
 
 
 class TestViewportKeys:
-    @pytest.mark.parametrize("key", ["x", "/x", "fig-1/", "fig-1/x/y"])
+    @pytest.mark.parametrize("key", ["x", "/x", "fig-1/", "fig-1/x/y", "fig-1//x"])
     def test_key_without_figure_and_axis_is_rejected(self, key):
+        data = _make_dashboard_spec().model_dump()
+        data["state"]["viewport"] = {key: _RANGE}
         with pytest.raises(ValidationError, match="<figure_uid>/<axis_id>"):
-            InteractionState.model_validate({"viewport": {key: _RANGE}})
+            DashboardSpec.model_validate(data)
 
     def test_dashboard_accepts_keys_of_its_figures(self):
         data = _make_dashboard_spec().model_dump()
