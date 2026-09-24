@@ -9,11 +9,13 @@ function plotlyAxisId(layoutKey) {
   return layoutKey.replace(/^(x|y)axis(\d*)$/, '$1$2');
 }
 
+// Operations can overlap, so the guard counts them: it stays on until the
+// last one settles. The executor starts the operation at once, and a throw
+// rejects the promise, so the count always goes down again.
 function fvRunProgrammaticPlotlyOp(operation) {
-  _programmaticOp = true;
-  const result = operation?.();
-  return Promise.resolve(result).finally(() => {
-    _programmaticOp = false;
+  _programmaticOps++;
+  return new Promise(resolve => resolve(operation())).finally(() => {
+    _programmaticOps--;
   });
 }
 

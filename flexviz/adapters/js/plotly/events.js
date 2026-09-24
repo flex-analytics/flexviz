@@ -1,7 +1,9 @@
 // === Plotly adapter — event handlers ===
 // Requires: render.js, state.js
 
-let _programmaticOp = false;
+// The number of programmatic Plotly operations in progress. While it is above
+// zero, the handlers ignore Plotly events.
+let _programmaticOps = 0;
 
 function clearFigureSelection(figUid) {
   const remainingSelections = window.fvClearFigureSelectionFromList?.(
@@ -18,9 +20,7 @@ function clearFigureSelection(figUid) {
 
 function resetTreemapLevel(figUid) {
   _resetTreemapLevel = true;
-  _programmaticOp = true;
-  _fvRenderFigure(figUid);
-  _programmaticOp = false;
+  fvRunProgrammaticPlotlyOp(() => _fvRenderFigure(figUid));
   _resetTreemapLevel = false;
 }
 
@@ -49,7 +49,7 @@ function _categoricalClausesFromLabel(clicked, labelCols) {
 // Click selection (pie slice / treemap node) — dispatched on the trace's
 // declared selection.kind, never on its renderer trace type.
 function handleClick(eventData, figUid) {
-  if (_programmaticOp) return false;
+  if (_programmaticOps > 0) return false;
   const pt = eventData && eventData.points && eventData.points[0];
   if (!pt) return false;
   const figSpec = figSpecByUid[figUid];
@@ -209,7 +209,7 @@ function _figureSourceTrace(figUid, kind) {
 
 function handleRelayout(relayout, figUid) {
   if (!relayout) return;
-  if (_programmaticOp) return;
+  if (_programmaticOps > 0) return;
   const keys = Object.keys(relayout);
   if (keys.length === 1 && keys[0] === 'dragmode') {
     updateModeIndicator(figUid, relayout.dragmode);
@@ -1402,7 +1402,7 @@ function _fvCubeGestureAbort(figUid) {
 // Bound (init.js) only when live_brush !== "off" and the figure has range
 // or categorical (bar) selection geometry.
 function handleSelecting(eventData, figUid) {
-  if (_programmaticOp) return;
+  if (_programmaticOps > 0) return;
   if (!_fvLiveBrushEnabled()) return;
   if (!eventData || (!eventData.range && !(eventData.points || []).length)) return;
   let gesture = _fvCubeGestures[figUid];
@@ -1520,7 +1520,7 @@ function _fvCoveredBarPoints(figUid, range, gd, source) {
 // Bound (init.js, capture phase) alongside plotly_selecting, under the same
 // live_brush / selection-geometry gate.
 function handleSelectionEditPointerDown(evt, figUid) {
-  if (_programmaticOp || !_fvLiveBrushEnabled()) return;
+  if (_programmaticOps > 0 || !_fvLiveBrushEnabled()) return;
   if (evt.button !== 0 || _fvCubeGestures[figUid]) return;
   const el = evt.target;
   if (!el || !el.closest) return;
@@ -1935,7 +1935,7 @@ function handleSelected(eventData, figUid) {
 }
 
 function handleDeselect(figUid) {
-  if (_programmaticOp) return;
+  if (_programmaticOps > 0) return;
   _fvCubeGestureAbort(figUid);
   clearFigureSelection(figUid);
 }
