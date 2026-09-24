@@ -23,12 +23,6 @@ function clearFigureSelection(figUid) {
   });
 }
 
-function resetTreemapLevel(figUid) {
-  _resetTreemapLevel = true;
-  fvRunProgrammaticPlotlyOp(figUid, () => _fvRenderFigure(figUid));
-  _resetTreemapLevel = false;
-}
-
 function _selectionBoxMatches(left, right) {
   if (!left && !right) return true;
   if (!left || !right) return false;
@@ -94,10 +88,7 @@ function handleClick(eventData, figUid) {
         predicate
       ) || []);
   if (!newPredicates.length) {
-    if (existing) {
-      if (sel.kind === 'path') resetTreemapLevel(figUid);
-      clearFigureSelection(figUid);
-    }
+    if (existing) clearFigureSelection(figUid);
     return false;
   }
   const nextSelections = window.fvReplaceFigureSelection?.(

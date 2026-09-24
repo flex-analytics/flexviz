@@ -403,7 +403,6 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.offsetgroup = logicalUid;
     trace.alignmentgroup = 'fv-bars';
   }
-  if (_resetTreemapLevel && template.type === 'treemap') { trace.level = 'root'; }
   if (applyLineGaps && Array.isArray(trace.x) && Array.isArray(trace.y)) {
     const gapped = fvApplyLineGaps(trace.x, trace.y, true);
     trace.x = gapped.x;

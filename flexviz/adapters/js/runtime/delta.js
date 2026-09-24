@@ -185,9 +185,6 @@ async function postDashboardUpdate(event) {
     return false;
   }
 
-  if (['deselect', 'init'].includes(event.type)) {
-    _resetTreemapLevel = true;
-  }
   for (const figUid of dirtyFigUids) {
     try {
       _fvRenderFigure(figUid);
@@ -195,7 +192,6 @@ async function postDashboardUpdate(event) {
       console.warn(`flexviz render failed for figure ${figUid}`, e);
     }
   }
-  _resetTreemapLevel = false;
   window.fvRefreshSelectionSummary?.();
   // A render error is not an apply failure: the page state still matches the spec.
   return true;

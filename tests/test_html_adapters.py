@@ -1223,35 +1223,15 @@ class TestTreeMapPlotly:
         assert obj["values"] == []
         assert "level" not in obj
 
-    def test_reset_treemap_level_flag_in_runtime(self, html):
-        # _resetTreemapLevel flag controls level reset: true for reset-like
-        # renders, but not for selection because selection should allow
-        # Plotly's native treemap drill/zoom feedback.
-        assert "_resetTreemapLevel" in html
-        assert "_resetTreemapLevel = true" in html
-        assert "_resetTreemapLevel = false" in html
-        assert "['deselect', 'init'].includes(event.type)" in html
-
-    def test_treemap_reset_level_fn_present(self, html):
-        # resetTreemapLevel must be defined and call _fvRenderFigure (not
-        # Plotly.restyle) so it resets the drill level via Plotly.react.
-        assert "resetTreemapLevel" in html
-        assert "_fvRenderFigure" in html
-
     def test_treemap_click_handler_uses_treemap_event(self, html):
-        # Plotly's treemap-specific click event lets handleClick decide when
-        # to allow native drill and when to cancel it for deselect.
+        # handleClick returns false, which cancels Plotly's native drill, so
+        # the treemap stays at its root level.
         assert "plotly_treemapclick" in html
         assert "return handleClick" in html
 
     def test_category_selection_styles_present(self, html):
         assert "CATEGORY_DIMMED_OPACITY" in html
         assert "applyCategorySelectionStyles(figUid)" in html
-
-    def test_treemap_level_resets_to_root_id(self, html):
-        # Treemap ids include a synthetic "root" node. Resetting to the empty
-        # level leaves Plotly drilled into the clicked node after deselect.
-        assert "trace.level = 'root'" in html
 
     def test_treemap_root_click_clears_selection(self, html):
         # Clicking the root node (pt.id == "root", parts=[]) while a selection
