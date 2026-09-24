@@ -226,7 +226,8 @@ partial `state` keeps its sibling keys (`viewport`, `group_domains`,
 rejects with the server's reason when the re-request fails, and the page keeps
 its previous state. When `client_state.axis_links` lists a viewport key, set
 every key of that group to the same range; a patch that sets only one is
-rejected. With
+rejected. Locks follow the same rule: lock every key of a group or none, with
+one range in `axis_lock_ranges`. With
 separate browsers the human does not see it, so record the state with
 `record_state(..., actor="agent")` and give them the new `/h/N` instead;
 the default actor is `"human"`, because step 6 is its first use.

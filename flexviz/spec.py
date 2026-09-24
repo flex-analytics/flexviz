@@ -340,10 +340,11 @@ class ClientState(BaseModel):
     This is the designated home for client-only-but-persistent state:
     hover mode, annotation visibility, panel collapse state, axis locks, etc.
 
-    ``axis_locks`` maps ``"{figure_uid}/{axis_family}"`` → locked flag and
-    ``axis_lock_ranges`` maps the same keys → the pinned ``AxisRange``. Both are
-    applied entirely client-side (JS pins the viewport); only the link
-    validator reads them.
+    ``axis_locks`` maps ``"{figure_uid}/{axis_family}"`` → locked flag, where
+    the family ``x`` also covers ``x2``. ``axis_lock_ranges`` maps
+    ``"{figure_uid}/{axis_id}"`` → the pinned ``AxisRange`` of each locked
+    axis. Both are applied entirely client-side (JS pins the viewport); only
+    the link validator reads them.
 
     ``live_brush`` gates the cube live-brush loop (spec §2.5): ``"auto"``
     (default) binds ``plotly_selecting`` on range-geometry figures and slices

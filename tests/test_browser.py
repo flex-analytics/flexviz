@@ -1209,10 +1209,11 @@ class TestPlotlyBrowser:
     def test_cached_source_locked_figure_reset_served_from_cache(
         self, page: Page, server_port: int
     ):
-        """Axis locks are view-only (pruned from server requests, re-applied on
-        render), so a per-figure reset of a locked figure back to full autorange
-        is served from the figure-scoped client cache just like an unlocked one —
-        no /dashboard/update — and the lock range survives."""
+        """A lock taken at autorange writes no viewport key (it pins the display
+        and is re-applied on render), so a per-figure reset of a locked figure
+        back to full autorange is served from the figure-scoped client cache
+        just like an unlocked one — no /dashboard/update — and the lock range
+        survives."""
         url = _dashboard_url_cached(server_port, "plotly")
         update_requests: list[str] = []
 
