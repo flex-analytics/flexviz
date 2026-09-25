@@ -68,8 +68,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   filtered by other selections as the figure's unfiltered background. After a
   switch to overlay mode, the figure then showed that filtered data as its
   background. The client now keeps a delta as the background only when no
-  other figure has a selection, and marks the old background stale after the
-  zoom.
+  other figure has a selection. It marks the old background stale when a zoom,
+  or a panel reset that also clears a selection, changes the range under a
+  cross-filter.
 - `GridItem.h` now renders at `h * 80` pixels on both layout paths. The static
   grid (`draggable=False`) carried `gap` between its rows, which made a panel
   of `h` rows `h * 80 + (h - 1) * gap` pixels tall. The gap now sits inside the

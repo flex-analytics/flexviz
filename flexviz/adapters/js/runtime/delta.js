@@ -202,8 +202,12 @@ async function postDashboardUpdate(event) {
       }
       if (sawBackground) {
         setHasBackground(figUid, true, seq);
-      } else if (event.type === 'viewport' && !isUnfilteredBaseForFigure(event, figUid)) {
-        // A zoom under a cross-filter: the background still holds the old range.
+      } else if (
+        fvFiguresOfKeys(event.viewport_keys || []).includes(figUid)
+        && !isUnfilteredBaseForFigure(event, figUid)
+      ) {
+        // The range changed under a cross-filter (a zoom, or a panel reset
+        // that also clears a selection): the background holds the old range.
         setHasBackground(figUid, false, seq);
       }
       if (deltas.length) dirtyFigUids.add(figUid);
