@@ -31,6 +31,13 @@ function fvNextWriteSeq() {
   return ++_fvWriteSeq;
 }
 
+function _fvLayerSlot(uid, layerKey) {
+  return uid + '|' + layerKey;
+}
+function _fvBackgroundSlot(figUid) {
+  return figUid + '|hasBg';
+}
+
 function _fvClaimSlot(slot, seq) {
   if ((_fvSlotSeq[slot] || 0) > seq) return false;
   _fvSlotSeq[slot] = seq;
@@ -38,16 +45,48 @@ function _fvClaimSlot(slot, seq) {
 }
 
 function setLayerData(uid, layerKey, updates, seq = fvNextWriteSeq()) {
-  if (!_fvClaimSlot(uid + '|' + layerKey, seq)) return;
+  if (!_fvClaimSlot(_fvLayerSlot(uid, layerKey), seq)) return;
   ensureLayerData(uid)[layerKey] = cloneObj(updates || {});
 }
 function setGroupedLayerData(figUid, parentUid, layerKey, groupResults, seq = fvNextWriteSeq()) {
-  if (!_fvClaimSlot(parentUid + '|' + layerKey, seq)) return;
+  if (!_fvClaimSlot(_fvLayerSlot(parentUid, layerKey), seq)) return;
   groupedDataByParent[figUid][parentUid][layerKey] = cloneObj(groupResults || []);
 }
 function setHasBackground(figUid, hasBackground, seq = fvNextWriteSeq()) {
-  if (!_fvClaimSlot(figUid + '|hasBg', seq)) return;
+  if (!_fvClaimSlot(_fvBackgroundSlot(figUid), seq)) return;
   hasBgByFigure[figUid] = hasBackground;
+}
+
+// A live-brush gesture writes its previews with new numbers, so an older
+// response cannot overwrite them, and a commit keeps them. An abandoned
+// gesture puts back each slot it changed together with the slot's earlier
+// number. A response to a request sent before the gesture then still applies
+// when it lands after the abort.
+// ponytail: a response that lands during the gesture is lost when the gesture
+// is abandoned. Keep that data with the saved slot if this case shows up.
+
+// Returns a function that puts back the layer's current data and number.
+function fvSaveLayerData(figUid, uid, layerKey) {
+  const grouped = isGroupedParent(traceSpecByUid[uid]);
+  const layers = grouped ? groupedDataByParent[figUid][uid] : ensureLayerData(uid);
+  const data = cloneObj(layers[layerKey] || (grouped ? [] : {}));
+  const slot = _fvLayerSlot(uid, layerKey);
+  const seq = _fvSlotSeq[slot] || 0;
+  return () => {
+    layers[layerKey] = data;
+    _fvSlotSeq[slot] = seq;
+  };
+}
+// Returns a function that puts back the figure's current background flag and
+// number.
+function fvSaveHasBackground(figUid) {
+  const hasBackground = hasBgByFigure[figUid];
+  const slot = _fvBackgroundSlot(figUid);
+  const seq = _fvSlotSeq[slot] || 0;
+  return () => {
+    hasBgByFigure[figUid] = hasBackground;
+    _fvSlotSeq[slot] = seq;
+  };
 }
 
 // Why the last failed request failed, for callers that report it
@@ -96,7 +135,7 @@ async function postDashboardUpdate(event) {
   // Client-side init cache: replay the unfiltered response without a fetch.
   // Whole-dashboard blob first (init / deselect); then the figure-scoped
   // slice (a per-figure reset or autorange to full range with no other filters).
-  const cachedFigureDeltas = fvCacheGet(event) || fvCacheGetFigure(event);
+  const cachedFigureDeltas = fvCacheGet(cacheKey) || fvCacheGetFigure(event);
   if (cachedFigureDeltas) {
     data = { figure_deltas: cachedFigureDeltas };
   } else {

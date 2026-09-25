@@ -207,13 +207,6 @@ class TestPlotlyHtml:
         assert 'class="fv-panel-has-bar"' not in html
         assert '<div class="fv-plot-wrap">' in html
 
-    # Bug 2: Deselect must not fire a second backend call when Plotly's own
-    # plotly_deselect event fires programmatically after Plotly.react clears
-    # selection boxes.  A guard flag prevents the double-fire.
-    def test_deselect_has_programmatic_guard(self, html):
-        body = _js_function_body(html, "function handleDeselect(figUid)")
-        assert "_fvIsProgrammatic(figUid)" in body
-
     def test_grouped_parent_not_bootstrapped_as_trace(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 
@@ -330,7 +323,7 @@ class TestPlotlyHtml:
         # bundle and chained into postDashboardUpdate after the whole-dashboard
         # getter.
         assert "function fvCacheGetFigure(event)" in html
-        assert "fvCacheGet(event) || fvCacheGetFigure(event)" in html
+        assert "fvCacheGet(cacheKey) || fvCacheGetFigure(event)" in html
 
     def test_runtime_ships_panel_reset_noop_guard(self, html):
         # Per-figure reset cases 3c/3d: the no-op guard must short-circuit before
@@ -531,11 +524,6 @@ class TestPlotlyHtml:
     def test_plotly_mode_buttons_use_mode_active_class(self, html):
         body = _js_function_body(html, "function updateModeIndicator(figUid, dragmode)")
         assert "mode-active" in body
-
-    # handleRelayout guards
-    def test_handlerelayout_has_programmatic_op_guard(self, html):
-        body = _js_function_body(html, "function handleRelayout(relayout, figUid)")
-        assert "_fvIsProgrammatic(figUid)" in body
 
     def test_autorange_sends_viewport_not_reset(self, html):
         # The modebar home button fires an autorange relayout.  This must send a

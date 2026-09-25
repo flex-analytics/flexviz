@@ -89,7 +89,13 @@ from flexviz.cube import (
 )
 from flexviz.trace.bin_grid import snap_range
 from flexviz.trace.hist import _HIST_BIN_EPSILON
-from tests.test_browser import _wait_for_init
+from tests.test_browser import (
+    _COUNT_SETTLED_UPDATES,
+    _hold_first_update,
+    _release,
+    _wait_for_init,
+    _wait_held,
+)
 
 pytestmark = pytest.mark.browser
 
@@ -951,6 +957,49 @@ class TestLiveBrushCube:
         assert types in ([], ["cube_request"]), types
         # Deliberately no mouse.up(): releasing would emit a real ranged
         # plotly_selected and start a fresh (legacy) commit — out of scope.
+
+    def test_abandoned_gesture_keeps_a_pending_response(
+        self, page: Page, server_port: int
+    ):
+        """A zoom of the target is pending when a live brush starts. The brush
+        is abandoned before the zoom response lands. The response must still
+        apply: the abort puts back the pre-drag data, not newer data."""
+        url = _two_hist_dashboard_url(server_port, "_cube_browser_abandon_late", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        page.evaluate(_COUNT_SETTLED_UPDATES)
+        _enter_select_mode(page)
+        held = _hold_first_update(page)
+        page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [20, 60]})")
+        _wait_held(page, held)
+
+        y_before = _target_y(page)
+        x1, x2, y, _width = _drag_coords(page)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move((x1 + x2) / 2, y, steps=8)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=y_before,
+            timeout=10_000,
+        )
+        # The cube key carries the zoom, so the live preview already bins
+        # inside [20, 60]. Only the counts tell the response from the preview.
+        y_live = _target_y(page)
+        # Abandon twice, as in test_abandoned_gesture_restores_targets.
+        page.evaluate("divs[0].emit('plotly_selected', undefined)")
+        page.wait_for_timeout(500)
+        page.evaluate("divs[0].emit('plotly_selected', undefined)")
+        page.wait_for_timeout(500)
+        _release(page, held, settled=1)
+
+        centers = page.eval_on_selector("#fv-plot-1", "gd => Array.from(gd.data[0].x)")
+        assert 20 <= min(centers) and max(centers) <= 60, centers
+        assert sum(_target_y(page)) > sum(y_live), "the unfiltered response applies"
 
     def test_reset_deselect_unchanged(self, page: Page, server_port: int):
         """With a cube-committed (client-side) selection, the toolbar deselect

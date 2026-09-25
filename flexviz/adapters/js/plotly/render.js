@@ -9,6 +9,15 @@ function plotlyAxisId(layoutKey) {
   return layoutKey.replace(/^(x|y)axis(\d*)$/, '$1$2');
 }
 
+// The number of programmatic Plotly operations in progress, per figure. Plotly
+// emits an event on the div that an operation changed, so while a figure has
+// one, its handlers ignore its events. Other figures stay interactive.
+const _programmaticOps = {};
+
+function _fvIsProgrammatic(figUid) {
+  return (_programmaticOps[figUid] || 0) > 0;
+}
+
 // Guard `figUid` while `operation` changes its Plotly div. Operations can
 // overlap, so the guard counts them: it stays on until the last one settles.
 // The executor starts the operation at once, and a throw rejects the promise,
