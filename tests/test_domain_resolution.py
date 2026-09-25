@@ -608,7 +608,10 @@ class TestFilteredResolveCount:
         engine, infos = self._engine([LinePlot(x="k", y="a", n_points=100)])
         engine.process(
             InteractionEvent(
-                type="selection", force_update=True, selections=_brush("k", _BRUSH)
+                type="selection",
+                force_update=True,
+                selection_figure_uid="src",
+                selections=_brush("k", _BRUSH),
             ),
             infos,
         )
@@ -628,7 +631,10 @@ class TestFilteredResolveCount:
         )
         engine.process(
             InteractionEvent(
-                type="selection", force_update=True, selections=_brush("a", (0.0, 0.4))
+                type="selection",
+                force_update=True,
+                selection_figure_uid="src",
+                selections=_brush("a", (0.0, 0.4)),
             ),
             infos,
         )

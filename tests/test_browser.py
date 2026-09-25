@@ -7377,3 +7377,149 @@ class TestResponseOrderBrowser:
         assert [p["type"] for p in posts] == ["deselect"], "the rest is cached"
         lo, hi = page.evaluate(_X_SPAN, 0)
         assert lo <= 10 and hi >= 490, (lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# A figure with its own brush follows the other brushes
+# ---------------------------------------------------------------------------
+
+# The x extent of figure i's rendered data, gaps dropped.
+_DATA_X_SPAN = """(i) => {
+    const x = divs[i].data[0].x.filter(v => v !== null);
+    return [Math.min(...x), Math.max(...x)];
+  }"""
+
+
+def _ts_range(page: Page, fig: int) -> list[float]:
+    """The committed ts range of figure *fig*'s selection."""
+    return page.evaluate(
+        """(fig) => DASHBOARD_SPEC.state.selections.find(
+            s => s.source_figure_uid === DASHBOARD_SPEC.figures[fig].uid
+          ).predicates[0].clauses[0].range""",
+        fig,
+    )
+
+
+def _brush(page: Page, fig: int, lo: float, hi: float) -> None:
+    """A real mouse brush over the fractions *lo*..*hi* of figure *fig*'s x."""
+    page.locator(f"#fv-bar-{fig} .fv-mode-btn[data-mode='select']").click()
+    box = page.locator(f"#fv-plot-{fig} .nsewdrag").bounding_box()
+    assert box is not None
+    page.mouse.move(box["x"] + box["width"] * lo, box["y"] + box["height"] * 0.25)
+    page.mouse.down()
+    page.mouse.move(
+        box["x"] + box["width"] * hi, box["y"] + box["height"] * 0.75, steps=20
+    )
+    page.mouse.up()
+
+
+@pytest.mark.browser
+class TestSelectionOwnerBrowser:
+    @staticmethod
+    def _open(page: Page, url: str) -> list[dict]:
+        return TestResponseOrderBrowser._open(page, url)
+
+    def test_a_second_brush_filters_the_first_owner(self, page: Page, server_port: int):
+        posts = self._open(page, _dashboard_url(server_port, "plotly", n_figures=3))
+        _brush(page, 0, 0.2, 0.65)
+        _wait_settled(page, 1)
+        _brush(page, 1, 0.35, 0.5)
+        _wait_settled(page, 2)
+
+        b_uid = page.evaluate("DASHBOARD_SPEC.figures[1].uid")
+        assert posts[-1]["type"] == "selection"
+        assert posts[-1].get("selection_figure_uid") == b_uid
+        lo, hi = _ts_range(page, 1)
+        a_lo, a_hi = page.evaluate(_DATA_X_SPAN, 0)
+        assert lo <= a_lo and a_hi <= hi, ((a_lo, a_hi), (lo, hi))
+        assert page.evaluate("divs[0].layout.selections.length") > 0
+
+    def test_a_restored_state_filters_every_owner(self, page: Page, server_port: int):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import SelectionState, encode_spec
+
+        df = pl.DataFrame(
+            {"ts": list(range(500)), "val": [float(i) for i in range(500)]}
+        )
+        register_source("_browser_test", df)
+        dash = Dashboard(df)
+        for _ in range(3):
+            dash.add_figure().add_line(x="ts", y="val", n_points=1000)
+        spec = dash.to_spec(source_name="_browser_test")
+        spec.state.selections = [
+            SelectionState.model_validate(
+                {
+                    "source_figure_uid": spec.figures[fig].uid,
+                    "predicates": [{"clauses": [{"column": "ts", "range": rng}]}],
+                }
+            )
+            for fig, rng in ((0, [100, 300]), (1, [200, 400]))
+        ]
+        page.goto(
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
+            "&renderer=plotly"
+        )
+        # A is filtered by B's brush, and B by A's.
+        page.wait_for_function(
+            f"""() => {{
+                const spans = [0, 1, 2].map(i => ({_DATA_X_SPAN})(i));
+                return JSON.stringify(spans)
+                  === JSON.stringify([[200, 400], [100, 300], [200, 300]]);
+            }}""",
+            timeout=10_000,
+        )
+
+    def test_an_owner_zoomed_under_a_filter_gets_an_unfiltered_background(
+        self, page: Page, server_port: int
+    ):
+        # Two owners only: a third figure would lose its background on the
+        # zoom, and the warm-up init would then refresh every figure's.
+        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        page.evaluate("""() => {
+            const uids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            window.fvSetSelectionState([[0, [50, 450]], [1, [200, 250]]].map(
+              ([i, range]) => ({source_figure_uid: uids[i],
+                predicates: [{clauses: [{column: 'ts', range}]}]})));
+            postDashboardUpdate({type: 'selection',
+              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+          }""")
+        _wait_settled(page, 1)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        _wait_settled(page, 2)
+        assert page.evaluate(_DATA_X_SPAN, 0) == [200, 250]
+
+        page.click("#fv-btn-cfmode")
+        _wait_settled(page, 3)
+
+        lo, hi = page.evaluate(_LAYER_X_SPAN, [0, "bg"])
+        assert lo <= 110 and hi >= 390, (lo, hi)
+
+    def test_a_panel_reset_under_a_filter_refreshes_the_owner_background(
+        self, page: Page, server_port: int
+    ):
+        # A reset that clears a zoom and a selection together is a selection
+        # event with viewport keys, not a viewport event.
+        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        _wait_settled(page, 1)
+        page.evaluate("""() => {
+            const uids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            window.fvSetSelectionState([[0, [150, 350]], [1, [200, 250]]].map(
+              ([i, range]) => ({source_figure_uid: uids[i],
+                predicates: [{clauses: [{column: 'ts', range}]}]})));
+            postDashboardUpdate({type: 'selection',
+              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+          }""")
+        _wait_settled(page, 2)
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']")
+        _wait_settled(page, 3)
+
+        page.click("#fv-btn-cfmode")
+        page.wait_for_function(
+            """() => {
+                const bg = divs[0].data.find(t => t.uid.endsWith('__fv_layer_bg'));
+                return !!bg && Math.min(...bg.x) <= 10 && Math.max(...bg.x) >= 490;
+            }""",
+            timeout=10_000,
+        )

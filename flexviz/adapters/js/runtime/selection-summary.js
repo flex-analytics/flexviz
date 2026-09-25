@@ -122,6 +122,7 @@ window.fvRemoveSelectionByFigure = async function(figUid) {
   await postDashboardUpdate({
     type: remaining.length ? 'selection' : 'deselect',
     selections: remaining,
+    selection_figure_uid: figUid,
     force_update: true,
   });
 };

@@ -432,6 +432,71 @@ class TestEngineViewportKeys:
         assert autorange.updates == init[0].updates
 
 
+class TestEngineSelectionOwners:
+    """A figure is filtered by every selection but its own, so a
+    selection event re-aggregates every figure except the one whose selection
+    changed. In overlay mode an owner shows only its unfiltered background.
+    """
+
+    @staticmethod
+    def _process(selections, mode="update", **event_kw):
+        lines = {fig: LinePlot(x="ts", y="val", n_points=1000) for fig in "abc"}
+        engine, infos = TestEngineViewportKeys._engine(
+            {fig: [line] for fig, line in lines.items()}
+        )
+        event = InteractionEvent(
+            type="selection", force_update=True, selections=selections, **event_kw
+        )
+        deltas = engine.process(event, infos, cross_filter_mode=mode)
+        spans = {}
+        for fig, line in lines.items():
+            (delta,) = [d for d in deltas if d.uid == line.uid] or [None]
+            if delta is not None:
+                x = [v for v in delta.updates["x"] if v is not None]
+                spans[fig] = (delta.layer, min(x), max(x))
+        return spans
+
+    def test_an_owner_follows_the_brush_of_another_figure(self):
+        spans = self._process(
+            [_ts_range_selection("a", 10, 50), _ts_range_selection("b", 30, 35)],
+            selection_figure_uid="b",
+        )
+        assert spans == {"a": (None, 30, 35), "c": (None, 30, 35)}
+
+    def test_an_owner_is_unfiltered_when_the_other_brush_is_cleared(self):
+        spans = self._process(
+            [_ts_range_selection("a", 10, 50)], selection_figure_uid="b"
+        )
+        assert spans == {"a": (None, 0, 99), "c": (None, 10, 50)}
+
+    def test_without_a_changed_figure_every_owner_is_refreshed(self):
+        # A restore or a mode switch: the whole selection state is applied again.
+        spans = self._process(
+            [_ts_range_selection("a", 10, 50), _ts_range_selection("b", 30, 70)]
+        )
+        assert spans == {
+            "a": (None, 30, 70),
+            "b": (None, 10, 50),
+            "c": (None, 30, 50),
+        }
+
+    def test_overlay_owners_keep_their_background(self):
+        spans = self._process(
+            [_ts_range_selection("a", 10, 50), _ts_range_selection("b", 30, 35)],
+            mode="overlay",
+            selection_figure_uid="b",
+        )
+        assert spans == {"c": ("fg", 30, 35)}
+
+    def test_overlay_figure_that_cleared_its_brush_gets_a_foreground(self):
+        spans = self._process(
+            [_ts_range_selection("a", 10, 50)],
+            mode="overlay",
+            selection_figure_uid="b",
+        )
+        assert spans == {"b": ("fg", 10, 50), "c": ("fg", 10, 50)}
+
+
 # ---- deselect event --------------------------------------------------------
 
 
@@ -473,6 +538,7 @@ class TestEngineSelection:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -515,6 +581,7 @@ class TestEngineSelection:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -556,6 +623,7 @@ class TestEngineSelection:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -597,6 +665,7 @@ class TestEngineSelection:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -642,6 +711,7 @@ class TestEngineSelection:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_hist",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_hist",
@@ -689,6 +759,7 @@ class TestEngineOverlay:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -773,6 +844,7 @@ class TestBarPlotCrossFilter:
         return InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid=figure_uid,
             selections=[
                 SelectionState(
                     source_figure_uid=figure_uid,
@@ -882,6 +954,7 @@ class TestBarPlotCrossFilter:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_line",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_line",
@@ -1015,6 +1088,7 @@ class TestBarPlotCrossFilter:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_src",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_src",
@@ -1101,6 +1175,7 @@ class TestBarPlotCrossFilter:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -1139,6 +1214,7 @@ class TestCategoriesColumnCrossFilter:
         return InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid=figure_uid,
             selections=[
                 SelectionState(
                     source_figure_uid=figure_uid,
@@ -1521,6 +1597,7 @@ class TestEngineGroupedLine:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_a",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_a",
@@ -2201,6 +2278,7 @@ class TestGroupedTracesEdgeCases:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="fig_src",
             selections=[
                 SelectionState(
                     source_figure_uid="fig_src",
@@ -2248,6 +2326,7 @@ class TestEngineSelectionFilterExprs:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="figA",
             selections=[
                 SelectionState(
                     source_figure_uid="figA",
@@ -2315,6 +2394,7 @@ class TestEngineSelectionFilterExprs:
             event=InteractionEvent(
                 type="selection",
                 force_update=True,
+                selection_figure_uid="figA",
                 selections=[
                     SelectionState(
                         source_figure_uid="figA",
@@ -2891,6 +2971,7 @@ class TestResidentLineXWidth:
         event = InteractionEvent(
             type="selection",
             force_update=True,
+            selection_figure_uid="src",
             selections=[
                 SelectionState(
                     source_figure_uid="src",

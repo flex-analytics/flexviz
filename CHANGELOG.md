@@ -55,6 +55,22 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Fixed
 
+- A figure with a cross-filter selection of its own now follows the selections
+  of the other figures in update mode. Before, it kept data for the old
+  selections when another figure's selection changed, and it showed unfiltered
+  data after a restore (shared URL, import, `flexvizApply`) or a switch from
+  overlay mode. A zoom on that figure applied the other selections, so the same
+  state gave different data. The selection event now names the figure whose
+  selection changed (`selection_figure_uid`), and only that figure keeps its
+  data. A live-brush commit that the cube serves now still sends a request
+  when another figure has a selection.
+- In update mode, a zoom on a figure with its own selection stored the data
+  filtered by other selections as the figure's unfiltered background. After a
+  switch to overlay mode, the figure then showed that filtered data as its
+  background. The client now keeps a delta as the background only when no
+  other figure has a selection. It marks the old background stale when a zoom,
+  or a panel reset that also clears a selection, changes the range under a
+  cross-filter.
 - `GridItem.h` now renders at `h * 80` pixels on both layout paths. The static
   grid (`draggable=False`) carried `gap` between its rows, which made a panel
   of `h` rows `h * 80 + (h - 1) * gap` pixels tall. The gap now sits inside the

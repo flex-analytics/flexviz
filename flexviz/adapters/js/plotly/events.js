@@ -10,6 +10,7 @@ function clearFigureSelection(figUid) {
   postDashboardUpdate({
     type: remainingSelections.length ? 'selection' : 'deselect',
     selections: remainingSelections,
+    selection_figure_uid: figUid,
     force_update: true,
   });
 }
@@ -91,12 +92,17 @@ function handleClick(eventData, figUid) {
   // Conditional cube commit — live_brush === "off" gates clicks too
   // (bit-for-bit legacy). Served entirely from the client store ⇒ no POST;
   // any miss POSTs as today and warms the store for the next click.
-  if (_fvLiveBrushEnabled() && _fvCubeClickCommit(figUid, tsSpec, newPredicates)) {
+  if (
+    !_fvCommitNeedsServer(figUid)
+    && _fvLiveBrushEnabled()
+    && _fvCubeClickCommit(figUid, tsSpec, newPredicates)
+  ) {
     return false;
   }
   postDashboardUpdate({
     type: 'selection',
     selections: nextSelections,
+    selection_figure_uid: figUid,
     force_update: true,
   });
   return false;
@@ -764,11 +770,21 @@ function _fvCubeTargetKey(sourceName, freeDesc, passiveKey, fig, ts) {
   return { key: null, postRequired: false };
 }
 
+// Cube targets skip every figure with a selection of its own. In update mode
+// such a figure is filtered by the other selections, so a commit on figUid must
+// still reach the server when another figure has a selection.
+function _fvCommitNeedsServer(figUid) {
+  if ((DASHBOARD_SPEC.state.cross_filter_mode || 'update') !== 'update') return false;
+  return (DASHBOARD_SPEC.state.selections || []).some(
+    s => s && s.source_figure_uid != null && s.source_figure_uid !== figUid
+      && (s.predicates || []).length > 0
+  );
+}
+
 // Cube-capable targets for one source descriptor: every trace in every
-// figure other than the source figure THAT OWNS NO COMMITTED SELECTION
-// (mirrors the engine's target enumeration / _should_process_trace: legacy
-// selection events never update selection-owning figures, so the cube path
-// must not either), keyed (or marked incapable) by _fvCubeTargetKey.
+// figure other than the source figure THAT OWNS NO COMMITTED SELECTION (the
+// engine's cube target enumeration does the same), keyed (or marked
+// incapable) by _fvCubeTargetKey.
 function _fvCubeEnumerateTargets(figUid, sourceName, freeDesc, passiveKey) {
   const owning = new Set(
     (DASHBOARD_SPEC.state.selections || [])
@@ -1878,7 +1894,7 @@ function handleSelected(eventData, figUid) {
     DASHBOARD_SPEC.state.selections || []
   ) || [];
   window.fvSetSelectionState?.(nextSelections);
-  if (cubeSkipPost) {
+  if (cubeSkipPost && !_fvCommitNeedsServer(figUid)) {
     // Every cross-filter target rendered the exact committed slice already —
     // the client is authoritative, no round-trip. Mirror the post-selection
     // render pass: every figure redraws (the source picks up its committed
@@ -1889,6 +1905,7 @@ function handleSelected(eventData, figUid) {
   postDashboardUpdate({
     type: 'selection',
     selections: nextSelections,
+    selection_figure_uid: figUid,
     force_update: true,
   });
 }
