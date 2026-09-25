@@ -7521,7 +7521,7 @@ class TestHeatmapColorNormBrowser:
         }""")
         assert "z: 1000" in label
 
-    def test_colorbar_ticks_label_a_narrow_range(self, page: Page, server_port: int):
+    def test_colorbar_tick_labels(self, page: Page, server_port: int):
         url = _color_norm_url(
             server_port,
             "_browser_color_norm_ticks",
@@ -7531,12 +7531,101 @@ class TestHeatmapColorNormBrowser:
         page.goto(url)
         _wait_for_init(page, "plotly")
 
-        ticks = page.evaluate("""() => ({
-            noStep: logColorbarTicks(Math.log10(21), Math.log10(49)).ticktext,
-            oneValue: logColorbarTicks(Math.log10(3) - 0.005, Math.log10(3) + 0.005).ticktext,
-        })""")
+        ticks = page.evaluate("""() => {
+            const text = (lo, hi) => logColorbarTicks(Math.log10(lo), Math.log10(hi)).ticktext;
+            return {
+                decades: text(1, 1e4),
+                steps: text(3, 30),
+                noStep: text(21, 49),
+                narrow: text(1000, 1020),
+                oneValue: text(3, 3),
+                small: text(1e-7, 1e-4),
+            };
+        }""")
+        assert ticks["decades"] == ["1", "10", "100", "1K", "10K"]
+        assert ticks["steps"] == ["5", "10", "20"]
         assert ticks["noStep"] == ["21", "49"]
+        assert ticks["narrow"] == ["1K", "1.02K"]
         assert ticks["oneValue"] == ["3"]
+        assert ticks["small"] == ["1e-7", "1e-6", "1e-5", "1e-4"]
+
+    @pytest.mark.parametrize(
+        ("color_range", "ticktext"),
+        [("auto", ["1"]), ((1000.0, 1020.0), ["1K", "1.02K"])],
+    )
+    def test_uniform_counts_and_narrow_fixed_range_keep_a_readable_colorbar(
+        self, page: Page, server_port: int, color_range, ticktext
+    ):
+        # Every drawn bin holds one row.
+        df = pl.DataFrame({"x": [0.0, 1.0, 3.0], "y": [0.0, 0.0, 0.0]})
+        url = _color_norm_url(
+            server_port,
+            "_browser_color_norm_uniform",
+            df,
+            lambda d: d.add_figure().add_histogram2d(
+                x="x",
+                y="y",
+                x_bins=4,
+                y_bins=1,
+                color_range=color_range,
+                color_norm="log",
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        [[trace]] = page.evaluate(_READ_HEATMAPS_JS)
+        assert trace["colorbar"]["ticktext"] == ticktext
+        if color_range == "auto":
+            assert trace["zmin"] < 0.0 < trace["zmax"]
+            assert trace["zmax"] - trace["zmin"] < 0.1
+        else:
+            expected = (math.log10(1000.0), math.log10(1020.0))
+            assert (trace["zmin"], trace["zmax"]) == pytest.approx(expected)
+
+    def test_cells_that_are_not_drawn_have_no_hover(self, page: Page, server_port: int):
+        # Per x bin: a negative sum, a zero sum, no row, a positive sum.
+        df = pl.DataFrame(
+            {
+                "x": [0.0, 1.0, 1.0, 3.0],
+                "y": [0.0, 0.0, 0.0, 0.0],
+                "w": [-5.0, 2.0, -2.0, 1000.0],
+            }
+        )
+        url = _color_norm_url(
+            server_port,
+            "_browser_color_norm_hover",
+            df,
+            lambda d: d.add_figure().add_histogram2d(
+                x="x",
+                y="y",
+                x_bins=4,
+                y_bins=1,
+                z="w",
+                histfunc="sum",
+                color_norm="log",
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        [[trace]] = page.evaluate(_READ_HEATMAPS_JS)
+        assert trace["text"] == [[-5, 0, None, 1000]]
+        assert trace["z"] == [[None, None, None, pytest.approx(3.0)]]
+        labels = page.evaluate("""async () => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[0];
+            const labels = [];
+            for (let col = 0; col < 4; col++) {
+                Plotly.Fx.unhover(gd);
+                Plotly.Fx.hover(gd, [{ curveNumber: 0, pointNumber: [0, col] }]);
+                await new Promise(r => setTimeout(r, 100));
+                const el = gd.querySelector('.hovertext');
+                labels.push(el ? el.textContent : null);
+            }
+            return labels;
+        }""")
+        assert labels[:3] == [None, None, None]
+        assert "z: 1000" in labels[3]
 
     def test_geo_histogram2d_log_colors_and_step_ticks(
         self, page: Page, server_port: int

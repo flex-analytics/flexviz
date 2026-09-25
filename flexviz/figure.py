@@ -543,7 +543,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
-        color_norm: Literal["linear", "log"] = "linear",
+        color_norm: Literal["linear", "log"] | None = None,
         axes: tuple[str, ...] = ("x", "y"),
     ) -> Figure:
         """Add a 2D histogram / heatmap trace.
@@ -613,7 +613,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
-        color_norm: Literal["linear", "log"] = "linear",
+        color_norm: Literal["linear", "log"] | None = None,
     ) -> Figure:
         """Add a geospatial 2D histogram (choropleth) trace.
 

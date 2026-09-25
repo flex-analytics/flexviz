@@ -477,8 +477,7 @@ class TestHist2DSpec:
             y_bins=15,
             name="My Heatmap",
             color_scale="plasma",
-            color_range=(1.0, 5.0),
-            color_norm="log",
+            color_range=(0.0, 5.0),
         )
         spec = t.to_trace_spec()
         assert spec.trace_type == "histogram2d"
@@ -486,8 +485,8 @@ class TestHist2DSpec:
         assert spec.params["x_bins"] == 10
         assert spec.params["y_bins"] == 15
         assert spec.display["color_scale"] == "plasma"
-        assert spec.display["color_range"] == (1.0, 5.0)
-        assert spec.display["color_norm"] == "log"
+        assert spec.display["color_range"] == (0.0, 5.0)
+        assert spec.display["color_norm"] == "linear"
 
         t2 = Histogram2D.from_trace_spec(spec)
         assert t2.x_col == "a"
@@ -495,6 +494,12 @@ class TestHist2DSpec:
         assert t2.x_bins == 10
         assert t2.y_bins == 15
         assert t2.color_scale == "plasma"
+        assert t2.color_range == (0.0, 5.0)
+        assert t2.color_norm == "linear"
+
+    def test_roundtrip_log_color_norm(self):
+        t = Histogram2D(x="a", y="b", color_range=(1.0, 5.0), color_norm="log")
+        t2 = Histogram2D.from_trace_spec(t.to_trace_spec())
         assert t2.color_range == (1.0, 5.0)
         assert t2.color_norm == "log"
 

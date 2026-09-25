@@ -696,14 +696,14 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="rdbu", color_range="auto")
 ```
 
 - `color_scale`, `color_range` and `color_norm` live in `TraceSpec.display`, not in `params`, because they are renderer-facing style hints.
-- `color_norm` is `"linear"` or `"log"` and exists on `Histogram2D` and `GeoHistogram2D` only. A missing `color_norm` means linear: `CorrHeatmap` values lie in [-1, 1] and are always linear. With `"log"`, a fixed `color_range` stays in data units and must be above 0.
+- `color_norm` is `"linear"` or `"log"` and exists on `Histogram2D` and `GeoHistogram2D` only. A missing `color_norm` means linear: `CorrHeatmap` values lie in [-1, 1] and are always linear. With `"log"`, a fixed `color_range` stays in data units and must be above 0. An imported spec skips the trace validation until its first request, so the Plotly adapter also rejects another value, a log norm on a `corr_heatmap`, and a fixed log range at or below 0.
 - Defaults are owned by the trace classes: `Histogram2D` and `GeoHistogram2D` materialize `"viridis"` / `"auto"` / `"linear"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
 - Generated specs must include explicit `display.color_scale` and `display.color_range`; `Figure` and adapters validate this invariant instead of re-deriving heatmap defaults.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
 - `Figure.to_spec()` validates that all heatmap-like traces in one figure (`histogram2d`, `corr_heatmap`, `geo_histogram2d`) share the same effective style (`color_scale`, `color_range`, `color_norm`), because renderers treat the heatmap color control as figure-level.
 - Renderer split:
   - Plotly consumes the raw `color_scale` string directly and applies `zmin` / `zmax` only when `color_range` is fixed.
-  - Plotly log norm: Plotly has no log color axis, so `buildTraceFromTemplate` colors by `log10(z)`, keeps the raw values in `text` for the hover template, pins an auto range to the drawn cells, and labels the colorbar ticks in data units. `heatmapColorRange` (JS) and `_plotly_heatmap_color_range` (Python) return a fixed range in log10 space. A cell at or below 0 has no log and is not drawn. Every delta, from the server or the cube, passes through `buildTraceFromTemplate`, the only place the transform runs.
+  - Plotly log norm: Plotly has no log color axis, so `applyLogColorNorm` colors by `log10(z)` and keeps the raw values in `text` for the hover template. It also pins the color range in log10 space: a fixed range from its data units, an auto range from the drawn cells, and a single value as a narrow band around it. The colorbar ticks are labelled in data units. A cell at or below 0 has no log, so it is not drawn and has no hover. Every delta, from the server or the cube, passes through `buildTraceFromTemplate`, which calls `applyLogColorNorm`. It is the only place the transform runs: the template keeps a fixed range in data units, and the overlay sync pins only a layer that has no range yet.
   - ECharts maps a supported set of heatmap scale names (`viridis`, `plasma`, `magma`, `inferno`, `cividis`, `blues`, `reds`, `rdbu`) to local color arrays for one per-figure `visualMap`, and ignores `color_norm`.
 
 ### Dtype-Aware Filtering

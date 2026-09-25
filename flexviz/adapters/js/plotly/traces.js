@@ -22,22 +22,19 @@ function heatmapColorScale(ts) {
   return colorScale;
 }
 
-// Only Histogram2D and GeoHistogram2D carry color_norm; a missing one is linear.
-function heatmapColorNorm(ts) {
-  return (ts && ts.display && ts.display.color_norm) || 'linear';
-}
-
 function heatmapColorRange(ts) {
   const display = (ts && ts.display) || {};
   if (!Object.prototype.hasOwnProperty.call(display, 'color_range')) {
     throw new Error('Generated heatmap specs must include explicit color_scale and color_range defaults.');
   }
-  const range = display.color_range;
-  // A fixed range is in data units; a log norm colors in log10 space.
-  if (range !== 'auto' && heatmapColorNorm(ts) === 'log') {
-    return [Math.log10(range[0]), Math.log10(range[1])];
-  }
-  return range;
+  return display.color_range;
+}
+
+// Only Histogram2D and GeoHistogram2D take color_norm; a missing one is linear.
+function usesLogColorNorm(ts) {
+  return !!ts
+    && (ts.trace_type === 'histogram2d' || ts.trace_type === 'geo_histogram2d')
+    && ts.display.color_norm === 'log';
 }
 
 function applyPlotlyColor(trace, color) {
@@ -164,51 +161,77 @@ function heatmapHasRenderableCells(trace) {
   return heatmapZFiniteExtent(trace && trace.z) !== null;
 }
 
+// A colorbar label in data units: compact from 0.001 up (0.02, 5, 1K), and an
+// exponent below, where compact notation would print every zero.
+function logTickText(logValue, digits) {
+  const value = 10 ** logValue;
+  if (value < 1e-3) return Number(value.toPrecision(digits)).toExponential();
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: digits })
+    .format(value);
+}
+
 // Colorbar ticks for a log10 color axis, labelled in data units (1, 10, 1K).
 function logColorbarTicks(lo, hi) {
-  const ticks = [];
+  const ticks = (values, digits) => ({
+    tickvals: values,
+    ticktext: values.map(v => logTickText(v, digits)),
+  });
+  if (lo === hi) return ticks([lo], 2);
+  const steps = [];
+  const decades = [];
   for (let e = Math.floor(lo); e <= Math.ceil(hi); e++) {
     for (const m of [1, 2, 5]) {
       const v = e + Math.log10(m);
-      if (v >= lo - 1e-9 && v <= hi + 1e-9) ticks.push({ v, decade: m === 1 });
+      if (v < lo - 1e-9 || v > hi + 1e-9) continue;
+      steps.push(v);
+      if (m === 1) decades.push(v);
     }
   }
-  // Decades alone once there are enough of them; 1-2-5 steps fill narrow ranges,
-  // and a range too narrow for two of those gets its ends labelled.
-  const decades = ticks.filter(t => t.decade);
-  let chosen = decades.length >= 3 ? decades : ticks;
-  if (chosen.length < 2) chosen = [{ v: lo }, ...chosen, { v: hi }];
-  const format = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 2 });
-  const tickvals = [];
-  const ticktext = [];
-  for (const t of chosen) {
-    const text = format.format(10 ** t.v);
-    if (text === ticktext[ticktext.length - 1]) continue;
-    tickvals.push(t.v);
-    ticktext.push(text);
-  }
-  return { tickvals, ticktext };
+  // Decades alone once there are enough of them, else 1-2-5 steps. A range too
+  // narrow for two steps gets its ends, with the digits to tell them apart.
+  if (decades.length >= 3) return ticks(decades, 2);
+  if (steps.length >= 2) return ticks(steps, 2);
+  let digits = 2;
+  while (digits < 6 && logTickText(lo, digits) === logTickText(hi, digits)) digits++;
+  return ticks([lo, hi], digits);
 }
 
 // Log color norm: color by log10(value), keep the raw value for hover, and
 // label the colorbar in data units. A value <= 0 has no log and is not drawn.
 function applyLogColorNorm(trace) {
-  const toLog = v => (v != null && v > 0 ? Math.log10(v) : null);
+  let lo = Infinity;
+  let hi = -Infinity;
+  const toLog = v => {
+    if (!(Number.isFinite(v) && v > 0)) return null;
+    const logValue = Math.log10(v);
+    if (logValue < lo) lo = logValue;
+    if (logValue > hi) hi = logValue;
+    return logValue;
+  };
   const raw = trace.z || [];
   trace.text = raw;
-  trace.z = raw.map(v => (Array.isArray(v) ? v.map(toLog) : toLog(v)));
-  trace.hovertemplate = trace.type === 'choroplethmap'
-    ? '%{location}<br>%{text:.10~r}<extra></extra>'
-    : 'x: %{x}<br>y: %{y}<br>z: %{text:.10~r}<extra></extra>';
-  // A fixed range is already on the template. An auto range is pinned to the
-  // drawn cells, so the colorbar ticks match the colors Plotly draws.
   // z is 2-D for a heatmap and flat for a choropleth.
-  if (trace.zmin == null) {
-    const extent = heatmapZFiniteExtent([trace.z.flat()]);
-    if (!extent) return;
-    [trace.zmin, trace.zmax] = extent;
+  trace.z = raw.map(v => (Array.isArray(v) ? v.map(toLog) : toLog(v)));
+  if (trace.type === 'choroplethmap') {
+    trace.hovertemplate = '%{location}<br>%{text:.10~r}<extra></extra>';
+  } else {
+    trace.hovertemplate = 'x: %{x}<br>y: %{y}<br>z: %{text:.10~r}<extra></extra>';
+    // %{text} shows an empty cell as 0, so a cell that is not drawn gets no hover.
+    trace.hoverongaps = false;
   }
-  trace.colorbar = { ...trace.colorbar, ...logColorbarTicks(trace.zmin, trace.zmax) };
+  if (trace.zmin != null) {
+    // A fixed range comes in data units.
+    lo = Math.log10(trace.zmin);
+    hi = Math.log10(trace.zmax);
+  } else if (lo > hi) {
+    return;  // No cell is drawn.
+  }
+  // Pin the range, so the colorbar ticks match the colors Plotly draws. A
+  // single value gets a narrow band around it.
+  trace.colorbar = { ...trace.colorbar, ...logColorbarTicks(lo, hi) };
+  const pad = lo === hi ? 0.01 : 0;
+  trace.zmin = lo - pad;
+  trace.zmax = hi + pad;
 }
 
 function applyHeatmapColorbarPolicy(trace, renderLayer, showForeground) {
@@ -288,16 +311,12 @@ function syncHeatmapOverlayColorScale(traces, figSpec, showForeground) {
       t => stripLayerSuffix(t.uid) === ts.uid && t.uid.endsWith(RENDER_LAYER_SUFFIX.fg)
     );
     if (!bgTrace || !fgTrace) continue;
-    const colorRange = heatmapColorRange(ts);
-    if (colorRange !== 'auto') {
-      applyHeatmapZRange(bgTrace, colorRange);
-      applyHeatmapZRange(fgTrace, colorRange);
-      continue;
-    }
-    // Auto range: bg uses full cached data; fg uses filtered data so the
+    // A fixed range comes from the template and a log norm pins its own. An
+    // auto range: bg uses full cached data; fg uses filtered data so the
     // post-finalize colorbar reflects the selection, not the original scale.
-    applyHeatmapZRange(bgTrace, heatmapZFiniteExtent(bgTrace.z));
-    applyHeatmapZRange(fgTrace, heatmapZFiniteExtent(fgTrace.z));
+    for (const trace of [bgTrace, fgTrace]) {
+      if (trace.zmin == null) applyHeatmapZRange(trace, heatmapZFiniteExtent(trace.z));
+    }
   }
 }
 
@@ -463,7 +482,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.x = gapped.x;
     trace.y = gapped.y;
   }
-  if (heatmapColorNorm(traceSpecByUid[logicalUid]) === 'log') applyLogColorNorm(trace);
+  if (usesLogColorNorm(traceSpecByUid[logicalUid])) applyLogColorNorm(trace);
   applyHeatmapColorbarPolicy(trace, renderLayer, showForeground);
   applyLegendVisibility(trace, logicalUid);
   return trace;

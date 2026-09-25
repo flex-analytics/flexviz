@@ -544,8 +544,7 @@ class TestGeoHist2DSpec:
             z="value",
             name="Geo Heatmap",
             color_scale="plasma",
-            color_range=(1.0, 100.0),
-            color_norm="log",
+            color_range=(0.0, 100.0),
         )
         spec = t.to_trace_spec()
         assert spec.trace_type == "geo_histogram2d"
@@ -565,6 +564,14 @@ class TestGeoHist2DSpec:
         assert t2.histnorm == "percent"
         assert t2.z_col == "value"
         assert t2.color_scale == "plasma"
+        assert t2.color_range == (0.0, 100.0)
+        assert t2.color_norm == "linear"
+
+    def test_roundtrip_log_color_norm(self):
+        t = GeoHistogram2D(
+            lat="lat", lon="lon", color_range=(1.0, 100.0), color_norm="log"
+        )
+        t2 = GeoHistogram2D.from_trace_spec(t.to_trace_spec())
         assert t2.color_range == (1.0, 100.0)
         assert t2.color_norm == "log"
 
