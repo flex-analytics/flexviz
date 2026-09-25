@@ -163,7 +163,6 @@ async function postDashboardUpdate(event) {
   const dirtyFigUids = new Set();
   try {
     for (const [figUid, deltas] of Object.entries(data.figure_deltas)) {
-      const sourceFigure = figureHasSelectionSource(figUid, event.selections || []);
       let sawBackground = false;
       if (['deselect', 'init'].includes(event.type)) {
         bgYExtentByFig[figUid] = null;
@@ -203,11 +202,8 @@ async function postDashboardUpdate(event) {
       }
       if (sawBackground) {
         setHasBackground(figUid, true, seq);
-      } else if (
-        event.type === 'viewport'
-        && requestHasActiveSelections(event)
-        && !sourceFigure
-      ) {
+      } else if (event.type === 'viewport' && !isUnfilteredBaseForFigure(event, figUid)) {
+        // A zoom under a cross-filter: the background still holds the old range.
         setHasBackground(figUid, false, seq);
       }
       if (deltas.length) dirtyFigUids.add(figUid);

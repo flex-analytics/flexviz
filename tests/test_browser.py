@@ -7152,6 +7152,12 @@ _LAYER_X_SPAN = """([i, layer]) => {
     return [Math.min(...x), Math.max(...x)];
   }"""
 
+# The x extent of figure i's rendered data, gaps dropped.
+_DATA_X_SPAN = """(i) => {
+    const x = divs[i].data[0].x.filter(v => v !== null);
+    return [Math.min(...x), Math.max(...x)];
+  }"""
+
 # Selects a ts range on figure `fig` and posts it. It does not wait for the
 # response, so a held request cannot block the evaluate.
 _SELECT_TS = """([fig, range]) => {
@@ -7377,3 +7383,28 @@ class TestResponseOrderBrowser:
         assert [p["type"] for p in posts] == ["deselect"], "the rest is cached"
         lo, hi = page.evaluate(_X_SPAN, 0)
         assert lo <= 10 and hi >= 490, (lo, hi)
+
+    def test_an_owner_zoomed_under_a_filter_gets_an_unfiltered_background(
+        self, page: Page, server_port: int
+    ):
+        # Two owners only: a third figure would lose its background on the
+        # zoom, and the warm-up init would then refresh every figure's.
+        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        page.evaluate("""() => {
+            const uids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            window.fvSetSelectionState([[0, [50, 450]], [1, [200, 250]]].map(
+              ([i, range]) => ({source_figure_uid: uids[i],
+                predicates: [{clauses: [{column: 'ts', range}]}]})));
+            postDashboardUpdate({type: 'selection',
+              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+          }""")
+        _wait_settled(page, 1)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        _wait_settled(page, 2)
+        assert page.evaluate(_DATA_X_SPAN, 0) == [200, 250]
+
+        page.click("#fv-btn-cfmode")
+        _wait_settled(page, 3)
+
+        lo, hi = page.evaluate(_LAYER_X_SPAN, [0, "bg"])
+        assert lo <= 110 and hi >= 390, (lo, hi)
