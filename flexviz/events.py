@@ -41,14 +41,24 @@ class InteractionEvent(BaseModel):
         Full list of current rectangular selections.  Populated for
         ``"selection"`` events; empty list for ``"deselect"``.
 
+    ``selection_figure_uid``
+        The figure whose selection a ``"selection"`` event changed.  A figure
+        is never filtered by its own selection, so in update mode its data did
+        not change and the engine skips it.  ``None`` means the whole selection
+        state was applied again (a restore or a mode switch), so every figure
+        is recomputed.
+
     ``force_update``
-        When ``True`` every scalable trace is recomputed, except the traces of
-        a figure that sources a selection in a ``"selection"`` event.
+        When ``True`` every scalable trace is recomputed, except the ones that a
+        ``"selection"`` event cannot change: in update mode the traces of
+        ``selection_figure_uid``, in overlay mode the traces of every figure
+        that sources a selection (they show only their unfiltered background).
     """
 
     type: Literal["init", "viewport", "selection", "deselect", "cube_request"]
     viewport_keys: list[str] = Field(default_factory=list)
     selections: list[SelectionState] = Field(default_factory=list)
+    selection_figure_uid: str | None = None
     force_update: bool = False
 
 

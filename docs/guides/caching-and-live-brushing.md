@@ -46,4 +46,6 @@ Cubes exist for brushes originating from line, histogram, box, 2-D histogram,
 bar, pie, and treemap figures, and accelerate target aggregations that can be
 combined from per-bin partials (counts, sums, means, min/max). Anything not
 cube-eligible silently stays on the normal server path; the result is always
-the same, only the latency differs.
+the same, only the latency differs. A figure that has its own selection is not
+a cube target: during the drag it keeps its data, and it updates when you
+release the mouse.

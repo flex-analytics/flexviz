@@ -207,6 +207,7 @@ class FlexEngine:
             selection_fig_uids=selection_fig_uids,
             changed_axes=changed_axes,
             viewports_by_figure=viewports_by_figure,
+            cross_filter_mode=cross_filter_mode,
         )
 
         # Sibling histograms on one figure bin over a shared domain, so this
@@ -385,8 +386,9 @@ class FlexEngine:
         owning_figures = {sel.source_figure_uid for sel in passive}
 
         # Targets: every cube-capable trace in every OTHER figure that owns
-        # no committed selection (mirrors ``_should_process_trace``: legacy
-        # selection events never update selection-owning figures).
+        # no committed selection. A figure with a selection is filtered by the
+        # passive set minus its own selection, which this cube does not hold,
+        # so in update mode the commit request refreshes it.
         targets: list[tuple[TraceInfo, FlexTrace, CubeTargetSpec]] = []
         # Every eligible trace, cube-capable or not: a shared bin domain is a
         # property of the *figure's* trace set, so a sibling that is not itself
@@ -865,16 +867,21 @@ class FlexEngine:
         trace_info: TraceInfo,
         selection_fig_uids: set[str | None],
         changed_axes: dict[str, set[str]],
+        cross_filter_mode: str,
     ) -> bool:
         if self._viewport_changed(trace_info, changed_axes):
             return True
         if not event.force_update:
             return False
-        # A selection event leaves its source figures as they are: their own
-        # selection never filters them, so their data did not change.
-        return not (
-            event.type == "selection" and trace_info.figure_uid in selection_fig_uids
-        )
+        if event.type != "selection":
+            return True
+        if cross_filter_mode == "overlay":
+            # An owner shows only its unfiltered background, which no
+            # selection changes.
+            return trace_info.figure_uid not in selection_fig_uids
+        # A figure is filtered by every selection but its own, so only the
+        # figure whose selection changed keeps its data.
+        return trace_info.figure_uid != event.selection_figure_uid
 
     def _trace_update_range(
         self,
@@ -1104,6 +1111,7 @@ class FlexEngine:
         selection_fig_uids: set[str | None],
         changed_axes: dict[str, set[str]],
         viewports_by_figure: dict[str, dict[str, Any]],
+        cross_filter_mode: str,
     ) -> list[_AggregationTrace]:
         return [
             _AggregationTrace(
@@ -1117,6 +1125,7 @@ class FlexEngine:
                 trace_info=ti,
                 selection_fig_uids=selection_fig_uids,
                 changed_axes=changed_axes,
+                cross_filter_mode=cross_filter_mode,
             )
         ]
 

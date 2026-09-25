@@ -49,6 +49,23 @@ def client(integ_df: pl.DataFrame) -> TestClient:
 # ---- helpers ---------------------------------------------------------------
 
 
+def _ts_brush(fig_uid: str, lo: int, hi: int) -> dict:
+    return {
+        "source_figure_uid": fig_uid,
+        "predicates": [{"clauses": [{"column": "ts", "range": [lo, hi]}]}],
+    }
+
+
+def _x_spans(body: dict, uids: list[str]) -> list[tuple[int, int] | None]:
+    """The x extent of each figure's first delta, ``None`` for no delta."""
+    spans = []
+    for uid in uids:
+        deltas = body["figure_deltas"].get(uid, [])
+        xs = [x for x in deltas[0]["updates"]["x"] if x is not None] if deltas else []
+        spans.append((min(xs), max(xs)) if xs else None)
+    return spans
+
+
 def _make_dashboard_and_spec(
     df: pl.DataFrame,
     n_figures: int = 2,
@@ -200,6 +217,7 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": fig_b_uid,
                 "selections": [
                     {
                         "source_figure_uid": fig_b_uid,
@@ -217,13 +235,13 @@ class TestPostDashboardUpdate:
         assert len(body["figure_deltas"].get(fig_b_uid, [])) == 0
         assert len(body["figure_deltas"].get(fig_c_uid, [])) > 0
 
-    def test_multi_source_selection_excludes_all(
+    def test_a_second_brush_refreshes_the_first_owner(
         self, client: TestClient, integ_df: pl.DataFrame
     ):
+        """Issue #80: B owns a brush, then C brushes. B is filtered by C."""
         dash = Dashboard(integ_df)
-        for name in ("A", "B", "C", "D"):
-            f = dash.add_figure()
-            f.add_line(x="ts", y="val", name=name)
+        for _ in range(4):
+            dash.add_figure().add_line(x="ts", y="val", n_points=10_000)
         spec = dash.to_spec(source_name=_SRC)
         uids = [f.uid for f in spec.figures]
 
@@ -231,29 +249,21 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": uids[2],
                 "selections": [
-                    {
-                        "source_figure_uid": uids[1],
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 4999]}]}
-                        ],
-                    },
-                    {
-                        "source_figure_uid": uids[2],
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 4999]}]}
-                        ],
-                    },
+                    _ts_brush(uids[1], 1000, 3000),
+                    _ts_brush(uids[2], 2000, 4000),
                 ],
                 "force_update": True,
             },
         }
-        resp = client.post("/dashboard/update", json=payload)
-        body = resp.json()
-        assert len(body["figure_deltas"].get(uids[0], [])) > 0
-        assert len(body["figure_deltas"].get(uids[1], [])) == 0
-        assert len(body["figure_deltas"].get(uids[2], [])) == 0
-        assert len(body["figure_deltas"].get(uids[3], [])) > 0
+        body = client.post("/dashboard/update", json=payload).json()
+        assert _x_spans(body, uids) == [
+            (2000, 3000),
+            (2000, 4000),
+            None,
+            (2000, 3000),
+        ]
 
     def test_cross_filtered_line_target_keeps_its_full_budget(self, client: TestClient):
         """A brushed line target returns ``n_points``, not the brush fraction.
@@ -324,6 +334,7 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": fig_a_uid,
                 "selections": [
                     {
                         "source_figure_uid": fig_a_uid,
@@ -343,43 +354,34 @@ class TestPostDashboardUpdate:
         x_vals = b_deltas[0]["updates"]["x"]
         assert min(x_vals) >= 2000
 
-    def test_two_step_selection_excludes_both(
+    def test_a_selection_without_a_changed_figure_refreshes_every_owner(
         self, client: TestClient, integ_df: pl.DataFrame
     ):
+        """A restore applies the whole selection state again."""
         dash = Dashboard(integ_df)
-        for name in ("A", "B", "C", "D"):
-            f = dash.add_figure()
-            f.add_line(x="ts", y="val", name=name)
+        for _ in range(4):
+            dash.add_figure().add_line(x="ts", y="val", n_points=10_000)
         spec = dash.to_spec(source_name=_SRC)
         uids = [f.uid for f in spec.figures]
 
-        b_sel = {
-            "source_figure_uid": uids[1],
-            "predicates": [{"clauses": [{"column": "ts", "range": [0, 4999]}]}],
-        }
-        c_sel = {
-            "source_figure_uid": uids[2],
-            "predicates": [{"clauses": [{"column": "ts", "range": [0, 4999]}]}],
-        }
-
-        # Step 2: both B and C selections active
-        spec_with_b = spec.model_copy(deep=True)
-        spec_with_b.state.selections = [SelectionState(**b_sel)]
-
         payload = {
-            "spec": spec_with_b.model_dump(),
+            "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [b_sel, c_sel],
+                "selections": [
+                    _ts_brush(uids[1], 1000, 3000),
+                    _ts_brush(uids[2], 2000, 4000),
+                ],
                 "force_update": True,
             },
         }
-        resp = client.post("/dashboard/update", json=payload)
-        body = resp.json()
-        assert len(body["figure_deltas"].get(uids[0], [])) > 0
-        assert len(body["figure_deltas"].get(uids[1], [])) == 0
-        assert len(body["figure_deltas"].get(uids[2], [])) == 0
-        assert len(body["figure_deltas"].get(uids[3], [])) > 0
+        body = client.post("/dashboard/update", json=payload).json()
+        assert _x_spans(body, uids) == [
+            (2000, 3000),
+            (2000, 4000),
+            (1000, 3000),
+            (2000, 3000),
+        ]
 
     def test_deselect_clears_filter(self, client: TestClient, integ_df: pl.DataFrame):
         """After a selection narrows figure B, deselect must restore full data."""
@@ -462,6 +464,7 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": hist_uid,
                 "selections": [
                     {
                         "source_figure_uid": hist_uid,
@@ -856,6 +859,7 @@ class TestCrossFilterScenarios:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": uid_a,
                 "selections": [
                     {
                         "source_figure_uid": uid_a,
@@ -877,33 +881,26 @@ class TestCrossFilterScenarios:
         assert min(b_x) >= 1000 and max(b_x) <= 3000
         assert min(c_x) >= 1000 and max(c_x) <= 3000
 
-    def test_selection_on_A_then_B_only_updates_C(
+    def test_selection_on_A_then_B_updates_A_and_C(
         self, client: TestClient, three_fig_spec: DashboardSpec
     ):
         spec = three_fig_spec
-        uid_a, uid_b, uid_c = [f.uid for f in spec.figures]
+        uids = [f.uid for f in spec.figures]
 
-        sel_a = {
-            "source_figure_uid": uid_a,
-            "predicates": [{"clauses": [{"column": "ts", "range": [1000, 3000]}]}],
-        }
-        sel_b = {
-            "source_figure_uid": uid_b,
-            "predicates": [{"clauses": [{"column": "ts", "range": [1500, 2500]}]}],
-        }
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [sel_a, sel_b],
+                "selection_figure_uid": uids[1],
+                "selections": [
+                    _ts_brush(uids[0], 1000, 3000),
+                    _ts_brush(uids[1], 1500, 2500),
+                ],
                 "force_update": True,
             },
         }
-        resp = client.post("/dashboard/update", json=payload)
-        body = resp.json()
-        assert len(body["figure_deltas"].get(uid_a, [])) == 0
-        assert len(body["figure_deltas"].get(uid_b, [])) == 0
-        assert len(body["figure_deltas"].get(uid_c, [])) > 0
+        body = client.post("/dashboard/update", json=payload).json()
+        assert _x_spans(body, uids) == [(1500, 2500), None, (1500, 2500)]
 
     def test_deselect_restores_all_keeps_zoom(
         self, client: TestClient, three_fig_spec: DashboardSpec
@@ -1807,6 +1804,7 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": fig_a_uid,
                 "selections": [
                     {
                         "source_figure_uid": fig_a_uid,
@@ -2123,6 +2121,7 @@ class TestBarCrossFilterIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": bar_spec.figure.uid,
                 "force_update": True,
                 "selections": [
                     {
@@ -2272,6 +2271,7 @@ class TestCrossFilterEdgeCases:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
+                "selection_figure_uid": bar_spec.figure.uid,
                 "force_update": True,
                 "selections": [
                     {

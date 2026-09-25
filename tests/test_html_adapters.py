@@ -243,8 +243,9 @@ class TestPlotlyHtml:
         body = _js_function_body(html, "function clearFigureSelection(figUid)")
         assert "type: remainingSelections.length ? 'selection' : 'deselect'" in body
         assert "selections: remainingSelections" in body
-        # Events no longer carry a figure uid; the selections say who owns what.
-        assert "figure_uid" not in body
+        # The event names only the figure whose selection changed.
+        assert "selection_figure_uid: figUid" in body
+        assert "\n    figure_uid" not in body
 
     def test_click_toggle_uses_figure_scoped_clear(self, html):
         body = _js_function_body(html, "function handleClick(eventData, figUid)")

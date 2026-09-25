@@ -289,6 +289,7 @@ window.fvOnResetPanel = async function(figUid) {
     type: remaining.length ? 'selection' : 'deselect',
     viewport_keys: clearedKeys,
     selections: remaining,
+    selection_figure_uid: figUid,
     force_update: true,
   });
 };

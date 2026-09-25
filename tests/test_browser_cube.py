@@ -3239,9 +3239,10 @@ class TestStalePassiveGuard:
         (now itself a lazy-2nd-selection cube gesture) → re-brush A. The
         re-brush must NOT serve the stale zero-passive slices: the new
         passive set {B} is a store miss ⇒ exactly one cube_request, then C
-        live-updates from passive-baked cubes, B (owning a selection) is
-        never touched, the commit stays local, and final values equal a
-        server reference with both filters."""
+        live-updates from passive-baked cubes. The cube never serves a figure
+        with its own selection, so a commit while another figure owns one
+        still POSTs, and final values equal a server reference:
+        each owner filtered by the other's brush, C by both."""
         df = _three_hist_df()
         url = _three_hist_dashboard_url(server_port, "_cube_browser_stale")
         bodies = _capture_updates(page)
@@ -3258,41 +3259,36 @@ class TestStalePassiveGuard:
         assert len(sels_phase1) == 1  # A's committed selection
 
         # --- Phase 2: commit on B (lazy 2nd selection; passive = {A}) ---
-        # A owns a committed selection: never live-updated by the B-gesture.
+        # A owns a committed selection, so the commit POSTs to refresh it.
         _fig_select_mode(page, 1)
-        y_a_before = _fig_hist_y(page, 0)
         n1 = len(bodies)
         _brush_commit(page, 1, 0.3, 0.7, live_fig_idx=2)
         types = [b.get("event", {}).get("type") for b in bodies[n1:]]
-        assert types == ["cube_request"], types
-        assert _fig_hist_y(page, 0) == y_a_before
+        assert types == ["cube_request", "selection"], types
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         assert len(sels) == 2  # A's + B's
 
         # --- Phase 3: re-brush A — the zero-passive store entries for B and
         # C are stale now; the passive-keyed gesture must fetch fresh cubes
-        # (one cube_request), live-update C only, and commit locally. ---
+        # (one cube_request), live-update C only, and POST the commit for B. ---
         _fig_select_mode(page, 0)
-        y_b_before = _fig_hist_y(page, 1)
         n2 = len(bodies)
         _brush_commit(page, 0, 0.35, 0.75, live_fig_idx=2)
         types = [b.get("event", {}).get("type") for b in bodies[n2:]]
-        assert types == ["cube_request"], types
-        # B owns a committed selection — held through the whole phase.
-        assert _fig_hist_y(page, 1) == y_b_before, "B touched by an A-gesture"
+        assert types == ["cube_request", "selection"], types
 
-        # Final parity. B is untouched since its phase-2 state (it owns a
-        # selection; its rendering still shows A's OLD filter from phase 1 —
-        # B's own gesture never re-renders B). C carries BOTH new filters.
+        # Final parity: each owner is filtered by the other's current brush,
+        # C by both.
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         fig_uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
         by_fig = {s["source_figure_uid"]: s for s in sels}
         expr_a_new = _selection_expr(df, by_fig[fig_uids[0]])
         expr_b = _selection_expr(df, by_fig[fig_uids[1]])
-        expr_a_old = _selection_expr(df, sels_phase1[0])
-        expected_b = _hist_counts_ref(df, expr_a_old, "b", _TGT_BINS)
+        expected_a = _hist_counts_ref(df, expr_b, "a", _SRC_BINS)
+        expected_b = _hist_counts_ref(df, expr_a_new, "b", _TGT_BINS)
         expected_c = _hist_counts_ref(df, expr_a_new & expr_b, "c", _C_BINS)
         assert 0 < sum(expected_c) < df.height
+        _wait_for_hist_equals(page, "#fv-plot-0", expected_a)
         _wait_for_hist_equals(page, "#fv-plot-1", expected_b)
         _wait_for_hist_equals(page, "#fv-plot-2", expected_c)
 
@@ -3401,9 +3397,10 @@ class TestClientPassiveKeying:
         self, page: Page, server_port: int
     ):
         """(a): commit on A, then brush B — the new passive set is a store
-        miss ⇒ exactly one cube_request, after which C live-updates mid-drag
-        (A, owning a selection, holds) and the commit is local (skipPost).
-        Final C equals a server reference with both predicates."""
+        miss ⇒ exactly one cube_request, after which C live-updates mid-drag.
+        The cube serves every non-owner, but A owns a selection and is
+        filtered by B's, so the commit still POSTs. Final A is
+        filtered by B, and C by both predicates."""
         df = _three_hist_df()
         url = _three_hist_dashboard_url(server_port, "_cube_browser_lazy2")
         bodies = _capture_updates(page)
@@ -3418,25 +3415,25 @@ class TestClientPassiveKeying:
 
         # Brush B: lazy 2nd selection.
         _fig_select_mode(page, 1)
-        y_a_before = _fig_hist_y(page, 0)
         n1 = len(bodies)
         _brush_commit(page, 1, 0.3, 0.7, live_fig_idx=2)
-        # Exactly one cube_request for the new passive set; zero other POSTs
-        # (the commit was local — every non-owner target was cube-served).
-        assert [b["event"]["type"] for b in bodies[n1:]] == ["cube_request"], [
-            b["event"]["type"] for b in bodies[n1:]
-        ]
-        # A owns a committed selection — never live-updated by a B-gesture.
-        assert _fig_hist_y(page, 0) == y_a_before
-
-        # Committed C equals the recompute with BOTH predicates.
-        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        # One cube_request for the new passive set, then the commit POST that
+        # names B as the figure whose selection changed.
+        events = [b["event"] for b in bodies[n1:]]
+        assert [e["type"] for e in events] == ["cube_request", "selection"], events
         fig_uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        assert events[1]["selection_figure_uid"] == fig_uids[1]
+
+        # A equals the recompute under B's brush, C under both.
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         by_fig = {s["source_figure_uid"]: s for s in sels}
         expr_a = _selection_expr(df, by_fig[fig_uids[0]])
         expr_b = _selection_expr(df, by_fig[fig_uids[1]])
+        expected_a = _hist_counts_ref(df, expr_b, "a", _SRC_BINS)
         expected_c = _hist_counts_ref(df, expr_a & expr_b, "c", _C_BINS)
+        assert sum(expected_a) < df.height
         assert 0 < sum(expected_c) < df.height
+        _wait_for_hist_equals(page, "#fv-plot-0", expected_a)
         _wait_for_hist_equals(page, "#fv-plot-2", expected_c)
 
     def test_deselect_reverts_to_zero_passive_store_hit(
@@ -3457,11 +3454,15 @@ class TestClientPassiveKeying:
         _brush_commit(page, 1, 0.2, 0.6, live_fig_idx=2)
         assert [b["event"]["type"] for b in bodies[n0:]] == ["cube_request"]
 
-        # 2. Brush+commit A — lazy 2nd selection (passive = {B}).
+        # 2. Brush+commit A — lazy 2nd selection (passive = {B}). B owns a
+        # selection, so the commit POSTs to refresh it.
         _fig_select_mode(page, 0)
         n1 = len(bodies)
         _brush_commit(page, 0, 0.3, 0.7, live_fig_idx=2)
-        assert [b["event"]["type"] for b in bodies[n1:]] == ["cube_request"]
+        assert [b["event"]["type"] for b in bodies[n1:]] == [
+            "cube_request",
+            "selection",
+        ]
 
         # 3. Deselect A (double-click in select mode) — passive set shrinks.
         box = page.locator("#fv-plot-0 .nsewdrag").bounding_box()
@@ -3486,14 +3487,11 @@ class TestClientPassiveKeying:
         assert 0 < sum(expected_c) < df.height
         _wait_for_hist_equals(page, "#fv-plot-2", expected_c)
 
-    def test_pie_click_with_foreign_selection_passive_keyed(
-        self, page: Page, server_port: int
-    ):
-        """(d): pie clicks with a foreign selection committed — the first
-        click POSTs (passive-keyed store miss) and warms; the second click
-        conditionally commits ONLY after the passive-keyed store hit (zero
-        further POSTs), with the hist matching the recompute under both
-        filters."""
+    def test_pie_click_with_foreign_selection_posts(self, page: Page, server_port: int):
+        """(d): pie clicks with a foreign selection committed. The cube never
+        serves the owner Other, which is filtered by the pie selection, so
+        every click POSTs and requests no cube. The hist target
+        matches the recompute under both filters, Other under the pie's."""
         df = _cat_target_df()
         url = _pie_with_other_dashboard_url(server_port, "_cube_browser_piefgn")
         bodies = _capture_updates(page)
@@ -3508,34 +3506,17 @@ class TestClientPassiveKeying:
         other_sel = page.evaluate("DASHBOARD_SPEC.state.selections")[0]
         expr_other = _selection_expr(df, other_sel)
 
-        # First pie click: passive-keyed miss ⇒ selection POST + one
-        # fire-and-forget cube_request.
-        store_before = page.evaluate("_fvCubeStore.size")
-        n1 = len(bodies)
-        _click_pie_slice(page, "#fv-plot-0", "g0")
-        expected_g0 = _reference_categorical_hist_counts(
-            df, expr_other & pl.col("g").is_in(["g0"])
-        )
-        _wait_for_hist_equals(page, "#fv-plot-1", expected_g0)
-        # The fire-and-forget cube_request must land in the client store
-        # (under the passive-aware key) before the second click can be local.
-        page.wait_for_function(
-            "(n) => _fvCubeStore.size > n", arg=store_before, timeout=10_000
-        )
-        page.wait_for_timeout(300)
-        types = sorted(b["event"]["type"] for b in bodies[n1:])
-        assert types == ["cube_request", "selection"], types
-
-        # Second click: passive-keyed store hit ⇒ local conditional commit.
-        n2 = len(bodies)
-        _click_pie_slice(page, "#fv-plot-0", "g1")
-        expected_union = _reference_categorical_hist_counts(
-            df, expr_other & pl.col("g").is_in(["g0", "g1"])
-        )
-        assert 0 < sum(expected_union) < df.height
-        _wait_for_hist_equals(page, "#fv-plot-1", expected_union)
-        page.wait_for_timeout(500)
-        assert bodies[n2:] == [], [b["event"]["type"] for b in bodies[n2:]]
+        for labels in (["g0"], ["g0", "g1"]):
+            n = len(bodies)
+            _click_pie_slice(page, "#fv-plot-0", labels[-1])
+            expr_pie = pl.col("g").is_in(labels)
+            expected = _reference_categorical_hist_counts(df, expr_other & expr_pie)
+            assert 0 < sum(expected) < df.height
+            _wait_for_hist_equals(page, "#fv-plot-1", expected)
+            expected_other = _hist_counts_ref(df, expr_pie, "a", _SRC_BINS)
+            _wait_for_hist_equals(page, "#fv-plot-2", expected_other)
+            types = [b["event"]["type"] for b in bodies[n:]]
+            assert types == ["selection"], types
 
 
 # ---------------------------------------------------------------------------
@@ -4095,9 +4076,9 @@ class TestZoomKeyInterplayBrowser:
 
     def test_zoomed_source_with_foreign_selection(self, page: Page, server_port: int):
         """(c): zoom + passive combined — a zoomed source brushes with a
-        foreign selection committed: one passive-keyed cube_request, live
-        updates on the non-owner target, local commit, parity with both
-        filters."""
+         foreign selection committed: one passive-keyed cube_request, live
+         updates on the non-owner target, a commit POST for the owner Third
+        , parity with both filters."""
         df = _three_hist_df()
         url = _zoomed_dashboard_url(
             server_port, "_cube_browser_zpass", src_zoom=(10.0, 80.0), with_third=True
@@ -4117,7 +4098,7 @@ class TestZoomKeyInterplayBrowser:
         n1 = len(bodies)
         _brush_commit(page, 0, 0.25, 0.65, live_fig_idx=1)
         types = [b["event"]["type"] for b in bodies[n1:]]
-        assert types == ["cube_request"], types
+        assert types == ["cube_request", "selection"], types
 
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         fig_uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
@@ -4131,6 +4112,8 @@ class TestZoomKeyInterplayBrowser:
         expected = _hist_counts_ref(df, expr_src & expr_third, "b", _TGT_BINS)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
+        expected_third = _hist_counts_ref(df, expr_src, "c", _C_BINS)
+        _wait_for_hist_equals(page, "#fv-plot-2", expected_third)
 
 
 # ---------------------------------------------------------------------------

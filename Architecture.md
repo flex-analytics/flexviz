@@ -812,7 +812,9 @@ FlexEngine
       2. Decide which traces need re-aggregation (one uniform rule for cartesian
          and map traces):
          (trace.recompute_axes ∩ changed axes of its figure ≠ ∅)
-         OR (force_update AND NOT (selection event AND the figure owns a selection))
+         OR (force_update AND NOT (selection event AND the selection cannot
+             change the figure: in update mode the figure is
+             `event.selection_figure_uid`, in overlay mode it owns a selection))
          where changed axes come from `event.viewport_keys`: cartesian ids
          ("x"/"y2"/…) or "coordinates" for maps. Every trace's range comes
          from `state.viewport` (`viewports_by_figure`)
@@ -863,7 +865,7 @@ FlexEngine
 
 `TraceInfo` (dataclass) carries `uid`, `axes`, `trace_type`, `figure_uid` — the minimal metadata the engine needs without holding trace instances directly.
 
-**Cross-filtering:** Selections live in `state.selections`.  Each `SelectionState` carries one or more `SelectionPredicate` objects whose clauses translate directly to Polars expressions via `flexviz/predicates.py::predicates_to_expr` and are applied lazily to the shared LazyFrame *before* aggregation.  Predicates from one selection are ORed; predicates from different source figures are ANDed by `LazyFrame.filter(*exprs)`.  A figure is never filtered by its own selection.  When a figure is the source of a selection its traces are excluded from re-aggregation during `selection` events, unless the event also names one of its viewport keys.  Trace classes no longer participate in filter compilation — every selection is interpreted column-by-column at the engine boundary.
+**Cross-filtering:** Selections live in `state.selections`.  Each `SelectionState` carries one or more `SelectionPredicate` objects whose clauses translate directly to Polars expressions via `flexviz/predicates.py::predicates_to_expr` and are applied lazily to the shared LazyFrame *before* aggregation.  Predicates from one selection are ORed; predicates from different source figures are ANDed by `LazyFrame.filter(*exprs)`.  A figure is never filtered by its own selection, so every figure, also one with a selection of its own, is filtered by every other selection, in any order (the crossfilter model of crossfilter.js and Mosaic). A `selection` event names the figure whose selection changed in `selection_figure_uid`; in update mode only that figure keeps its data, because no other selection changed. An event without it (a restore or a mode switch) re-aggregates every figure. In overlay mode a selection's source figure shows only its unfiltered background, so a `selection` event skips every source figure. A viewport key in the event re-aggregates its figure in both modes. A cube commit reaches the server when another figure has a selection in update mode (`_fvCommitNeedsServer`), because cube targets skip every figure with a selection.  Trace classes no longer participate in filter compilation — every selection is interpreted column-by-column at the engine boundary.
 
 **Per-figure reset (`fvOnResetPanel`):** each figure's panel has its own Reset button that resets **only that figure**, with semantics that depend on the *direction* of any cross-filter relative to the figure:
 

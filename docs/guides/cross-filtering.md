@@ -37,7 +37,10 @@ How a figure emits a selection depends on its trace type:
 Range selections become typed `is_between` filters and category clicks become
 `is_in` filters, compiled into Polars expressions and applied lazily before
 any aggregation. A figure is never filtered by its own selection, only by the
-selections of other figures.
+selections of other figures. This is also true for a figure that has a
+selection: it follows the selections of the other figures, and the order of
+the selections has no effect. So each figure shows its column for the rows
+that the other selections keep, and you can adjust any selection at any time.
 
 ## Update vs. overlay mode
 
