@@ -20,6 +20,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+## [0.1.0b4] - 2026-09-25
+
 ### Added
 
 - Linked axes: `Dashboard.link_axes` links axes across figures, so they zoom,
@@ -80,9 +82,32 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   changing.
 - A deselect sent while zoomed no longer stores zoomed data in the client
   response cache when the zoom is reset before the response arrives.
+- In update mode, a cross-filtered line (`minmax`, `lttb`, `fpcs`) kept only a
+  fraction of its points: a 2 % brush left 20 of 1000. The bucket grid spanned
+  the unfiltered x domain. It now spans the x range of the filtered rows.
+  Zoomed lines, overlay mode and `nth` lines are unchanged.
+- The live cross-filter preview (cube) gave a null category the same code as
+  the string `"None"`, and a null or NaN in a numeric category raised an
+  error. A null category is now its own category.
+- A selection on a Boolean column that included a null raised an error. A null
+  member is now dropped, as for every other dtype.
+- On a Parquet scan, 1-D and 2-D histograms read the source columns as stored.
+  A cast or alias before the batches let Polars buffer row groups ahead of the
+  fold, which raised peak memory.
 
 ### Changed
 
+- `flexviz` requires `flexviz-polars` 0.1.0b3 or later, because the 2-D
+  histogram kernels changed their bin scale (see Fixed).
+- `flexviz serve` without `--port` picks a free port and prints it. Before, it
+  used port 8000.
+- A category cross-filter on an in-memory frame is faster. A selection of up to
+  64 values compiles to equality tests instead of `is_in`. On a scan source it
+  keeps `is_in`.
+- The line envelope cube reads a frame with many chunks, such as a collected
+  Parquet file, without a copy. On such a frame it is about 2x faster.
+- The cube encodes category dims with Polars expressions instead of Python
+  loops, 2 to 4x faster on String, Enum and Categorical dims.
 - Spec version 0.6. `Figure.legend()` now writes `layout.showlegend` instead
   of `layout.legend`, so legend visibility and legend placement no longer
   share one key. `legend()` and `update_layout(legend={...})` now work in
@@ -232,6 +257,7 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
   the two are released together.
 
+[0.1.0b4]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b2
 [0.1.0b1]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b1
