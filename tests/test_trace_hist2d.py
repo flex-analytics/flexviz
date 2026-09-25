@@ -90,6 +90,7 @@ class TestHist2DConstructor:
         assert t.overlay_style == "filtered_only"
         assert t.color_scale == "viridis"
         assert t.color_range == "auto"
+        assert t.color_norm == "linear"
 
     def test_custom_bins(self):
         t = Histogram2D(x="a", y="b", x_bins=10, y_bins=15)
@@ -105,6 +106,10 @@ class TestHist2DConstructor:
         )
         assert t.color_scale == "plasma"
         assert t.color_range == (0.0, 5.0)
+
+    def test_log_color_norm_rejects_range_from_zero(self):
+        with pytest.raises(ValueError, match="color_range must be above 0"):
+            Histogram2D(x="a", y="b", color_norm="log", color_range=(0.0, 5.0))
 
     def test_histfunc_without_z_raises(self):
         with pytest.raises(
@@ -472,7 +477,8 @@ class TestHist2DSpec:
             y_bins=15,
             name="My Heatmap",
             color_scale="plasma",
-            color_range=(0.0, 5.0),
+            color_range=(1.0, 5.0),
+            color_norm="log",
         )
         spec = t.to_trace_spec()
         assert spec.trace_type == "histogram2d"
@@ -480,7 +486,8 @@ class TestHist2DSpec:
         assert spec.params["x_bins"] == 10
         assert spec.params["y_bins"] == 15
         assert spec.display["color_scale"] == "plasma"
-        assert spec.display["color_range"] == (0.0, 5.0)
+        assert spec.display["color_range"] == (1.0, 5.0)
+        assert spec.display["color_norm"] == "log"
 
         t2 = Histogram2D.from_trace_spec(spec)
         assert t2.x_col == "a"
@@ -488,7 +495,8 @@ class TestHist2DSpec:
         assert t2.x_bins == 10
         assert t2.y_bins == 15
         assert t2.color_scale == "plasma"
-        assert t2.color_range == (0.0, 5.0)
+        assert t2.color_range == (1.0, 5.0)
+        assert t2.color_norm == "log"
 
     def test_roundtrip_with_histfunc(self):
         t = Histogram2D(
@@ -522,6 +530,7 @@ class TestHist2DSpec:
         trace = Histogram2D.from_trace_spec(spec)
         assert trace.color_scale == "viridis"
         assert trace.color_range == "auto"
+        assert trace.color_norm == "linear"
         assert trace.histfunc is None
         assert trace.histnorm is None
 

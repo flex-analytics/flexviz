@@ -148,7 +148,9 @@ def _validate_bar_modes(trace_specs: list) -> None:
         )
 
 
-def _effective_heatmap_style(trace_spec: Any) -> tuple[str, tuple[float, float] | str]:
+def _effective_heatmap_style(
+    trace_spec: Any,
+) -> tuple[str, tuple[float, float] | str, str]:
     if (
         "color_scale" not in trace_spec.display
         or "color_range" not in trace_spec.display
@@ -172,7 +174,8 @@ def _effective_heatmap_style(trace_spec: Any) -> tuple[str, tuple[float, float] 
         if lo >= hi:
             raise ValueError("heatmap color_range must satisfy min < max")
         color_range = (lo, hi)
-    return (scale, color_range)
+    # CorrHeatmap has no color_norm: it is always linear.
+    return (scale, color_range, trace_spec.display.get("color_norm", "linear"))
 
 
 def _validate_heatmap_styles(trace_specs: list) -> None:
@@ -184,8 +187,8 @@ def _validate_heatmap_styles(trace_specs: list) -> None:
     if len(heatmap_styles) > 1:
         raise ValueError(
             "All heatmap traces in one figure must share the same effective "
-            "color_scale and color_range because renderers treat the heatmap "
-            "colorbar as a figure-level setting."
+            "color_scale, color_range and color_norm because renderers treat the "
+            "heatmap colorbar as a figure-level setting."
         )
 
 
@@ -540,6 +543,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
+        color_norm: Literal["linear", "log"] = "linear",
         axes: tuple[str, ...] = ("x", "y"),
     ) -> Figure:
         """Add a 2D histogram / heatmap trace.
@@ -572,6 +576,11 @@ class Figure:
             Heatmap color scale name understood by the active renderer.
         color_range:
             Fixed heatmap color range, or ``"auto"`` for dynamic scaling.
+        color_norm:
+            How bin values map to colors: ``"linear"`` (default) or ``"log"``.
+            Use ``"log"`` when a few dense bins would otherwise wash out the
+            rest. Bins at or below 0 are not drawn, and a fixed
+            ``color_range`` must be above 0.
         axes:
             Axis anchor tuple, e.g. ``("x", "y")``.
         """
@@ -587,6 +596,7 @@ class Figure:
                 name=name,
                 color_scale=color_scale,
                 color_range=color_range,
+                color_norm=color_norm,
                 axes=axes,
             )
         )
@@ -603,6 +613,7 @@ class Figure:
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
+        color_norm: Literal["linear", "log"] = "linear",
     ) -> Figure:
         """Add a geospatial 2D histogram (choropleth) trace.
 
@@ -635,6 +646,11 @@ class Figure:
             Color scale name understood by the active renderer.
         color_range:
             Fixed color range, or ``"auto"`` for dynamic scaling.
+        color_norm:
+            How bin values map to colors: ``"linear"`` (default) or ``"log"``.
+            Use ``"log"`` when a few dense bins would otherwise wash out the
+            rest. Bins at or below 0 are not drawn, and a fixed
+            ``color_range`` must be above 0.
         """
         return self._add_trace(
             GeoHistogram2D(
@@ -648,6 +664,7 @@ class Figure:
                 name=name,
                 color_scale=color_scale,
                 color_range=color_range,
+                color_norm=color_norm,
             )
         )
 

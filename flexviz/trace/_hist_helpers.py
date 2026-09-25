@@ -1,8 +1,8 @@
 """Shared helpers for 2D histogram traces (Histogram2D, GeoHistogram2D, CorrHeatmap).
 
 Provides histfunc/histnorm constants and type aliases, the ``apply_histnorm``
-normalization function, and color-scale/color-range validation helpers. The
-heatmap trace classes share them to avoid duplication.
+normalization function, and color-scale/color-range/color-norm validation
+helpers. The heatmap trace classes share them to avoid duplication.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ _HISTNORM_OPTIONS = (
     "density",  # count / bin_width
     "probability density",  # count / (total * bin_width)
 )
+_COLOR_NORM_OPTIONS = ("linear", "log")
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -41,7 +42,7 @@ _HISTNORM_OPTIONS = (
 HeatmapColorRange = tuple[float, float] | Literal["auto"]
 
 # ---------------------------------------------------------------------------
-# Shared color-normalization helpers (used by all heatmap trace classes)
+# Shared color helpers for the heatmap trace classes
 # ---------------------------------------------------------------------------
 
 
@@ -89,6 +90,30 @@ def normalize_heatmap_color_range(
     raise TypeError(
         f"{trace_name} color_range must be 'auto' or a (min, max) numeric tuple"
     )
+
+
+def normalize_heatmap_color_norm(
+    color_norm: str | None,
+    color_range: HeatmapColorRange,
+    *,
+    trace_name: str,
+) -> str:
+    """Validate and normalise a ``color_norm`` value.
+
+    ``None`` means ``"linear"``. With ``"log"``, a fixed *color_range* (already
+    normalised) must stay above 0, because log(0) is undefined.
+    """
+    if color_norm is None:
+        return "linear"
+    if color_norm not in _COLOR_NORM_OPTIONS:
+        raise ValueError(
+            f"{trace_name} color_norm must be one of {_COLOR_NORM_OPTIONS}"
+        )
+    if color_norm == "log" and color_range != "auto" and color_range[0] <= 0:
+        raise ValueError(
+            f"{trace_name} color_range must be above 0 when color_norm is 'log'"
+        )
+    return color_norm
 
 
 # ---------------------------------------------------------------------------

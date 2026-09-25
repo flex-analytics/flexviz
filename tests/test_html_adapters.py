@@ -1350,6 +1350,40 @@ class TestHeatmapPlotly:
         assert trace["zmin"] == 0.0
         assert trace["zmax"] == 5.0
 
+    def test_plotly_heatmap_trace_maps_log_range_to_color_space(self):
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h2d",
+            trace_type="histogram2d",
+            axes=("x", "y"),
+            display={
+                "color_scale": "plasma",
+                "color_range": (1.0, 1000.0),
+                "color_norm": "log",
+            },
+        )
+        trace = PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
+        assert trace["zmin"] == pytest.approx(0.0)
+        assert trace["zmax"] == pytest.approx(3.0)
+
+    def test_plotly_heatmap_trace_rejects_log_range_from_zero(self):
+        """A decoded spec reaches the adapter without the trace validation."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h2d",
+            trace_type="histogram2d",
+            axes=("x", "y"),
+            display={
+                "color_scale": "plasma",
+                "color_range": (0.0, 10.0),
+                "color_norm": "log",
+            },
+        )
+        with pytest.raises(ValueError, match="above 0"):
+            PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
+
     def test_corr_heatmap_legend_disabled(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 

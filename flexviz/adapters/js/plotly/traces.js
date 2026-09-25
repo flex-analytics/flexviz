@@ -22,12 +22,22 @@ function heatmapColorScale(ts) {
   return colorScale;
 }
 
+// Only Histogram2D and GeoHistogram2D carry color_norm; a missing one is linear.
+function heatmapColorNorm(ts) {
+  return (ts && ts.display && ts.display.color_norm) || 'linear';
+}
+
 function heatmapColorRange(ts) {
   const display = (ts && ts.display) || {};
   if (!Object.prototype.hasOwnProperty.call(display, 'color_range')) {
     throw new Error('Generated heatmap specs must include explicit color_scale and color_range defaults.');
   }
-  return display.color_range;
+  const range = display.color_range;
+  // A fixed range is in data units; a log norm colors in log10 space.
+  if (range !== 'auto' && heatmapColorNorm(ts) === 'log') {
+    return [Math.log10(range[0]), Math.log10(range[1])];
+  }
+  return range;
 }
 
 function applyPlotlyColor(trace, color) {
@@ -152,6 +162,53 @@ function heatmapZFiniteExtent(z) {
 
 function heatmapHasRenderableCells(trace) {
   return heatmapZFiniteExtent(trace && trace.z) !== null;
+}
+
+// Colorbar ticks for a log10 color axis, labelled in data units (1, 10, 1K).
+function logColorbarTicks(lo, hi) {
+  const ticks = [];
+  for (let e = Math.floor(lo); e <= Math.ceil(hi); e++) {
+    for (const m of [1, 2, 5]) {
+      const v = e + Math.log10(m);
+      if (v >= lo - 1e-9 && v <= hi + 1e-9) ticks.push({ v, decade: m === 1 });
+    }
+  }
+  // Decades alone once there are enough of them; 1-2-5 steps fill narrow ranges,
+  // and a range too narrow for two of those gets its ends labelled.
+  const decades = ticks.filter(t => t.decade);
+  let chosen = decades.length >= 3 ? decades : ticks;
+  if (chosen.length < 2) chosen = [{ v: lo }, ...chosen, { v: hi }];
+  const format = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 2 });
+  const tickvals = [];
+  const ticktext = [];
+  for (const t of chosen) {
+    const text = format.format(10 ** t.v);
+    if (text === ticktext[ticktext.length - 1]) continue;
+    tickvals.push(t.v);
+    ticktext.push(text);
+  }
+  return { tickvals, ticktext };
+}
+
+// Log color norm: color by log10(value), keep the raw value for hover, and
+// label the colorbar in data units. A value <= 0 has no log and is not drawn.
+function applyLogColorNorm(trace) {
+  const toLog = v => (v != null && v > 0 ? Math.log10(v) : null);
+  const raw = trace.z || [];
+  trace.text = raw;
+  trace.z = raw.map(v => (Array.isArray(v) ? v.map(toLog) : toLog(v)));
+  trace.hovertemplate = trace.type === 'choroplethmap'
+    ? '%{location}<br>%{text:.10~r}<extra></extra>'
+    : 'x: %{x}<br>y: %{y}<br>z: %{text:.10~r}<extra></extra>';
+  // A fixed range is already on the template. An auto range is pinned to the
+  // drawn cells, so the colorbar ticks match the colors Plotly draws.
+  // z is 2-D for a heatmap and flat for a choropleth.
+  if (trace.zmin == null) {
+    const extent = heatmapZFiniteExtent([trace.z.flat()]);
+    if (!extent) return;
+    [trace.zmin, trace.zmax] = extent;
+  }
+  trace.colorbar = { ...trace.colorbar, ...logColorbarTicks(trace.zmin, trace.zmax) };
 }
 
 function applyHeatmapColorbarPolicy(trace, renderLayer, showForeground) {
@@ -406,6 +463,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.x = gapped.x;
     trace.y = gapped.y;
   }
+  if (heatmapColorNorm(traceSpecByUid[logicalUid]) === 'log') applyLogColorNorm(trace);
   applyHeatmapColorbarPolicy(trace, renderLayer, showForeground);
   applyLegendVisibility(trace, logicalUid);
   return trace;

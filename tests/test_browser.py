@@ -388,7 +388,7 @@ def _dashboard_url_plotly_selection_box(
     return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
 
 
-def _dashboard_url_hist2d_overlay(port: int) -> str:
+def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
     """Two-figure dashboard: line source + histogram2d target for overlay CF tests."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -406,7 +406,7 @@ def _dashboard_url_hist2d_overlay(port: int) -> str:
 
     dash = Dashboard(df)
     dash.add_figure(title="Source").add_line(x="ts", y="val", n_points=200)
-    dash.add_figure(title="Heatmap").add_histogram2d(x="x", y="y")
+    dash.add_figure(title="Heatmap").add_histogram2d(x="x", y="y", **hist2d_kwargs)
     spec = dash.to_spec(source_name="_browser_hist2d_overlay")
 
     encoded = encode_spec(spec)
@@ -7437,3 +7437,169 @@ class TestResponseOrderBrowser:
             }""",
             timeout=10_000,
         )
+
+
+def _color_norm_url(port: int, source: str, df: pl.DataFrame, build) -> str:
+    """Dashboard URL for ``build(dash)`` on *df* registered as *source*."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import encode_spec
+
+    register_source(source, df)
+    dash = Dashboard(df)
+    build(dash)
+    spec = dash.to_spec(source_name=source)
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+# Rendered heatmap/choropleth traces of every Plotly figure, reduced to the
+# fields the color norm touches.
+_READ_HEATMAPS_JS = """() => [...document.querySelectorAll('.js-plotly-plot')].map(
+    gd => gd.data
+        .filter(t => t.type === 'heatmap' || t.type === 'choroplethmap')
+        .map(t => ({
+            uid: t.uid, z: t.z, text: t.text, zmin: t.zmin, zmax: t.zmax,
+            hovertemplate: t.hovertemplate, colorbar: t.colorbar || {},
+        })))"""
+
+
+def _assert_log_of_text(trace: dict) -> None:
+    """Every drawn cell is log10 of its raw value; a cell without one is null."""
+
+    def flat(values: list) -> list:
+        # A heatmap sends rows of cells, a choropleth one flat list.
+        if values and isinstance(values[0], list):
+            return [v for row in values for v in row]
+        return values
+
+    z, raw = flat(trace["z"]), flat(trace["text"])
+    assert len(z) == len(raw)
+    assert any(v is not None for v in raw), "the layer must have drawn cells"
+    for zv, rv in zip(z, raw):
+        if rv is not None and rv > 0:
+            assert zv == pytest.approx(math.log10(rv))
+        else:
+            assert zv is None
+
+
+@pytest.mark.browser
+class TestHeatmapColorNormBrowser:
+    """``color_norm="log"``: log10 colors, raw values in hover, count ticks."""
+
+    # x = 0 once, 1 ten times, 3 a thousand times; no row lands in the third bin.
+    _COUNTS_DF = pl.DataFrame(
+        {
+            "x": [0.0] + [1.0] * 10 + [3.0] * 1000,
+            "y": [float(i % 2) for i in range(1011)],
+        }
+    )
+
+    def test_histogram2d_log_colors_raw_hover_and_count_ticks(
+        self, page: Page, server_port: int
+    ):
+        url = _color_norm_url(
+            server_port,
+            "_browser_color_norm_log",
+            self._COUNTS_DF,
+            lambda d: d.add_figure().add_histogram2d(
+                x="x", y="y", x_bins=4, y_bins=1, color_norm="log"
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        [[trace]] = page.evaluate(_READ_HEATMAPS_JS)
+        assert trace["text"] == [[1, 10, None, 1000]]
+        assert trace["z"] == [[0.0, 1.0, None, pytest.approx(3.0)]]
+        assert trace["colorbar"]["tickvals"] == pytest.approx([0.0, 1.0, 2.0, 3.0])
+        assert trace["colorbar"]["ticktext"] == ["1", "10", "100", "1K"]
+        label = page.evaluate("""async () => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[0];
+            Plotly.Fx.hover(gd, [{ curveNumber: 0, pointNumber: [0, 3] }]);
+            await new Promise(r => setTimeout(r, 200));
+            return gd.querySelector('.hovertext').textContent;
+        }""")
+        assert "z: 1000" in label
+
+    def test_colorbar_ticks_label_a_narrow_range(self, page: Page, server_port: int):
+        url = _color_norm_url(
+            server_port,
+            "_browser_color_norm_ticks",
+            self._COUNTS_DF,
+            lambda d: d.add_figure().add_histogram2d(x="x", y="y", color_norm="log"),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        ticks = page.evaluate("""() => ({
+            noStep: logColorbarTicks(Math.log10(21), Math.log10(49)).ticktext,
+            oneValue: logColorbarTicks(Math.log10(3) - 0.005, Math.log10(3) + 0.005).ticktext,
+        })""")
+        assert ticks["noStep"] == ["21", "49"]
+        assert ticks["oneValue"] == ["3"]
+
+    def test_geo_histogram2d_log_colors_and_step_ticks(
+        self, page: Page, server_port: int
+    ):
+        df = pl.DataFrame({"lat": [0.0] + [10.0] * 5, "lon": [0.0] + [10.0] * 5})
+        url = _color_norm_url(
+            server_port,
+            "_browser_color_norm_geo",
+            df,
+            lambda d: d.add_figure().add_geo_histogram2d(
+                lat="lat", lon="lon", lat_bins=2, lon_bins=2, color_norm="log"
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        [[trace]] = page.evaluate(_READ_HEATMAPS_JS)
+        assert sorted(trace["text"]) == [1, 5]
+        _assert_log_of_text(trace)
+        assert trace["colorbar"]["ticktext"] == ["1", "2", "5"]
+        assert "%{text" in trace["hovertemplate"]
+
+    @pytest.mark.parametrize("color_range", ["auto", (1.0, 1000.0)])
+    def test_overlay_cross_filter_keeps_both_layers_in_log_space(
+        self, page: Page, server_port: int, color_range
+    ):
+        url = _dashboard_url_hist2d_overlay(
+            server_port, color_norm="log", color_range=color_range
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        page.click("#fv-btn-cfmode")
+        page.evaluate("""() => {
+            const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: figUids[0],
+                predicates: [{ clauses: [{ column: 'ts', range: [100, 200] }] }],
+            }];
+            return postDashboardUpdate({
+                type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections,
+                force_update: true,
+            });
+        }""")
+        page.wait_for_function(
+            """() => {
+                const gd = document.querySelectorAll('.js-plotly-plot')[1];
+                const fg = gd.data.find(t => t.uid.endsWith('__fv_layer_fg'));
+                return fg && fg.text && fg.showscale === true;
+            }""",
+            timeout=10_000,
+        )
+
+        heatmaps = page.evaluate(_READ_HEATMAPS_JS)[1]
+        layers = {_trace_layer(t["uid"]): t for t in heatmaps}
+        assert set(layers) == {"bg", "fg"}
+        for trace in layers.values():
+            _assert_log_of_text(trace)
+        fg = layers["fg"]
+        if color_range == "auto":
+            drawn = [v for row in fg["z"] for v in row if v is not None]
+            assert (fg["zmin"], fg["zmax"]) == pytest.approx((min(drawn), max(drawn)))
+        else:
+            assert (fg["zmin"], fg["zmax"]) == pytest.approx((0.0, 3.0))
+            assert fg["colorbar"]["ticktext"] == ["1", "10", "100", "1K"]

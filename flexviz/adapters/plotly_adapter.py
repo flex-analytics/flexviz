@@ -190,6 +190,7 @@ def _plotly_heatmap_color_scale(ts: Any) -> str:
 
 
 def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
+    """The fixed range in color space: log10 of the data range for a log norm."""
     if "color_range" not in ts.display:
         raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
     color_range = ts.display["color_range"]
@@ -205,6 +206,12 @@ def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
         raise ValueError("heatmap color_range values must be finite numbers")
     if lo >= hi:
         raise ValueError("heatmap color_range must satisfy min < max")
+    if ts.display.get("color_norm") == "log":
+        if lo <= 0:
+            raise ValueError(
+                "heatmap color_range must be above 0 when color_norm is 'log'"
+            )
+        return (math.log10(lo), math.log10(hi))
     return (lo, hi)
 
 
