@@ -7408,3 +7408,32 @@ class TestResponseOrderBrowser:
 
         lo, hi = page.evaluate(_LAYER_X_SPAN, [0, "bg"])
         assert lo <= 110 and hi >= 390, (lo, hi)
+
+    def test_a_panel_reset_under_a_filter_marks_the_background_stale(
+        self, page: Page, server_port: int
+    ):
+        # A reset that clears a zoom and a selection together is a selection
+        # event with viewport keys, not a viewport event.
+        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
+        _wait_settled(page, 1)
+        page.evaluate("""() => {
+            const uids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            window.fvSetSelectionState([[0, [150, 350]], [1, [200, 250]]].map(
+              ([i, range]) => ({source_figure_uid: uids[i],
+                predicates: [{clauses: [{column: 'ts', range}]}]})));
+            postDashboardUpdate({type: 'selection',
+              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+          }""")
+        _wait_settled(page, 2)
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']")
+        _wait_settled(page, 3)
+
+        page.click("#fv-btn-cfmode")
+        page.wait_for_function(
+            """() => {
+                const bg = divs[0].data.find(t => t.uid.endsWith('__fv_layer_bg'));
+                return !!bg && Math.min(...bg.x) <= 10 && Math.max(...bg.x) >= 490;
+            }""",
+            timeout=10_000,
+        )
