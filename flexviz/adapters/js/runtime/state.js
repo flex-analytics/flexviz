@@ -216,14 +216,14 @@ function selectionSourceFigureUids(selections) {
 function figureHasSelectionSource(figUid, selections) {
   return selectionSourceFigureUids(selections).has(figUid);
 }
-function requestHasActiveSelections(event) {
-  return !['init', 'deselect'].includes(event.type)
-    && !!(event.selections && event.selections.length);
-}
+// A figure is filtered by every selection but its own, so its base data is
+// unfiltered only when no other figure has a selection.
 function isUnfilteredBaseForFigure(event, figUid) {
   if (['init', 'deselect'].includes(event.type)) return true;
-  if (!requestHasActiveSelections(event)) return true;
-  return figureHasSelectionSource(figUid, event.selections || []);
+  return !(event.selections || []).some(
+    s => s && s.source_figure_uid != null && s.source_figure_uid !== figUid
+      && (s.predicates || []).length > 0
+  );
 }
 function backgroundDataLayerForFigure(figUid) {
   return hasBgByFigure[figUid] ? 'bg' : 'base';
