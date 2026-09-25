@@ -9,11 +9,23 @@ function plotlyAxisId(layoutKey) {
   return layoutKey.replace(/^(x|y)axis(\d*)$/, '$1$2');
 }
 
-function fvRunProgrammaticPlotlyOp(operation) {
-  _programmaticOp = true;
-  const result = operation?.();
-  return Promise.resolve(result).finally(() => {
-    _programmaticOp = false;
+// The number of programmatic Plotly operations in progress, per figure. Plotly
+// emits an event on the div that an operation changed, so while a figure has
+// one, its handlers ignore its events. Other figures stay interactive.
+const _programmaticOps = {};
+
+function _fvIsProgrammatic(figUid) {
+  return (_programmaticOps[figUid] || 0) > 0;
+}
+
+// Guard `figUid` while `operation` changes its Plotly div. Operations can
+// overlap, so the guard counts them: it stays on until the last one settles.
+// The executor starts the operation at once, and a throw rejects the promise,
+// so the count always goes down again.
+function fvRunProgrammaticPlotlyOp(figUid, operation) {
+  _programmaticOps[figUid] = (_programmaticOps[figUid] || 0) + 1;
+  return new Promise(resolve => resolve(operation())).finally(() => {
+    _programmaticOps[figUid]--;
   });
 }
 
@@ -65,7 +77,7 @@ window.fvApplyAxisLocks = function(figUid, changedAxisId) {
     }
   }
   if (!Object.keys(update).length) return;
-  return fvRunProgrammaticPlotlyOp(() => Plotly.relayout(divs[figIdx], update));
+  return fvRunProgrammaticPlotlyOp(figUid, () => Plotly.relayout(divs[figIdx], update));
 };
 
 function _axisRangeForSelectionBox(figUid, axisProp) {
@@ -155,7 +167,7 @@ function setFigureMode(figUid, mode) {
   if (figIdx === undefined) return;
   if (window.fvAreCurrentAxesLocked?.(figUid) && (mode === 'zoom' || mode === 'pan')) return;
   return Promise.resolve(
-    fvRunProgrammaticPlotlyOp(() => Plotly.relayout(divs[figIdx], { dragmode: mode }))
+    fvRunProgrammaticPlotlyOp(figUid, () => Plotly.relayout(divs[figIdx], { dragmode: mode }))
   ).then(() => {
     updateModeIndicator(figUid, mode);
   });

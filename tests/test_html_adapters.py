@@ -121,13 +121,6 @@ class TestPlotlyHtml:
             "fvOnReset must set autorange:true on layoutsByFig after postDashboardUpdate"
         )
 
-    def test_reset_deletes_axis_range(self, html):
-        # The reset handler must explicitly clear the saved range property
-        # so Plotly does not re-render at the old zoom level.
-        assert "_programmaticOp" in html, (
-            "fvOnReset must use _programmaticOp guard (same as deselect guard)"
-        )
-
     def test_reset_calls_fv_reset_runtime_cache(self, html):
         # fvOnReset must call fvResetRuntimeCache to clear stale fg layer data
         # and bgYExtentByFig before posting the reset event so that overlay mode
@@ -213,14 +206,6 @@ class TestPlotlyHtml:
         assert 'id="fv-bar-0"' not in html
         assert 'class="fv-panel-has-bar"' not in html
         assert '<div class="fv-plot-wrap">' in html
-
-    # Bug 2: Deselect must not fire a second backend call when Plotly's own
-    # plotly_deselect event fires programmatically after Plotly.react clears
-    # selection boxes.  A guard flag prevents the double-fire.
-    def test_deselect_has_programmatic_guard(self, html):
-        assert "_programmaticOp" in html, (
-            "handleDeselect must check _programmaticOp to prevent double backend calls"
-        )
 
     def test_grouped_parent_not_bootstrapped_as_trace(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
@@ -338,7 +323,7 @@ class TestPlotlyHtml:
         # bundle and chained into postDashboardUpdate after the whole-dashboard
         # getter.
         assert "function fvCacheGetFigure(event)" in html
-        assert "fvCacheGet(event) || fvCacheGetFigure(event)" in html
+        assert "fvCacheGet(cacheKey) || fvCacheGetFigure(event)" in html
 
     def test_runtime_ships_panel_reset_noop_guard(self, html):
         # Per-figure reset cases 3c/3d: the no-op guard must short-circuit before
@@ -539,16 +524,6 @@ class TestPlotlyHtml:
     def test_plotly_mode_buttons_use_mode_active_class(self, html):
         body = _js_function_body(html, "function updateModeIndicator(figUid, dragmode)")
         assert "mode-active" in body
-
-    # handleRelayout guards
-    def test_handlerelayout_has_programmatic_op_guard(self, html):
-        # handleRelayout must bail early when _programmaticOp is true to avoid
-        # sending a spurious second server request during fvOnReset.
-        assert "handleRelayout" in html
-        # The guard must appear inside the function body (not just in fvOnReset).
-        # We verify both strings appear in the HTML (order is guaranteed by the
-        # single JS function definition).
-        assert "_programmaticOp" in html
 
     def test_autorange_sends_viewport_not_reset(self, html):
         # The modebar home button fires an autorange relayout.  This must send a
@@ -1223,35 +1198,15 @@ class TestTreeMapPlotly:
         assert obj["values"] == []
         assert "level" not in obj
 
-    def test_reset_treemap_level_flag_in_runtime(self, html):
-        # _resetTreemapLevel flag controls level reset: true for reset-like
-        # renders, but not for selection because selection should allow
-        # Plotly's native treemap drill/zoom feedback.
-        assert "_resetTreemapLevel" in html
-        assert "_resetTreemapLevel = true" in html
-        assert "_resetTreemapLevel = false" in html
-        assert "['deselect', 'init'].includes(event.type)" in html
-
-    def test_treemap_reset_level_fn_present(self, html):
-        # resetTreemapLevel must be defined and call _fvRenderFigure (not
-        # Plotly.restyle) so it resets the drill level via Plotly.react.
-        assert "resetTreemapLevel" in html
-        assert "_fvRenderFigure" in html
-
     def test_treemap_click_handler_uses_treemap_event(self, html):
-        # Plotly's treemap-specific click event lets handleClick decide when
-        # to allow native drill and when to cancel it for deselect.
+        # handleClick returns false, which cancels Plotly's native drill, so
+        # the treemap stays at its root level.
         assert "plotly_treemapclick" in html
         assert "return handleClick" in html
 
     def test_category_selection_styles_present(self, html):
         assert "CATEGORY_DIMMED_OPACITY" in html
         assert "applyCategorySelectionStyles(figUid)" in html
-
-    def test_treemap_level_resets_to_root_id(self, html):
-        # Treemap ids include a synthetic "root" node. Resetting to the empty
-        # level leaves Plotly drilled into the clicked node after deselect.
-        assert "trace.level = 'root'" in html
 
     def test_treemap_root_click_clears_selection(self, html):
         # Clicking the root node (pt.id == "root", parts=[]) while a selection

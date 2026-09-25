@@ -68,16 +68,22 @@ function _fvCacheKey(event) {
   return 'unfiltered|' + _fvCrossFilterMode();
 }
 
-// Return a deep clone of the cached figure_deltas for this event, or null.
-function fvCacheGet(event) {
-  if (!fvCacheActive(event)) return null;
-  const hit = _fvResponseCache.get(_fvCacheKey(event));
+// The cache key for this event, or null when its response must not be read
+// from or put into the cache. Take it when the request is sent: the viewport
+// and the cross-filter mode can change before the response arrives.
+function fvCacheKeyFor(event) {
+  return fvCacheActive(event) ? _fvCacheKey(event) : null;
+}
+
+// Return a deep clone of the figure_deltas cached under `key`, or null.
+function fvCacheGet(key) {
+  const hit = key && _fvResponseCache.get(key);
   return hit ? cloneObj(hit) : null;
 }
 
-function fvCachePut(event, figureDeltas) {
-  if (!fvCacheActive(event) || !figureDeltas) return;
-  _fvResponseCache.set(_fvCacheKey(event), cloneObj(figureDeltas));
+function fvCachePut(key, figureDeltas) {
+  if (!key || !figureDeltas) return;
+  _fvResponseCache.set(key, cloneObj(figureDeltas));
 }
 
 // === Figure-scoped reset cache (per-figure reset or autorange, case 3a) ===

@@ -63,6 +63,16 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   whenever an axis span was smaller than `bins / 10`, and a span under 1e-10
   collapsed every row into bin 0. The bin scale now has no absolute pad, and a
   value at the top edge folds into the top bin.
+- When requests overlap, the newest data now wins for each trace layer. Before,
+  the response that arrived last was applied, even when it belonged to an older
+  zoom, selection or reset. A late response still fills the layers that newer
+  requests did not re-aggregate.
+- A zoom made while a reset or deselect was pending is no longer lost. The
+  page ignored Plotly events of every figure until the response arrived. The
+  page now ignores only the events of a figure that a programmatic update is
+  changing.
+- A deselect sent while zoomed no longer stores zoomed data in the client
+  response cache when the zoom is reset before the response arrives.
 
 ### Changed
 

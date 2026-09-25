@@ -10,15 +10,18 @@ window.fvEnsureOverlayBackground = async function(selections) {
   });
 };
 window.fvResetRuntimeCache = function() {
+  // The reset is a write too: a response to an older request cannot bring
+  // its data back.
+  const seq = fvNextWriteSeq();
+  const layerKeys = ['base', 'bg', 'fg'];
   for (const uid of Object.keys(layerDataByUid)) {
-    layerDataByUid[uid] = { base: {}, bg: {}, fg: {} };
+    for (const layerKey of layerKeys) setLayerData(uid, layerKey, {}, seq);
   }
   for (const fig of DASHBOARD_SPEC.figures) {
-    hasBgByFigure[fig.uid] = false;
+    setHasBackground(fig.uid, false, seq);
     bgYExtentByFig[fig.uid] = null;
-    const grouped = groupedDataByParent[fig.uid] || {};
-    for (const parentUid of Object.keys(grouped)) {
-      grouped[parentUid] = { base: [], bg: [], fg: [] };
+    for (const parentUid of Object.keys(groupedDataByParent[fig.uid] || {})) {
+      for (const layerKey of layerKeys) setGroupedLayerData(fig.uid, parentUid, layerKey, [], seq);
     }
   }
   if (typeof _fvResetRendererCache === 'function') _fvResetRendererCache();

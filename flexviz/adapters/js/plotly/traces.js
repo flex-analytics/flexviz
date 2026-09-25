@@ -161,7 +161,7 @@ function applyHeatmapColorbarPolicy(trace, renderLayer, showForeground) {
     return;
   }
   // During Plotly.react keep the bg colorbar; swap to fg-only after render
-  // completes (see fvFinalizeHeatmapOverlayColorbars in render.js).
+  // completes (see fvFinalizeHeatmapOverlayColorbars).
   if (renderLayer === 'bg') {
     trace.showscale = true;
   } else if (renderLayer === 'fg') {
@@ -211,9 +211,7 @@ window.fvFinalizeHeatmapOverlayColorbars = function(figUid) {
     );
     return Promise.all(steps);
   };
-  return typeof fvRunProgrammaticPlotlyOp === 'function'
-    ? fvRunProgrammaticPlotlyOp(restyle)
-    : Promise.resolve(restyle());
+  return fvRunProgrammaticPlotlyOp(figUid, restyle);
 };
 
 function applyHeatmapZRange(trace, extent) {
@@ -403,7 +401,6 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.offsetgroup = logicalUid;
     trace.alignmentgroup = 'fv-bars';
   }
-  if (_resetTreemapLevel && template.type === 'treemap') { trace.level = 'root'; }
   if (applyLineGaps && Array.isArray(trace.x) && Array.isArray(trace.y)) {
     const gapped = fvApplyLineGaps(trace.x, trace.y, true);
     trace.x = gapped.x;

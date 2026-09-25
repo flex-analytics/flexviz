@@ -5423,13 +5423,19 @@ class TestResetCleanupBrowser:
         }""")
         assert all_cleared, "Plotly.react must clear selection rectangles on reset"
 
-    def test_reset_fires_exactly_one_server_call(self, page: Page, server_port: int):
-        """The toolbar Reset button must fire exactly one reset event.
-
-        Bug B (missing _programmaticOp guard in handleRelayout) caused a
-        spurious second server call when Plotly fired plotly_relayout during
-        fvOnReset's Plotly.react call.
-        """
+    @pytest.mark.parametrize(
+        "button",
+        [
+            "#fv-btn-reset",
+            "#fv-btn-deselect",
+            "#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']",
+        ],
+    )
+    def test_reset_fires_exactly_one_server_call(
+        self, page: Page, server_port: int, button: str
+    ):
+        """A reset button posts one request, although no guard is on while the
+        response redraws the figures and clears the selection box."""
         url = _dashboard_url(server_port, "plotly", n_figures=2)
         update_bodies: list[dict] = []
 
@@ -5448,18 +5454,12 @@ class TestResetCleanupBrowser:
         page.wait_for_timeout(1_500)
 
         count_before = len(update_bodies)
-        page.click("#fv-btn-reset")
+        page.click(button)
         page.wait_for_timeout(2_000)
 
-        reset_events = [
-            b
-            for b in update_bodies[count_before:]
-            if b.get("event", {}).get("type") == "init"
-        ]
-        assert len(reset_events) == 1, (
-            f"Expected exactly 1 init event from toolbar Reset, got {len(reset_events)}. "
-            "Spurious duplicates indicate _programmaticOp guard is missing from handleRelayout."
-        )
+        events = [b["event"]["type"] for b in update_bodies[count_before:]]
+        assert len(events) == 1, events
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
 
     def test_modebar_home_preserves_selections(self, page: Page, server_port: int):
         """The Plotly modebar Reset-axes button must preserve cross-filter selections.
@@ -7093,3 +7093,287 @@ class TestLinkedAxesBrowser:
 
         assert "equal ranges" in message
         assert page.evaluate("window.flexvizState().state") == before
+
+
+# ---------------------------------------------------------------------------
+# Response order and the programmatic guard
+# ---------------------------------------------------------------------------
+
+
+def _hold_first_update(page: Page) -> list:
+    """Hold back the next /dashboard/update request, so its response arrives
+    late. Returns the list that receives its route: continue it to release."""
+    held: list = []
+
+    def hold_first(route) -> None:
+        if held:
+            route.continue_()
+        else:
+            held.append(route)
+
+    page.route("**/dashboard/update", hold_first)
+    return held
+
+
+def _wait_held(page: Page, held: list) -> None:
+    deadline = time.time() + 5
+    while not held:
+        assert time.time() < deadline, "no request was held"
+        page.wait_for_timeout(20)
+
+
+# Counts the updates that have applied their response and redrawn. The
+# handlers call postDashboardUpdate by its global name, so the wrapper sees
+# every update, cache hits included.
+_COUNT_SETTLED_UPDATES = """() => {
+    const base = postDashboardUpdate;
+    window.__fvSettled = 0;
+    window.postDashboardUpdate = (...args) =>
+      base(...args).finally(() => { window.__fvSettled++; });
+  }"""
+
+
+def _wait_settled(page: Page, count: int) -> None:
+    page.wait_for_function(f"() => window.__fvSettled >= {count}", timeout=5_000)
+
+
+def _release(page: Page, held: list, settled: int) -> None:
+    held[0].continue_()
+    _wait_settled(page, settled)
+
+
+_X_SPAN = """(i) => {
+    const x = divs[i].data[0].x;
+    return [Math.min(...x), Math.max(...x)];
+  }"""
+
+_LAYER_X_SPAN = """([i, layer]) => {
+    const x = divs[i].data.find(t => t.uid.endsWith('__fv_layer_' + layer)).x;
+    return [Math.min(...x), Math.max(...x)];
+  }"""
+
+# Selects a ts range on figure `fig` and posts it. It does not wait for the
+# response, so a held request cannot block the evaluate.
+_SELECT_TS = """([fig, range]) => {
+    window.fvSetSelectionState([{
+      source_figure_uid: DASHBOARD_SPEC.figures[fig].uid,
+      predicates: [{clauses: [{column: 'ts', range}]}],
+    }]);
+    postDashboardUpdate({type: 'selection',
+      selections: DASHBOARD_SPEC.state.selections, force_update: true});
+  }"""
+
+
+@pytest.mark.browser
+class TestResponseOrderBrowser:
+    @staticmethod
+    def _open(page: Page, url: str) -> list[dict]:
+        posts: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                posts.append(json.loads(r.post_data or "{}")["event"])
+                if "/dashboard/update" in r.url and r.method == "POST"
+                else None
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        page.evaluate(_COUNT_SETTLED_UPDATES)
+        posts.clear()
+        return posts
+
+    def test_a_late_response_does_not_overwrite_a_newer_zoom(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked(server_port)
+        posts = self._open(page, url)
+        held = _hold_first_update(page)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        _wait_held(page, held)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
+        _wait_settled(page, 1)
+        _release(page, held, settled=2)
+
+        assert len(posts) == 2
+        for idx in (0, 1):
+            lo, hi = page.evaluate(_X_SPAN, idx)
+            assert 300 <= lo and hi <= 400, (idx, lo, hi)
+
+    def test_a_late_response_still_updates_what_a_newer_request_left_alone(
+        self, page: Page, server_port: int
+    ):
+        """A brush on C re-aggregates A and B. A zoom on A before that response
+        re-aggregates only A. The late brush response must still filter B."""
+        url = _dashboard_url(server_port, "plotly", n_figures=3)
+        posts = self._open(page, url)
+        held = _hold_first_update(page)
+
+        page.evaluate(_SELECT_TS, [2, [100, 300]])
+        _wait_held(page, held)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [200, 400]})")
+        _wait_settled(page, 1)
+        _release(page, held, settled=2)
+
+        assert [p["type"] for p in posts] == ["selection", "viewport"]
+        lo, hi = page.evaluate(_X_SPAN, 0)
+        assert 200 <= lo and hi <= 300, ("A", lo, hi)
+        lo, hi = page.evaluate(_X_SPAN, 1)
+        assert 100 <= lo and hi <= 300, ("B", lo, hi)
+
+    def test_a_late_response_still_fills_the_layers_a_newer_one_left_alone(
+        self, page: Page, server_port: int
+    ):
+        """Overlay mode, with a brush on C. A zoom on A re-aggregates the bg and
+        fg of A. A newer brush on C re-aggregates only the fg of A. The late
+        zoom response must still set the bg of A, but not its older fg."""
+        url = _dashboard_url(server_port, "plotly", n_figures=3)
+        posts = self._open(page, url)
+        page.evaluate("window.flexvizApply({state: {cross_filter_mode: 'overlay'}})")
+        page.evaluate(_SELECT_TS, [2, [100, 300]])
+        _wait_settled(page, 2)
+        held = _hold_first_update(page)
+        posts.clear()
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [200, 400]})")
+        _wait_held(page, held)
+        page.evaluate(_SELECT_TS, [2, [250, 450]])
+        _wait_settled(page, 3)
+        _release(page, held, settled=4)
+
+        assert [p["type"] for p in posts] == ["viewport", "selection"]
+        lo, hi = page.evaluate(_LAYER_X_SPAN, [0, "bg"])
+        assert 200 <= lo and hi <= 400, ("bg", lo, hi)
+        lo, hi = page.evaluate(_LAYER_X_SPAN, [0, "fg"])
+        assert 250 <= lo and hi <= 400, ("fg", lo, hi)
+
+    @pytest.mark.parametrize(
+        "button",
+        [
+            "#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']",
+            "#fv-btn-reset",
+        ],
+    )
+    def test_a_late_zoom_response_does_not_undo_a_reset(
+        self, page: Page, server_port: int, button: str
+    ):
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        posts = self._open(page, url)
+        held = _hold_first_update(page)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        _wait_held(page, held)
+        page.click(button)
+        _wait_settled(page, 1)
+        _release(page, held, settled=2)
+
+        assert len(posts) == 2, posts
+        lo, hi = page.evaluate(_X_SPAN, 0)
+        assert lo <= 10 and hi >= 490, (lo, hi)
+
+    @pytest.mark.parametrize(
+        "button",
+        [
+            "#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']",
+            "#fv-btn-reset",
+            "#fv-btn-deselect",
+        ],
+    )
+    def test_a_zoom_while_a_reset_is_pending_posts_and_keeps_its_data(
+        self, page: Page, server_port: int, button: str
+    ):
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        posts = self._open(page, url)
+        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        _wait_settled(page, 1)
+        held = _hold_first_update(page)
+        posts.clear()
+
+        page.click(button)
+        _wait_held(page, held)
+        page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [300, 400]})")
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        assert viewport.get(f"{uids[1]}/x") == {"min": 300, "max": 400}, viewport
+        _wait_settled(page, 2)
+
+        assert len(posts) == 2, posts
+        assert posts[1]["viewport_keys"] == [f"{uids[1]}/x"]
+        _release(page, held, settled=3)
+        lo, hi = page.evaluate(_X_SPAN, 1)
+        assert 300 <= lo and hi <= 400, (lo, hi)
+
+    def test_the_guard_ignores_only_its_figure_until_its_last_operation_ends(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        posts = self._open(page, url)
+        uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
+        page.evaluate(
+            """(uid) => {
+            window.__fvRelease = [];
+            window.__fvOps = [0, 1].map(() => fvRunProgrammaticPlotlyOp(
+              uid, () => new Promise(r => window.__fvRelease.push(r))));
+            window.__fvRelease[0]();
+            return window.__fvOps[0];
+          }""",
+            uids[0],
+        )
+
+        # A relayout posts synchronously, so the zoom on 0 would post first.
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        page.evaluate("() => Plotly.relayout(divs[1], {'xaxis.range': [100, 200]})")
+        _wait_settled(page, 1)
+        assert [p["viewport_keys"] for p in posts] == [[f"{uids[1]}/x"]]
+
+        page.evaluate("() => { window.__fvRelease[1](); return window.__fvOps[1]; }")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [300, 400]})")
+        _wait_settled(page, 2)
+        assert [p["viewport_keys"] for p in posts][1:] == [[f"{uids[0]}/x"]]
+
+    def test_the_guard_ignores_a_deselect_on_its_figure(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        posts = self._open(page, url)
+        page.evaluate(_SELECT_TS, [0, [100, 300]])
+        _wait_settled(page, 1)
+        posts.clear()
+        page.evaluate("""() => {
+            window.__fvOp = fvRunProgrammaticPlotlyOp(DASHBOARD_SPEC.figures[0].uid,
+              () => new Promise(r => { window.__fvRelease = r; }));
+          }""")
+
+        page.evaluate("() => divs[0].emit('plotly_deselect')")
+        assert len(page.evaluate("DASHBOARD_SPEC.state.selections")) == 1
+
+        page.evaluate("() => { window.__fvRelease(); return window.__fvOp; }")
+        page.evaluate("() => divs[0].emit('plotly_deselect')")
+        _wait_settled(page, 2)
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+        assert [p["type"] for p in posts] == ["deselect"]
+
+    def test_a_late_response_does_not_enter_the_init_cache(
+        self, page: Page, server_port: int
+    ):
+        """A deselect sent while zoomed has zoomed data. If the zoom is reset
+        before it arrives, it must not become the cached unfiltered response."""
+        url = _dashboard_url_cached(server_port)
+        posts = self._open(page, url)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
+        _wait_settled(page, 1)
+        held = _hold_first_update(page)
+        posts.clear()
+
+        page.click("#fv-btn-deselect")
+        _wait_held(page, held)
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.autorange': true})")
+        _wait_settled(page, 2)
+        _release(page, held, settled=3)
+        page.click("#fv-btn-deselect")
+        _wait_settled(page, 4)
+
+        assert [p["type"] for p in posts] == ["deselect"], "the rest is cached"
+        lo, hi = page.evaluate(_X_SPAN, 0)
+        assert lo <= 10 and hi >= 490, (lo, hi)

@@ -1,8 +1,6 @@
 // === Plotly adapter — event handlers ===
 // Requires: render.js, state.js
 
-let _programmaticOp = false;
-
 function clearFigureSelection(figUid) {
   const remainingSelections = window.fvClearFigureSelectionFromList?.(
     figUid,
@@ -14,14 +12,6 @@ function clearFigureSelection(figUid) {
     selections: remainingSelections,
     force_update: true,
   });
-}
-
-function resetTreemapLevel(figUid) {
-  _resetTreemapLevel = true;
-  _programmaticOp = true;
-  _fvRenderFigure(figUid);
-  _programmaticOp = false;
-  _resetTreemapLevel = false;
 }
 
 function _selectionBoxMatches(left, right) {
@@ -49,7 +39,7 @@ function _categoricalClausesFromLabel(clicked, labelCols) {
 // Click selection (pie slice / treemap node) — dispatched on the trace's
 // declared selection.kind, never on its renderer trace type.
 function handleClick(eventData, figUid) {
-  if (_programmaticOp) return false;
+  if (_fvIsProgrammatic(figUid)) return false;
   const pt = eventData && eventData.points && eventData.points[0];
   if (!pt) return false;
   const figSpec = figSpecByUid[figUid];
@@ -89,10 +79,7 @@ function handleClick(eventData, figUid) {
         predicate
       ) || []);
   if (!newPredicates.length) {
-    if (existing) {
-      if (sel.kind === 'path') resetTreemapLevel(figUid);
-      clearFigureSelection(figUid);
-    }
+    if (existing) clearFigureSelection(figUid);
     return false;
   }
   const nextSelections = window.fvReplaceFigureSelection?.(
@@ -209,7 +196,7 @@ function _figureSourceTrace(figUid, kind) {
 
 function handleRelayout(relayout, figUid) {
   if (!relayout) return;
-  if (_programmaticOp) return;
+  if (_fvIsProgrammatic(figUid)) return;
   const keys = Object.keys(relayout);
   if (keys.length === 1 && keys[0] === 'dragmode') {
     updateModeIndicator(figUid, relayout.dragmode);
@@ -481,9 +468,9 @@ function _fvCubeEnsureOverlayBg(gesture) {
     needed.add(t.figUid);
   }
   if (!needed.size) return;
-  const blob = fvCacheGet({
+  const blob = fvCacheGet(fvCacheKeyFor({
     type: 'init', selections: [], force_update: true,
-  });
+  }));
   if (!blob) return; // cold cache — degrade (skipPost bg conjunct)
   for (const figUid of needed) {
     const deltas = blob[figUid] || [];
@@ -494,28 +481,20 @@ function _fvCubeEnsureOverlayBg(gesture) {
     for (const delta of deltas) {
       const ts = traceSpecByUid[delta.uid];
       if (fvCubeTraceFilteredOnly(ts)) continue;
+      restores.push(fvSaveLayerData(figUid, delta.uid, 'bg'));
       if (delta.group_results) {
-        restores.push({
-          uid: delta.uid,
-          grouped: true,
-          data: cloneObj((groupedDataByParent[figUid][delta.uid] || {}).bg || []),
-        });
         for (const cr of delta.group_results) childUidToParentUid[cr.uid] = delta.uid;
         setGroupedLayerData(figUid, delta.uid, 'bg', delta.group_results);
         for (const cr of delta.group_results) {
           _updateBgYExtent(figUid, (cr.updates || {}).y);
         }
       } else {
-        restores.push({
-          uid: delta.uid,
-          grouped: false,
-          data: cloneObj(ensureLayerData(delta.uid).bg || {}),
-        });
         setLayerData(delta.uid, 'bg', delta.updates || {});
         _updateBgYExtent(figUid, (delta.updates || {}).y);
       }
     }
-    hasBgByFigure[figUid] = true;
+    restores.push(fvSaveHasBackground(figUid));
+    setHasBackground(figUid, true);
     (gesture.createdBg = gesture.createdBg || []).push({
       figUid, restores, prevYExtent,
     });
@@ -1206,20 +1185,10 @@ function _fvCubeApplyTargetSlices(targets, rangesForEntry, gesture) {
     if (gesture) {
       if (!gesture.savedLayers) gesture.savedLayers = {};
       if (!(target.uid in gesture.savedLayers)) {
-        // Snapshot the pre-drag layer (grouped parents: their child-result
-        // list) so an abandoned gesture can restore it.
-        gesture.savedLayers[target.uid] = grouped
-          ? {
-              figUid: target.figUid,
-              layerKey,
-              grouped: true,
-              data: cloneObj(groupedDataByParent[target.figUid][target.uid][layerKey] || []),
-            }
-          : {
-              figUid: target.figUid,
-              layerKey,
-              data: cloneObj(ensureLayerData(target.uid)[layerKey] || {}),
-            };
+        gesture.savedLayers[target.uid] = {
+          figUid: target.figUid,
+          restore: fvSaveLayerData(target.figUid, target.uid, layerKey),
+        };
       }
     }
     // Dispatch per target shape: grouped parents reconcile child results
@@ -1371,29 +1340,19 @@ function _fvCubeGestureTake(figUid) {
 // layer data of every target the live loop touched (grouped parents restore
 // their child-result list — the recorded child uids are unchanged, so
 // childUidToParentUid needs no rollback), plus any bg layer state the
-// gesture itself created (_fvCubeEnsureOverlayBg — contract F).
+// gesture itself created (_fvCubeEnsureOverlayBg — contract F). Each restore
+// also puts back the slot's pre-drag number (see fvSaveLayerData, delta.js).
 function _fvCubeGestureAbort(figUid) {
   const gesture = _fvCubeGestureTake(figUid);
   if (!gesture || (!gesture.savedLayers && !gesture.createdBg)) return;
   const dirty = new Set();
-  for (const [uid, saved] of Object.entries(gesture.savedLayers || {})) {
-    if (saved.grouped) {
-      setGroupedLayerData(saved.figUid, uid, saved.layerKey, saved.data);
-    } else {
-      setLayerData(uid, saved.layerKey, saved.data);
-    }
+  for (const saved of Object.values(gesture.savedLayers || {})) {
+    saved.restore();
     dirty.add(saved.figUid);
   }
   for (const created of (gesture.createdBg || [])) {
-    hasBgByFigure[created.figUid] = false;
+    for (const restore of created.restores) restore();
     bgYExtentByFig[created.figUid] = created.prevYExtent;
-    for (const r of created.restores) {
-      if (r.grouped) {
-        setGroupedLayerData(created.figUid, r.uid, 'bg', r.data);
-      } else {
-        setLayerData(r.uid, 'bg', r.data);
-      }
-    }
     dirty.add(created.figUid);
   }
   _fvCubeRenderFigures(dirty);
@@ -1402,7 +1361,7 @@ function _fvCubeGestureAbort(figUid) {
 // Bound (init.js) only when live_brush !== "off" and the figure has range
 // or categorical (bar) selection geometry.
 function handleSelecting(eventData, figUid) {
-  if (_programmaticOp) return;
+  if (_fvIsProgrammatic(figUid)) return;
   if (!_fvLiveBrushEnabled()) return;
   if (!eventData || (!eventData.range && !(eventData.points || []).length)) return;
   let gesture = _fvCubeGestures[figUid];
@@ -1520,7 +1479,7 @@ function _fvCoveredBarPoints(figUid, range, gd, source) {
 // Bound (init.js, capture phase) alongside plotly_selecting, under the same
 // live_brush / selection-geometry gate.
 function handleSelectionEditPointerDown(evt, figUid) {
-  if (_programmaticOp || !_fvLiveBrushEnabled()) return;
+  if (_fvIsProgrammatic(figUid) || !_fvLiveBrushEnabled()) return;
   if (evt.button !== 0 || _fvCubeGestures[figUid]) return;
   const el = evt.target;
   if (!el || !el.closest) return;
@@ -1855,7 +1814,7 @@ function _fvCubeEchoOfStoredSelection(figUid, range) {
 function _reapplyCanonicalSelectionBoxes(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined || !divs[figIdx]) return;
-  fvRunProgrammaticPlotlyOp(() =>
+  fvRunProgrammaticPlotlyOp(figUid, () =>
     Plotly.relayout(divs[figIdx], { selections: selectionBoxesForFigure(figUid) })
   );
 }
@@ -1935,7 +1894,7 @@ function handleSelected(eventData, figUid) {
 }
 
 function handleDeselect(figUid) {
-  if (_programmaticOp) return;
+  if (_fvIsProgrammatic(figUid)) return;
   _fvCubeGestureAbort(figUid);
   clearFigureSelection(figUid);
 }
