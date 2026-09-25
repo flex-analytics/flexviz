@@ -38,7 +38,7 @@ from .trace.line import LinePlot
 from .trace.pie import PiePlot
 from .trace.treemap import TreeMap
 
-_HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap"})
+_HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap", "geo_histogram2d"})
 _HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
 
 

@@ -700,7 +700,7 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="rdbu", color_range="auto")
 - Defaults are owned by the trace classes: `Histogram2D` and `GeoHistogram2D` materialize `"viridis"` / `"auto"` / `"linear"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
 - Generated specs must include explicit `display.color_scale` and `display.color_range`; `Figure` and adapters validate this invariant instead of re-deriving heatmap defaults.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
-- `Figure.to_spec()` validates that all heatmap-like traces in one figure share the same effective style (`color_scale`, `color_range`, `color_norm`), because renderers treat the heatmap color control as figure-level.
+- `Figure.to_spec()` validates that all heatmap-like traces in one figure (`histogram2d`, `corr_heatmap`, `geo_histogram2d`) share the same effective style (`color_scale`, `color_range`, `color_norm`), because renderers treat the heatmap color control as figure-level.
 - Renderer split:
   - Plotly consumes the raw `color_scale` string directly and applies `zmin` / `zmax` only when `color_range` is fixed.
   - Plotly log norm: Plotly has no log color axis, so `buildTraceFromTemplate` colors by `log10(z)`, keeps the raw values in `text` for the hover template, pins an auto range to the drawn cells, and labels the colorbar ticks in data units. `heatmapColorRange` (JS) and `_plotly_heatmap_color_range` (Python) return a fixed range in log10 space. A cell at or below 0 has no log and is not drawn. Every delta, from the server or the cube, passes through `buildTraceFromTemplate`, the only place the transform runs.
