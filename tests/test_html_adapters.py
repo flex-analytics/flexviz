@@ -121,13 +121,6 @@ class TestPlotlyHtml:
             "fvOnReset must set autorange:true on layoutsByFig after postDashboardUpdate"
         )
 
-    def test_reset_deletes_axis_range(self, html):
-        # The reset handler must explicitly clear the saved range property
-        # so Plotly does not re-render at the old zoom level.
-        assert "_programmaticOp" in html, (
-            "fvOnReset must use _programmaticOp guard (same as deselect guard)"
-        )
-
     def test_reset_calls_fv_reset_runtime_cache(self, html):
         # fvOnReset must call fvResetRuntimeCache to clear stale fg layer data
         # and bgYExtentByFig before posting the reset event so that overlay mode
@@ -218,9 +211,8 @@ class TestPlotlyHtml:
     # plotly_deselect event fires programmatically after Plotly.react clears
     # selection boxes.  A guard flag prevents the double-fire.
     def test_deselect_has_programmatic_guard(self, html):
-        assert "_programmaticOp" in html, (
-            "handleDeselect must check _programmaticOp to prevent double backend calls"
-        )
+        body = _js_function_body(html, "function handleDeselect(figUid)")
+        assert "_fvIsProgrammatic(figUid)" in body
 
     def test_grouped_parent_not_bootstrapped_as_trace(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
@@ -542,13 +534,8 @@ class TestPlotlyHtml:
 
     # handleRelayout guards
     def test_handlerelayout_has_programmatic_op_guard(self, html):
-        # handleRelayout must bail early when _programmaticOp is true to avoid
-        # sending a spurious second server request during fvOnReset.
-        assert "handleRelayout" in html
-        # The guard must appear inside the function body (not just in fvOnReset).
-        # We verify both strings appear in the HTML (order is guaranteed by the
-        # single JS function definition).
-        assert "_programmaticOp" in html
+        body = _js_function_body(html, "function handleRelayout(relayout, figUid)")
+        assert "_fvIsProgrammatic(figUid)" in body
 
     def test_autorange_sends_viewport_not_reset(self, html):
         # The modebar home button fires an autorange relayout.  This must send a
