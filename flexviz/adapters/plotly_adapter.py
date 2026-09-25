@@ -189,10 +189,21 @@ def _plotly_heatmap_color_scale(ts: Any) -> str:
     return color_scale
 
 
+def _plotly_heatmap_color_norm(ts: Any) -> str:
+    # The browser reads color_norm straight from the spec, so an imported spec
+    # is checked here. Only the two 2-D histograms take "log".
+    color_norm = ts.display.get("color_norm", "linear")
+    norms = ("linear",) if ts.trace_type == "corr_heatmap" else ("linear", "log")
+    if color_norm not in norms:
+        raise ValueError(f"{ts.trace_type} color_norm must be one of {norms}")
+    return color_norm
+
+
 def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
     if "color_range" not in ts.display:
         raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
     color_range = ts.display["color_range"]
+    color_norm = _plotly_heatmap_color_norm(ts)
     if color_range == "auto":
         return "auto"
     if not (isinstance(color_range, (list, tuple)) and len(color_range) == 2):
@@ -205,6 +216,8 @@ def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
         raise ValueError("heatmap color_range values must be finite numbers")
     if lo >= hi:
         raise ValueError("heatmap color_range must satisfy min < max")
+    if color_norm == "log" and lo <= 0:
+        raise ValueError("heatmap color_range must be above 0 when color_norm is 'log'")
     return (lo, hi)
 
 

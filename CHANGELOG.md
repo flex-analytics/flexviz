@@ -24,6 +24,10 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Added
 
+- `color_norm="log"` on `add_histogram2d` and `add_geo_histogram2d` colors
+  each bin by the log of its value, so a few dense bins no longer wash out the
+  rest. The colorbar and the hover show the real values. Bins at or below 0
+  are not drawn, and a fixed `color_range` must be above 0.
 - Linked axes: `Dashboard.link_axes` links axes across figures, so they zoom,
   pan, autorange and reset together, and every linked figure re-aggregates in
   one request. Link by column (`link_axes(on="ts")`, optionally for given
@@ -57,6 +61,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Fixed
 
+- `Figure.to_spec()` now also checks that the `add_geo_histogram2d` traces in
+  one figure share `color_scale`, `color_range` and `color_norm`, as it
+  already did for the other heatmaps.
 - In update mode, a zoom on a figure with its own selection stored the data
   filtered by other selections as the figure's unfiltered background. After a
   switch to overlay mode, the figure then showed that filtered data as its

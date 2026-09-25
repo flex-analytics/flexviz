@@ -248,7 +248,7 @@ Figure
 ├── add_bar(labels, values=None, agg="sum", ..., color_map=None, group_by=None)
 ├── add_pie(labels, values, agg, hole, color_map)
 ├── add_treemap(path, values=None, agg="sum", name, color_map)
-├── add_histogram2d(x, y, x_bins, y_bins, name, color_scale, color_range, axes)
+├── add_histogram2d(x, y, x_bins, y_bins, name, color_scale, color_range, color_norm, axes)
 ├── add_geo_histogram2d(lat, lon, lat_bins, lon_bins, z, histfunc, histnorm, …)
 ├── add_geo_line(lat, lon, n_points, name, color, marker_size)
 ├── add_corr_heatmap(columns, method, absolute, name, color_scale, color_range)
@@ -644,7 +644,7 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
-- Public style API: `color_scale` and `color_range`; trace-owned defaults are `"viridis"` and `"auto"`.
+- Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"viridis"`, `"auto"` and `"linear"`.
 - `_to_update` returns `{"x": [...centers], "y": [...centers], "z": [[values]], "x_edges": [lo, step, n], "y_edges": [lo, step, n]}`.
 - Box-select inside the heatmap emits a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses (x and y columns).
 
@@ -663,7 +663,7 @@ fig.add_geo_histogram2d(lat="lat", lon="lon", histfunc="mean", z="temperature")
 - `histnorm` is applied over the flat z grid inside `unpack_hist2d_grid` (`trace/hist2d.py`), with `bin_area = lat_step * lon_step`. The delta carries the two edge triples and the flat z, no centers: the client derives every rectangle from them.
 - `_to_update` returns `{"lat_edges": [lo, step, n], "lon_edges": [lo, step, n], "z": [...]}`: one triple per axis and the flat lon-major grid, `null` for an empty cell. `_geoRectanglesFromEdges` (`plotly/traces.js`) builds the choropleth GeoJSON from them, one rectangle per non-empty cell with id `r{lat_i}_c{lon_j}`. The rectangles are most of a geo response, and every one of them is `lo + i * step`.
 - Cross-filtering: Plotly geo selections are derived from the selected choropleth bin ids (`locations`, built by the client with the rectangles) and collapsed to one lon/lat bounding box, then emitted as a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses on the trace's `lon` and `lat` columns.
-- Public style API: `color_scale` and `color_range`; defaults are `"viridis"` and `"auto"`.
+- Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"viridis"`, `"auto"` and `"linear"`.
 - PlotlyAdapter renders as a `choroplethmap` trace with OpenStreetMap base tiles.
 - ECharts geo rendering is not yet supported.
 
@@ -691,17 +691,20 @@ fig.add_corr_heatmap(
 
 ```python
 fig.add_histogram2d(x="x", y="y", color_scale="plasma", color_range=(0.0, 5.0))
+fig.add_histogram2d(x="lon", y="lat", color_norm="log")
 fig.add_corr_heatmap(columns=["a", "b"], color_scale="rdbu", color_range="auto")
 ```
 
-- `color_scale` and `color_range` live in `TraceSpec.display`, not in `params`, because they are renderer-facing style hints.
-- Defaults are owned by the trace classes: `Histogram2D` materializes `"viridis"` / `"auto"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
+- `color_scale`, `color_range` and `color_norm` live in `TraceSpec.display`, not in `params`, because they are renderer-facing style hints.
+- `color_norm` is `"linear"` or `"log"` and exists on `Histogram2D` and `GeoHistogram2D` only. A missing `color_norm` means linear: `CorrHeatmap` values lie in [-1, 1] and are always linear. With `"log"`, a fixed `color_range` stays in data units and must be above 0. An imported spec skips the trace validation until its first request, so the Plotly adapter also rejects another value, a log norm on a `corr_heatmap`, and a fixed log range at or below 0.
+- Defaults are owned by the trace classes: `Histogram2D` and `GeoHistogram2D` materialize `"viridis"` / `"auto"` / `"linear"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
 - Generated specs must include explicit `display.color_scale` and `display.color_range`; `Figure` and adapters validate this invariant instead of re-deriving heatmap defaults.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
-- `Figure.to_spec()` validates that all heatmap-like traces in one figure share the same effective style, because renderers treat the heatmap color control as figure-level.
+- `Figure.to_spec()` validates that all heatmap-like traces in one figure (`histogram2d`, `corr_heatmap`, `geo_histogram2d`) share the same effective style (`color_scale`, `color_range`, `color_norm`), because renderers treat the heatmap color control as figure-level.
 - Renderer split:
   - Plotly consumes the raw `color_scale` string directly and applies `zmin` / `zmax` only when `color_range` is fixed.
-  - ECharts maps a supported set of heatmap scale names (`viridis`, `plasma`, `magma`, `inferno`, `cividis`, `blues`, `reds`, `rdbu`) to local color arrays for one per-figure `visualMap`.
+  - Plotly log norm: Plotly has no log color axis, so `applyLogColorNorm` colors by `log10(z)` and keeps the raw values in `text` for the hover template. It also pins the color range in log10 space: a fixed range from its data units, an auto range from the drawn cells, and a single value as a narrow band around it. The colorbar ticks are labelled in data units. A cell at or below 0 has no log, so it is not drawn and has no hover. Every delta, from the server or the cube, passes through `buildTraceFromTemplate`, which calls `applyLogColorNorm`. It is the only place the transform runs: the template keeps a fixed range in data units, and the overlay sync pins only a layer that has no range yet.
+  - ECharts maps a supported set of heatmap scale names (`viridis`, `plasma`, `magma`, `inferno`, `cividis`, `blues`, `reds`, `rdbu`) to local color arrays for one per-figure `visualMap`, and ignores `color_norm`.
 
 ### Dtype-Aware Filtering
 

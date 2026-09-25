@@ -770,6 +770,23 @@ class TestFigureAddHistogram2D:
         ts = fig.to_spec(source="src").figure.traces[0]
         assert ts.display["color_scale"] == "viridis"
         assert ts.display["color_range"] == "auto"
+        assert ts.display["color_norm"] == "linear"
+
+    def test_to_spec_serializes_log_color_norm(self):
+        fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
+        fig.add_histogram2d(x="x", y="y", color_norm="log")
+
+        ts = fig.to_spec(source="src").figure.traces[0]
+        assert ts.display["color_norm"] == "log"
+
+
+class TestFigureAddGeoHistogram2D:
+    def test_to_spec_serializes_log_color_norm(self):
+        fig = Figure(pl.DataFrame({"lat": [0.0, 1.0], "lon": [1.0, 2.0]}))
+        fig.add_geo_histogram2d(lat="lat", lon="lon", color_norm="log")
+
+        ts = fig.to_spec(source="src").figure.traces[0]
+        assert ts.display["color_norm"] == "log"
 
 
 class TestFigureAddCorrHeatmap:
@@ -804,7 +821,7 @@ class TestFigureHeatmapValidation:
         fig.add_histogram2d(x="x", y="y", color_scale="plasma")
 
         with pytest.raises(
-            ValueError, match="same effective color_scale and color_range"
+            ValueError, match="same effective color_scale, color_range and color_norm"
         ):
             fig.to_spec()
 
@@ -814,8 +831,24 @@ class TestFigureHeatmapValidation:
         fig.add_histogram2d(x="x", y="y", color_range=(0.0, 10.0))
 
         with pytest.raises(
-            ValueError, match="same effective color_scale and color_range"
+            ValueError, match="same effective color_scale, color_range and color_norm"
         ):
+            fig.to_spec()
+
+    def test_mixed_heatmap_color_norms_raise(self):
+        fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
+        fig.add_histogram2d(x="x", y="y", color_norm="linear")
+        fig.add_histogram2d(x="x", y="y", color_norm="log")
+
+        with pytest.raises(ValueError, match="color_norm"):
+            fig.to_spec()
+
+    def test_mixed_geo_heatmap_color_norms_raise(self):
+        fig = Figure(pl.DataFrame({"lat": [0.0, 1.0], "lon": [1.0, 2.0]}))
+        fig.add_geo_histogram2d(lat="lat", lon="lon", color_norm="linear")
+        fig.add_geo_histogram2d(lat="lat", lon="lon", color_norm="log")
+
+        with pytest.raises(ValueError, match="color_norm"):
             fig.to_spec()
 
 

@@ -99,6 +99,7 @@ class TestGeoHist2DConstructor:
         assert t.overlay_style == "filtered_only"
         assert t.color_scale == "viridis"
         assert t.color_range == "auto"
+        assert t.color_norm == "linear"
 
     def test_custom_bins(self):
         t = GeoHistogram2D(lat="lat", lon="lon", lat_bins=10, lon_bins=20)
@@ -564,6 +565,15 @@ class TestGeoHist2DSpec:
         assert t2.z_col == "value"
         assert t2.color_scale == "plasma"
         assert t2.color_range == (0.0, 100.0)
+        assert t2.color_norm == "linear"
+
+    def test_roundtrip_log_color_norm(self):
+        t = GeoHistogram2D(
+            lat="lat", lon="lon", color_range=(1.0, 100.0), color_norm="log"
+        )
+        t2 = GeoHistogram2D.from_trace_spec(t.to_trace_spec())
+        assert t2.color_range == (1.0, 100.0)
+        assert t2.color_norm == "log"
 
     def test_build_from_registry(self):
         t = GeoHistogram2D(lat="lat", lon="lon")
@@ -585,6 +595,7 @@ class TestGeoHist2DSpec:
         trace = GeoHistogram2D.from_trace_spec(spec)
         assert trace.color_scale == "viridis"
         assert trace.color_range == "auto"
+        assert trace.color_norm == "linear"
         assert trace.histfunc is None
         assert trace.histnorm is None
 

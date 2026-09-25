@@ -1330,8 +1330,8 @@ class TestHeatmapPlotly:
             html,
             "function syncHeatmapOverlayColorScale(traces, figSpec, showForeground)",
         )
-        assert "heatmapZFiniteExtent(bgTrace.z)" in body
-        assert "heatmapZFiniteExtent(fgTrace.z)" in body
+        assert "for (const trace of [bgTrace, fgTrace])" in body
+        assert "heatmapZFiniteExtent(trace.z)" in body
 
     def test_heatmap_scale_registry_is_not_embedded(self, html):
         assert "const HEATMAP_COLOR_SCALES =" not in html
@@ -1349,6 +1349,67 @@ class TestHeatmapPlotly:
         assert trace["colorscale"] == "plasma"
         assert trace["zmin"] == 0.0
         assert trace["zmax"] == 5.0
+
+    def test_plotly_heatmap_trace_keeps_log_range_in_data_units(self):
+        """The browser takes the log of the fixed range, as it does for the cells."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h2d",
+            trace_type="histogram2d",
+            axes=("x", "y"),
+            display={
+                "color_scale": "plasma",
+                "color_range": (1.0, 1000.0),
+                "color_norm": "log",
+            },
+        )
+        trace = PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
+        assert (trace["zmin"], trace["zmax"]) == (1.0, 1000.0)
+
+    @pytest.mark.parametrize(
+        ("trace_type", "color_norm"),
+        [
+            ("histogram2d", "sqrt"),
+            ("geo_histogram2d", "LOG"),
+            ("corr_heatmap", "log"),
+        ],
+    )
+    def test_plotly_heatmap_trace_rejects_invalid_color_norm(
+        self, trace_type, color_norm
+    ):
+        """A decoded spec reaches the adapter without the trace validation."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h",
+            trace_type=trace_type,
+            axes=("x", "y"),
+            display={
+                "color_scale": "plasma",
+                "color_range": "auto",
+                "color_norm": color_norm,
+            },
+        )
+        with pytest.raises(ValueError, match="color_norm must be one of"):
+            PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
+
+    def test_plotly_heatmap_trace_rejects_log_range_from_zero(self):
+        """A decoded spec reaches the adapter without the trace validation."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h2d",
+            trace_type="histogram2d",
+            axes=("x", "y"),
+            display={
+                "color_scale": "plasma",
+                "color_range": (0.0, 10.0),
+                "color_norm": "log",
+            },
+        )
+        with pytest.raises(ValueError, match="above 0"):
+            PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
 
     def test_corr_heatmap_legend_disabled(self):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
