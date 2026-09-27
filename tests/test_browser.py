@@ -7651,7 +7651,9 @@ class TestHeatmapColorNormBrowser:
         assert trace["colorbar"]["ticktext"] == ["1", "10", "100", "1K"]
         label = page.evaluate("""async () => {
             const gd = document.querySelectorAll('.js-plotly-plot')[0];
-            Plotly.Fx.hover(gd, [{ curveNumber: 0, pointNumber: [0, 3] }]);
+            // plotly.js 3.7+ shows no label for a heatmap [row, col] pointNumber.
+            const [trace] = gd.data;
+            Plotly.Fx.hover(gd, { xval: trace.x[3], yval: trace.y[0] });
             await new Promise(r => setTimeout(r, 200));
             return gd.querySelector('.hovertext').textContent;
         }""")
