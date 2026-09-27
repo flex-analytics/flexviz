@@ -814,42 +814,59 @@ class TestFigureAddCorrHeatmap:
         assert ts.display["color_range"] == (0.0, 1.0)
 
 
-class TestFigureHeatmapValidation:
-    def test_mixed_heatmap_color_scales_raise(self):
-        fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
-        fig.add_histogram2d(x="x", y="y", color_scale="viridis")
-        fig.add_histogram2d(x="x", y="y", color_scale="Cividis")
+class TestFigureHeatmapCount:
+    """A figure allows at most one heatmap-like trace."""
 
-        with pytest.raises(
-            ValueError, match="same effective color_scale, color_range and color_norm"
-        ):
+    @pytest.mark.parametrize(
+        "add_heatmap",
+        [
+            lambda fig: fig.add_histogram2d(x="a", y="b"),
+            lambda fig: fig.add_geo_histogram2d(lat="a", lon="b"),
+            lambda fig: fig.add_corr_heatmap(columns=["a", "b"]),
+        ],
+        ids=["histogram2d", "geo_histogram2d", "corr_heatmap"],
+    )
+    def test_second_heatmap_raises(self, add_heatmap):
+        fig = Figure(pl.DataFrame({"a": [0.0, 1.0, 2.0], "b": [1.0, 2.0, 3.0]}))
+        add_heatmap(fig)
+        add_heatmap(fig)
+
+        with pytest.raises(ValueError, match="at most one heatmap-like trace"):
             fig.to_spec()
 
-    def test_mixed_heatmap_color_ranges_raise(self):
-        fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
-        fig.add_histogram2d(x="x", y="y", color_range="auto")
-        fig.add_histogram2d(x="x", y="y", color_range=(0.0, 10.0))
+    @pytest.mark.parametrize(
+        ("add_traces", "trace_types"),
+        [
+            (
+                lambda fig: fig.add_histogram2d(x="a", y="b").add_line(x="a", y="b"),
+                {"histogram2d", "line"},
+            ),
+            (
+                lambda fig: fig.add_geo_histogram2d(lat="a", lon="b").add_geo_line(
+                    lat="a", lon="b"
+                ),
+                {"geo_histogram2d", "geo_line"},
+            ),
+        ],
+        ids=["line_over_histogram2d", "geo_line_over_geo_histogram2d"],
+    )
+    def test_heatmap_with_other_traces_builds(self, add_traces, trace_types):
+        fig = Figure(pl.DataFrame({"a": [0.0, 1.0, 2.0], "b": [1.0, 2.0, 3.0]}))
+        add_traces(fig)
 
-        with pytest.raises(
-            ValueError, match="same effective color_scale, color_range and color_norm"
-        ):
-            fig.to_spec()
+        spec = fig.to_spec(source="src")
+        assert {ts.trace_type for ts in spec.figure.traces} == trace_types
 
-    def test_mixed_heatmap_color_norms_raise(self):
-        fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
-        fig.add_histogram2d(x="x", y="y", color_norm="linear")
-        fig.add_histogram2d(x="x", y="y", color_norm="log")
+    def test_dashboard_figure_second_heatmap_raises(self):
+        from flexviz.dashboard import Dashboard
 
-        with pytest.raises(ValueError, match="color_norm"):
-            fig.to_spec()
+        dash = Dashboard(pl.DataFrame({"a": [0.0, 1.0, 2.0], "b": [1.0, 2.0, 3.0]}))
+        fig = dash.add_figure()
+        fig.add_histogram2d(x="a", y="b")
+        fig.add_histogram2d(x="a", y="b")
 
-    def test_mixed_geo_heatmap_styles_raise(self):
-        fig = Figure(pl.DataFrame({"lat": [0.0, 1.0], "lon": [1.0, 2.0]}))
-        fig.add_geo_histogram2d(lat="lat", lon="lon")
-        fig.add_geo_histogram2d(lat="lat", lon="lon", color_scale="Cividis")
-
-        with pytest.raises(ValueError, match="must share the same effective"):
-            fig.to_spec()
+        with pytest.raises(ValueError, match="at most one heatmap-like trace"):
+            dash.to_spec()
 
 
 class TestAxisLabelDerivation:
