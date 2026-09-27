@@ -7964,6 +7964,83 @@ class TestHeatmapColorNormBrowser:
 
 
 @pytest.mark.browser
+class TestReversedAxisBrowser:
+    """A reversed x axis from the figure layout survives every redraw."""
+
+    _DF = pl.DataFrame(
+        {
+            "x": [float(i) for i in range(1000)],
+            "y": [float(i % 17) for i in range(1000)],
+        }
+    )
+
+    @staticmethod
+    def _wait_for_data_span(page: Page, lo: float, hi: float) -> None:
+        """Wait until the line data spans about ``lo..hi``."""
+        page.wait_for_function(
+            """([lo, hi]) => {
+                const xs = divs[0].data[0].x.filter(v => v != null);
+                return xs.length && Math.abs(Math.min(...xs) - lo) < 20
+                    && Math.abs(Math.max(...xs) - hi) < 20;
+            }""",
+            arg=[lo, hi],
+            timeout=10_000,
+        )
+
+    @staticmethod
+    def _wait_for_full_reversed_range(page: Page) -> None:
+        """Wait until the axis shows the full data range, high to low."""
+        page.wait_for_function(
+            """() => {
+                const [r0, r1] = divs[0]._fullLayout.xaxis.range;
+                return r0 > 900 && r1 < 100;
+            }""",
+            timeout=10_000,
+        )
+
+    @pytest.mark.parametrize(
+        "xaxis",
+        [{"autorange": "reversed"}, {"range": [999, 0]}],
+        ids=["autorange", "fixed_range"],
+    )
+    def test_reversed_axis_survives_zoom_and_reset(
+        self, page: Page, server_port: int, xaxis: dict
+    ):
+        page.goto(
+            _color_norm_url(
+                server_port,
+                "_browser_reversed_axis_" + next(iter(xaxis)),
+                self._DF,
+                lambda d: (
+                    d.add_figure()
+                    .add_line(x="x", y="y", n_points=100)
+                    .update_layout(xaxis=xaxis)
+                ),
+            )
+        )
+        _wait_for_init(page, "plotly")
+        self._wait_for_full_reversed_range(page)
+
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [800, 200]})")
+        self._wait_for_data_span(page, 200, 800)
+        assert page.evaluate("() => divs[0]._fullLayout.xaxis.range") == (
+            pytest.approx([800, 200])
+        )
+
+        # A panel reset, a double-click autorange and a global reset each return
+        # to the full range, reversed.
+        for act in [
+            "() => fvOnResetPanel(DASHBOARD_SPEC.figures[0].uid)",
+            "() => Plotly.relayout(divs[0], {'xaxis.autorange': true})",
+            "() => fvOnReset()",
+        ]:
+            page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [800, 200]})")
+            self._wait_for_data_span(page, 200, 800)
+            page.evaluate(act)
+            self._wait_for_full_reversed_range(page)
+
+
+@pytest.mark.browser
 class TestLogAxisBrowser:
     """Plotly holds a log axis range in log10 units. Client state holds data units."""
 

@@ -312,6 +312,18 @@ function applyCategorySelectionStyles(figUid) {
   }
 }
 
+// The autorange an axis returns to without a viewport. It follows the rule of
+// `_axis_reversed` in spec.py: a reversed variant from the figure layout stays
+// as given, a fixed range given high to low gives 'reversed' (its bounds are
+// dropped), anything else gives true. It is read from the spec, because Plotly
+// writes `autorange: true` back into the layout it draws.
+function declaredAutorange(figUid, layoutKey) {
+  const { autorange, range } = figSpecByUid[figUid]?.layout?.[layoutKey] || {};
+  if (typeof autorange === 'string' && autorange.includes('reversed')) return autorange;
+  const [r0, r1] = Array.isArray(range) && range.length === 2 ? range : [];
+  return r0 != null && r1 != null && r0 > r1 ? 'reversed' : true;
+}
+
 function syncLayoutViewport(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
@@ -326,7 +338,7 @@ function syncLayoutViewport(figUid) {
   );
   for (const key of Object.keys(layout)) {
     if (/^[xy]axis\d*$/.test(key) && !Object.prototype.hasOwnProperty.call(cartesianKeys, key)) {
-      if (layout[key]) { delete layout[key].range; layout[key].autorange = true; }
+      if (layout[key]) { delete layout[key].range; layout[key].autorange = declaredAutorange(figUid, key); }
     }
   }
   for (const [axId, range] of Object.entries(cartesianRanges)) {
