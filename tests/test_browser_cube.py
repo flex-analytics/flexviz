@@ -116,16 +116,27 @@ def _cube_df() -> pl.DataFrame:
     )
 
 
-def _two_hist_dashboard_url(port: int, source_name: str, live_brush: str) -> str:
+def _two_hist_dashboard_url(
+    port: int,
+    source_name: str,
+    live_brush: str,
+    df: pl.DataFrame | None = None,
+    source_x_log: bool = False,
+) -> str:
+    """Source hist(a) + target hist(b). *df* defaults to ``_cube_df()``; pass
+    one with a strictly positive ``a`` column together with *source_x_log* for
+    a log-axis source."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
 
-    df = _cube_df()
+    df = _cube_df() if df is None else df
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
-    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    source_fig = dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    if source_x_log:
+        source_fig.update_layout(xaxis={"type": "log"})
     dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
     spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
     spec.client_state.live_brush = live_brush
@@ -1664,6 +1675,64 @@ class TestLiveBrushCube:
         expected = _reference_slice_counts(df, edge_lo, edge_hi)
         assert 0 < sum(expected) < df.height
         assert _target_y(page) == expected
+
+    def test_edit_existing_box_live_brush_log_axis(self, page: Page, server_port: int):
+        """Same edit-drag gesture as ``test_edit_existing_box_live_brush``, but
+        the source histogram's x axis is log. ``_fvOutlineDataRange`` must
+        feed the live preview data units: sampled at the same pixel position,
+        the live (pre-mouseup) target render must already match what mouseup
+        commits, since both read the same outline geometry."""
+        df = _cube_df().with_columns((pl.col("a") + 1).alias("a"))
+        url = _two_hist_dashboard_url(
+            server_port, "_cube_browser_editbox_log", "auto", df=df, source_x_log=True
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+
+        # Gesture 1: a fresh draw commits a snapped box and warms the store.
+        y_unfiltered = _target_y(page)
+        x1, x2, y, width = _drag_coords(page)
+        _drag_with_live_wait(page, x1, x2, y, y_unfiltered)
+        page.wait_for_timeout(1_000)
+        y_first = _target_y(page)
+        assert y_first != y_unfiltered
+
+        # Activate the rendered box.
+        box = page.eval_on_selector(
+            "#fv-plot-0 .selectionlayer path",
+            "n => { const r = n.getBoundingClientRect();"
+            " return {x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2}; }",
+        )
+        page.mouse.click(box["x"], box["y"])
+        page.wait_for_function(
+            "() => divs[0]._fullLayout._activeSelectionIndex >= 0", timeout=5_000
+        )
+
+        # Gesture 2: drag the activated box sideways, sample the live target
+        # at the drag's final position, then release at that same position.
+        page.mouse.move(box["x"], box["y"])
+        page.mouse.down()
+        page.mouse.move(box["x"] + width * 0.15, box["y"], steps=10)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=y_first,
+            timeout=10_000,
+        )
+        page.wait_for_timeout(300)
+        y_live = _target_y(page)
+        page.mouse.up()
+        page.wait_for_timeout(2_000)
+
+        assert sum(y_live) > 0, "the live preview must select something"
+        assert y_live == _target_y(page), (
+            "the live preview and the mouseup commit must agree at the same "
+            "outline position"
+        )
 
 
 # ---------------------------------------------------------------------------

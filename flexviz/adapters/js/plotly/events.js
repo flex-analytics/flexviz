@@ -1385,9 +1385,19 @@ function _fvAxisFromRef(gd, ref) {
   return gd._fullLayout[ref.charAt(0) + 'axis' + ref.slice(1)] || null;
 }
 
+// p2r matches Plotly's own range units, which are log10 on a log axis (same
+// as axis.range). handleSelecting and the cube snap want data units instead,
+// so use p2d there, as Plotly's own makeFillRangeItems does. Only a log axis
+// switches: p2r already returns data-comparable units for date and category,
+// so the result is a Plotly range only for a non-log axis; a log axis gets
+// the data value on purpose.
+function _fvPixelToSelectionUnit(axis, px) {
+  return axis.type === 'log' ? axis.p2d(px) : axis.p2r(px);
+}
+
 // The outline path's bbox (paper pixels) as an eventData.range-shaped object
 // ({x: [lo, hi], y: [lo, hi]}, ascending) — mirrors Plotly's
-// makeFillRangeItems (p2r over the pixel extremes, sorted per axis).
+// makeFillRangeItems (p2r/p2d over the pixel extremes, sorted per axis).
 function _fvOutlineDataRange(node, xa, ya) {
   let bb;
   try { bb = node.getBBox(); } catch (e) { return null; }
@@ -1395,10 +1405,16 @@ function _fvOutlineDataRange(node, xa, ya) {
   const asc = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const range = {};
   if (xa) {
-    range.x = [xa.p2r(bb.x - xa._offset), xa.p2r(bb.x + bb.width - xa._offset)].sort(asc);
+    range.x = [
+      _fvPixelToSelectionUnit(xa, bb.x - xa._offset),
+      _fvPixelToSelectionUnit(xa, bb.x + bb.width - xa._offset),
+    ].sort(asc);
   }
   if (ya) {
-    range.y = [ya.p2r(bb.y - ya._offset), ya.p2r(bb.y + bb.height - ya._offset)].sort(asc);
+    range.y = [
+      _fvPixelToSelectionUnit(ya, bb.y - ya._offset),
+      _fvPixelToSelectionUnit(ya, bb.y + bb.height - ya._offset),
+    ].sort(asc);
   }
   return range;
 }
@@ -1419,8 +1435,9 @@ function _fvEditReplayEventData(figUid, range, gd) {
 // Synthesize plotly_selecting-shaped points for the bars of `source` whose
 // category position falls inside the outline's span on the category axis.
 // Vertical bars carry the category on x, horizontal on y. The axis's d2c maps
-// each rendered label to the SAME coordinate space as the outline range (built
-// from p2r in _fvOutlineDataRange), so membership is uniform across a category
+// each rendered label to the SAME coordinate space as the outline range
+// (_fvPixelToSelectionUnit in _fvOutlineDataRange, which is p2r for a
+// category or linear bar axis), so membership is uniform across a category
 // axis (string labels) and a linear axis (numeric labels — drawn at their
 // value, the cross-filter target). Each point mirrors the shape
 // _categoricalSelectionPredicates consumes (pt.data[catKey][pt.pointNumber]).
