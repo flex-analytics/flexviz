@@ -311,7 +311,7 @@ class TestAxisLinks:
         data = _linked_dashboard(xaxis={"type": "log"})
         a, b, *_ = _uids(data)
         data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]
-        with pytest.raises(ValidationError, match="log axis"):
+        with pytest.raises(ValidationError, match="log axes are not linkable yet"):
             DashboardSpec.model_validate(data)
 
     @pytest.mark.parametrize(
@@ -333,7 +333,7 @@ class TestAxisLinks:
             DashboardSpec.model_validate(data)
 
     @pytest.mark.parametrize("axis_type", ["log", "category", "multicategory"])
-    def test_axis_types_outside_data_units_are_rejected(self, axis_type):
+    def test_unlinkable_axis_types_are_rejected(self, axis_type):
         data = _linked_dashboard(xaxis={"type": axis_type})
         a, b, *_ = _uids(data)
         data["client_state"]["axis_links"] = [[f"{a}/x", f"{b}/x"]]

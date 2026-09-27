@@ -9,6 +9,21 @@ function plotlyAxisId(layoutKey) {
   return layoutKey.replace(/^(x|y)axis(\d*)$/, '$1$2');
 }
 
+// Plotly holds a log axis range in log10 units. Client state holds data units,
+// as the server and the selections do. The declared type decides: the first
+// render writes the layout before Plotly draws the div, and Plotly never
+// infers a log axis. The exponent is clamped to the float range: 10 ** 309 is
+// Infinity, which JSON sends as null, and 10 ** -324 is 0, which has no log.
+function plotlyRangeToData(figIdx, layoutKey, range) {
+  return layoutsByFig[figIdx]?.[layoutKey]?.type === 'log'
+    ? range.map(v => 10 ** Math.min(Math.max(v, -323), 308))
+    : range;
+}
+
+function plotlyRangeFromData(figIdx, layoutKey, range) {
+  return layoutsByFig[figIdx]?.[layoutKey]?.type === 'log' ? range.map(Math.log10) : range;
+}
+
 // The number of programmatic Plotly operations in progress, per figure. Plotly
 // emits an event on the div that an operation changed, so while a figure has
 // one, its handlers ignore its events. Other figures stay interactive.
@@ -43,7 +58,7 @@ window.fvCaptureAxisDisplayRanges = function(figUid, axisFamily) {
     const axId = plotlyAxisId(layoutKey);
     const range = axisObj && axisObj.range;
     if (Array.isArray(range) && range.length === 2) {
-      out[axId] = [range[0], range[1]];
+      out[axId] = plotlyRangeToData(figIdx, layoutKey, [range[0], range[1]]);
     }
   }
   return out;
@@ -63,7 +78,7 @@ window.fvApplyAxisLocks = function(figUid, changedAxisId) {
   for (const [axId, range] of Object.entries(ranges)) {
     if (!/^(x|y)\d*$/.test(axId)) continue;
     const key = plotlyAxisKey(axId);
-    update[key + '.range'] = range;
+    update[key + '.range'] = plotlyRangeFromData(figIdx, key, range);
     update[key + '.autorange'] = false;
   }
   const changedFamily = String(changedAxisId || '').charAt(0);
@@ -313,7 +328,7 @@ function syncLayoutViewport(figUid) {
   for (const [axId, range] of Object.entries(cartesianRanges)) {
     const key = plotlyAxisKey(axId);
     if (!layout[key]) layout[key] = {};
-    layout[key].range = range;
+    layout[key].range = plotlyRangeFromData(figIdx, key, range);
     layout[key].autorange = false;
   }
 }

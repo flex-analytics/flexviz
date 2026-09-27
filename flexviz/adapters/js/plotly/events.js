@@ -246,7 +246,9 @@ function handleRelayout(relayout, figUid) {
   }
   const complete = {};
   for (const [k, v] of Object.entries(ranges)) {
-    if (v[0] != null && v[1] != null) complete[k] = v;
+    if (v[0] != null && v[1] != null) {
+      complete[k] = plotlyRangeToData(figUidToIdx[figUid], plotlyAxisKey(k), v);
+    }
   }
   if (hasAuto && Object.keys(complete).length === 0) {
     // Per-axis autorange (double-click): clear only the autoranged axes locally

@@ -610,10 +610,15 @@ class DashboardSpec(BaseModel):
                         "categorical traces and maps cannot be linked)"
                     )
                 axis = _layout_axis(figure, axis_id)
-                if axis.get("type") not in _LINKABLE_AXIS_TYPES:
+                axis_type = axis.get("type")
+                if axis_type not in _LINKABLE_AXIS_TYPES:
+                    reason = (
+                        "log axes are not linkable yet"
+                        if axis_type == "log"
+                        else "its range is in positions, not data values"
+                    )
                     raise ValueError(
-                        f"{axis.get('type')} axis {key!r} cannot be linked: its "
-                        "range is not in data units"
+                        f"{axis_type} axis {key!r} cannot be linked: {reason}"
                     )
                 is_reversed[key] = _axis_reversed(axis)
             for rule, value_of in (
@@ -628,8 +633,9 @@ class DashboardSpec(BaseModel):
         return self
 
 
-# Plotly axis types whose range is in data units. A log range is in log10
-# units and a category range in positions, so copying one would be wrong.
+# Plotly axis types the client can link. A category range is in positions, so
+# copying one would be wrong. A log axis is not linkable yet: a linear member of
+# its group can zoom to a range at or below 0, which a log axis cannot show.
 _LINKABLE_AXIS_TYPES = (None, "-", "linear", "date")
 
 
