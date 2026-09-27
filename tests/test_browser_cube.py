@@ -905,7 +905,7 @@ class TestLiveBrushCube:
         Plotly emits when a selection collapses/clears) commits nothing and
         restores the targets' exact pre-drag rendering.
 
-        No deterministic pure-mouse trigger exists in headless Plotly 3:
+        No deterministic pure-mouse trigger exists in headless Plotly:
         Escape mid-drag re-fires a trailing ranged ``plotly_selected`` that
         re-commits, and a degenerate drag-back-to-origin release still emits
         a tiny non-empty range.  So the empty event is delivered through the

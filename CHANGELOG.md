@@ -28,6 +28,20 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   values. A bin at or below 0 has no color, but it keeps its hover and its
   selection. A fixed `color_range` must be above 0.
 
+### Changed
+
+- The Plotly renderer loads
+  [plotly.js 4.1.1](https://github.com/plotly/plotly.js/blob/master/CHANGELOG.md)
+  instead of 3.0.0. Colors and `update_layout()` options go to Plotly
+  unchanged, so they follow the plotly.js 4 rules. Plotly now reads `rgb()`
+  values from 0 to 1 on the 0 to 255 scale, so such a color is almost black.
+  Plotly no longer accepts `hsv()` colors. Map figures need a browser with
+  WebGL 2. Two clicks within 500 ms (before: 300 ms) are a double-click, and a
+  legend click takes effect after this delay.
+- The page loads plotly.js from `cdn.jsdelivr.net`, which also serves the
+  other page libraries, instead of `cdn.plot.ly`. The compressed download stays
+  at 1.4 MB, and browsers cache it for a year.
+
 ### Fixed
 
 - `Figure.to_spec()` now also checks that the `add_geo_histogram2d` traces in
@@ -37,6 +51,12 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   its filtered cells over a faded background of all cells. The colorbar
   describes the filtered cells. Before, the render failed with a linear norm.
   With a log norm, the background was not faded and kept the colorbar.
+
+### Security
+
+- Map figures use maplibre-gl 6.9.0 from plotly.js 4.1.1. This version fixes
+  [CVE-2026-85061](https://github.com/advisories/GHSA-jrc7-96c5-q579), an XSS
+  in the map attribution control.
 
 ## [0.1.0b4] - 2026-09-25
 

@@ -106,7 +106,7 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
                       ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  ADAPTER LAYER  (renderer-specific)                            │
-│  PlotlyAdapter  — HTML + Plotly.js 3 CDN (line/hist/box/bar/pie/heatmap/scattermap) │
+│  PlotlyAdapter  — HTML + Plotly.js 4 CDN (line/hist/box/bar/pie/heatmap/scattermap) │
 │  EChartsAdapter — HTML + ECharts 5 CDN  (line/hist/bar/pie/heatmap) │
 │  AbstractAdapter — shared toolbar, delivery helpers            │
 └────────────────────────────────────────────────────────────────┘
@@ -1531,7 +1531,7 @@ When `DashboardSpec.layout.draggable=True`, both adapters render figures as Grid
 
 ### PlotlyAdapter
 
-- Self-contained HTML + Plotly.js 3 from CDN; no Python Plotly dependency.
+- Self-contained HTML + Plotly.js 4 from CDN; no Python Plotly dependency.
 - One `<div>` per figure; grouped parents are logical-only and are not bootstrapped
   as renderer traces.
 - Keeps per-figure base traces plus `groupedChildrenByParent`; rebuilds the figure's

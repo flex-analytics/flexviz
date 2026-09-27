@@ -5,7 +5,7 @@ HTML pages.  No Dash or Jupyter widget extensions required.
 
 Interaction loop
 ----------------
-1. ``show_dashboard`` builds a self-contained HTML page with Plotly.js 3.
+1. ``show_dashboard`` builds a self-contained HTML page with Plotly.js 4.
 2. The page fetches initial data from ``/dashboard/update`` on load and
    calls ``Plotly.react``.
 3. Every zoom/pan writes ``state.viewport`` in the browser and posts an
@@ -469,7 +469,7 @@ class PlotlyAdapter(AbstractAdapter):
 <head>
   <meta charset="utf-8">
   {page_head_html()}
-  <script src="https://cdn.plot.ly/plotly-3.0.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@4.1.1/plotly.min.js"></script>
   {dashboard.head_html}
   <style>
 {theme_css()}
