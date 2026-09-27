@@ -698,7 +698,7 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="rdbu", color_range="auto")
 - Defaults are owned by the trace classes: `Histogram2D` materializes `"viridis"` / `"auto"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
 - Generated specs must include explicit `display.color_scale` and `display.color_range`; `Figure` and adapters validate this invariant instead of re-deriving heatmap defaults.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
-- `Figure.to_spec()` validates that all heatmap-like traces in one figure share the same effective style, because renderers treat the heatmap color control as figure-level.
+- `Figure.to_spec()` validates that all heatmap-like traces in one figure (`histogram2d`, `corr_heatmap`, `geo_histogram2d`) share the same effective style (`color_scale`, `color_range`), because renderers treat the heatmap color control as figure-level.
 - Renderer split:
   - Plotly consumes the raw `color_scale` string directly and applies `zmin` / `zmax` only when `color_range` is fixed.
   - ECharts maps a supported set of heatmap scale names (`viridis`, `plasma`, `magma`, `inferno`, `cividis`, `blues`, `reds`, `rdbu`) to local color arrays for one per-figure `visualMap`.

@@ -818,6 +818,14 @@ class TestFigureHeatmapValidation:
         ):
             fig.to_spec()
 
+    def test_mixed_geo_heatmap_styles_raise(self):
+        fig = Figure(pl.DataFrame({"lat": [0.0, 1.0], "lon": [1.0, 2.0]}))
+        fig.add_geo_histogram2d(lat="lat", lon="lon")
+        fig.add_geo_histogram2d(lat="lat", lon="lon", color_scale="plasma")
+
+        with pytest.raises(ValueError, match="must share the same effective"):
+            fig.to_spec()
+
 
 class TestAxisLabelDerivation:
     """to_spec() auto-fills xlabel/ylabel from trace column names when not set."""

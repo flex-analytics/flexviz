@@ -20,6 +20,12 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Figure.to_spec()` now also checks that the `add_geo_histogram2d` traces in
+  one figure share one heatmap style, as it already did for the other
+  heatmaps.
+
 ## [0.1.0b4] - 2026-09-25
 
 ### Added
