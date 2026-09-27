@@ -127,9 +127,11 @@ const hoverTargetsByColumn = {};
 // { traceUid -> {sourceModes, columns, figUid} }
 const hoverSourceByTrace = {};
 
-// Registry rebuilt by Plotly adapter after each render; cleared on re-render
-// { traceUid -> [{bounds, pointIndex, rowIndex?, colIndex?, coordSpace}] }
-const hoverCellsByTraceUid = {};
+// Bin-edge triples of each binned trace, as the delta carries them; written by
+// the Plotly adapter when it builds the trace. Hover resolves a bin from them
+// by arithmetic, so no object per bin or cell is built.
+// { traceUid -> {x: [lo, step, n] | undefined, y: [lo, step, n] | undefined} }
+const hoverEdgesByTraceUid = {};
 
 function _fvClearObject(obj) {
   for (const key of Object.keys(obj)) delete obj[key];

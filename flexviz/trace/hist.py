@@ -487,8 +487,8 @@ class Histogram(FlexTrace):
             data_axis = centers
             factor = 1.0
 
-        # The client derives one {x0,x1} per bin from this triple; sending the
-        # per-bin objects instead is most of a histogram response.
+        # The client finds a hover bin from this triple by arithmetic; sending
+        # one bound object per bin instead is most of a histogram response.
         edges = [float(lo) * factor, step * factor, n_bins]
 
         if self.prop_key == "x":

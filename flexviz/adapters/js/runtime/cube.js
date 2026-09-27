@@ -699,8 +699,8 @@ function histDeltaFromCounts(traceSpec, header, counts) {
     }
   }
 
-  // Per-axis [lo, step, n]: the client derives the per-bin hover bounds, the
-  // same triple the server sends.
+  // Per-axis [lo, step, n]: hover finds its bin from it, the same triple the
+  // server sends.
   const edges = [lo, width, dim.bins];
   // Prop key = the single backend_data key, exactly how the adapter
   // (Histogram.from_trace_spec) determines orientation.

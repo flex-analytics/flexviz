@@ -1,6 +1,6 @@
 // === FlexViz shared runtime — linked-hover dispatch (renderer-agnostic) ===
 // Requires: state.js loaded first (provides stripLayerSuffix, hoverTargetsByColumn,
-//           hoverSourceByTrace, hoverCellsByTraceUid, DASHBOARD_SPEC)
+//           hoverSourceByTrace, hoverEdgesByTraceUid, DASHBOARD_SPEC)
 
 /**
  * Return the active hover mode from the dashboard spec.
@@ -120,6 +120,29 @@ function pushBandOnce(result, figUid, axisRole, lo, hi) {
     : { type: 'y_band', y0: lo, y1: hi, role: 'linked' });
 }
 
+// Round epsilon in bin units, as FIXED_HIST_ROUND_EPS (Rust) and _fixed_hist_bin_expr (cube.py).
+const BIN_EPS = 1e-9;
+
+/** Bounds [lo_i, hi_i] of bin i on a [lo, step, n] grid. */
+function binBounds(edges, i) {
+  return [edges[0] + i * edges[1], edges[0] + (i + 1) * edges[1]];
+}
+
+/**
+ * Bounds of the bin that holds v on a [lo, step, n] grid, or null when there
+ * is no grid or v lies outside it. Same arithmetic as the fixed_hist kernels,
+ * so on a numeric axis a value gets the bin the server counted it in: the epsilon keeps a value
+ * on an inner edge in the upper bin despite float error, and the top edge is
+ * closed, so the maximum lands in the last bin.
+ */
+function binAt(edges, v) {
+  if (!edges) return null;
+  const [lo, step, n] = edges;
+  const t = (v - lo) / step;
+  if (!(t > -BIN_EPS && t < n + BIN_EPS)) return null;
+  return binBounds(edges, Math.min(Math.floor(t + BIN_EPS), n - 1));
+}
+
 /**
  * Apply mode policy and produce per-figure visual instruction lists.
  * This is a pure function: no DOM access, no Plotly calls.
@@ -128,10 +151,10 @@ function pushBandOnce(result, figUid, axisRole, lo, hi) {
  * @param {string} mode  - Active HoverMode
  * @param {object} hoverTargetsByColumn
  * @param {object} hoverSourceByTrace
- * @param {object} hoverCellsByTraceUid
+ * @param {object} hoverEdgesByTraceUid
  * @returns {Map<string, Array>} figUid -> Visual[]
  */
-function planHoverVisuals(event, mode, hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid, implementationGates) {
+function planHoverVisuals(event, mode, hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid, implementationGates) {
   const gates = implementationGates || {
     implementedAxisBandTargetTraceTypes: IMPLEMENTED_AXIS_BAND_TARGET_TRACE_TYPES,
   };
@@ -171,18 +194,9 @@ function planHoverVisuals(event, mode, hoverTargetsByColumn, hoverSourceByTrace,
           // The bin bounds live on the axis where the TARGET plots colName
           // (target.axis), which may differ from the axis role the source used
           // (e.g. a line projects 'sin' on y, but an x= histogram bins it on x).
-          const cells = hoverCellsByTraceUid[target.traceUid] || [];
-          const tAxis = target.axis;
-          for (const cell of cells) {
-            const b = cell.bounds;
-            if (tAxis === 'x' && b.x0 !== undefined && b.x0 <= val && val < b.x1) {
-              pushBandOnce(result, target.figUid, 'x', b.x0, b.x1);
-              break;
-            } else if (tAxis === 'y' && b.y0 !== undefined && b.y0 <= val && val < b.y1) {
-              pushBandOnce(result, target.figUid, 'y', b.y0, b.y1);
-              break;
-            }
-          }
+          const edges = hoverEdgesByTraceUid[target.traceUid] || {};
+          const bin = binAt(edges[target.axis], val);
+          if (bin) pushBandOnce(result, target.figUid, target.axis, bin[0], bin[1]);
           continue;
         }
         // Draw the guide on the axis where the TARGET plots colName
@@ -240,18 +254,14 @@ function planHoverVisuals(event, mode, hoverTargetsByColumn, hoverSourceByTrace,
             pushBandOnce(result, target.figUid, targetAxis, interval0, interval1);
             continue;
           }
-          const cells = hoverCellsByTraceUid[target.traceUid] || [];
-          let matchedCell = null;
-          for (const cell of cells) {
-            const b = cell.bounds;
-            const xIn = (b.x0 !== undefined && b.x0 <= cx && cx < b.x1);
-            const yIn = (b.y0 !== undefined && b.y0 <= cy && cy < b.y1);
-            if (xIn && yIn) { matchedCell = cell; break; }
-          }
-          if (matchedCell) {
+          const edges = hoverEdgesByTraceUid[target.traceUid] || {};
+          const xBin = binAt(edges.x, cx);
+          const yBin = binAt(edges.y, cy);
+          if (xBin && yBin) {
             const visuals = ensureFigVisuals(result, target.figUid);
             if (!visuals.some(v => v.type === 'rect')) {
-              visuals.push({ type: 'rect', bounds: matchedCell.bounds, coordSpace: 'cartesian', role: 'linked' });
+              const bounds = { x0: xBin[0], x1: xBin[1], y0: yBin[0], y1: yBin[1] };
+              visuals.push({ type: 'rect', bounds, coordSpace: 'cartesian', role: 'linked' });
             }
           } else {
             // Fallback: band on matching axis

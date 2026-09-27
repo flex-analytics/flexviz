@@ -374,43 +374,6 @@ function syncHeatmapOverlayColorScale(traces, figSpec, showForeground) {
 }
 
 /**
- * Bin bounds for hover, derived from the per-axis [lo, step, n] triples the
- * server sends (one triple per axis instead of one object per bin/cell).
- * Every edge is lo + i * step, the arithmetic the server bins with.
- * @param {object} updates
- * @returns {Array|null} 1D [{x0,x1}|{y0,y1}, ...] or 2D [[{x0,x1,y0,y1}, ...], ...]
- */
-function _hoverBoundsFromEdges(updates) {
-  const xe = updates && updates.x_edges;
-  const ye = updates && updates.y_edges;
-  if (!xe && !ye) return null;
-  if (xe && ye) {
-    // 2D: outer = row (y bin), inner = col (x bin), matching z.
-    const rows = [];
-    for (let r = 0; r < ye[2]; r++) {
-      const row = [];
-      for (let c = 0; c < xe[2]; c++) {
-        row.push({
-          x0: xe[0] + c * xe[1], x1: xe[0] + (c + 1) * xe[1],
-          y0: ye[0] + r * ye[1], y1: ye[0] + (r + 1) * ye[1],
-        });
-      }
-      rows.push(row);
-    }
-    return rows;
-  }
-  // 1D: x= histogram bins on x, y= (horizontal) histogram bins on y.
-  const e = xe || ye;
-  const lo = xe ? 'x0' : 'y0';
-  const hi = xe ? 'x1' : 'y1';
-  const out = [];
-  for (let i = 0; i < e[2]; i++) {
-    out.push({ [lo]: e[0] + i * e[1], [hi]: e[0] + (i + 1) * e[1] });
-  }
-  return out;
-}
-
-/**
  * One GeoJSON rectangle per non-empty cell of a geo histogram, from the two
  * [lo, step, n] triples and the flat z the server sends (z[j * nbLat + i],
  * null = empty cell). The map selection reads these rings back to build its
@@ -455,54 +418,6 @@ function _geoRectanglesFromEdges(updates) {
   return { geojson: { type: 'FeatureCollection', features }, locations, z };
 }
 
-/**
- * Flatten hover bounds into hoverCellsByTraceUid for cell matching.
- * hoverBounds can be:
- *   - 1D array: [{x0,x1}, ...] or [{y0,y1}, ...] (histogram)
- *   - 2D array: [[{x0,x1,y0,y1}, ...], ...] (histogram2d, outer=rows/y, inner=cols/x)
- * @param {string} logicalUid
- * @param {Array} hoverBounds
- */
-function _rebuildHoverCells(logicalUid, hoverBounds) {
-  // Hover-cell lookups (planHoverVisuals, axis-band targets) key on the logical
-  // *parent* uid taken from the trace spec, but grouped children render under
-  // their own child uid. Mirror the cells under the parent so grouped histograms
-  // resolve as hover targets — every child shares the same bin edges, so the
-  // last-written child's bounds are representative.
-  const parentUid = childUidToParentUid[logicalUid] || logicalUid;
-  if (!hoverBounds || !hoverBounds.length) {
-    delete hoverCellsByTraceUid[logicalUid];
-    if (parentUid !== logicalUid) delete hoverCellsByTraceUid[parentUid];
-    return;
-  }
-  const cells = [];
-  if (Array.isArray(hoverBounds[0])) {
-    // 2D case: histogram2d. Outer = row (y), inner = col (x).
-    for (let r = 0; r < hoverBounds.length; r++) {
-      for (let c = 0; c < hoverBounds[r].length; c++) {
-        cells.push({
-          bounds: hoverBounds[r][c],
-          pointIndex: r * hoverBounds[r].length + c,
-          rowIndex: r,
-          colIndex: c,
-          coordSpace: 'cartesian',
-        });
-      }
-    }
-  } else {
-    // 1D case: histogram.
-    for (let i = 0; i < hoverBounds.length; i++) {
-      cells.push({
-        bounds: hoverBounds[i],
-        pointIndex: i,
-        coordSpace: 'cartesian',
-      });
-    }
-  }
-  hoverCellsByTraceUid[logicalUid] = cells;
-  if (parentUid !== logicalUid) hoverCellsByTraceUid[parentUid] = cells;
-}
-
 function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opacity, showlegend, forceBarOffsetgroup = false, showForeground = false, applyLineGaps = false) {
   if (!template) return null;
   const effectiveShowlegend = (template.showlegend !== undefined)
@@ -513,7 +428,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
   if (template.line) trace.line = { ...template.line };
   if (template.marker) trace.marker = { ...template.marker };
   for (const [k, v] of Object.entries(updates || {})) {
-    // Bin-edge triples are expanded below, not copied onto the trace.
+    // Bin-edge triples feed the hover lookup and the geo rectangles below.
     if (k === 'x_edges' || k === 'y_edges') continue;
     if (k === 'lat_edges' || k === 'lon_edges') continue;
     trace[k] = v;
@@ -521,10 +436,13 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
   if (updates && updates.lat_edges && updates.lon_edges) {
     Object.assign(trace, _geoRectanglesFromEdges(updates));
   }
-  const hoverBounds = _hoverBoundsFromEdges(updates);
-  if (hoverBounds) {
-    trace.customdata = hoverBounds;
-    _rebuildHoverCells(logicalUid, hoverBounds);
+  if (updates && (updates.x_edges || updates.y_edges)) {
+    // Hover target lookups key on the logical parent uid, but grouped children
+    // render under their own uid. Every child shares the parent's bin edges,
+    // so the last child written is representative.
+    const edges = { x: updates.x_edges, y: updates.y_edges };
+    hoverEdgesByTraceUid[logicalUid] = edges;
+    hoverEdgesByTraceUid[childUidToParentUid[logicalUid] || logicalUid] = edges;
   }
   if (trace.type === 'bar' && forceBarOffsetgroup) {
     trace.offsetgroup = logicalUid;
