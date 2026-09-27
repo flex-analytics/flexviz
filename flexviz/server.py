@@ -74,6 +74,7 @@ from flexviz.spec import (
     DashboardSpec,
     FigureSpec,
     InteractionState,
+    VisualizationSpec,
     check_axis_link_types,
 )
 
@@ -161,6 +162,34 @@ def _check_link_types(spec: DashboardSpec) -> None:
     if spec.client_state.axis_links:
         names = {fig.source for fig in spec.figures} & _sources.keys()
         check_axis_link_types(spec, {name: _sources[name].schema for name in names})
+
+
+def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSpec:
+    """Run the builder checks on a decoded spec and return the spec to render.
+
+    A decoded spec skips ``Figure.to_spec()``, so this builds every trace and
+    runs the figure checks. The returned spec holds what the rebuilt traces
+    emit, so the page sees normalized values, such as the Plotly spelling of
+    an older lowercase ``color_scale``. Raises on an invalid spec.
+    """
+    from flexviz.figure import _validate_figure_traces
+    from flexviz.trace import build_trace_from_spec
+
+    if isinstance(spec, VisualizationSpec):
+        spec = DashboardSpec(figures=[spec.figure], state=spec.state)
+    _check_link_types(spec)
+    figures = []
+    for fig in spec.figures:
+        # The same domain source as Figure.to_spec(), for a spec without a
+        # group_domain_key.
+        domain_source = fig.source or fig.uid
+        traces = [
+            build_trace_from_spec(ts).to_trace_spec(domain_source=domain_source)
+            for ts in fig.traces
+        ]
+        _validate_figure_traces(traces)
+        figures.append(fig.model_copy(update={"traces": traces}))
+    return spec.model_copy(update={"figures": figures})
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +483,8 @@ async def share(req: ShareRequest) -> dict[str, str]:
     # Apply the checks of /view, so an invalid spec fails here, not later.
     try:
         spec = parse_spec(req.spec)
-        if isinstance(spec, DashboardSpec):
-            _check_link_types(spec)
-    except ValueError as exc:
+        _validated_dashboard(spec)
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
     url = f"{req.server_url.rstrip('/')}/view?spec={encode_spec(spec)}"
     return {"url": url}
@@ -469,17 +497,10 @@ def _render_spec_html(spec: str, renderer: str, server_url: str) -> HTMLResponse
     encoded spec comes from and what page-relative ``server_url`` the
     rendered page needs to reach its API routes.
     """
-    from flexviz.spec import DashboardSpec as _DashboardSpec
     from flexviz.spec import decode_spec
 
     try:
-        decoded = decode_spec(spec)
-        if isinstance(decoded, _DashboardSpec):
-            dash_spec = decoded
-        else:
-            # Wrap single-figure spec into a 1-figure dashboard.
-            dash_spec = _DashboardSpec(figures=[decoded.figure], state=decoded.state)
-        _check_link_types(dash_spec)
+        dash_spec = _validated_dashboard(decode_spec(spec))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid spec: {exc}") from exc
     from flexviz.adapters import build_adapter, validate_dashboard_renderer

@@ -158,6 +158,15 @@ def _validate_heatmap_count(trace_specs: list) -> None:
         )
 
 
+def _validate_figure_traces(trace_specs: list) -> None:
+    """Run the checks that span the traces of one figure.
+
+    ``Figure.to_spec()`` runs this, and the server runs it on a decoded spec.
+    """
+    _validate_bar_modes(trace_specs)
+    _validate_heatmap_count(trace_specs)
+
+
 class Figure:
     """Low-code, renderer-agnostic figure.
 
@@ -798,8 +807,7 @@ class Figure:
         trace_specs = [
             t.to_trace_spec(domain_source=domain_source) for t in self._traces
         ]
-        _validate_bar_modes(trace_specs)
-        _validate_heatmap_count(trace_specs)
+        _validate_figure_traces(trace_specs)
         layout = dict(self._layout)
         derived = _derive_axis_labels(trace_specs)
         if "xlabel" not in layout and derived.get("xlabel"):

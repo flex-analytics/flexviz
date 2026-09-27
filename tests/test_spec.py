@@ -869,6 +869,62 @@ class TestFigureHeatmapCount:
             dash.to_spec()
 
 
+_ROUND_TRIP_FIGURES = {
+    "line": lambda fig: fig.add_line(x="a", y="b", color="#123456"),
+    "line_grouped": lambda fig: fig.add_line(
+        x="a", y="b", group_by=["g", "h"], downsample="lttb", assume_sorted_x=True
+    ),
+    "histogram_grouped": lambda fig: fig.add_histogram(
+        y="b", histnorm="percent", group_by="g"
+    ),
+    "box_grouped": lambda fig: fig.add_boxplot(x="a", group_by="g"),
+    "bar": lambda fig: fig.add_bar(
+        labels=["g", "h"], values="b", agg="mean", orientation="h", bar_mode="stack"
+    ),
+    "pie": lambda fig: fig.add_pie(labels="g", hole=0.3, color_map={"x": "#f00"}),
+    "treemap": lambda fig: fig.add_treemap(path=["g", "h"], values="b"),
+    "histogram2d": lambda fig: fig.add_histogram2d(
+        x="a", y="b", z="b", histfunc="mean", color_range=(1, 5), color_norm="log"
+    ),
+    "geo_histogram2d": lambda fig: fig.add_geo_histogram2d(
+        lat="a", lon="b", color_scale="hot"
+    ),
+    "geo_line": lambda fig: fig.add_geo_line(lat="a", lon="b", add_gaps=False),
+    "corr_heatmap": lambda fig: fig.add_corr_heatmap(absolute=True),
+}
+
+
+def _round_trip_figure(name: str, source: str | None = None) -> FigureSpec:
+    df = pl.DataFrame({"a": [0.0], "b": [1.0], "g": ["x"], "h": ["y"]})
+    return _ROUND_TRIP_FIGURES[name](Figure(df)).to_spec(source=source).figure
+
+
+class TestTraceSpecRoundTrip:
+    """The server renders a decoded spec from the traces it builds, so a
+    builder spec must come back from a rebuilt trace unchanged."""
+
+    def test_every_trace_type_is_covered(self):
+        from flexviz.trace import _REGISTRY
+
+        types = {
+            ts.trace_type
+            for name in _ROUND_TRIP_FIGURES
+            for ts in _round_trip_figure(name).traces
+        }
+        assert types == set(_REGISTRY)
+
+    @pytest.mark.parametrize("source", [None, "src"])
+    @pytest.mark.parametrize("name", list(_ROUND_TRIP_FIGURES))
+    def test_rebuilt_trace_emits_the_same_spec(self, name, source):
+        from flexviz.trace import build_trace_from_spec
+
+        figure = _round_trip_figure(name, source)
+        for ts in figure.traces:
+            trace = build_trace_from_spec(ts)
+            rebuilt = trace.to_trace_spec(domain_source=figure.source or figure.uid)
+            assert rebuilt == ts
+
+
 class TestAxisLabelDerivation:
     """to_spec() auto-fills xlabel/ylabel from trace column names when not set."""
 

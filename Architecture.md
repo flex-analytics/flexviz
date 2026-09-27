@@ -1042,6 +1042,12 @@ inflation and the CPU cost of gzipping text.
   adapter HTML with a page-relative `SERVER_URL` (`"."`) — the server cannot know its external
   base URL behind a prefix-stripping reverse proxy, so API calls resolve in the browser as
   siblings of `/view`.
+- A decoded spec skips `Figure.to_spec()`, so `/share`, `/view` and `/h/{n}` validate it where
+  it enters the server (`_validated_dashboard` in `server.py`): they build every trace with
+  `build_trace_from_spec` and run `_validate_figure_traces`, the figure checks that
+  `Figure.to_spec()` runs. An invalid spec returns 400 `Invalid spec: …`. `/view` and `/h/{n}`
+  render the trace specs of the rebuilt traces, so the page sees normalized values, such as the
+  Plotly spelling of an older lowercase `color_scale`. `/share` encodes the spec as sent.
 
 `mount_into(host_app, prefix="/flexviz")` mounts the flexviz ASGI app into an existing Starlette/FastAPI application.
 
