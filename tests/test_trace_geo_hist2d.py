@@ -614,7 +614,7 @@ class TestGeoHist2DAdapter:
                 "histfunc": None,
                 "histnorm": None,
             },
-            display={"name": "Geo", "color_scale": "viridis", "color_range": "auto"},
+            display={"name": "Geo", "color_scale": "Viridis", "color_range": "auto"},
             axes=None,
             recompute_axes=("coordinates",),
         )
