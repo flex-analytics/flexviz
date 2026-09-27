@@ -248,7 +248,7 @@ Figure
 ├── add_bar(labels, values=None, agg="sum", ..., color_map=None, group_by=None)
 ├── add_pie(labels, values, agg, hole, color_map)
 ├── add_treemap(path, values=None, agg="sum", name, color_map)
-├── add_histogram2d(x, y, x_bins, y_bins, name, color_scale, color_range, color_norm, axes)
+├── add_histogram2d(x, y, x_bins, y_bins, name, color_scale, color_range, color_norm)
 ├── add_geo_histogram2d(lat, lon, lat_bins, lon_bins, z, histfunc, histnorm, …)
 ├── add_geo_line(lat, lon, n_points, name, color, marker_size)
 ├── add_corr_heatmap(columns, method, absolute, name, color_scale, color_range)
