@@ -38,6 +38,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   Plotly no longer accepts `hsv()` colors. Map figures need a browser with
   WebGL 2. Two clicks within 500 ms (before: 300 ms) are a double-click, and a
   legend click takes effect after this delay.
+- The page loads plotly.js from `cdn.jsdelivr.net`, which also serves the
+  other page libraries, instead of `cdn.plot.ly`. The compressed download stays
+  at 1.4 MB, and browsers cache it for a year.
 
 ### Fixed
 

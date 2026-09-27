@@ -469,7 +469,7 @@ class PlotlyAdapter(AbstractAdapter):
 <head>
   <meta charset="utf-8">
   {page_head_html()}
-  <script src="https://cdn.plot.ly/plotly-4.1.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@4.1.1/plotly.min.js"></script>
   {dashboard.head_html}
   <style>
 {theme_css()}
