@@ -664,7 +664,7 @@ fig.add_geo_histogram2d(lat="lat", lon="lon", histfunc="mean", z="temperature")
 - `_to_update` returns `{"lat_edges": [lo, step, n], "lon_edges": [lo, step, n], "z": [...]}`: one triple per axis and the flat lon-major grid, `null` for an empty cell. `_geoRectanglesFromEdges` (`plotly/traces.js`) builds the choropleth GeoJSON from them, one rectangle per non-empty cell with id `r{lat_i}_c{lon_j}`. The rectangles are most of a geo response, and every one of them is `lo + i * step`.
 - Cross-filtering: Plotly geo selections are derived from the selected choropleth bin ids (`locations`, built by the client with the rectangles) and collapsed to one lon/lat bounding box, then emitted as a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses on the trace's `lon` and `lat` columns.
 - Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"viridis"`, `"auto"` and `"linear"`.
-- PlotlyAdapter renders as a `choroplethmap` trace with OpenStreetMap base tiles.
+- PlotlyAdapter renders as a `choroplethmap` trace with OpenStreetMap base tiles. A `choroplethmap` has no trace opacity, so the adapter fades an overlay background through the marker opacity of each cell (`applyChoroplethLayerOpacity`).
 - ECharts geo rendering is not yet supported.
 
 ### CorrHeatmap
