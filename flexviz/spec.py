@@ -68,6 +68,7 @@ class TraceDisplay(TypedDict, total=False):
     color_map: dict[str, str]
     color_scale: str
     color_range: tuple[float, float] | Literal["auto"]
+    color_norm: Literal["linear", "log"]
 
 
 class TraceParams(TypedDict, total=False):

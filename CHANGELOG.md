@@ -20,6 +20,14 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Added
+
+- `color_norm="log"` on `add_histogram2d` and `add_geo_histogram2d` colors
+  each bin by the log of its value, so a few dense bins no longer wash out the
+  rest. Only the colors change: the colorbar and the hover show the real
+  values. A bin at or below 0 has no color, but it keeps its hover and its
+  selection. A fixed `color_range` must be above 0.
+
 ### Fixed
 
 - `Figure.to_spec()` now also checks that the `add_geo_histogram2d` traces in

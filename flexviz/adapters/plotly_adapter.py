@@ -20,6 +20,7 @@ import math
 from typing import Any
 
 from ..spec import DashboardSpec, FigureSpec
+from ..trace._hist_helpers import normalize_heatmap_color_norm
 from .base import (
     AbstractAdapter,
     _in_async_context,
@@ -208,6 +209,17 @@ def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
     return (lo, hi)
 
 
+def _check_plotly_heatmap_color_norm(
+    ts: Any, color_range: tuple[float, float] | str
+) -> None:
+    # The browser reads color_norm straight from the spec, and a decoded spec
+    # reaches this adapter without the trace validation.
+    color_norm = ts.display.get("color_norm")
+    if ts.trace_type == "corr_heatmap" and color_norm not in (None, "linear"):
+        raise ValueError("corr_heatmap color_norm must be 'linear'")
+    normalize_heatmap_color_norm(color_norm, color_range, trace_name=ts.trace_type)
+
+
 def _plotly_heatmap_trace_obj(ts: Any, name: str) -> dict:
     trace = {
         "uid": ts.uid,
@@ -220,6 +232,7 @@ def _plotly_heatmap_trace_obj(ts: Any, name: str) -> dict:
         "showlegend": False,
     }
     color_range = _plotly_heatmap_color_range(ts)
+    _check_plotly_heatmap_color_norm(ts, color_range)
     if color_range != "auto":
         trace["zmin"], trace["zmax"] = color_range
     return trace
@@ -240,6 +253,7 @@ def _plotly_choropleth_trace_obj(ts: Any, name: str) -> dict:
         "marker": {"line": {"width": 0}},
     }
     color_range = _plotly_heatmap_color_range(ts)
+    _check_plotly_heatmap_color_norm(ts, color_range)
     if color_range != "auto":
         trace["zmin"], trace["zmax"] = color_range
     return trace
