@@ -413,6 +413,35 @@ def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
     return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
 
 
+def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
+    """Two-figure dashboard: line source + geo_histogram2d target for overlay CF tests."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import encode_spec
+
+    df = pl.DataFrame(
+        {
+            "ts": list(range(500)),
+            "val": [float(i) for i in range(500)],
+            "lat": [float(i % 25) for i in range(500)],
+            "lon": [float((i * 7) % 25) for i in range(500)],
+            # Signed, so a summed cell can be at or below 0.
+            "w": [1.0 if i % 25 % 3 == 0 else -1.0 for i in range(500)],
+        }
+    )
+    register_source("_browser_geo_overlay", df)
+
+    dash = Dashboard(df)
+    dash.add_figure(title="Source").add_line(x="ts", y="val", n_points=200)
+    dash.add_figure(title="Map").add_geo_histogram2d(
+        lat="lat", lon="lon", lat_bins=5, lon_bins=5, **geo_kwargs
+    )
+    spec = dash.to_spec(source_name="_browser_geo_overlay")
+
+    encoded = encode_spec(spec)
+    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
+
+
 def _dashboard_url_hist2d(port: int, renderer: str = "plotly") -> str:
     """Single-figure dashboard with a Histogram2D trace."""
     from flexviz.dashboard import Dashboard
@@ -2872,6 +2901,88 @@ class TestOverlayBrowser:
         assert result["fgZmax"] >= result["fgZmin"], (
             "Foreground colorbar must use filtered z range"
         )
+
+    @pytest.mark.parametrize(
+        "geo_kwargs",
+        [
+            pytest.param({}, id="linear"),
+            pytest.param({"color_norm": "log"}, id="log"),
+            pytest.param(
+                {"color_norm": "log", "z": "w", "histfunc": "sum"}, id="log-signed-sum"
+            ),
+        ],
+    )
+    def test_overlay_map_fades_background_under_filtered_layer(
+        self, page: Page, server_port: int, renderer: str, geo_kwargs: dict
+    ):
+        """A geo_histogram2d target draws both layers; the colorbar moves to fg."""
+        if renderer != "plotly":
+            pytest.skip("ECharts has no map traces")
+        errors: list[str] = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        page.on(
+            "console",
+            lambda msg: (
+                errors.append(msg.text) if "render failed" in msg.text else None
+            ),
+        )
+        page.goto(_dashboard_url_geo_overlay(server_port, **geo_kwargs))
+        _wait_for_init(page, "plotly")
+
+        page.click("#fv-btn-cfmode")
+        # A short range, so the background has cells without filtered rows.
+        page.evaluate("""() => {
+            const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: figUids[0],
+                predicates: [{ clauses: [{ column: 'ts', range: [100, 110] }] }],
+            }];
+            return postDashboardUpdate({
+                type: 'selection',
+                selections: DASHBOARD_SPEC.state.selections,
+                force_update: true,
+            });
+        }""")
+        # The colorbar moves to the filtered layer once the overlay render ends.
+        page.wait_for_function(
+            """() => {
+                const gd = document.querySelectorAll('.js-plotly-plot')[1];
+                const fg = gd._fullData.find(t => t.uid.endsWith('__fv_layer_fg'));
+                return fg && fg.showscale === true;
+            }""",
+            timeout=10_000,
+        )
+
+        # _fullData holds what Plotly accepted: it drops a trace-level opacity,
+        # which a choroplethmap does not have.
+        rendered = page.evaluate("""() => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            return gd._fullData.map(t => ({
+                uid: t.uid, showscale: t.showscale, locations: t.locations,
+                raw: t.text || t.z, opacity: t.marker.opacity,
+            }));
+        }""")
+        layers = {_trace_layer(t["uid"]): t for t in rendered}
+        bg, fg = layers["bg"], layers["fg"]
+        assert errors == []
+        assert (bg["showscale"], fg["showscale"]) == (False, True)
+        # Both layers share one grid, and the background shows more cells.
+        assert set(fg["locations"]) < set(bg["locations"])
+
+        # Each cell takes its layer's opacity. A cell at or below 0 has no log,
+        # so the log norm keeps it at 0 in both layers.
+        is_log = geo_kwargs.get("color_norm") == "log"
+        for layer, layer_opacity in ((bg, 0.16), (fg, 1)):
+            opacity = layer["opacity"]
+            cells = (
+                opacity if isinstance(opacity, list) else [opacity] * len(layer["raw"])
+            )
+            expected = [
+                0 if is_log and value <= 0 else layer_opacity for value in layer["raw"]
+            ]
+            assert cells == pytest.approx(expected)
+            if "z" in geo_kwargs:
+                assert min(layer["raw"]) <= 0 < max(layer["raw"])
 
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int, renderer: str

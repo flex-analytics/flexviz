@@ -33,6 +33,10 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `Figure.to_spec()` now also checks that the `add_geo_histogram2d` traces in
   one figure share one heatmap style, as it already did for the other
   heatmaps.
+- In overlay mode, a `geo_histogram2d` that another figure filters now draws
+  its filtered cells over a faded background of all cells. The colorbar
+  describes the filtered cells. Before, the render failed with a linear norm.
+  With a log norm, the background was not faded and kept the colorbar.
 
 ## [0.1.0b4] - 2026-09-25
 

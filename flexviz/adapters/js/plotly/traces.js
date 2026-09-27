@@ -132,10 +132,12 @@ function isHeatmapScaledTrace(trace) {
   return trace && (trace.type === 'heatmap' || trace.type === 'choroplethmap');
 }
 
-function heatmapZFiniteExtent(z) {
+function heatmapZFiniteExtent(trace) {
+  // A heatmap holds rows of cells, a choropleth one flat list of cells.
+  const rows = trace.type === 'choroplethmap' ? [trace.z] : trace.z;
   let vMin = Infinity;
   let vMax = -Infinity;
-  for (const row of (z || [])) {
+  for (const row of (rows || [])) {
     for (const value of (row || [])) {
       if (value == null || !Number.isFinite(value)) continue;
       if (value < vMin) vMin = value;
@@ -151,7 +153,7 @@ function heatmapZFiniteExtent(z) {
 }
 
 function heatmapHasRenderableCells(trace) {
-  return heatmapZFiniteExtent(trace && trace.z) !== null;
+  return heatmapZFiniteExtent(trace) !== null;
 }
 
 // Colorbar labels in data units: compact notation (0.02, 5, 1.5K), and an
@@ -274,6 +276,17 @@ function hideUncoloredCells(trace, raw, hasColor) {
   }
 }
 
+// A choroplethmap has no trace opacity, so the layer opacity (faded for an
+// overlay background) goes on the marker opacity of each cell. The log norm
+// may already have set that per cell, to hide the cells it cannot color.
+function applyChoroplethLayerOpacity(trace) {
+  const cells = trace.marker.opacity;
+  trace.marker = {
+    ...trace.marker,
+    opacity: Array.isArray(cells) ? cells.map(v => v * trace.opacity) : trace.opacity,
+  };
+}
+
 function applyHeatmapColorbarPolicy(trace, renderLayer, showForeground) {
   if (!isHeatmapScaledTrace(trace)) return;
   if (!showForeground) {
@@ -355,7 +368,7 @@ function syncHeatmapOverlayColorScale(traces, figSpec, showForeground) {
     // and a log norm pins its own. Otherwise bg uses full cached data and fg
     // the filtered data, so the post-finalize colorbar reflects the selection.
     for (const trace of [bgTrace, fgTrace]) {
-      if (trace.zmin == null) applyHeatmapZRange(trace, heatmapZFiniteExtent(trace.z));
+      if (trace.zmin == null) applyHeatmapZRange(trace, heatmapZFiniteExtent(trace));
     }
   }
 }
@@ -523,6 +536,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.y = gapped.y;
   }
   if (traceSpecByUid[logicalUid]?.display.color_norm === 'log') applyLogColorNorm(trace);
+  if (trace.type === 'choroplethmap') applyChoroplethLayerOpacity(trace);
   applyHeatmapColorbarPolicy(trace, renderLayer, showForeground);
   applyLegendVisibility(trace, logicalUid);
   return trace;
