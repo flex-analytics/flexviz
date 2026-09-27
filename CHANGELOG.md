@@ -20,6 +20,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+## [0.1.0b5] - 2026-09-27
+
 ### Added
 
 - `color_norm="log"` on `add_histogram2d` and `add_geo_histogram2d` colors
@@ -295,6 +297,7 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   traces. `flexviz` requires a `flexviz-polars` build that ships `minmax_line`;
   the two are released together.
 
+[0.1.0b5]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b5
 [0.1.0b4]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b4
 [0.1.0b3]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b3
 [0.1.0b2]: https://github.com/flex-analytics/flexviz/releases/tag/v0.1.0b2
