@@ -68,28 +68,16 @@ window.fvHasLockableCurrentAxis = function(figUid, axisFamily) {
   return Object.keys(window.fvCaptureAxisDisplayRanges?.(figUid, axisFamily) || {}).length > 0;
 };
 
-window.fvApplyAxisLocks = function(figUid, changedAxisId) {
+window.fvApplyAxisLocks = function(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
   const ranges = { ...(window.fvAxisLockRangesForFigure?.(figUid) || {}), ...figureViewportRanges(figUid) };
-  const gd = divs[figIdx];
-  const fullLayout = (gd && gd._fullLayout) || {};
   const update = {};
   for (const [axId, range] of Object.entries(ranges)) {
     if (!/^(x|y)\d*$/.test(axId)) continue;
     const key = plotlyAxisKey(axId);
     update[key + '.range'] = plotlyRangeFromData(figIdx, key, range);
     update[key + '.autorange'] = false;
-  }
-  const changedFamily = String(changedAxisId || '').charAt(0);
-  if ((changedFamily === 'x' || changedFamily === 'y') && !window.fvIsAxisLocked?.(figUid, changedAxisId)) {
-    for (const layoutKey of Object.keys(fullLayout)) {
-      const match = /^(x|y)axis(\d*)$/.exec(layoutKey);
-      if (!match || match[1] !== changedFamily) continue;
-      const axId = plotlyAxisId(layoutKey);
-      if (Object.prototype.hasOwnProperty.call(ranges, axId)) continue;
-      update[layoutKey + '.autorange'] = true;
-    }
   }
   if (!Object.keys(update).length) return;
   return fvRunProgrammaticPlotlyOp(figUid, () => Plotly.relayout(divs[figIdx], update));

@@ -539,7 +539,7 @@ class TestPlotlyHtml:
         body = _js_function_body(html, "function setFigureMode(figUid, mode)")
         assert "fvRunProgrammaticPlotlyOp" in body
         lock_body = _js_function_body(
-            html, "window.fvApplyAxisLocks = function(figUid, changedAxisId)"
+            html, "window.fvApplyAxisLocks = function(figUid)"
         )
         assert "fvRunProgrammaticPlotlyOp" in lock_body
 
