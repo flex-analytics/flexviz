@@ -103,11 +103,15 @@ function _axisRangeForSelectionBox(figUid, axisProp) {
     && divs[figIdx]._fullLayout
     && divs[figIdx]._fullLayout[axisKey]
     && divs[figIdx]._fullLayout[axisKey].range;
-  if (Array.isArray(fullRange) && fullRange.length === 2) return fullRange;
+  if (Array.isArray(fullRange) && fullRange.length === 2) {
+    return plotlyRangeToData(figIdx, axisKey, fullRange);
+  }
   const layoutRange = layoutsByFig[figIdx]
     && layoutsByFig[figIdx][axisKey]
     && layoutsByFig[figIdx][axisKey].range;
-  if (Array.isArray(layoutRange) && layoutRange.length === 2) return layoutRange;
+  if (Array.isArray(layoutRange) && layoutRange.length === 2) {
+    return plotlyRangeToData(figIdx, axisKey, layoutRange);
+  }
   return null;
 }
 

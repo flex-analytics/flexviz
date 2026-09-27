@@ -8083,3 +8083,30 @@ class TestLogAxisBrowser:
             page.wait_for_timeout(800)
             assert self._shown_range(page) == pytest.approx([2, 4]), act
             self._wait_for_data_inside(page, 99, 10_001)
+
+    def test_selection_band_spans_a_log_count_axis(self, page: Page, server_port: int):
+        page.goto(
+            _color_norm_url(
+                server_port,
+                "_browser_log_axis_band",
+                self._DF,
+                lambda d: (
+                    d.add_figure()
+                    .add_histogram(x="x", bins=20)
+                    .update_layout(yaxis={"type": "log"})
+                ),
+            )
+        )
+        _wait_for_init(page, "plotly")
+        page.evaluate("""() => flexvizApply({state: {selections: [{
+            source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+            predicates: [{clauses: [{column: 'x', range: [100000, 500000]}]}],
+        }]}})""")
+        shown = page.evaluate("""() => ({
+            box: divs[0]._fullLayout.selections[0],
+            yrange: divs[0]._fullLayout.yaxis.range,
+        })""")
+        # An x-only selection is a band: Plotly places a selection in data units.
+        assert [shown["box"]["y0"], shown["box"]["y1"]] == pytest.approx(
+            [10**v for v in shown["yrange"]]
+        )
