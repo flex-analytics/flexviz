@@ -154,6 +154,126 @@ function heatmapHasRenderableCells(trace) {
   return heatmapZFiniteExtent(trace && trace.z) !== null;
 }
 
+// Colorbar labels in data units: compact notation (0.02, 5, 1.5K), and an
+// exponent below 0.001 and from 1e15 up, where compact notation prints every
+// zero. Six significant digits keep a linear step exact (1.005K) for a range
+// wider than about 1e-4 decades.
+const LOG_TICK_FORMAT = new Intl.NumberFormat('en', {
+  notation: 'compact', maximumSignificantDigits: 6,
+});
+
+function logTickText(value) {
+  if (value >= 1e-3 && value < 1e15) return LOG_TICK_FORMAT.format(value);
+  return Number(value.toPrecision(6)).toExponential().replace('e+', 'e');
+}
+
+// Colorbar ticks for a log10 color range [lo, hi]. Every tick sits at a round
+// data value and is labelled with it; a single value gets one tick.
+function logColorbarTicks(lo, hi) {
+  const values = lo === hi ? [10 ** lo] : logTickValues(lo, hi);
+  return { tickvals: values.map(Math.log10), ticktext: values.map(logTickText) };
+}
+
+// Decades when three or more fit, thinned to at most eight; else 1-2-5 steps
+// when two or more fit; else linear steps.
+function logTickValues(lo, hi) {
+  const inRange = v => v >= 10 ** lo * (1 - 1e-9) && v <= 10 ** hi * (1 + 1e-9);
+  const exponents = [];
+  for (let e = Math.floor(lo); e <= Math.ceil(hi); e++) exponents.push(e);
+  const decades = exponents.filter(e => inRange(10 ** e));
+  if (decades.length >= 3) {
+    const every = Math.ceil(decades.length / 8);
+    return decades.filter(e => e % every === 0).map(e => 10 ** e);
+  }
+  const steps = exponents.flatMap(e => [1, 2, 5].map(m => m * 10 ** e)).filter(inRange);
+  if (steps.length >= 2) return steps;
+  return linearTickValues(10 ** lo, 10 ** hi);
+}
+
+// Two to six multiples of one step (1, 2 or 5 times a power of 10) within
+// [min, max], for a range too narrow for two 1-2-5 steps.
+function linearTickValues(min, max) {
+  const rough = (max - min) / 5;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 5, 10].map(m => m * power).find(s => s >= rough);
+  const values = [];
+  const last = Math.floor(max / step + 1e-9);
+  for (let i = Math.ceil(min / step - 1e-9); i <= last; i++) values.push(i * step);
+  return values;
+}
+
+// Log color norm: color by log10(value) and label the colorbar in data units.
+// Only the colors change: the hover reads the raw values from `text`, and a
+// cell at or below 0, which has no log, has no color but keeps its hover and
+// its selection.
+function applyLogColorNorm(trace) {
+  const raw = trace.z || [];
+  let lo = Infinity;
+  let hi = -Infinity;
+  const toLog = v => {
+    if (!(v > 0 && Number.isFinite(v))) return null;
+    const logValue = Math.log10(v);
+    if (logValue < lo) lo = logValue;
+    if (logValue > hi) hi = logValue;
+    return logValue;
+  };
+  if (trace.type === 'choroplethmap') {
+    // A choropleth holds only the non-empty cells, in a flat z.
+    trace.z = raw.map(toLog);
+    trace.text = raw;
+    trace.hovertemplate = '%{location}<br>%{text:.10~r}<extra></extra>';
+  } else {
+    // An empty heatmap cell hovers as NaN, as with the linear norm. One pass
+    // builds both grids, because a heatmap can hold millions of cells.
+    trace.z = [];
+    trace.text = [];
+    for (const row of raw) {
+      const zRow = [];
+      const textRow = [];
+      for (const v of row) {
+        zRow.push(toLog(v));
+        textRow.push(v ?? NaN);
+      }
+      trace.z.push(zRow);
+      trace.text.push(textRow);
+    }
+    trace.hovertemplate = 'x: %{x}<br>y: %{y}<br>z: %{text:.10~r}<extra></extra>';
+  }
+  const hasColor = lo <= hi;
+  if (trace.zmin != null) {
+    // A fixed range comes in data units.
+    lo = Math.log10(trace.zmin);
+    hi = Math.log10(trace.zmax);
+  } else if (!hasColor) {
+    // No cell above 0. An empty layer has nothing to color; otherwise pin a
+    // nominal range around 1, so the colorbar still reads in data units.
+    if (!raw.flat().some(v => v != null)) return;
+    lo = hi = 0;
+  }
+  // Pin the range, so the colorbar ticks match the colors. A single value
+  // gets a narrow band around it.
+  trace.colorbar = { ...trace.colorbar, ...logColorbarTicks(lo, hi) };
+  const pad = lo === hi ? 0.01 : 0;
+  trace.zmin = lo - pad;
+  trace.zmax = hi + pad;
+  hideUncoloredCells(trace, raw, hasColor);
+}
+
+// Plotly draws, hovers and selects only the cells that have a z, so a cell at
+// or below 0 gets the lowest z and is made invisible instead. A choropleth
+// sets its opacity to 0. A heatmap has no opacity per cell, but it hovers over
+// a gap, so it only needs this when no cell has a color: then the whole trace
+// turns transparent.
+function hideUncoloredCells(trace, raw, hasColor) {
+  if (trace.type === 'choroplethmap') {
+    trace.marker = { ...trace.marker, opacity: trace.z.map(v => (v == null ? 0 : 1)) };
+    trace.z = trace.z.map(v => (v == null ? trace.zmin : v));
+  } else if (!hasColor) {
+    trace.opacity = 0;
+    trace.z = raw.map(row => row.map(v => (v == null ? null : trace.zmin)));
+  }
+}
+
 function applyHeatmapColorbarPolicy(trace, renderLayer, showForeground) {
   if (!isHeatmapScaledTrace(trace)) return;
   if (!showForeground) {
@@ -231,16 +351,12 @@ function syncHeatmapOverlayColorScale(traces, figSpec, showForeground) {
       t => stripLayerSuffix(t.uid) === ts.uid && t.uid.endsWith(RENDER_LAYER_SUFFIX.fg)
     );
     if (!bgTrace || !fgTrace) continue;
-    const colorRange = heatmapColorRange(ts);
-    if (colorRange !== 'auto') {
-      applyHeatmapZRange(bgTrace, colorRange);
-      applyHeatmapZRange(fgTrace, colorRange);
-      continue;
+    // A layer with a range keeps it: a fixed range comes from the template,
+    // and a log norm pins its own. Otherwise bg uses full cached data and fg
+    // the filtered data, so the post-finalize colorbar reflects the selection.
+    for (const trace of [bgTrace, fgTrace]) {
+      if (trace.zmin == null) applyHeatmapZRange(trace, heatmapZFiniteExtent(trace.z));
     }
-    // Auto range: bg uses full cached data; fg uses filtered data so the
-    // post-finalize colorbar reflects the selection, not the original scale.
-    applyHeatmapZRange(bgTrace, heatmapZFiniteExtent(bgTrace.z));
-    applyHeatmapZRange(fgTrace, heatmapZFiniteExtent(fgTrace.z));
   }
 }
 
@@ -406,6 +522,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.x = gapped.x;
     trace.y = gapped.y;
   }
+  if (traceSpecByUid[logicalUid]?.display.color_norm === 'log') applyLogColorNorm(trace);
   applyHeatmapColorbarPolicy(trace, renderLayer, showForeground);
   applyLegendVisibility(trace, logicalUid);
   return trace;

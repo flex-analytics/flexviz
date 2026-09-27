@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from flexviz.trace._hist_helpers import (
+    normalize_heatmap_color_norm,
     normalize_heatmap_color_range,
     normalize_heatmap_color_scale,
 )
@@ -88,3 +89,35 @@ class TestNormalizeHeatmapColorRange:
     def test_trace_name_in_error(self):
         with pytest.raises(TypeError, match="MyTrace"):
             normalize_heatmap_color_range("nope", "auto", trace_name="MyTrace")
+
+
+# ---------------------------------------------------------------------------
+# normalize_heatmap_color_norm
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeHeatmapColorNorm:
+    def test_none_returns_linear(self):
+        assert normalize_heatmap_color_norm(None, "auto", trace_name="T") == "linear"
+
+    def test_log_with_auto_range(self):
+        assert normalize_heatmap_color_norm("log", "auto", trace_name="T") == "log"
+
+    def test_log_with_positive_range(self):
+        assert (
+            normalize_heatmap_color_norm("log", (1.0, 1000.0), trace_name="T") == "log"
+        )
+
+    def test_log_rejects_range_that_reaches_zero(self):
+        with pytest.raises(ValueError, match="T color_range must be above 0"):
+            normalize_heatmap_color_norm("log", (0.0, 10.0), trace_name="T")
+
+    def test_linear_accepts_range_from_zero(self):
+        assert (
+            normalize_heatmap_color_norm("linear", (0.0, 10.0), trace_name="T")
+            == "linear"
+        )
+
+    def test_unknown_norm_raises(self):
+        with pytest.raises(ValueError, match="T color_norm must be one of"):
+            normalize_heatmap_color_norm("sqrt", "auto", trace_name="T")

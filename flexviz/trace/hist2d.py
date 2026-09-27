@@ -34,6 +34,7 @@ from ._hist_helpers import (
     _HISTNORM_OPTIONS,
     HeatmapColorRange,
     apply_histnorm,
+    normalize_heatmap_color_norm,
     normalize_heatmap_color_range,
     normalize_heatmap_color_scale,
 )
@@ -193,6 +194,7 @@ class Histogram2D(FlexTrace):
         name: str | None = None,
         color_scale: str | None = None,
         color_range: tuple[float, float] | str | None = None,
+        color_norm: str | None = None,
         axes: tuple[str, ...] = ("x", "y"),
     ) -> None:
         if z is None and histfunc is not None:
@@ -208,6 +210,9 @@ class Histogram2D(FlexTrace):
         if z is not None:
             backend_data["z"] = z
 
+        color_range = normalize_heatmap_color_range(
+            color_range, _DEFAULT_COLOR_RANGE, trace_name="Histogram2D"
+        )
         super().__init__(
             backend_data=backend_data,
             display={
@@ -215,8 +220,9 @@ class Histogram2D(FlexTrace):
                 "color_scale": normalize_heatmap_color_scale(
                     color_scale, _DEFAULT_COLOR_SCALE, trace_name="Histogram2D"
                 ),
-                "color_range": normalize_heatmap_color_range(
-                    color_range, _DEFAULT_COLOR_RANGE, trace_name="Histogram2D"
+                "color_range": color_range,
+                "color_norm": normalize_heatmap_color_norm(
+                    color_norm, color_range, trace_name="Histogram2D"
                 ),
             },
             params={
@@ -284,6 +290,10 @@ class Histogram2D(FlexTrace):
     @property
     def color_range(self) -> HeatmapColorRange:
         return self._display["color_range"]
+
+    @property
+    def color_norm(self) -> str:
+        return self._display["color_norm"]
 
     # ------------------------------------------------------------------
     # Cube descriptors (cross-filter pre-aggregation)
@@ -508,6 +518,7 @@ class Histogram2D(FlexTrace):
             name=spec.display.get("name"),
             color_scale=spec.display.get("color_scale"),
             color_range=spec.display.get("color_range"),
+            color_norm=spec.display.get("color_norm"),
             axes=spec.axes or ("x", "y"),
         )
         trace.uid = spec.uid
