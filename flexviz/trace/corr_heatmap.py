@@ -56,8 +56,8 @@ class CorrHeatmap(FlexTrace):
     select_policy_doc: str = "none — not a cross-filter source"
     overlay_style: str = "filtered_only"
     DEFAULT_COLOR_SCALE_BY_ABSOLUTE: ClassVar[dict[bool, str]] = {
-        False: "rdbu",
-        True: "viridis",
+        False: "RdBu",
+        True: "Viridis",
     }
     DEFAULT_COLOR_RANGE_BY_ABSOLUTE: ClassVar[dict[bool, tuple[float, float]]] = {
         False: (-1.0, 1.0),

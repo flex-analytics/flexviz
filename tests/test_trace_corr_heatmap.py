@@ -53,7 +53,7 @@ class TestCorrHeatmapConstructor:
         assert t.method == "pearson"
         assert t.triangular is False
         assert t.absolute is False
-        assert t.color_scale == "rdbu"
+        assert t.color_scale == "RdBu"
         assert t.color_range == (-1.0, 1.0)
 
     def test_custom_params(self):
@@ -64,7 +64,7 @@ class TestCorrHeatmapConstructor:
         assert t.method == "spearman"
         assert t.triangular is True
         assert t.absolute is True
-        assert t.color_scale == "viridis"
+        assert t.color_scale == "Viridis"
         assert t.color_range == (0.0, 1.0)
 
     def test_dynamic_color_range_can_be_requested(self):
@@ -155,7 +155,7 @@ class TestCorrHeatmapSpec:
             triangular=True,
             absolute=True,
             name="Corr",
-            color_scale="cividis",
+            color_scale="Cividis",
             color_range="auto",
         )
         spec = t.to_trace_spec()
@@ -164,7 +164,7 @@ class TestCorrHeatmapSpec:
         assert spec.params["triangular"] is True
         assert spec.params["absolute"] is True
         assert spec.params["columns"] == ["a", "b"]
-        assert spec.display["color_scale"] == "cividis"
+        assert spec.display["color_scale"] == "Cividis"
         assert spec.display["color_range"] == "auto"
 
         t2 = CorrHeatmap.from_trace_spec(spec)
@@ -172,7 +172,7 @@ class TestCorrHeatmapSpec:
         assert t2.method == "spearman"
         assert t2.triangular is True
         assert t2.absolute is True
-        assert t2.color_scale == "cividis"
+        assert t2.color_scale == "Cividis"
         assert t2.color_range == "auto"
 
     def test_legacy_spec_without_display_gets_semantic_defaults(self):
@@ -190,5 +190,5 @@ class TestCorrHeatmapSpec:
             recompute_axes=(),
         )
         trace = CorrHeatmap.from_trace_spec(spec)
-        assert trace.color_scale == "viridis"
+        assert trace.color_scale == "Viridis"
         assert trace.color_range == (0.0, 1.0)
