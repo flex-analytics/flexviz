@@ -223,7 +223,7 @@ class TestPredicateDashboard:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                     type: 'selection',
-                    selections: [sel], force_update: true
+                    force_update: true
                 });
             }""")
         page.wait_for_timeout(800)
@@ -253,7 +253,7 @@ class TestPredicateDashboard:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                     type: 'selection',
-                    selections: [sel], force_update: true
+                    force_update: true
                 });
             }""")
         page.wait_for_timeout(800)
@@ -367,11 +367,11 @@ class TestPredicateDashboard:
                         predicates: [{ clauses: [{ column: 'country', values: ['NL'] }] }],
                     }];
                     // Mirror real selection handlers: client state is set before
-                    // posting (postDashboardUpdate does not sync state from the event).
+                    // posting (the server reads the selections from the state).
                     DASHBOARD_SPEC.state.selections = selections;
                     await postDashboardUpdate({
                         type: 'selection',
-                        selections, force_update: true
+                        force_update: true
                     });
                 }""")
             page.wait_for_function(
@@ -382,7 +382,7 @@ class TestPredicateDashboard:
                     DASHBOARD_SPEC.state.selections = [];
                     await postDashboardUpdate({
                         type: 'deselect',
-                        selections: [], force_update: true
+                        force_update: true
                     });
                 }""")
             page.wait_for_function(

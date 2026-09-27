@@ -33,11 +33,11 @@ window.fvOnReset = async function() {
   window.fvClearUnlockedViewports?.();
   window.fvSetSelectionState?.([]);
   window.fvResetRuntimeCache?.();
-  await postDashboardUpdate({type: 'init', selections: [], force_update: true});
+  await postDashboardUpdate({type: 'init', force_update: true});
 };
 window.fvOnDeselect = async function() {
   window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'deselect', selections: [], force_update: true});
+  await postDashboardUpdate({type: 'deselect', force_update: true});
 };
 
 // Wire one figure's Plotly event handlers, resize observer and panel controls.

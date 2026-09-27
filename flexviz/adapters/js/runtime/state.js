@@ -217,10 +217,11 @@ function figureHasSelectionSource(figUid, selections) {
   return selectionSourceFigureUids(selections).has(figUid);
 }
 // A figure is filtered by every selection but its own, so its base data is
-// unfiltered only when no other figure has a selection.
-function isUnfilteredBaseForFigure(event, figUid) {
+// unfiltered only when no other figure has a selection. `selections` is the
+// state.selections list the request was sent with.
+function isUnfilteredBaseForFigure(event, selections, figUid) {
   if (['init', 'deselect'].includes(event.type)) return true;
-  return !(event.selections || []).some(
+  return !selections.some(
     s => s && s.source_figure_uid != null && s.source_figure_uid !== figUid
       && (s.predicates || []).length > 0
   );

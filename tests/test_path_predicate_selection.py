@@ -397,18 +397,16 @@ class TestEngineTreemapOrPredicates:
         self,
         figure_uid: str,
         clause_groups: list[list[ClauseFilter]],
-    ) -> InteractionEvent:
+    ) -> tuple[InteractionEvent, list[SelectionState]]:
         predicates = [SelectionPredicate(clauses=group) for group in clause_groups]
-        return InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid=figure_uid,
-                    predicates=predicates,
-                )
-            ],
-        )
+        selections = [
+            SelectionState(
+                source_figure_uid=figure_uid,
+                predicates=predicates,
+            )
+        ]
+        event = InteractionEvent(type="selection", force_update=True)
+        return event, selections
 
     def test_treemap_or_leaf_predicates_union_countries(self, geo_df: LFQueryBuilder):
         from flexviz.trace.bar import BarPlot
@@ -428,7 +426,7 @@ class TestEngineTreemapOrPredicates:
                 uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
             ),
         ]
-        event = self._make_or_click_event(
+        event, selections = self._make_or_click_event(
             "fig_tree",
             [
                 [
@@ -441,7 +439,7 @@ class TestEngineTreemapOrPredicates:
                 ],
             ],
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, selections=selections)
         bar_delta = next(d for d in deltas if d.uid == bar.uid)
         countries = set(bar_delta.updates.get("x", []))
         assert countries == {"Germany", "France"}

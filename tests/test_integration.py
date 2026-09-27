@@ -98,7 +98,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -158,7 +157,6 @@ class TestPostDashboardUpdate:
             "event": {
                 "type": "viewport",
                 "viewport_keys": [f"{fig_a_uid}/x"],
-                "selections": [],
                 "force_update": False,
             },
         }
@@ -181,7 +179,6 @@ class TestPostDashboardUpdate:
             "event": {
                 "type": "viewport",
                 "viewport_keys": [f"{fig_a_uid}/x"],
-                "selections": [],
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -199,18 +196,16 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         fig_a_uid, fig_b_uid, fig_c_uid = [f.uid for f in spec.figures]
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=fig_b_uid,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 3000]}]}],
+            )
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": fig_b_uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 3000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -219,6 +214,32 @@ class TestPostDashboardUpdate:
         assert len(body["figure_deltas"].get(fig_a_uid, [])) > 0
         assert len(body["figure_deltas"].get(fig_b_uid, [])) == 0
         assert len(body["figure_deltas"].get(fig_c_uid, [])) > 0
+
+    @pytest.mark.parametrize("stale_event_field", [False, True])
+    def test_state_selections_filter_the_request(
+        self, client: TestClient, integ_df: pl.DataFrame, stale_event_field: bool
+    ):
+        # The engine reads state.selections only. InteractionEvent ignores
+        # unknown fields, so an old client's event.selections has no effect.
+        _, spec = _make_dashboard_and_spec(integ_df)
+        src_uid, tgt_uid = (f.uid for f in spec.figures)
+
+        def brush(lo: int, hi: int) -> dict:
+            return {
+                "source_figure_uid": src_uid,
+                "predicates": [{"clauses": [{"column": "ts", "range": [lo, hi]}]}],
+            }
+
+        spec.state.selections = [SelectionState(**brush(1000, 2000))]
+        event = {"type": "selection", "force_update": True}
+        if stale_event_field:
+            event["selections"] = [brush(3000, 4000)]
+        resp = client.post(
+            "/dashboard/update", json={"spec": spec.model_dump(), "event": event}
+        )
+        assert resp.status_code == 200
+        xs = resp.json()["figure_deltas"][tgt_uid][0]["updates"]["x"]
+        assert 1000 <= min(xs) <= max(xs) <= 2000
 
     def test_multi_source_selection_excludes_all(
         self, client: TestClient, integ_df: pl.DataFrame
@@ -230,24 +251,20 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         uids = [f.uid for f in spec.figures]
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uids[1],
+                predicates=[{"clauses": [{"column": "ts", "range": [0, 4999]}]}],
+            ),
+            SelectionState(
+                source_figure_uid=uids[2],
+                predicates=[{"clauses": [{"column": "ts", "range": [0, 4999]}]}],
+            ),
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uids[1],
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 4999]}]}
-                        ],
-                    },
-                    {
-                        "source_figure_uid": uids[2],
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 4999]}]}
-                        ],
-                    },
-                ],
                 "force_update": True,
             },
         }
@@ -288,18 +305,13 @@ class TestPostDashboardUpdate:
 
         assert len(_post({"type": "init", "force_update": True})) == n_points
 
-        xs = _post(
-            {
-                "type": "selection",
-                "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": src_uid,
-                        "predicates": [{"clauses": [{"column": "ts", "range": brush}]}],
-                    }
-                ],
-            }
-        )
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=src_uid,
+                predicates=[{"clauses": [{"column": "ts", "range": brush}]}],
+            )
+        ]
+        xs = _post({"type": "selection", "force_update": True})
         assert len(xs) == n_points
         assert brush[0] <= min(xs) <= max(xs) <= brush[1]
 
@@ -323,18 +335,16 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=src_name)
         fig_a_uid, fig_b_uid = spec.figures[0].uid, spec.figures[1].uid
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=fig_a_uid,
+                predicates=[{"clauses": [{"column": "src_id", "range": [1000, 3000]}]}],
+            )
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": fig_a_uid,
-                        "predicates": [
-                            {"clauses": [{"column": "src_id", "range": [1000, 3000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -367,13 +377,15 @@ class TestPostDashboardUpdate:
 
         # Step 2: both B and C selections active
         spec_with_b = spec.model_copy(deep=True)
-        spec_with_b.state.selections = [SelectionState(**b_sel)]
+        spec_with_b.state.selections = [
+            SelectionState(**b_sel),
+            SelectionState(**c_sel),
+        ]
 
         payload = {
             "spec": spec_with_b.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [b_sel, c_sel],
                 "force_update": True,
             },
         }
@@ -399,7 +411,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -409,18 +420,16 @@ class TestPostDashboardUpdate:
         )
 
         # Step 2: selection on A narrows B to a small range.
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=fig_a_uid,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 2000]}]}],
+            )
+        ]
         sel_payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": fig_a_uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -430,12 +439,13 @@ class TestPostDashboardUpdate:
         )
         assert sel_b_count < init_b_count
 
-        # Step 3: deselect must restore B to its unfiltered count.
+        # Step 3: deselect must restore B to its unfiltered count. Mirror the
+        # browser client: it clears the state's selections before posting.
+        spec.state.selections = []
         desel_payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "deselect",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -461,18 +471,16 @@ class TestPostDashboardUpdate:
         hist_uid = spec.figures[0].uid
         line_uid = spec.figures[1].uid
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=hist_uid,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 3000]}]}],
+            )
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": hist_uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 3000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -494,19 +502,17 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         uid_a, uid_b = [f.uid for f in spec.figures]
         spec.state.viewport = {f"{uid_b}/x": AxisRange(min=200, max=400)}
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [100, 300]}]}],
+            )
+        ]
 
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [100, 300]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -525,19 +531,17 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         uid_a, uid_b = [f.uid for f in spec.figures]
         spec.state.cross_filter_mode = "overlay"
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 2000]}]}],
+            )
+        ]
 
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -561,20 +565,18 @@ class TestPostDashboardUpdate:
         uid_a, uid_b = [f.uid for f in spec.figures]
         spec.state.cross_filter_mode = "overlay"
         spec.state.viewport = {f"{uid_b}/x": AxisRange(min=1000, max=3000)}
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [1500, 2000]}]}],
+            )
+        ]
 
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "viewport",
                 "viewport_keys": [f"{uid_b}/x"],
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1500, 2000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -602,7 +604,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "deselect",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -625,7 +626,6 @@ class TestPostDashboardUpdate:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -651,7 +651,6 @@ class TestPostDashboardUpdate:
             "event": {
                 "type": "viewport",
                 "viewport_keys": vp_keys,
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -671,18 +670,16 @@ class TestPostDashboardUpdate:
         spec = dash.to_spec(source_name=_SRC)
         uid_a, _uid_b = [f.uid for f in spec.figures]
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 2000]}]}],
+            )
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -716,7 +713,6 @@ class TestPostDashboardUpdate:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -726,19 +722,17 @@ class TestPostDashboardUpdate:
         assert len(box_init_deltas) == 1
 
         # Selection on line: ts in [0, 999] — should filter box trace
+        dash_spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_line,
+                predicates=[{"clauses": [{"column": "ts", "range": [0, 999]}]}],
+            )
+        ]
         sel_payload = {
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": uid_line,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 999]}]}
-                        ],
-                    }
-                ],
             },
         }
         sel_resp = client.post("/dashboard/update", json=sel_payload)
@@ -762,16 +756,11 @@ class TestPostDashboardUpdate:
         uid_a, uid_b = [f.uid for f in spec.figures]
 
         # Selection with null ranges — treated as no filter
+        spec.state.selections = [SelectionState(source_figure_uid=uid_a, predicates=[])]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -802,6 +791,12 @@ class TestPostDashboardUpdate:
             state=InteractionState(
                 cross_filter_mode="overlay",
                 viewport={f"{uid_hist}/x": AxisRange(min=0, max=4999)},
+                selections=[
+                    SelectionState(
+                        source_figure_uid=uid_line,
+                        predicates=[{"clauses": [{"column": "ts", "range": [0, 999]}]}],
+                    )
+                ],
             ),
         )
 
@@ -810,14 +805,6 @@ class TestPostDashboardUpdate:
             "event": {
                 "type": "viewport",
                 "viewport_keys": [f"{uid_hist}/x"],
-                "selections": [
-                    {
-                        "source_figure_uid": uid_line,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 999]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -855,18 +842,16 @@ class TestCrossFilterScenarios:
         spec = three_fig_spec
         uid_a, uid_b, uid_c = [f.uid for f in spec.figures]
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 3000]}]}],
+            )
+        ]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 3000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -894,11 +879,11 @@ class TestCrossFilterScenarios:
             "source_figure_uid": uid_b,
             "predicates": [{"clauses": [{"column": "ts", "range": [1500, 2500]}]}],
         }
+        spec.state.selections = [SelectionState(**sel_a), SelectionState(**sel_b)]
         payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [sel_a, sel_b],
                 "force_update": True,
             },
         }
@@ -921,7 +906,6 @@ class TestCrossFilterScenarios:
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "init",
-                    "selections": [],
                     "force_update": True,
                 },
             },
@@ -929,18 +913,16 @@ class TestCrossFilterScenarios:
         init_b_count = len(init_resp.json()["figure_deltas"][uid_b][0]["updates"]["x"])
 
         # Step 2: select on A to narrow B and C.
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=uid_a,
+                predicates=[{"clauses": [{"column": "ts", "range": [1000, 2000]}]}],
+            )
+        ]
         sel_payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": uid_a,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -948,14 +930,15 @@ class TestCrossFilterScenarios:
         sel_b_count = len(sel_resp.json()["figure_deltas"][uid_b][0]["updates"]["x"])
         assert sel_b_count < init_b_count
 
-        # Step 3: deselect must restore B and C to full data.
+        # Step 3: deselect must restore B and C to full data. Mirror the
+        # browser client: it clears the state's selections before posting.
+        spec.state.selections = []
         desel_resp = client.post(
             "/dashboard/update",
             json={
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "deselect",
-                    "selections": [],
                     "force_update": True,
                 },
             },
@@ -978,7 +961,6 @@ class TestCrossFilterScenarios:
                 "spec": spec.model_dump(),
                 "event": {
                     "type": "init",
-                    "selections": [],
                     "force_update": True,
                 },
             },
@@ -999,7 +981,6 @@ class TestCrossFilterScenarios:
             "spec": zoomed_spec,
             "event": {
                 "type": "selection",
-                "selections": selections,
                 "force_update": True,
             },
         }
@@ -1012,7 +993,7 @@ class TestCrossFilterScenarios:
             "/dashboard/update",
             json={
                 "spec": spec.model_dump(),
-                "event": {"type": "init", "selections": [], "force_update": True},
+                "event": {"type": "init", "force_update": True},
             },
         )
         body = reset_resp.json()
@@ -1483,26 +1464,18 @@ class TestShareStatePreservation:
                 "spec": decoded.model_dump(),
                 "event": {
                     "type": "init",
-                    "selections": [],
                     "force_update": True,
                 },
             },
         )
         init_b_count = len(init_resp.json()["figure_deltas"][uid_b][0]["updates"]["x"])
 
-        # Step 2: replay the saved selection state as a selection event,
-        # as done by the adapters' initialisation JS.
+        # Step 2: replay the saved selection state as a selection event, as
+        # done by the adapters' initialisation JS.
         selection_payload = {
             "spec": decoded.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": s.source_figure_uid,
-                        "predicates": [p.model_dump() for p in s.predicates],
-                    }
-                    for s in decoded.state.selections
-                ],
                 "force_update": True,
             },
         }
@@ -1881,7 +1854,6 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -1899,25 +1871,25 @@ class TestDatetimeCrossFiltering:
         start_time = "2026-03-21 17:00:20"
         end_time = "2026-03-21 17:01:20"
 
+        spec.state.selections = [
+            SelectionState(
+                source_figure_uid=fig_a_uid,
+                predicates=[
+                    {
+                        "clauses": [
+                            {
+                                "column": "timestamp_utc",
+                                "range": [start_time, end_time],
+                            }
+                        ]
+                    }
+                ],
+            )
+        ]
         selection_payload = {
             "spec": spec.model_dump(),
             "event": {
                 "type": "selection",
-                "selections": [
-                    {
-                        "source_figure_uid": fig_a_uid,
-                        "predicates": [
-                            {
-                                "clauses": [
-                                    {
-                                        "column": "timestamp_utc",
-                                        "range": [start_time, end_time],
-                                    }
-                                ]
-                            }
-                        ],
-                    }
-                ],
                 "force_update": True,
             },
         }
@@ -1976,7 +1948,6 @@ class TestDatetimeCrossFiltering:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -1992,7 +1963,6 @@ class TestDatetimeCrossFiltering:
             "event": {
                 "type": "viewport",
                 "viewport_keys": [f"{fig_uid}/x"],
-                "selections": [],
                 "force_update": False,
             },
         }
@@ -2055,7 +2025,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -2078,7 +2047,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -2120,7 +2088,6 @@ class TestBarIntegration:
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -2130,19 +2097,17 @@ class TestBarIntegration:
         full_total = sum(bar_deltas[0]["updates"]["y"])
 
         # Selection on line figure: ts in [0, 99]
+        dash_spec.state.selections = [
+            SelectionState(
+                source_figure_uid=line_spec.figure.uid,
+                predicates=[{"clauses": [{"column": "ts", "range": [0, 99]}]}],
+            )
+        ]
         sel_payload = {
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": line_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 99]}]}
-                        ],
-                    }
-                ],
             },
         }
         sel_resp = bar_client.post("/dashboard/update", json=sel_payload)
@@ -2167,7 +2132,15 @@ class TestBarIntegration:
 
         dash_spec = DashboardSpec(
             figures=[line_spec.figure, bar_spec.figure],
-            state=InteractionState(cross_filter_mode="overlay"),
+            state=InteractionState(
+                cross_filter_mode="overlay",
+                selections=[
+                    SelectionState(
+                        source_figure_uid=line_spec.figure.uid,
+                        predicates=[{"clauses": [{"column": "ts", "range": [0, 99]}]}],
+                    )
+                ],
+            ),
         )
 
         payload = {
@@ -2175,14 +2148,6 @@ class TestBarIntegration:
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": line_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [0, 99]}]}
-                        ],
-                    }
-                ],
             },
         }
         resp = bar_client.post("/dashboard/update", json=payload)
@@ -2212,7 +2177,14 @@ class TestBarCrossFilterIntegration:
 
         dash_spec = DashboardSpec(
             figures=[bar_spec.figure, line_spec.figure],
-            state=InteractionState(),
+            state=InteractionState(
+                selections=[
+                    SelectionState(
+                        source_figure_uid=bar_spec.figure.uid,
+                        predicates=[{"clauses": [{"column": "cat", "values": ["A"]}]}],
+                    )
+                ]
+            ),
         )
 
         payload = {
@@ -2220,14 +2192,6 @@ class TestBarCrossFilterIntegration:
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": bar_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "cat", "values": ["A"]}]}
-                        ],
-                    }
-                ],
             },
         }
         resp = bar_client.post("/dashboard/update", json=payload)
@@ -2269,7 +2233,6 @@ class TestBarCrossFilterIntegration:
             "event": {
                 "type": "deselect",
                 "force_update": True,
-                "selections": [],
             },
         }
         resp = bar_client.post("/dashboard/update", json=payload)
@@ -2318,7 +2281,6 @@ class TestCrossFilterEdgeCases:
             "event": {
                 "type": "init",
                 "force_update": True,
-                "selections": [],
             },
         }
         init_resp = bar_client.post("/dashboard/update", json=init_payload)
@@ -2327,17 +2289,14 @@ class TestCrossFilterEdgeCases:
         )
 
         # Selection with empty categories list — must not filter
+        dash_spec.state.selections = [
+            SelectionState(source_figure_uid=bar_spec.figure.uid, predicates=[])
+        ]
         sel_payload = {
             "spec": dash_spec.model_dump(),
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": bar_spec.figure.uid,
-                        "predicates": [],
-                    }
-                ],
             },
         }
         sel_resp = bar_client.post("/dashboard/update", json=sel_payload)
@@ -2361,7 +2320,14 @@ class TestCrossFilterEdgeCases:
         line_spec = fig_line.to_spec(source=_BAR_SRC)
         dash_spec = DashboardSpec(
             figures=[bar_spec.figure, line_spec.figure],
-            state=InteractionState(),
+            state=InteractionState(
+                selections=[
+                    SelectionState(
+                        source_figure_uid=bar_spec.figure.uid,
+                        predicates=[{"clauses": [{"column": "cat", "values": ["A"]}]}],
+                    )
+                ]
+            ),
         )
 
         payload = {
@@ -2369,14 +2335,6 @@ class TestCrossFilterEdgeCases:
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": bar_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "cat", "values": ["A"]}]}
-                        ],
-                    }
-                ],
             },
         }
         resp = bar_client.post("/dashboard/update", json=payload)
@@ -2403,7 +2361,16 @@ class TestCrossFilterEdgeCases:
 
         dash_spec = DashboardSpec(
             figures=[line_spec.figure, hist_spec.figure],
-            state=InteractionState(),
+            state=InteractionState(
+                selections=[
+                    SelectionState(
+                        source_figure_uid=line_spec.figure.uid,
+                        predicates=[
+                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
+                        ],
+                    )
+                ]
+            ),
         )
 
         payload = {
@@ -2411,14 +2378,6 @@ class TestCrossFilterEdgeCases:
             "event": {
                 "type": "selection",
                 "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": line_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [1000, 2000]}]}
-                        ],
-                    }
-                ],
             },
         }
         resp = client.post("/dashboard/update", json=payload)
@@ -2478,35 +2437,24 @@ class TestEventSequences:
             return r.json()["figure_deltas"]
 
         # Step 1: init
-        init_result = _post({"type": "init", "force_update": True, "selections": []})
+        init_result = _post({"type": "init", "force_update": True})
         full_y_count = len(init_result[line_spec.figure.uid][0]["updates"]["y"])
 
         # Step 2: selection — filter to cat=A only
-        sel_result = _post(
-            {
-                "type": "selection",
-                "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": bar_spec.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "cat", "values": ["A"]}]}
-                        ],
-                    }
-                ],
-            }
-        )
+        dash_spec.state.selections = [
+            SelectionState(
+                source_figure_uid=bar_spec.figure.uid,
+                predicates=[{"clauses": [{"column": "cat", "values": ["A"]}]}],
+            )
+        ]
+        sel_result = _post({"type": "selection", "force_update": True})
         filtered_y_count = len(sel_result[line_spec.figure.uid][0]["updates"]["y"])
         assert filtered_y_count < full_y_count
 
-        # Step 3: deselect — all data restored
-        desel_result = _post(
-            {
-                "type": "deselect",
-                "force_update": True,
-                "selections": [],
-            }
-        )
+        # Step 3: deselect — all data restored. Mirror the browser client:
+        # it clears the state's selections before posting.
+        dash_spec.state.selections = []
+        desel_result = _post({"type": "deselect", "force_update": True})
         restored_y_count = len(desel_result[line_spec.figure.uid][0]["updates"]["y"])
         assert restored_y_count == full_y_count
 
@@ -2538,32 +2486,21 @@ class TestEventSequences:
             return r.json()["figure_deltas"]
 
         # Selection → target (fig_b) gets fg-only
-        sel_result = _post(
-            {
-                "type": "selection",
-                "force_update": True,
-                "selections": [
-                    {
-                        "source_figure_uid": spec_a.figure.uid,
-                        "predicates": [
-                            {"clauses": [{"column": "ts", "range": [500, 1500]}]}
-                        ],
-                    }
-                ],
-            }
-        )
+        dash_spec.state.selections = [
+            SelectionState(
+                source_figure_uid=spec_a.figure.uid,
+                predicates=[{"clauses": [{"column": "ts", "range": [500, 1500]}]}],
+            )
+        ]
+        sel_result = _post({"type": "selection", "force_update": True})
         b_deltas = sel_result.get(spec_b.figure.uid, [])
         assert b_deltas, "fig_b must have deltas on selection"
         assert all(d["layer"] == "fg" for d in b_deltas), "selection → fg only"
 
-        # Deselect → target gets bg-only (clears fg)
-        desel_result = _post(
-            {
-                "type": "deselect",
-                "force_update": True,
-                "selections": [],
-            }
-        )
+        # Deselect → target gets bg-only (clears fg). Mirror the browser
+        # client: it clears the state's selections before posting.
+        dash_spec.state.selections = []
+        desel_result = _post({"type": "deselect", "force_update": True})
         b_desel_deltas = desel_result.get(spec_b.figure.uid, [])
         assert b_desel_deltas, "fig_b must have deltas on deselect"
         layers = {d["layer"] for d in b_desel_deltas}
@@ -2621,7 +2558,6 @@ class TestEventSequences:
                     "event": {
                         "type": "selection",
                         "force_update": True,
-                        "selections": [s.model_dump() for s in spec.state.selections],
                     },
                 },
             )
@@ -2657,7 +2593,6 @@ class TestClientStatePassthrough:
             "spec": spec_dict,
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
@@ -2679,7 +2614,6 @@ class TestClientStatePassthrough:
             "spec": spec_dict,
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }

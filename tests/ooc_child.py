@@ -71,21 +71,22 @@ TRACES: dict[str, Callable] = {
     "line-minmax-filtered": lambda: LinePlot(x="x", y="y", downsample="minmax"),
 }
 
-_SELECTION = InteractionEvent(
-    type="selection",
-    force_update=True,
-    selections=[
-        SelectionState(
-            source_figure_uid="brush_source",
-            predicates=[
-                SelectionPredicate(clauses=[ClauseFilter(column="y", range=(0.5, 0.6))])
-            ],
-        )
-    ],
-)
+_SELECTION = InteractionEvent(type="selection", force_update=True)
+_SELECTION_STATES = [
+    SelectionState(
+        source_figure_uid="brush_source",
+        predicates=[
+            SelectionPredicate(clauses=[ClauseFilter(column="y", range=(0.5, 0.6))])
+        ],
+    )
+]
 
 # name -> the event the child posts; every other name gets an unfiltered init.
 EVENTS: dict[str, InteractionEvent] = {"line-minmax-filtered": _SELECTION}
+# name -> the committed selections the child passes to `process`.
+SELECTIONS: dict[str, list[SelectionState]] = {
+    "line-minmax-filtered": _SELECTION_STATES
+}
 
 
 # ---- anonymous-memory sampler ------------------------------------------
@@ -212,11 +213,12 @@ def main() -> None:
         figure_uid="target",
     )
     event = EVENTS.get(name, InteractionEvent(type="init", force_update=True))
+    selections = SELECTIONS.get(name, [])
 
     # Base is taken after the engine is built; only `process` itself is measured.
     with PeakSampler() as sampler:
         t0 = time.perf_counter()
-        engine.process(event, [info])
+        engine.process(event, [info], selections=selections)
         seconds = time.perf_counter() - t0
 
     print(

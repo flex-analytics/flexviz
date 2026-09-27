@@ -56,21 +56,18 @@ def test_selection_cross_filter(benchmark, frame: pl.DataFrame) -> None:
         TraceInfo(line.uid, line._axes, line.trace_type, figure_uid="fig_a"),
         TraceInfo(hist.uid, hist._axes, hist.trace_type, figure_uid="fig_b"),
     ]
-    event = InteractionEvent(
-        type="selection",
-        force_update=True,
-        selections=[
-            SelectionState(
-                source_figure_uid="fig_a",
-                predicates=[
-                    SelectionPredicate(
-                        clauses=[ClauseFilter(column="x", range=(N // 3, 2 * N // 3))]
-                    )
-                ],
-            )
-        ],
-    )
-    deltas = benchmark(engine.process, event, infos)
+    event = InteractionEvent(type="selection", force_update=True)
+    selections = [
+        SelectionState(
+            source_figure_uid="fig_a",
+            predicates=[
+                SelectionPredicate(
+                    clauses=[ClauseFilter(column="x", range=(N // 3, 2 * N // 3))]
+                )
+            ],
+        )
+    ]
+    deltas = benchmark(engine.process, event, infos, selections=selections)
     assert has_data(deltas)
     assert {d.uid for d in deltas} == {hist.uid}
 

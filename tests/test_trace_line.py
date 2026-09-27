@@ -1991,10 +1991,8 @@ class TestNthScanPlan:
             )
         ]
         if sel is not None:
-            event = InteractionEvent(
-                type="selection", force_update=True, selections=[sel]
-            )
-            deltas = engine.process(event, infos)
+            event = InteractionEvent(type="selection", force_update=True)
+            deltas = engine.process(event, infos, selections=[sel])
         elif x_range is None:
             event = InteractionEvent(type="init", force_update=True)
             deltas = engine.process(event, infos)

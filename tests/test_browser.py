@@ -1215,7 +1215,6 @@ class TestPlotlyBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -1379,7 +1378,6 @@ class TestPlotlyBrowser:
             window.fvSetSelectionState([sel]);
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -1424,7 +1422,6 @@ class TestPlotlyBrowser:
             ]);
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2019,7 +2016,6 @@ class TestGroupedBrowser:
               await postDashboardUpdate({
                 type: 'viewport',
                 viewport_keys: [figUid + '/x'],
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: false,
               });
             }""")
@@ -2398,7 +2394,6 @@ class TestDemoEChartsBrowser:
                 window.fvSetSelectionState?.([selection]);
                 await postDashboardUpdate({
                   type: 'selection',
-                  selections: [selection],
                   force_update: true,
                 });
             }""")
@@ -2517,7 +2512,6 @@ class TestCrossFilterBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2555,7 +2549,6 @@ class TestCrossFilterBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2572,7 +2565,7 @@ class TestCrossFilterBrowser:
         ]
         assert len(deselect_events) >= 1, "Deselect button must fire a deselect event"
         last = deselect_events[-1]
-        assert last["event"].get("selections", []) == [], (
+        assert last["spec"]["state"]["selections"] == [], (
             "Deselect must clear selections"
         )
 
@@ -2603,7 +2596,6 @@ class TestCrossFilterBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2668,7 +2660,6 @@ class TestCrossFilterBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2730,7 +2721,6 @@ class TestCrossFilterBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2782,7 +2772,6 @@ class TestOverlayBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2824,7 +2813,6 @@ class TestOverlayBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2866,7 +2854,6 @@ class TestOverlayBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -2951,7 +2938,6 @@ class TestOverlayBrowser:
             }];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3012,7 +2998,6 @@ class TestOverlayBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3070,7 +3055,6 @@ class TestOverlayBrowser:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3139,8 +3123,7 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [100, 200] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections, force_update: true});
+            return postDashboardUpdate({type: 'selection', force_update: true});
         }""")
         page.wait_for_timeout(1_500)
         page.click("#fv-btn-reset")
@@ -3151,8 +3134,7 @@ class TestOverlayBrowser:
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
             const sel = { source_figure_uid: figUids[0], predicates: [{ clauses: [{ column: 'ts', range: [150, 300] }] }] };
             DASHBOARD_SPEC.state.selections = [sel];
-            return postDashboardUpdate({type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections, force_update: true});
+            return postDashboardUpdate({type: 'selection', force_update: true});
         }""")
         page.wait_for_timeout(1_500)
 
@@ -3212,7 +3194,6 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3295,7 +3276,6 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3335,7 +3315,6 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3382,7 +3361,6 @@ class TestOverlayBrowserPlotlySafeLayerIds:
             DASHBOARD_SPEC.state.selections = [sel];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -3546,7 +3524,6 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
                 });
 
@@ -3732,7 +3709,6 @@ class TestShareUrlState:
                 await postDashboardUpdate({
                   type: 'viewport',
                   viewport_keys: [uidA + '/x'],
-                  selections: DASHBOARD_SPEC.state.selections,
                   force_update: false,
                 });
 
@@ -3744,7 +3720,6 @@ class TestShareUrlState:
                 DASHBOARD_SPEC.state.selections = [sel];
                 await postDashboardUpdate({
                   type: 'selection',
-                  selections: DASHBOARD_SPEC.state.selections,
                   force_update: true,
                 });
 
@@ -3945,7 +3920,6 @@ class TestAgentReadback:
             }];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")
@@ -5653,7 +5627,6 @@ _INJECT_SELECTION_JS = """() => {
     DASHBOARD_SPEC.state.selections = [sel];
     return postDashboardUpdate({
         type: 'selection',
-        selections: DASHBOARD_SPEC.state.selections,
         force_update: true,
     });
 }"""
@@ -5982,7 +5955,6 @@ class TestResetCleanupBrowser:
         page.evaluate("""async () => {
                 await postDashboardUpdate({
                   type: 'init',
-                  selections: [],
                   force_update: true,
                 });
             }""")
@@ -6362,7 +6334,6 @@ class TestLegendVisibilityBrowser:
                 await postDashboardUpdate({
                     type: 'viewport',
                     viewport_keys: [figUid + '/x'],
-                    selections: DASHBOARD_SPEC.state.selections || [],
                     force_update: false,
                 });
             }""")
@@ -7204,8 +7175,7 @@ class TestLinkedAxesBrowser:
         page.evaluate(
             """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
                 predicates: [{clauses: [{column: 'ts', range: [120, 180]}]}]}]);
-              return postDashboardUpdate({type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+              return postDashboardUpdate({type: 'selection', force_update: true}); }""",
             uids[1],
         )
         page.wait_for_timeout(1_000)
@@ -7276,8 +7246,7 @@ class TestLinkedAxesBrowser:
         page.evaluate(
             """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
                 predicates: [{clauses: [{column: 'ts', range: [200, 300]}]}]}]);
-              return postDashboardUpdate({type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+              return postDashboardUpdate({type: 'selection', force_update: true}); }""",
             uids[1],
         )
         page.wait_for_timeout(1_000)
@@ -7307,8 +7276,7 @@ class TestLinkedAxesBrowser:
             ),
         )
         page.evaluate(
-            "() => postDashboardUpdate({type: 'deselect', selections: [],"
-            " force_update: true})"
+            "() => postDashboardUpdate({type: 'deselect', force_update: true})"
         )
         page.wait_for_timeout(1_000)
         assert statuses == [200]
@@ -7332,8 +7300,7 @@ class TestLinkedAxesBrowser:
             ),
         )
         page.evaluate(
-            "() => postDashboardUpdate({type: 'deselect', selections: [],"
-            " force_update: true})"
+            "() => postDashboardUpdate({type: 'deselect', force_update: true})"
         )
         page.wait_for_timeout(1_000)
         assert statuses == [200]
@@ -7433,8 +7400,7 @@ class TestLinkedAxesBrowser:
         page.evaluate(
             """(uid) => { window.fvSetSelectionState([{source_figure_uid: uid,
                 predicates: [{clauses: [{column: 'ts', range: [150, 180]}]}]}]);
-              return postDashboardUpdate({type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections, force_update: true}); }""",
+              return postDashboardUpdate({type: 'selection', force_update: true}); }""",
             uids[1],
         )
         page.wait_for_timeout(1_000)
@@ -7552,8 +7518,7 @@ _SELECT_TS = """([fig, range]) => {
       source_figure_uid: DASHBOARD_SPEC.figures[fig].uid,
       predicates: [{clauses: [{column: 'ts', range}]}],
     }]);
-    postDashboardUpdate({type: 'selection',
-      selections: DASHBOARD_SPEC.state.selections, force_update: true});
+    postDashboardUpdate({type: 'selection', force_update: true});
   }"""
 
 
@@ -7782,8 +7747,7 @@ class TestResponseOrderBrowser:
             window.fvSetSelectionState([[0, [50, 450]], [1, [200, 250]]].map(
               ([i, range]) => ({source_figure_uid: uids[i],
                 predicates: [{clauses: [{column: 'ts', range}]}]})));
-            postDashboardUpdate({type: 'selection',
-              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+            postDashboardUpdate({type: 'selection', force_update: true});
           }""")
         _wait_settled(page, 1)
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
@@ -7809,8 +7773,7 @@ class TestResponseOrderBrowser:
             window.fvSetSelectionState([[0, [150, 350]], [1, [200, 250]]].map(
               ([i, range]) => ({source_figure_uid: uids[i],
                 predicates: [{clauses: [{column: 'ts', range}]}]})));
-            postDashboardUpdate({type: 'selection',
-              selections: DASHBOARD_SPEC.state.selections, force_update: true});
+            postDashboardUpdate({type: 'selection', force_update: true});
           }""")
         _wait_settled(page, 2)
         page.click("#fv-bar-0 .fv-mode-action-btn[data-action='reset-panel']")
@@ -8207,7 +8170,6 @@ class TestHeatmapColorNormBrowser:
             }];
             return postDashboardUpdate({
                 type: 'selection',
-                selections: DASHBOARD_SPEC.state.selections,
                 force_update: true,
             });
         }""")

@@ -14,8 +14,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .spec import SelectionState
-
 
 class InteractionEvent(BaseModel):
     """A single renderer-agnostic interaction event.
@@ -26,9 +24,10 @@ class InteractionEvent(BaseModel):
         - ``"selection"`` — one or more rectangle selections changed
         - ``"deselect"``  — all selections cleared
         - ``"cube_request"`` — brush-start cube materialization hint.  Carries
-          the ``selections`` (the committed ones — the future passive set)
-          and **no active range**; the server computes no deltas for it.
-          Only meaningful with ``request_cube=True`` on the request body.
+          **no active range**; the server bakes the committed
+          ``state.selections`` (the future passive set) into the cubes and
+          computes no deltas for it.  Only meaningful with
+          ``request_cube=True`` on the request body.
 
     ``viewport_keys``
         The ``state.viewport`` keys (``"<figure_uid>/<axis_id>"``) this event
@@ -37,18 +36,16 @@ class InteractionEvent(BaseModel):
         when one of its ``recompute_axes`` is listed for its figure, so one
         event can cover several figures (linked axes).
 
-    ``selections``
-        Full list of current rectangular selections.  Populated for
-        ``"selection"`` events; empty list for ``"deselect"``.
-
     ``force_update``
         When ``True`` every scalable trace is recomputed, except the traces of
         a figure that sources a selection in a ``"selection"`` event.
+
+    The event carries no selections. The engine reads them from
+    ``state.selections`` and ignores them for ``"init"`` and ``"deselect"``.
     """
 
     type: Literal["init", "viewport", "selection", "deselect", "cube_request"]
     viewport_keys: list[str] = Field(default_factory=list)
-    selections: list[SelectionState] = Field(default_factory=list)
     force_update: bool = False
 
 

@@ -437,8 +437,8 @@ def test_overlay_backgrounds_share_one_aggregate_call() -> None:
     event = InteractionEvent(
         type="viewport",
         viewport_keys=["a/x", "b/x", "c/x"],
-        selections=[owned("b"), owned("c")],
     )
+    selections = [owned("b"), owned("c")]
     calls: list[tuple[int, int]] = []
     original = LFQueryBuilder.aggregate
 
@@ -448,7 +448,9 @@ def test_overlay_backgrounds_share_one_aggregate_call() -> None:
 
     LFQueryBuilder.aggregate = tracked
     try:
-        engine.process(event, infos, {}, cross_filter_mode="overlay")
+        engine.process(
+            event, infos, {}, selections=selections, cross_filter_mode="overlay"
+        )
     finally:
         LFQueryBuilder.aggregate = original
 

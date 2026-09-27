@@ -43,7 +43,6 @@ function clearFigureSelection(figUid) {
   postDashboardUpdate({
     type: remainingSelections.length ? 'selection' : 'deselect',
     axis_ranges: {},
-    selections: remainingSelections,
     force_update: true,
     figure_uid: figUid,
   });
@@ -106,7 +105,6 @@ function handleEChartsClick(params, figUid) {
   postDashboardUpdate({
     type: 'selection',
     axis_ranges: {},
-    selections: nextSelections,
     force_update: true,
     figure_uid: figUid,
   });
@@ -213,7 +211,6 @@ FIG_UIDS.forEach((figUid, fi) => {
       postDashboardUpdate({
         type: 'viewport',
         axis_ranges: { x: [startVal, endVal] },
-        selections: DASHBOARD_SPEC.state.selections,
         force_update: false,
         figure_uid: figUid,
       });
@@ -263,7 +260,6 @@ FIG_UIDS.forEach((figUid, fi) => {
     postDashboardUpdate({
       type: 'selection',
       axis_ranges: {},
-      selections: nextSelections,
       force_update: true,
       figure_uid: figUid,
     });
@@ -368,11 +364,11 @@ window.fvOnReset = async function() {
   window.fvClearUnlockedViewports?.();
   window.fvSetSelectionState?.([]);
   window.fvResetRuntimeCache?.();
-  await postDashboardUpdate({type: 'init', axis_ranges: {}, selections: [], force_update: true});
+  await postDashboardUpdate({type: 'init', axis_ranges: {}, force_update: true});
 };
 window.fvOnDeselect = async function() {
   window.fvSetSelectionState?.([]);
-  await postDashboardUpdate({type: 'deselect', axis_ranges: {}, selections: [], force_update: true});
+  await postDashboardUpdate({type: 'deselect', axis_ranges: {}, force_update: true});
 };
 
 (async () => {

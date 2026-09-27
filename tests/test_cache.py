@@ -201,8 +201,8 @@ def _run_init(trace, cache, source_name="s"):
     ti = TraceInfo(
         uid=trace.uid, axes=trace._axes, trace_type=trace.trace_type, figure_uid="f"
     )
-    ev = InteractionEvent(type="init", selections=[], force_update=True)
-    return eng.process(ev, [ti], {"f": {}}, "update")
+    ev = InteractionEvent(type="init", force_update=True)
+    return eng.process(ev, [ti], {"f": {}}, cross_filter_mode="update")
 
 
 def test_engine_init_miss_then_hit():
@@ -221,9 +221,9 @@ def test_engine_no_cache_when_backend_none():
     lf = _engine(None)
     eng = FlexEngine(backend_lf=lf, scalable_traces={tr.uid: tr})  # no cache
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
-    ev = InteractionEvent(type="init", selections=[], force_update=True)
+    ev = InteractionEvent(type="init", force_update=True)
     # Should simply run without touching any cache and return a delta.
-    assert eng.process(ev, [ti], {"f": {}}, "update")[0].uid == tr.uid
+    assert eng.process(ev, [ti], {"f": {}}, cross_filter_mode="update")[0].uid == tr.uid
 
 
 def test_engine_viewport_event_not_cached():
@@ -240,10 +240,9 @@ def test_engine_viewport_event_not_cached():
     ev = InteractionEvent(
         type="viewport",
         viewport_keys=["f/x"],
-        selections=[],
         force_update=True,
     )
-    eng.process(ev, [ti], {"f": {"x": (1, 5)}}, "update")
+    eng.process(ev, [ti], {"f": {"x": (1, 5)}}, cross_filter_mode="update")
     assert cache.stats()["entries"] == 0
 
 
@@ -273,8 +272,8 @@ def test_engine_overlay_init_reuses_update_entry():
         source_name="s",
     )
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
-    ev = InteractionEvent(type="init", selections=[], force_update=True)
-    out = eng.process(ev, [ti], {"f": {}}, "overlay")
+    ev = InteractionEvent(type="init", force_update=True)
+    out = eng.process(ev, [ti], {"f": {}}, cross_filter_mode="overlay")
     assert cache.stats()["hits"] == 1
     assert out[0].layer == "bg"
 
@@ -291,7 +290,6 @@ def test_engine_deselect_while_zoomed_is_not_served_from_cache():
 
     desel = InteractionEvent(
         type="deselect",
-        selections=[],
         force_update=True,
     )
     zoomed_vp = {"f": {"x": (1.0, 5.0)}}
@@ -303,11 +301,11 @@ def test_engine_deselect_while_zoomed_is_not_served_from_cache():
         source_name="s",
     )
     ti = TraceInfo(uid=tr.uid, axes=tr._axes, trace_type="line", figure_uid="f")
-    out = eng.process(desel, [ti], zoomed_vp, "update")
+    out = eng.process(desel, [ti], zoomed_vp, cross_filter_mode="update")
 
     # Reference: identical deselect computed with no cache at all.
     ref_eng = FlexEngine(backend_lf=_engine(None), scalable_traces={tr.uid: tr})
-    ref = ref_eng.process(desel, [ti], zoomed_vp, "update")
+    ref = ref_eng.process(desel, [ti], zoomed_vp, cross_filter_mode="update")
 
     assert cache.stats()["hits"] == 0  # must NOT have served init's full-range entry
     assert out[0].updates == ref[0].updates  # viewport-correct result
@@ -334,12 +332,12 @@ def test_engine_mixed_zoom_deselect_does_not_short_circuit_from_cache():
             TraceInfo(uid="t1", axes=t1._axes, trace_type="line", figure_uid="f1"),
             TraceInfo(uid="t2", axes=t2._axes, trace_type="line", figure_uid="f2"),
         ]
-        return eng.process(event, infos, viewports, "update")
+        return eng.process(event, infos, viewports, cross_filter_mode="update")
 
-    init = InteractionEvent(type="init", selections=[], force_update=True)
+    init = InteractionEvent(type="init", force_update=True)
     run(init, {"f1": {}, "f2": {}})  # populate both unfiltered entries
 
-    desel = InteractionEvent(type="deselect", selections=[], force_update=True)
+    desel = InteractionEvent(type="deselect", force_update=True)
     out = run(desel, {"f1": {}, "f2": {"x": (1.0, 5.0)}})
     by_uid = {d.uid: d for d in out}
     assert set(by_uid) == {"t1", "t2"}  # zoomed trace not dropped by short-circuit
@@ -350,7 +348,7 @@ def test_engine_mixed_zoom_deselect_does_not_short_circuit_from_cache():
         desel,
         [TraceInfo(uid="t2", axes=t2._axes, trace_type="line", figure_uid="f2")],
         {"f2": {"x": (1.0, 5.0)}},
-        "update",
+        cross_filter_mode="update",
     )
     assert by_uid["t2"].updates == ref[0].updates  # viewport-correct, not cached
 
@@ -419,7 +417,7 @@ _SPEC = {
     ],
     "state": {"viewport": {}, "selections": [], "cross_filter_mode": "update"},
 }
-_INIT = {"type": "init", "selections": [], "force_update": True}
+_INIT = {"type": "init", "force_update": True}
 
 
 @pytest.fixture

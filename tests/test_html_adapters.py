@@ -242,7 +242,7 @@ class TestPlotlyHtml:
     def test_figure_scoped_clear_keeps_other_selections(self, html):
         body = _js_function_body(html, "function clearFigureSelection(figUid)")
         assert "type: remainingSelections.length ? 'selection' : 'deselect'" in body
-        assert "selections: remainingSelections" in body
+        assert "fvSetSelectionState?.(remainingSelections)" in body
         # Events no longer carry a figure uid; the selections say who owns what.
         assert "figure_uid" not in body
 
@@ -811,7 +811,7 @@ class TestEChartsHtml:
             "type: remainingSelections.length ? 'selection' : 'deselect'"
             in clear_helper
         )
-        assert "selections: remainingSelections" in clear_helper
+        assert "fvSetSelectionState?.(remainingSelections)" in clear_helper
         assert "figure_uid: figUid" in clear_helper
 
     def test_brush_end_emits_predicates(self, html):

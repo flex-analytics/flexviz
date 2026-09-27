@@ -316,7 +316,6 @@ window.fvOnResetPanel = async function(figUid) {
   await postDashboardUpdate({
     type: remaining.length ? 'selection' : 'deselect',
     viewport_keys: clearedKeys,
-    selections: remaining,
     force_update: true,
   });
 };
@@ -332,7 +331,6 @@ window.fvOnCfMode = async function() {
   }
   await postDashboardUpdate({
     type: selections.length ? 'selection' : 'deselect',
-    selections,
     force_update: true,
   });
 };

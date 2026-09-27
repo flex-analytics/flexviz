@@ -293,13 +293,16 @@ class TestEngineViewportKeys:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["a/x", "b/x"],
-            selections=[
-                _ts_range_selection("a", 20, 60),
-                _ts_range_selection("c", 40, 80),
-            ],
         )
+        selections = [
+            _ts_range_selection("a", 20, 60),
+            _ts_range_selection("c", 40, 80),
+        ]
         viewports = {"a": {"x": (10, 90)}, "b": {"x": (10, 90)}}
-        deltas = {d.uid: d for d in engine.process(event, infos, viewports)}
+        deltas = {
+            d.uid: d
+            for d in engine.process(event, infos, viewports, selections=selections)
+        }
 
         assert lines["c"].uid not in deltas
         a_x = deltas[lines["a"].uid].updates["x"]
@@ -316,10 +319,14 @@ class TestEngineViewportKeys:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["own/x"],
-            selections=[_ts_range_selection("own", 20, 40)],
         )
+        selections = [_ts_range_selection("own", 20, 40)]
         deltas = engine.process(
-            event, infos, {"own": {"x": (10, 90)}}, cross_filter_mode="overlay"
+            event,
+            infos,
+            {"own": {"x": (10, 90)}},
+            selections=selections,
+            cross_filter_mode="overlay",
         )
 
         assert {(d.uid, d.layer) for d in deltas} == {
@@ -337,10 +344,13 @@ class TestEngineViewportKeys:
             type="selection",
             force_update=True,
             viewport_keys=["src/x"],
-            selections=[_ts_range_selection("src", 20, 40)],
         )
+        selections = [_ts_range_selection("src", 20, 40)]
         deltas = {
-            d.uid: d for d in engine.process(event, infos, {"src": {"x": (10, 90)}})
+            d.uid: d
+            for d in engine.process(
+                event, infos, {"src": {"x": (10, 90)}}, selections=selections
+            )
         }
 
         src_x = deltas[src.uid].updates["x"]
@@ -367,12 +377,12 @@ class TestEngineViewportKeys:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["a/x", "b/x"],
-            selections=[
-                _ts_range_selection("a", 20, 60),
-                _ts_range_selection("b", 40, 80),
-            ],
         )
-        deltas = engine.process(event, infos, {})
+        selections = [
+            _ts_range_selection("a", 20, 60),
+            _ts_range_selection("b", 40, 80),
+        ]
+        deltas = engine.process(event, infos, {}, selections=selections)
 
         assert {d.uid for d in deltas} == {h_a.uid, h_b.uid}
         assert calls == [False]
@@ -395,12 +405,14 @@ class TestEngineViewportKeys:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["a/x", "b/x", "c/x"],
-            selections=[
-                _ts_range_selection("b", 20, 60),
-                _ts_range_selection("c", 40, 80),
-            ],
         )
-        deltas = engine.process(event, infos, {}, cross_filter_mode="overlay")
+        selections = [
+            _ts_range_selection("b", 20, 60),
+            _ts_range_selection("c", 40, 80),
+        ]
+        deltas = engine.process(
+            event, infos, {}, selections=selections, cross_filter_mode="overlay"
+        )
 
         assert calls == [(0, 3), (2, 1)]
         assert sorted((d.uid, d.layer) for d in deltas) == sorted(
@@ -415,10 +427,14 @@ class TestEngineViewportKeys:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["t/x"],
-            selections=[SelectionState(source_figure_uid="s", predicates=[])],
         )
+        selections = [SelectionState(source_figure_uid="s", predicates=[])]
         deltas = engine.process(
-            event, infos, {"t": {"x": (10, 90)}}, cross_filter_mode="overlay"
+            event,
+            infos,
+            {"t": {"x": (10, 90)}},
+            selections=selections,
+            cross_filter_mode="overlay",
         )
         assert [(d.uid, d.layer) for d in deltas] == [(hist2d.uid, "bg")]
 
@@ -470,21 +486,18 @@ class TestEngineSelection:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(100, 500))]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(100, 500))]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         delta_uids = {d.uid for d in deltas}
         assert line_a.uid not in delta_uids, "source figure trace should be excluded"
         assert line_b.uid in delta_uids, "target figure trace should receive a delta"
@@ -512,21 +525,18 @@ class TestEngineSelection:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(100, 300))]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(100, 300))]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         b_delta = next(d for d in deltas if d.uid == line_b.uid)
         assert all(100 <= v <= 300 for v in b_delta.updates["x"])
 
@@ -553,21 +563,18 @@ class TestEngineSelection:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="val", range=(200.0, 500.0))]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="val", range=(200.0, 500.0))]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         b_delta = next(d for d in deltas if d.uid == line_b.uid)
         assert all(200 <= v <= 500 for v in b_delta.updates["y"])
 
@@ -594,24 +601,21 @@ class TestEngineSelection:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[
-                                ClauseFilter(column="ts", range=(100, 400)),
-                                ClauseFilter(column="val", range=(100.0, 400.0)),
-                            ]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[
+                            ClauseFilter(column="ts", range=(100, 400)),
+                            ClauseFilter(column="val", range=(100.0, 400.0)),
+                        ]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         b_delta = next(d for d in deltas if d.uid == line_b.uid)
         assert all(100 <= v <= 400 for v in b_delta.updates["x"])
         assert all(100 <= v <= 400 for v in b_delta.updates["y"])
@@ -639,21 +643,18 @@ class TestEngineSelection:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_hist",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="val", range=(200, 500))]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_hist",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="val", range=(200, 500))]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         delta_uids = {d.uid for d in deltas}
         assert hist.uid not in delta_uids
         assert line.uid in delta_uids
@@ -686,21 +687,20 @@ class TestEngineOverlay:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(2, 4))]
-                        )
-                    ],
-                )
-            ],
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(2, 4))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, selections=selections, cross_filter_mode="overlay"
         )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert [d.uid for d in deltas].count(line_a.uid) == 0
         assert {d.layer for d in target_deltas} == {"fg"}
@@ -732,21 +732,20 @@ class TestEngineOverlay:
             ),
         ]
 
-        event, viewports = _zoom(
-            {"x": (0, 6)},
-            fig="fig_b",
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(2, 4))]
-                        )
-                    ],
-                )
-            ],
+        event, viewports = _zoom({"x": (0, 6)}, fig="fig_b")
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(2, 4))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, viewports, selections=selections, cross_filter_mode="overlay"
         )
-        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert {d.layer for d in target_deltas} == {"bg", "fg"}
         bg = next(d for d in target_deltas if d.layer == "bg")
@@ -769,21 +768,21 @@ class TestBarPlotCrossFilter:
         )
         return LFQueryBuilder(df)
 
-    def _make_event(self, figure_uid: str, categories: list[str]) -> InteractionEvent:
-        return InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid=figure_uid,
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="cat", values=categories)]
-                        )
-                    ],
-                )
-            ],
-        )
+    def _make_event(
+        self, figure_uid: str, categories: list[str]
+    ) -> tuple[InteractionEvent, list[SelectionState]]:
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid=figure_uid,
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="cat", values=categories)]
+                    )
+                ],
+            )
+        ]
+        return event, selections
 
     def test_bar_to_line_cross_filter(self, cat_lf: LFQueryBuilder):
         """Selecting bars on fig_bar should filter the line on fig_line to matching rows."""
@@ -802,8 +801,8 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = self._make_event("fig_bar", ["A"])
-        deltas = engine.process(event, infos)
+        event, selections = self._make_event("fig_bar", ["A"])
+        deltas = engine.process(event, infos, selections=selections)
 
         delta_uids = {d.uid for d in deltas}
         assert bar.uid not in delta_uids, "Source figure trace must not be re-processed"
@@ -832,8 +831,8 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = self._make_event("fig_bar", ["B", "C"])
-        deltas = engine.process(event, infos)
+        event, selections = self._make_event("fig_bar", ["B", "C"])
+        deltas = engine.process(event, infos, selections=selections)
 
         hist_delta = next(d for d in deltas if d.uid == hist.uid)
         # Only 4 rows remain (B+C), so total count across all bins must be 4.
@@ -857,8 +856,8 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = self._make_event("fig_bar", ["A", "B"])
-        deltas = engine.process(event, infos)
+        event, selections = self._make_event("fig_bar", ["A", "B"])
+        deltas = engine.process(event, infos, selections=selections)
         assert all(d.uid != bar.uid for d in deltas)
 
     def test_bar_as_cross_filter_target(self, cat_lf: LFQueryBuilder):
@@ -879,28 +878,27 @@ class TestBarPlotCrossFilter:
         ]
 
         # Select ts range 1-2 on the line (only cat=A rows).
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_line",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(1, 2))]
-                        )
-                    ],
-                )
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_line",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(1, 2))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(event, infos, selections=selections)
 
         bar_delta = next(d for d in deltas if d.uid == bar.uid)
         # After filtering to ts∈[1,2], only cat=A rows remain → bar has one label "A".
         assert bar_delta.updates["x"] == ["A"]
 
     def test_bar_deselect_clears_filter(self, cat_lf: LFQueryBuilder):
-        """A deselect event must return unfiltered aggregation for all traces."""
+        """A deselect event must return unfiltered aggregation for all traces,
+        even when state.selections still holds a selection: the server's
+        unfiltered cache relies on it."""
         bar = BarPlot(labels="cat")
         line = LinePlot(x="ts", y="val", n_points=1000)
         engine = FlexEngine(
@@ -916,8 +914,9 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = InteractionEvent(type="deselect", force_update=True, selections=[])
-        deltas = engine.process(event, infos)
+        _, selections = self._make_event("fig_bar", ["C"])
+        event = InteractionEvent(type="deselect", force_update=True)
+        deltas = engine.process(event, infos, selections=selections)
 
         line_delta = next(d for d in deltas if d.uid == line.uid)
         assert len(line_delta.updates["y"]) == 6, "All 6 rows returned after deselect"
@@ -939,8 +938,8 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = self._make_event("fig_bar", ["C"])
-        deltas = engine.process(event, infos)
+        event, selections = self._make_event("fig_bar", ["C"])
+        deltas = engine.process(event, infos, selections=selections)
 
         line_delta = next(d for d in deltas if d.uid == line.uid)
         assert line_delta.updates["y"] == [50.0, 60.0], "Only cat=C rows"
@@ -970,7 +969,8 @@ class TestBarPlotCrossFilter:
                     figure_uid="fig_line",
                 ),
             ]
-            deltas = engine.process(self._make_event("fig_bar", ["A", "C"]), infos)
+            event, selections = self._make_event("fig_bar", ["A", "C"])
+            deltas = engine.process(event, infos, selections=selections)
             return [d.updates for d in deltas]
 
         chain = run()
@@ -1012,21 +1012,20 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_src",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(0, 2))]
-                        )
-                    ],
-                )
-            ],
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_src",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(0, 2))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, selections=selections, cross_filter_mode="overlay"
         )
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
         bar_deltas = [d for d in deltas if d.uid == bar.uid]
         assert {d.layer for d in bar_deltas} == {"fg"}
         assert all(d.group_results is not None for d in bar_deltas)
@@ -1058,7 +1057,7 @@ class TestBarPlotCrossFilter:
             )
         ]
 
-        event = InteractionEvent(type="deselect", force_update=True, selections=[])
+        event = InteractionEvent(type="deselect", force_update=True)
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         assert all(d.layer == "bg" for d in deltas)
         assert not any(d.layer == "fg" for d in deltas)
@@ -1098,21 +1097,20 @@ class TestBarPlotCrossFilter:
             ),
         ]
 
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(2, 4))]
-                        )
-                    ],
-                )
-            ],
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(2, 4))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, selections=selections, cross_filter_mode="update"
         )
-        deltas = engine.process(event, infos, cross_filter_mode="update")
         assert all(d.layer is None for d in deltas)
 
 
@@ -1134,18 +1132,16 @@ class TestCategoriesColumnCrossFilter:
         self,
         figure_uid: str,
         clauses: list[ClauseFilter] | None = None,
-    ) -> InteractionEvent:
+    ) -> tuple[InteractionEvent, list[SelectionState]]:
         predicates = [SelectionPredicate(clauses=clauses)] if clauses else []
-        return InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid=figure_uid,
-                    predicates=predicates,
-                )
-            ],
-        )
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid=figure_uid,
+                predicates=predicates,
+            )
+        ]
+        return event, selections
 
     def test_treemap_continent_click_filters_bar(self, geo_df: LFQueryBuilder):
         """Clicking 'Europe' on a treemap cross-filters a bar in the same dashboard."""
@@ -1166,11 +1162,11 @@ class TestCategoriesColumnCrossFilter:
                 uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
             ),
         ]
-        event = self._make_click_event(
+        event, selections = self._make_click_event(
             figure_uid="fig_tree",
             clauses=[ClauseFilter(column="continent", values=["Europe"])],
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, selections=selections)
         # fig_bar should be recomputed with continent=Europe filter
         bar_delta = next((d for d in deltas if d.uid == bar.uid), None)
         assert bar_delta is not None
@@ -1199,11 +1195,11 @@ class TestCategoriesColumnCrossFilter:
                 uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
             ),
         ]
-        event = self._make_click_event(
+        event, selections = self._make_click_event(
             figure_uid="fig_tree",
             clauses=[ClauseFilter(column="country", values=["Germany"])],
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, selections=selections)
         bar_delta = next((d for d in deltas if d.uid == bar.uid), None)
         assert bar_delta is not None
         # Only Europe (where Germany is) should appear
@@ -1227,11 +1223,11 @@ class TestCategoriesColumnCrossFilter:
                 uid=bar.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_bar"
             ),
         ]
-        event = self._make_click_event(
+        event, selections = self._make_click_event(
             figure_uid="fig_pie",
             clauses=[ClauseFilter(column="continent", values=["Europe"])],
         )
-        deltas = engine.process(event, infos)
+        deltas = engine.process(event, infos, selections=selections)
         bar_delta = next((d for d in deltas if d.uid == bar.uid), None)
         assert bar_delta is not None
         countries = set(bar_delta.updates.get("x", []))
@@ -1261,8 +1257,8 @@ class TestCategoriesColumnCrossFilter:
             ),
         ]
         # No predicates → no filter applied → all data shown
-        event = self._make_click_event(figure_uid="fig_tree", clauses=None)
-        deltas = engine.process(event, infos)
+        event, selections = self._make_click_event(figure_uid="fig_tree", clauses=None)
+        deltas = engine.process(event, infos, selections=selections)
         bar_delta = next((d for d in deltas if d.uid == bar.uid), None)
         assert bar_delta is not None
         # All countries present since no filter was applied
@@ -1518,24 +1514,21 @@ class TestEngineGroupedLine:
             ),
         ]
         # Select a range that includes only ts=0..4 (both sensors have data there)
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[
-                                ClauseFilter(column="ts", range=(0, 4)),
-                                ClauseFilter(column="val", range=(0.0, 50.0)),
-                            ]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[
+                            ClauseFilter(column="ts", range=(0, 4)),
+                            ClauseFilter(column="val", range=(0.0, 50.0)),
+                        ]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         grp_delta = next((d for d in deltas if d.uid == line_grp.uid), None)
         assert grp_delta is not None
         assert [cr.group_value_key for cr in grp_delta.group_results] == ["A"]
@@ -1670,19 +1663,21 @@ class TestEngineOverlayPolicy:
         event = InteractionEvent(
             type="viewport",
             force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(20, 40))]
-                        )
-                    ],
-                )
-            ],
         )
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(20, 40))]
+                    )
+                ],
+            )
+        ]
 
-        deltas = engine.process(event, infos, cross_filter_mode="overlay")
+        deltas = engine.process(
+            event, infos, selections=selections, cross_filter_mode="overlay"
+        )
         assert {d.layer for d in deltas if d.uid == box.uid} == {"fg"}
 
     def test_overlay_ungrouped_bar_gets_bg(self):
@@ -1736,21 +1731,20 @@ class TestEngineOverlayPolicy:
                 uid=line_b.uid, axes=("x", "y"), trace_type="line", figure_uid="fig_b"
             ),
         ]
-        event, viewports = _zoom(
-            {"x": (0, 6)},
-            fig="fig_b",
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(2, 4))]
-                        )
-                    ],
-                )
-            ],
+        event, viewports = _zoom({"x": (0, 6)}, fig="fig_b")
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(2, 4))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, viewports, selections=selections, cross_filter_mode="overlay"
         )
-        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         target_deltas = [d for d in deltas if d.uid == line_b.uid]
         assert {d.layer for d in target_deltas} == {"bg", "fg"}
 
@@ -2004,21 +1998,20 @@ class TestEngineHistogramOverlayAlignment:
                 figure_uid="fig_tgt",
             ),
         ]
-        event, viewports = _zoom(
-            {"x": (0, n - 1)},
-            fig="fig_tgt",
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_src",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(50, 100))]
-                        )
-                    ],
-                )
-            ],
+        event, viewports = _zoom({"x": (0, n - 1)}, fig="fig_tgt")
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_src",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(50, 100))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(
+            event, infos, viewports, selections=selections, cross_filter_mode="overlay"
         )
-        deltas = engine.process(event, infos, viewports, cross_filter_mode="overlay")
         hist_deltas = [d for d in deltas if d.uid == hist_tgt.uid]
         assert {d.layer for d in hist_deltas} == {"bg", "fg"}
         bg = next(d for d in hist_deltas if d.layer == "bg")
@@ -2063,7 +2056,6 @@ class TestEngineOverlaySequences:
         event = InteractionEvent(
             type="deselect",
             force_update=True,
-            selections=[],
         )
         deltas = engine.process(event, infos, cross_filter_mode="overlay")
         layers = {d.layer for d in deltas}
@@ -2109,21 +2101,18 @@ class TestEngineViewportEdgeCases:
             ),
         ]
         # viewport from fig_a with a selection on fig_a — both traces are in fig_a
-        event, viewports = _zoom(
-            {"x": (0, 5)},
-            fig="fig_a",
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_a",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(0, 5))]
-                        )
-                    ],
-                )
-            ],
-        )
-        deltas = engine.process(event, infos, viewports)
+        event, viewports = _zoom({"x": (0, 5)}, fig="fig_a")
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_a",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(0, 5))]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(event, infos, viewports, selections=selections)
         # fig_a traces should not be cross-filtered — both traces get viewport data
         assert len(deltas) >= 1
         for d in deltas:
@@ -2198,21 +2187,18 @@ class TestGroupedTracesEdgeCases:
                 uid=bar_tgt.uid, axes=("x", "y"), trace_type="bar", figure_uid="fig_tgt"
             ),
         ]
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_src",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="cat", values=["A", "B"])]
-                        )
-                    ],
-                )
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_src",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="cat", values=["A", "B"])]
+                    )
+                ],
+            )
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         tgt_delta = next(d for d in deltas if d.uid == bar_tgt.uid)
         # grouped bar yields group_results; all child cats should be A or B only
         for child in tgt_delta.group_results:
@@ -2245,20 +2231,17 @@ class TestEngineSelectionFilterExprs:
         trace_b.uid = "b"
 
         engine = FlexEngine(backend_lf=lf, scalable_traces={"a": trace_a, "b": trace_b})
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="figA",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="country", values=["NL"])]
-                        )
-                    ],
-                )
-            ],
-        )
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="figA",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="country", values=["NL"])]
+                    )
+                ],
+            )
+        ]
         deltas = engine.process(
             event=event,
             trace_infos=[
@@ -2269,6 +2252,7 @@ class TestEngineSelectionFilterExprs:
                     uid="b", axes=("x", "y"), trace_type="bar", figure_uid="figB"
                 ),
             ],
+            selections=selections,
         )
         deltas_by_uid = {d.uid: d for d in deltas}
         # Source figure "figA" is not re-aggregated on its own selection
@@ -2311,23 +2295,18 @@ class TestEngineSelectionFilterExprs:
         engine = FlexEngine(
             backend_lf=lf, scalable_traces={src.uid: src, target.uid: target}
         )
-        engine.process(
-            event=InteractionEvent(
-                type="selection",
-                force_update=True,
-                selections=[
-                    SelectionState(
-                        source_figure_uid="figA",
-                        predicates=[
-                            SelectionPredicate(
-                                clauses=[
-                                    ClauseFilter(column="country", values=["NL", "BE"])
-                                ]
-                            )
-                        ],
+        selections = [
+            SelectionState(
+                source_figure_uid="figA",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="country", values=["NL", "BE"])]
                     )
                 ],
-            ),
+            )
+        ]
+        engine.process(
+            event=InteractionEvent(type="selection", force_update=True),
             trace_infos=[
                 TraceInfo(
                     uid=src.uid, axes=("x", "y"), trace_type="bar", figure_uid="figA"
@@ -2336,6 +2315,7 @@ class TestEngineSelectionFilterExprs:
                     uid=target.uid, axes=("x", "y"), trace_type="bar", figure_uid="figB"
                 ),
             ],
+            selections=selections,
         )
         assert compiled, "the engine compiled no selection filter"
         return compiled, lf.is_scan
@@ -2888,21 +2868,22 @@ class TestResidentLineXWidth:
                 uid=target.uid, axes=("x", "y"), trace_type="line", figure_uid="tgt"
             ),
         ]
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="src",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[ClauseFilter(column="ts", range=(4500, 5499))]
-                        )
-                    ],
-                )
-            ],
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="src",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[ClauseFilter(column="ts", range=(4500, 5499))]
+                    )
+                ],
+            )
+        ]
+        delta = next(
+            d
+            for d in engine.process(event, infos, selections=selections)
+            if d.uid == target.uid
         )
-        delta = next(d for d in engine.process(event, infos) if d.uid == target.uid)
         xs = list(delta.updates["x"])
         assert all(4500 <= v <= 5499 for v in xs)
         assert len(xs) == 200  # the full budget, not 10% of it

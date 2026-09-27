@@ -708,6 +708,7 @@ async def dashboard_update(
                 event,
                 infos,
                 viewports_by_figure,
+                req.spec.state.selections,
                 req.spec.state.cross_filter_mode,
             )
         except Exception as exc:

@@ -120,7 +120,6 @@ function fvCommitViewportChange(sourceFigUid, keys) {
   return postDashboardUpdate({
     type: 'viewport',
     viewport_keys: keys,
-    selections: DASHBOARD_SPEC.state.selections || [],
     force_update: false,
   });
 }
@@ -130,6 +129,9 @@ async function postDashboardUpdate(event) {
   // Taken in the same synchronous step that serializes the spec, so the
   // number orders the requests by the state they carry.
   const seq = fvNextWriteSeq();
+  // The selections the server filters this request by. The state can change
+  // before the response arrives.
+  const selections = DASHBOARD_SPEC.state.selections || [];
   const cacheKey = fvCacheKeyFor(event);
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.
@@ -180,7 +182,7 @@ async function postDashboardUpdate(event) {
             for (const cr of delta.group_results || []) {
               _updateBgYExtent(figUid, (cr.updates || {}).y);
             }
-          } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, figUid)) {
+          } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, selections, figUid)) {
             setGroupedLayerData(figUid, delta.uid, 'bg', delta.group_results || [], seq);
             sawBackground = true;
             for (const cr of delta.group_results || []) {
@@ -193,7 +195,7 @@ async function postDashboardUpdate(event) {
             setLayerData(delta.uid, 'base', delta.updates || {}, seq);
             sawBackground = true;
             _updateBgYExtent(figUid, (delta.updates || {}).y);
-          } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, figUid)) {
+          } else if (layerKey === 'base' && isUnfilteredBaseForFigure(event, selections, figUid)) {
             setLayerData(delta.uid, 'bg', delta.updates || {}, seq);
             sawBackground = true;
             _updateBgYExtent(figUid, (delta.updates || {}).y);
@@ -204,7 +206,7 @@ async function postDashboardUpdate(event) {
         setHasBackground(figUid, true, seq);
       } else if (
         fvFiguresOfKeys(event.viewport_keys || []).includes(figUid)
-        && !isUnfilteredBaseForFigure(event, figUid)
+        && !isUnfilteredBaseForFigure(event, selections, figUid)
       ) {
         // The range changed under a cross-filter (a zoom, or a panel reset
         // that also clears a selection): the background holds the old range.
