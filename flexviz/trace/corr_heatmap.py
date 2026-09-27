@@ -236,6 +236,10 @@ class CorrHeatmap(FlexTrace):
 
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> CorrHeatmap:
+        # Correlations lie in [-1, 1], so the trace has no color_norm. Refuse
+        # one instead of silently drawing a linear scale.
+        if "color_norm" in spec.display:
+            raise ValueError("CorrHeatmap has no color_norm")
         trace = cls(
             columns=spec.params.get("columns"),
             method=spec.params["method"],
