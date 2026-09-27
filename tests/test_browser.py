@@ -5336,6 +5336,82 @@ class TestBinEdgeTripleBrowser:
         assert band["x0"] == pytest.approx(lo + target_bin * step)
         assert band["x1"] == pytest.approx(lo + (target_bin + 1) * step)
 
+    @pytest.mark.browser_context_args(timezone_id="Europe/Brussels")
+    def test_temporal_hover_band_lands_on_the_bin_edge_off_utc(
+        self, page: Page, server_port: int
+    ):
+        """A histogram's date x axis carries bin edges as epoch-ms numbers
+        (see the ``[lo, step, n]`` triple above). The rendered band must land
+        where Plotly's own ``l2p`` draws that edge; a browser timezone other
+        than UTC (Brussels here) catches a conversion that re-derives the
+        value through ``new Date(ms)``, which shifts by the local offset."""
+        import datetime as dt
+
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        df = pl.DataFrame(
+            {
+                "ts": [
+                    dt.datetime(2024, 6, 1) + dt.timedelta(hours=i) for i in range(300)
+                ],
+                "val": [float((i * 37) % 300) for i in range(300)],
+            }
+        )
+        register_source("_browser_edges_hist_date", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="ts", y="val")  # fig0: axis source
+        dash.add_figure().add_histogram(x="ts", bins=10)  # fig1: axis target, date x
+        spec = dash.to_spec(source_name="_browser_edges_hist_date")
+        url = (
+            f"http://127.0.0.1:{server_port}/view?"
+            f"spec={encode_spec(spec)}&renderer=plotly"
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        base = page.evaluate("""() => {
+            const traceUid = DASHBOARD_SPEC.figures[1].traces[0].uid;
+            const [lo, step, n] = layerDataByUid[traceUid].base.x_edges;
+            return { lo, step, n };
+        }""")
+        lo, step, n = base["lo"], base["step"], base["n"]
+        target_bin = n // 2
+        probe_val = lo + (target_bin + 0.5) * step
+        edge0 = lo + target_bin * step
+        edge1 = lo + (target_bin + 1) * step
+
+        result = page.evaluate(
+            """({probeVal, edge0, edge1}) => {
+                const lineFigUid = DASHBOARD_SPEC.figures[0].uid;
+                const histFigUid = DASHBOARD_SPEC.figures[1].uid;
+                const lineTraceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+                DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+                handlePlotlyHover({
+                    points: [{ x: probeVal, y: 0, data: { uid: lineTraceUid } }],
+                }, lineFigUid);
+                const figIdx = figUidToIdx[histFigUid];
+                const xa = divs[figIdx]._fullLayout.xaxis;
+                const band = divs[figIdx].querySelector('[data-fv-hover="linked:x_band"]');
+                // Independent of the code under test: Plotly's own l2p.
+                const p0 = xa._offset + xa.l2p(edge0);
+                const p1 = xa._offset + xa.l2p(edge1);
+                return {
+                    left: band && parseFloat(band.style.left),
+                    width: band && parseFloat(band.style.width),
+                    expectedLeft: Math.min(p0, p1),
+                    expectedWidth: Math.abs(p1 - p0),
+                };
+            }""",
+            {"probeVal": probe_val, "edge0": edge0, "edge1": edge1},
+        )
+
+        assert result["left"] is not None, "Expected an x_band on the date target"
+        assert result["left"] == pytest.approx(result["expectedLeft"], abs=0.5)
+        assert result["width"] == pytest.approx(result["expectedWidth"], abs=0.5)
+
     def test_histogram2d_edges_and_hover_cell_lookup(
         self, page: Page, server_port: int
     ):
@@ -8376,3 +8452,48 @@ class TestLogAxisBrowser:
         assert [shown["box"]["y0"], shown["box"]["y1"]] == pytest.approx(
             [10**v for v in shown["yrange"]]
         )
+
+    def test_linked_hover_guide_lands_at_the_data_value_on_a_log_target(
+        self, page: Page, server_port: int
+    ):
+        """A linked hover guide is drawn from a raw data value (the hovered
+        point). On a log target axis that value must be log10'd before it
+        reaches l2p, or it would be treated as an already-log10 position and
+        place the guide far off the plot."""
+        df = pl.DataFrame(
+            {
+                "x": [10 ** (3 * i / 99) for i in range(100)],  # 1..1000
+                "y": [float(i) for i in range(100)],
+                "y2": [float(i) for i in range(100)],
+            }
+        )
+
+        def build(dash):
+            dash.add_figure(title="Fig0").add_line(x="x", y="y", n_points=100)
+            dash.add_figure(title="Fig1").add_line(
+                x="x", y="y2", n_points=100
+            ).update_layout(xaxis={"type": "log"})
+
+        page.goto(_color_norm_url(server_port, "_browser_log_axis_hover", df, build))
+        _wait_for_init(page, "plotly")
+
+        result = page.evaluate("""() => {
+            const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
+            const fig1Uid = DASHBOARD_SPEC.figures[1].uid;
+            const traceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
+            if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+            DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+            const x = 100;  // a real data value on the shared 'x' column
+            handlePlotlyHover({points: [{x, y: 50, data: {uid: traceUid}}]}, fig0Uid);
+            const fig1Idx = figUidToIdx[fig1Uid];
+            const xa = divs[fig1Idx]._fullLayout.xaxis;
+            const guide = divs[fig1Idx].querySelector('[data-fv-hover="linked:x"]');
+            return {
+                guideLeft: guide && parseFloat(guide.style.left),
+                // Independent of the code under test: log10 by hand, then l2p.
+                expected: xa._offset + xa.l2p(Math.log10(x)),
+            };
+        }""")
+
+        assert result["guideLeft"] is not None, "Expected an x-guide on the log target"
+        assert result["guideLeft"] == pytest.approx(result["expected"], abs=0.5)
