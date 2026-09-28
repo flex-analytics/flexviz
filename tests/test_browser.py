@@ -7228,6 +7228,41 @@ class TestLinkedAxesBrowser:
         assert posts == []
         assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
 
+    def test_lock_on_a_line_and_histogram_of_one_column_posts_nothing(
+        self, page: Page, server_port: int
+    ):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        # The line and the histogram autorange to ranges that differ by float
+        # noise only, so the lock has nothing to fix.
+        df = pl.DataFrame({"long": range(10_000)}).with_columns(
+            val=pl.col("long").cast(pl.Float64)
+        )
+        register_source("_browser_linked_hist", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="long", y="val", n_points=200)
+        dash.add_figure().add_histogram(x="long", bins=50)
+        dash.link_axes(on="long")
+        spec = dash.to_spec(source_name="_browser_linked_hist")
+        posts = self._open(
+            page,
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
+            "&renderer=plotly",
+        )
+        shown = page.evaluate(
+            "[...document.querySelectorAll('.js-plotly-plot')]"
+            ".map(gd => gd._fullLayout.xaxis.range)"
+        )
+        assert shown[0] != shown[1], shown
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+
     def test_overlay_owner_in_the_group_gets_its_background(
         self, page: Page, server_port: int
     ):

@@ -145,6 +145,15 @@ function fvTryLockAxis(figUid, axisId) {
   window.fvStoreAxisLockRanges(figUid, ranges);
   return ranges;
 }
+// Figures linked on one column rarely autorange to bit-identical bounds (a line
+// shows [3e-13, 9999.0000000001] where a histogram shows [0, 9999]), so numeric
+// bounds within 1e-9 of the span count as equal. Date strings compare exactly.
+function fvSameRange(a, b) {
+  if (JSON.stringify(a) === JSON.stringify(b)) return true;
+  if (!a || !b || ![...a, ...b].every(v => typeof v === 'number')) return false;
+  const tolerance = 1e-9 * Math.abs(b[1] - b[0]);
+  return Math.abs(a[0] - b[0]) < tolerance && Math.abs(a[1] - b[1]) < tolerance;
+}
 // Lock an axis and every axis linked to it at the range this figure shows. A
 // group keeps one range (the spec validator rejects unequal lock ranges), so a
 // member that autoranged to other data takes this figure's range. The server
@@ -163,7 +172,7 @@ function fvLockAxisGroup(figUid, axisId) {
     const [memberFigUid, memberAxisId] = key.split('/');
     if (memberFigUid === figUid) continue;
     const shown = (window.fvCaptureAxisDisplayRanges?.(memberFigUid, memberAxisId) || {})[memberAxisId];
-    if (JSON.stringify(shown) !== JSON.stringify(range)) apart = true;
+    if (!fvSameRange(shown, range)) apart = true;
     window.fvSetAxisLocked(memberFigUid, memberAxisId, true);
     if (range) window.fvStoreAxisLockRanges(memberFigUid, { [memberAxisId]: range });
     others.push(memberFigUid);
