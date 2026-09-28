@@ -165,14 +165,14 @@ def _check_link_types(spec: DashboardSpec) -> None:
 
 
 def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSpec:
-    """Run the builder checks on a decoded spec and return the spec to render.
+    """Run the trace checks on a decoded spec and return the spec to render.
 
-    A decoded spec skips ``Figure.to_spec()``, so this builds every trace and
-    runs the figure checks. The returned spec holds what the rebuilt traces
-    emit, so the page sees normalized values, such as the Plotly spelling of
-    an older lowercase ``color_scale``. Raises on an invalid spec.
+    A decoded spec skips the trace constructors, so this builds every trace.
+    The figure checks already ran when ``FigureSpec`` parsed it. The returned
+    spec holds what the rebuilt traces emit, so the page sees normalized
+    values, such as the Plotly spelling of an older lowercase ``color_scale``.
+    Raises on an invalid spec.
     """
-    from flexviz.figure import _validate_figure_traces
     from flexviz.trace import build_trace_from_spec
 
     if isinstance(spec, VisualizationSpec):
@@ -187,7 +187,8 @@ def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSp
             build_trace_from_spec(ts).to_trace_spec(domain_source=domain_source)
             for ts in fig.traces
         ]
-        _validate_figure_traces(traces)
+        # model_copy skips the FigureSpec checks; a rebuilt trace keeps its
+        # trace_type and bar_mode, so they still hold.
         figures.append(fig.model_copy(update={"traces": traces}))
     return spec.model_copy(update={"figures": figures})
 

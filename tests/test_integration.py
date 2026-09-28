@@ -5,6 +5,8 @@ All tests in this module are marked with ``@pytest.mark.integration``.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 
 import polars as pl
@@ -1118,9 +1120,16 @@ def _heatmap_spec_data(df: pl.DataFrame, trace_type: str) -> dict:
     return fig.to_spec(source=_SRC).model_dump(mode="json")
 
 
+def _encode_raw(data: dict) -> str:
+    """Encode a spec dict as ``encode_spec`` does, without parsing it first,
+    so a test can send a spec that the models refuse."""
+    compressed = gzip.compress(json.dumps(data).encode(), compresslevel=9)
+    return base64.urlsafe_b64encode(compressed).rstrip(b"=").decode()
+
+
 def _view_and_share(client: TestClient, data: dict) -> list:
     return [
-        client.get(f"/view?spec={encode_spec(parse_spec(data))}"),
+        client.get(f"/view?spec={_encode_raw(data)}"),
         client.post("/share", json={"spec": data, "server_url": "http://testserver"}),
     ]
 
@@ -1165,6 +1174,23 @@ class TestDecodedSpecValidation:
         for resp in _view_and_share(client, data):
             assert resp.status_code == 400
             assert "at most one heatmap-like trace" in resp.json()["detail"]
+
+    def test_two_heatmaps_are_refused_at_dashboard_update(
+        self, client: TestClient, integ_df
+    ):
+        """FigureSpec runs the figure checks, so a posted spec gets them too."""
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_histogram2d(x="ts", y="val")
+        spec = dash.to_spec(source_name=_SRC).model_dump(mode="json")
+        traces = spec["figures"][0]["traces"]
+        traces.append({**traces[0], "uid": "second-heatmap"})
+
+        resp = client.post(
+            "/dashboard/update",
+            json={"spec": spec, "event": {"type": "init", "force_update": True}},
+        )
+        assert resp.status_code == 422
+        assert "at most one heatmap-like trace" in resp.text
 
     def test_view_renders_the_plotly_spelling_of_an_old_color_scale(
         self, client: TestClient, integ_df

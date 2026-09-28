@@ -701,7 +701,7 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="RdBu", color_range="auto")
 - Defaults are owned by the trace classes: `Histogram2D` and `GeoHistogram2D` materialize `"Viridis"` / `"auto"` / `"linear"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
 - Generated specs must include explicit `display.color_scale` and `display.color_range`, so adapters read them instead of re-deriving heatmap defaults. The Plotly adapter only reads these fields: the builders (`Figure.to_spec()`, `Dashboard.to_spec()`) and the server (for a decoded spec, see [Request Flows](#request-flows)) hand it specs that the traces built. A caller that passes a hand-made spec to the adapter directly skips this. The deprecated ECharts adapter still checks them.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
-- `Figure.to_spec()` allows at most one heatmap-like trace (`histogram2d`, `corr_heatmap`, `geo_histogram2d`) per figure and raises otherwise: each one is opaque and draws its own figure-wide colorbar, so a second one hides the first and duplicates the colorbar. A heatmap together with non-heatmap traces, such as a line over a `histogram2d`, stays allowed.
+- A figure holds at most one heatmap-like trace (`histogram2d`, `corr_heatmap`, `geo_histogram2d`): each one is opaque and draws its own figure-wide colorbar, so a second one hides the first and duplicates the colorbar. `FigureSpec` checks this when it is built or parsed, so the builder, a decoded spec and every request get the same rule. A heatmap together with non-heatmap traces, such as a line over a `histogram2d`, stays allowed.
 - Renderer split:
   - Plotly receives `color_scale` in the Plotly spelling that the trace stored. The server rebuilds a decoded spec, so an older lowercase name still renders its scale. With a linear norm, it applies `zmin` / `zmax` only when `color_range` is fixed.
   - Plotly log norm: Plotly has no log color axis, so the client colors by `log10(z)`, pins the color range in log10 space and labels the colorbar ticks with round data values. Only the colors change: the hover shows the raw values, and a cell at or below 0, which has no log, has no color but keeps its hover and its selection. The transform (`applyLogColorNorm` in `plotly/traces.js`) runs when a trace is built from its template, so it covers every delta, from the server or the cube.
@@ -1042,10 +1042,11 @@ inflation and the CPU cost of gzipping text.
   adapter HTML with a page-relative `SERVER_URL` (`"."`) — the server cannot know its external
   base URL behind a prefix-stripping reverse proxy, so API calls resolve in the browser as
   siblings of `/view`.
-- A decoded spec skips `Figure.to_spec()`, so `/share`, `/view` and `/h/{n}` validate it where
-  it enters the server (`_validated_dashboard` in `server.py`): they build every trace with
-  `build_trace_from_spec` and run `_validate_figure_traces`, the figure checks that
-  `Figure.to_spec()` runs. An invalid spec returns 400 `Invalid spec: …`. `/view` and `/h/{n}`
+- A decoded spec skips the trace constructors, so `/share`, `/view` and `/h/{n}` validate it
+  where it enters the server (`_validated_dashboard` in `server.py`): they build every trace
+  with `build_trace_from_spec`. The figure checks (one `bar_mode`, at most one heatmap) run in
+  `FigureSpec` itself, when the spec is parsed. An invalid spec returns 400
+  `Invalid spec: …`. `/view` and `/h/{n}`
   render the trace specs of the rebuilt traces, so the page sees normalized values, such as the
   Plotly spelling of an older lowercase `color_scale`. `/share` encodes the spec as sent.
 

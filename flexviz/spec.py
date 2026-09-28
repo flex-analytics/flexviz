@@ -257,6 +257,9 @@ class TraceSpec(BaseModel):
     hover: TraceHoverSpec = Field(default_factory=TraceHoverSpec)
 
 
+_HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap", "geo_histogram2d"})
+
+
 class FigureSpec(BaseModel):
     """Static figure configuration (layout + traces).
 
@@ -274,6 +277,31 @@ class FigureSpec(BaseModel):
     source: str | None = None
     layout: dict[str, Any] = Field(default_factory=dict)
     traces: list[TraceSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_figure_traces(self) -> FigureSpec:
+        """Reject trace combinations that one figure cannot render.
+
+        Every spec entry point (builder, share URL, import, each request) runs
+        this, so a decoded spec gets the same rules as ``Figure.to_spec()``.
+        """
+        bar_modes = {
+            ts.display.get("bar_mode", ts.params.get("bar_mode", "group"))
+            for ts in self.traces
+            if ts.trace_type == "bar"
+        }
+        if len(bar_modes) > 1:
+            raise ValueError(
+                "All bar traces in one figure must share the same bar_mode because "
+                "renderers treat bar_mode as a figure-level setting."
+            )
+        if sum(ts.trace_type in _HEATMAP_TRACE_TYPES for ts in self.traces) > 1:
+            raise ValueError(
+                "A figure can hold at most one heatmap-like trace "
+                f"({', '.join(sorted(_HEATMAP_TRACE_TYPES))}) because each one is "
+                "opaque and draws its own figure-wide colorbar."
+            )
+        return self
 
 
 def figure_axis_columns(figure: FigureSpec) -> dict[str, set[str]]:

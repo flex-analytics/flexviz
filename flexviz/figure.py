@@ -37,8 +37,6 @@ from .trace.line import LinePlot
 from .trace.pie import PiePlot
 from .trace.treemap import TreeMap
 
-_HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap", "geo_histogram2d"})
-
 
 def _derive_axis_labels(trace_specs: list) -> dict[str, str | None]:
     """Infer xlabel/ylabel from trace backend_data when all cartesian traces agree.
@@ -131,40 +129,6 @@ def _derive_auto_title(trace_specs: list) -> str | None:
             continue
         candidates.add(candidate)
     return next(iter(candidates)) if len(candidates) == 1 else None
-
-
-def _validate_bar_modes(trace_specs: list) -> None:
-    bar_modes = {
-        ts.display.get("bar_mode", ts.params.get("bar_mode", "group"))
-        for ts in trace_specs
-        if ts.trace_type == "bar"
-    }
-    if len(bar_modes) > 1:
-        raise ValueError(
-            "All bar traces in one figure must share the same bar_mode because "
-            "renderers treat bar_mode as a figure-level setting."
-        )
-
-
-def _validate_heatmap_count(trace_specs: list) -> None:
-    heatmap_count = sum(
-        1 for ts in trace_specs if ts.trace_type in _HEATMAP_TRACE_TYPES
-    )
-    if heatmap_count > 1:
-        raise ValueError(
-            "A figure can hold at most one heatmap-like trace "
-            f"({', '.join(sorted(_HEATMAP_TRACE_TYPES))}) because each one is "
-            "opaque and draws its own figure-wide colorbar."
-        )
-
-
-def _validate_figure_traces(trace_specs: list) -> None:
-    """Run the checks that span the traces of one figure.
-
-    ``Figure.to_spec()`` runs this, and the server runs it on a decoded spec.
-    """
-    _validate_bar_modes(trace_specs)
-    _validate_heatmap_count(trace_specs)
 
 
 class Figure:
@@ -807,7 +771,6 @@ class Figure:
         trace_specs = [
             t.to_trace_spec(domain_source=domain_source) for t in self._traces
         ]
-        _validate_figure_traces(trace_specs)
         layout = dict(self._layout)
         derived = _derive_axis_labels(trace_specs)
         if "xlabel" not in layout and derived.get("xlabel"):
