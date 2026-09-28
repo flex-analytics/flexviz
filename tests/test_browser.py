@@ -4792,6 +4792,77 @@ class TestLinkedHoverBrowser:
         assert result["left"] == pytest.approx(result["expectedLeft"], abs=0.5)
         assert result["width"] == pytest.approx(result["expectedWidth"], abs=0.5)
 
+    @pytest.mark.parametrize(
+        ("log_x", "zoom", "probe"),
+        [(False, [33.3, 60], 33.5), (True, [0.3, 2.7], 5.0)],
+        ids=["linear", "log"],
+    )
+    def test_hover_band_is_clipped_to_the_plot_area(
+        self, page: Page, server_port: int, renderer: str, log_x, zoom, probe
+    ):
+        """A zoomed grid snaps outward, so its first bin starts left of the
+        plot. On a log axis the lattice puts that edge at 0, which has no log
+        position. The band must still show, clipped to the plot area, and not
+        spill over the y-axis labels."""
+        if renderer == "echarts":
+            pytest.skip("Plotly-specific test")
+        df = pl.DataFrame(
+            {"v": [10 ** (3 * i / 999) for i in range(1000)], "y": [0.0] * 1000}
+        )
+
+        def build(dash):
+            dash.add_figure().add_line(x="v", y="y", n_points=200)
+            hist = dash.add_figure().add_histogram(x="v", bins=50)
+            if log_x:
+                hist.update_layout(xaxis={"type": "log"})
+
+        source = f"_browser_band_clip_{'log' if log_x else 'linear'}"
+        page.goto(_color_norm_url(server_port, source, df, build))
+        _wait_for_init(page, "plotly")
+        page.evaluate(
+            """zoom => Plotly.relayout(
+                divs[figUidToIdx[DASHBOARD_SPEC.figures[1].uid]], {'xaxis.range': zoom}
+            )""",
+            zoom,
+        )
+        # The snapped zoomed grid holds one bin more than configured.
+        page.wait_for_function(
+            "() => layerDataByUid[DASHBOARD_SPEC.figures[1].traces[0].uid]"
+            ".base.x_edges[2] === 51"
+        )
+
+        result = page.evaluate(
+            """({probe, logX}) => {
+                const f0 = DASHBOARD_SPEC.figures[0], f1 = DASHBOARD_SPEC.figures[1];
+                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+                DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+                handlePlotlyHover({
+                    points: [{x: probe, y: 0, data: {uid: f0.traces[0].uid}}],
+                }, f0.uid);
+                const gd = divs[figUidToIdx[f1.uid]];
+                const xa = gd._fullLayout.xaxis;
+                const [lo, step] = layerDataByUid[f1.traces[0].uid].base.x_edges;
+                const hi = lo + step;
+                const band = gd.querySelector('[data-fv-hover="linked:x_band"]');
+                return {
+                    lo,
+                    probeInFirstBin: lo <= probe && probe < hi,
+                    left: band && parseFloat(band.style.left),
+                    right: band && parseFloat(band.style.left) + parseFloat(band.style.width),
+                    plotLeft: xa._offset,
+                    // Independent of the code under test: log10 by hand, then l2p.
+                    expectedRight: xa._offset + xa.l2p(logX ? Math.log10(hi) : hi),
+                };
+            }""",
+            {"probe": probe, "logX": log_x},
+        )
+
+        assert result["probeInFirstBin"], result
+        assert result["lo"] < (10 ** zoom[0] if log_x else zoom[0]), result
+        assert result["left"] is not None, "Expected an x_band on the zoomed target"
+        assert result["left"] == pytest.approx(result["plotLeft"], abs=0.5)
+        assert result["right"] == pytest.approx(result["expectedRight"], abs=0.5)
+
 
 class TestCellHoverBrowser:
     """Browser tests for Phase 3 cell hover mode."""
