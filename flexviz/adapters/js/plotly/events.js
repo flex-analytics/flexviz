@@ -102,31 +102,6 @@ function handleClick(eventData, figUid) {
   return false;
 }
 
-function extractMapBounds(figUid) {
-  const figIdx = figUidToIdx[figUid];
-  if (figIdx === undefined) return null;
-  const gd = divs[figIdx];
-  if (!gd || !gd._fullLayout || !gd._fullLayout.map) return null;
-  const mapLayout = gd._fullLayout.map;
-  if (!mapLayout._subplot) return null;
-  try {
-    const mapObj = mapLayout._subplot.getMap();
-    if (!mapObj) return null;
-    const bounds = mapObj.getBounds();
-    if (!bounds) return null;
-    const sw = bounds.getSouthWest();
-    const ne = bounds.getNorthEast();
-    return [
-      [sw.lng, sw.lat],
-      [ne.lng, sw.lat],
-      [ne.lng, ne.lat],
-      [sw.lng, ne.lat],
-    ];
-  } catch (e) {
-    return null;
-  }
-}
-
 function mapCoordinatesFromRelayout(relayout) {
   if (!relayout) return null;
   for (const [key, value] of Object.entries(relayout)) {
@@ -209,7 +184,7 @@ function handleRelayout(relayout, figUid) {
 
   const isMapEvent = keys.some(k => k.startsWith('map.') || k.startsWith('map2.'));
   if (isMapEvent) {
-    const coords = mapCoordinatesFromRelayout(relayout) || extractMapBounds(figUid);
+    const coords = mapCoordinatesFromRelayout(relayout);
     if (coords) {
       fvCommitViewportChange(figUid, fvWriteViewport(figUid + '/coordinates', coords));
     }
