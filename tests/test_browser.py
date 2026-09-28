@@ -8045,6 +8045,48 @@ class TestReversedAxisBrowser:
             page.evaluate(act)
             self._wait_for_full_reversed_range(page)
 
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            "{state: {viewport: {[key]: {min: 200, max: 800}}}}",
+            (
+                "{client_state: {axis_locks: {[key]: true},"
+                " axis_lock_ranges: {[key]: {min: 200, max: 800}}}}"
+            ),
+        ],
+        ids=["viewport", "lock"],
+    )
+    def test_range_given_low_to_high_draws_reversed(
+        self, page: Page, server_port: int, patch: str
+    ):
+        """The layout decides the direction; a stored range holds only its bounds."""
+        page.goto(
+            _color_norm_url(
+                server_port,
+                "_browser_reversed_axis_apply",
+                self._DF,
+                lambda d: (
+                    d.add_figure()
+                    .add_line(x="x", y="y", n_points=100)
+                    .update_layout(xaxis={"autorange": "reversed"})
+                ),
+            )
+        )
+        _wait_for_init(page, "plotly")
+        self._wait_for_full_reversed_range(page)
+
+        page.evaluate(
+            f"() => {{ const key = DASHBOARD_SPEC.figures[0].uid + '/x';"
+            f" return flexvizApply({patch}); }}"
+        )
+        page.wait_for_function(
+            "() => Math.abs(divs[0]._fullLayout.xaxis.range[1]"
+            " - divs[0]._fullLayout.xaxis.range[0]) < 700"
+        )
+        assert page.evaluate("() => divs[0]._fullLayout.xaxis.range") == (
+            pytest.approx([800, 200])
+        )
+
 
 @pytest.mark.browser
 class TestLogAxisBrowser:

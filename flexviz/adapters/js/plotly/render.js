@@ -76,7 +76,7 @@ window.fvApplyAxisLocks = function(figUid) {
   for (const [axId, range] of Object.entries(ranges)) {
     if (!/^(x|y)\d*$/.test(axId)) continue;
     const key = plotlyAxisKey(axId);
-    update[key + '.range'] = plotlyRangeFromData(figIdx, key, range);
+    update[key + '.range'] = plotlyRangeFromData(figIdx, key, orientedRange(figUid, key, range));
     update[key + '.autorange'] = false;
   }
   if (!Object.keys(update).length) return;
@@ -314,6 +314,14 @@ function declaredAutorange(figUid, layoutKey) {
   return r0 != null && r1 != null && r0 > r1 ? 'reversed' : true;
 }
 
+// A stored viewport or lock range holds only its bounds. The declared layout
+// decides the direction, so a range given low to high, for example through
+// flexvizApply, still draws a reversed axis reversed.
+function orientedRange(figUid, layoutKey, [a, b]) {
+  const reversed = declaredAutorange(figUid, layoutKey) === 'reversed';
+  return (a > b) === reversed ? [a, b] : [b, a];
+}
+
 function syncLayoutViewport(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
@@ -334,7 +342,7 @@ function syncLayoutViewport(figUid) {
   for (const [axId, range] of Object.entries(cartesianRanges)) {
     const key = plotlyAxisKey(axId);
     if (!layout[key]) layout[key] = {};
-    layout[key].range = plotlyRangeFromData(figIdx, key, range);
+    layout[key].range = plotlyRangeFromData(figIdx, key, orientedRange(figUid, key, range));
     layout[key].autorange = false;
   }
 }
