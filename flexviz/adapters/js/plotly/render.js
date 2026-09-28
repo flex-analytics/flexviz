@@ -12,16 +12,23 @@ function plotlyAxisId(layoutKey) {
 // Plotly holds a log axis range in log10 units. Client state holds data units,
 // as the server and the selections do. The declared type decides: the first
 // render writes the layout before Plotly draws the div, and Plotly never
-// infers a log axis. The exponent is clamped to the float range: 10 ** 309 is
-// Infinity, which JSON sends as null, and 10 ** -324 is 0, which has no log.
+// infers a log axis. A type on the axis wins over one from the layout
+// template, as in Plotly. The exponent is clamped to the float range: 10 ** 309
+// is Infinity, which JSON sends as null, and 10 ** -324 is 0, which has no log.
+function isLogAxis(figIdx, layoutKey) {
+  const layout = layoutsByFig[figIdx];
+  const type = layout?.[layoutKey]?.type ?? layout?.template?.layout?.[layoutKey]?.type;
+  return type === 'log';
+}
+
 function plotlyRangeToData(figIdx, layoutKey, range) {
-  return layoutsByFig[figIdx]?.[layoutKey]?.type === 'log'
+  return isLogAxis(figIdx, layoutKey)
     ? range.map(v => 10 ** Math.min(Math.max(v, -323), 308))
     : range;
 }
 
 function plotlyRangeFromData(figIdx, layoutKey, range) {
-  return layoutsByFig[figIdx]?.[layoutKey]?.type === 'log' ? range.map(Math.log10) : range;
+  return isLogAxis(figIdx, layoutKey) ? range.map(Math.log10) : range;
 }
 
 // The number of programmatic Plotly operations in progress, per figure. Plotly

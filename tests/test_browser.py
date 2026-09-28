@@ -7996,12 +7996,27 @@ class TestLogAxisBrowser:
     def _shown_range(page: Page) -> list[float]:
         return page.evaluate("() => divs[0]._fullLayout.xaxis.range")
 
+    @pytest.mark.parametrize(
+        "layout",
+        [
+            {"xaxis": {"type": "log"}},
+            {"template": {"layout": {"xaxis": {"type": "log"}}}},
+        ],
+        ids=["axis_type", "template"],
+    )
     def test_drag_zoom_keeps_the_viewport_in_data_units(
-        self, page: Page, server_port: int
+        self, page: Page, server_port: int, layout: dict
     ):
         page.goto(
             _color_norm_url(
-                server_port, "_browser_log_axis_zoom", self._DF, self._build
+                server_port,
+                "_browser_log_axis_zoom",
+                self._DF,
+                lambda dash: (
+                    dash.add_figure()
+                    .add_line(x="x", y="y", n_points=100)
+                    .update_layout(**layout)
+                ),
             )
         )
         _wait_for_init(page, "plotly")
