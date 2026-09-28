@@ -15,7 +15,6 @@ Example usage::
 
 from __future__ import annotations
 
-import math
 import threading
 import warnings
 from collections.abc import Sequence
@@ -39,7 +38,6 @@ from .trace.pie import PiePlot
 from .trace.treemap import TreeMap
 
 _HEATMAP_TRACE_TYPES = frozenset({"histogram2d", "corr_heatmap", "geo_histogram2d"})
-_HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
 
 
 def _derive_axis_labels(trace_specs: list) -> dict[str, str | None]:
@@ -148,47 +146,15 @@ def _validate_bar_modes(trace_specs: list) -> None:
         )
 
 
-def _effective_heatmap_style(
-    trace_spec: Any,
-) -> tuple[str, tuple[float, float] | str, str]:
-    if (
-        "color_scale" not in trace_spec.display
-        or "color_range" not in trace_spec.display
-    ):
-        raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
-
-    scale = trace_spec.display["color_scale"]
-    if not isinstance(scale, str) or not scale:
-        raise TypeError("heatmap color_scale must be a non-empty string")
-
-    color_range = trace_spec.display["color_range"]
-    if color_range != "auto":
-        if not (isinstance(color_range, (list, tuple)) and len(color_range) == 2):
-            raise TypeError(
-                "heatmap color_range must be 'auto' or a (min, max) numeric tuple"
-            )
-        lo = float(color_range[0])
-        hi = float(color_range[1])
-        if not (math.isfinite(lo) and math.isfinite(hi)):
-            raise ValueError("heatmap color_range values must be finite numbers")
-        if lo >= hi:
-            raise ValueError("heatmap color_range must satisfy min < max")
-        color_range = (lo, hi)
-    # CorrHeatmap has no color_norm: it is always linear.
-    return (scale, color_range, trace_spec.display.get("color_norm", "linear"))
-
-
-def _validate_heatmap_styles(trace_specs: list) -> None:
-    heatmap_styles = {
-        _effective_heatmap_style(ts)
-        for ts in trace_specs
-        if ts.trace_type in _HEATMAP_TRACE_TYPES
-    }
-    if len(heatmap_styles) > 1:
+def _validate_heatmap_count(trace_specs: list) -> None:
+    heatmap_count = sum(
+        1 for ts in trace_specs if ts.trace_type in _HEATMAP_TRACE_TYPES
+    )
+    if heatmap_count > 1:
         raise ValueError(
-            "All heatmap traces in one figure must share the same effective "
-            "color_scale, color_range and color_norm because renderers treat the "
-            "heatmap colorbar as a figure-level setting."
+            "A figure can hold at most one heatmap-like trace "
+            f"({', '.join(sorted(_HEATMAP_TRACE_TYPES))}) because each one is "
+            "opaque and draws its own figure-wide colorbar."
         )
 
 
@@ -811,7 +777,7 @@ class Figure:
             t.to_trace_spec(domain_source=domain_source) for t in self._traces
         ]
         _validate_bar_modes(trace_specs)
-        _validate_heatmap_styles(trace_specs)
+        _validate_heatmap_count(trace_specs)
         layout = dict(self._layout)
         derived = _derive_axis_labels(trace_specs)
         if "xlabel" not in layout and derived.get("xlabel"):
