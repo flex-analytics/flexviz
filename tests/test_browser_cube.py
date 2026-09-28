@@ -116,16 +116,27 @@ def _cube_df() -> pl.DataFrame:
     )
 
 
-def _two_hist_dashboard_url(port: int, source_name: str, live_brush: str) -> str:
+def _two_hist_dashboard_url(
+    port: int,
+    source_name: str,
+    live_brush: str,
+    df: pl.DataFrame | None = None,
+    source_x_log: bool = False,
+) -> str:
+    """Source hist(a) + target hist(b). *df* defaults to ``_cube_df()``; pass
+    one with a strictly positive ``a`` column together with *source_x_log* for
+    a log-axis source."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
 
-    df = _cube_df()
+    df = _cube_df() if df is None else df
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
-    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    source_fig = dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    if source_x_log:
+        source_fig.update_layout(xaxis={"type": "log"})
     dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
     spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
     spec.client_state.live_brush = live_brush
@@ -1592,16 +1603,31 @@ class TestLiveBrushCube:
         got = {c["name"]: dict(zip(c["x"], c["y"])) for c in after}
         assert got == expected
 
-    def test_edit_existing_box_live_brush(self, page: Page, server_port: int):
+    @pytest.mark.parametrize("log_x", [False, True], ids=["linear", "log"])
+    def test_edit_existing_box_live_brush(
+        self, page: Page, server_port: int, log_x: bool
+    ):
         """Moving an already-committed selection box is a live-brush gesture
         too. Plotly emits no event while an activated selection outline is
         dragged (only the mouseup round-trips), so the runtime watches the
         outline drag directly and replays it through the same gesture path:
         the target live-updates mid-move, the whole edit is a pure store hit
         (zero POSTs of any kind), and the re-committed predicate is snapped
-        ``closed="left"`` at the new edges, matching the cube reference."""
+        ``closed="left"`` at the new edges, matching the cube reference.
+
+        On a log source axis, ``_fvOutlineDataRange`` must feed the live
+        preview data units: the live target at the final drag position must
+        already match what mouseup commits there."""
         df = _cube_df()
-        url = _two_hist_dashboard_url(server_port, "_cube_browser_editbox", "auto")
+        if log_x:
+            df = df.with_columns(pl.col("a") + 1)  # log needs a > 0
+        url = _two_hist_dashboard_url(
+            server_port,
+            f"_cube_browser_editbox_{'log' if log_x else 'linear'}",
+            "auto",
+            df=df,
+            source_x_log=log_x,
+        )
         bodies = _capture_updates(page)
         posts = _capture_posts(page)
         page.goto(url)
@@ -1617,7 +1643,7 @@ class TestLiveBrushCube:
         y_first = _target_y(page)
         assert y_first != y_unfiltered
 
-        # Activate the rendered box (click on it) — Plotly only allows
+        # Activate the rendered box (click on it): Plotly only allows
         # moving/resizing the activated selection.
         box = page.eval_on_selector(
             "#fv-plot-0 .selectionlayer path",
@@ -1647,6 +1673,7 @@ class TestLiveBrushCube:
             timeout=10_000,
         )
         page.wait_for_timeout(300)
+        y_live = _target_y(page)
         page.mouse.up()
         # Past the safety-abort window: a missed commit would restore the
         # pre-move rendering and fail the asserts below.
@@ -1657,6 +1684,10 @@ class TestLiveBrushCube:
             f"zero POSTs of any kind; got {posts[n_posts:]}"
         )
         assert bodies[n_bodies:] == []
+        assert y_live == _target_y(page), (
+            "the live preview and the mouseup commit must agree at the same "
+            "outline position"
+        )
 
         # The re-committed predicate: snapped closed="left" at the new edges.
         edge_lo, edge_hi = _committed_edges(page, "a")

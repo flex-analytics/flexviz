@@ -14,6 +14,29 @@ function hoverGuideShape(axis, value, style, tag) {
   return { tag, axis, value, style };
 }
 
+// A guide coordinate is a data value: a number on a linear, log or date axis
+// (hist and hist2d send epoch-ms edges). c2p is l2p on every axis but log,
+// where it takes log10 first. d2p would parse a date number through
+// `new Date()`, which shifts it by the browser's timezone offset.
+function axisDataToPixel(axisObj, value) {
+  if (!axisObj || typeof axisObj.c2p !== 'function') return NaN;
+  return axisObj._offset + axisObj.c2p(value);
+}
+
+// A band or cell edge can lie outside the plot: a zoomed grid snaps outward,
+// and on a log axis its lattice can put an edge at 0, which c2p's clip flag
+// maps far past the axis start. The overlay covers the whole figure, so clip
+// the span to the plot area. Returns [start, end] in pixels, or null.
+function axisSpanToPixels(axisObj, v0, v1) {
+  if (!axisObj || typeof axisObj.c2p !== 'function') return null;
+  const p0 = axisObj.c2p(v0, true);
+  const p1 = axisObj.c2p(v1, true);
+  if (!Number.isFinite(p0) || !Number.isFinite(p1)) return null;
+  const start = Math.max(Math.min(p0, p1), 0);
+  const end = Math.min(Math.max(p0, p1), axisObj._length);
+  return end < start ? null : [axisObj._offset + start, axisObj._offset + end];
+}
+
 function ensureHoverOverlay(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return null;
@@ -63,8 +86,7 @@ function renderHoverOverlay(figUid) {
     // --- x_guide / y_guide (solid lines) ---
     if (guide.axis === 'x' || guide.axis === 'y') {
       const axisObj = guide.axis === 'x' ? xAxis : yAxis;
-      if (!axisObj || typeof axisObj.l2p !== 'function') continue;
-      const pixel = axisObj._offset + axisObj.l2p(guide.value);
+      const pixel = axisDataToPixel(axisObj, guide.value);
       if (!Number.isFinite(pixel)) continue;
 
       const line = document.createElement('div');
@@ -95,12 +117,10 @@ function renderHoverOverlay(figUid) {
 
     // --- x_band (vertical teal band) ---
     } else if (guide.tag && guide.tag.startsWith('linked:x_band')) {
-      if (typeof xAxis.l2p !== 'function') continue;
-      const px0 = xAxis._offset + xAxis.l2p(guide.x0);
-      const px1 = xAxis._offset + xAxis.l2p(guide.x1);
-      if (!Number.isFinite(px0) || !Number.isFinite(px1)) continue;
-      const left = Math.min(px0, px1);
-      const bandWidth = Math.max(1, Math.abs(px1 - px0));
+      const span = axisSpanToPixels(xAxis, guide.x0, guide.x1);
+      if (!span) continue;
+      const left = span[0];
+      const bandWidth = Math.max(1, span[1] - span[0]);
 
       const band = document.createElement('div');
       band.className = 'fv-hover-guide';
@@ -118,12 +138,10 @@ function renderHoverOverlay(figUid) {
 
     // --- y_band (horizontal teal band) ---
     } else if (guide.tag && guide.tag.startsWith('linked:y_band')) {
-      if (typeof yAxis.l2p !== 'function') continue;
-      const py0 = yAxis._offset + yAxis.l2p(guide.y0);
-      const py1 = yAxis._offset + yAxis.l2p(guide.y1);
-      if (!Number.isFinite(py0) || !Number.isFinite(py1)) continue;
-      const top = Math.min(py0, py1);
-      const bandHeight = Math.max(1, Math.abs(py1 - py0));
+      const span = axisSpanToPixels(yAxis, guide.y0, guide.y1);
+      if (!span) continue;
+      const top = span[0];
+      const bandHeight = Math.max(1, span[1] - span[0]);
 
       const band = document.createElement('div');
       band.className = 'fv-hover-guide';
@@ -143,16 +161,13 @@ function renderHoverOverlay(figUid) {
     } else if (guide.tag && guide.tag.startsWith('linked:rect')) {
       const b = guide.bounds;
       if (!b) continue;
-      if (typeof xAxis.l2p !== 'function' || typeof yAxis.l2p !== 'function') continue;
-      const rx0 = xAxis._offset + xAxis.l2p(b.x0);
-      const rx1 = xAxis._offset + xAxis.l2p(b.x1);
-      const ry0 = yAxis._offset + yAxis.l2p(b.y0);
-      const ry1 = yAxis._offset + yAxis.l2p(b.y1);
-      if (!Number.isFinite(rx0) || !Number.isFinite(rx1) || !Number.isFinite(ry0) || !Number.isFinite(ry1)) continue;
-      const left = Math.min(rx0, rx1);
-      const top = Math.min(ry0, ry1);
-      const rectW = Math.max(1, Math.abs(rx1 - rx0));
-      const rectH = Math.max(1, Math.abs(ry1 - ry0));
+      const xSpan = axisSpanToPixels(xAxis, b.x0, b.x1);
+      const ySpan = axisSpanToPixels(yAxis, b.y0, b.y1);
+      if (!xSpan || !ySpan) continue;
+      const left = xSpan[0];
+      const top = ySpan[0];
+      const rectW = Math.max(1, xSpan[1] - xSpan[0]);
+      const rectH = Math.max(1, ySpan[1] - ySpan[0]);
 
       const rect = document.createElement('div');
       rect.className = 'fv-hover-guide';
