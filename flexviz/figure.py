@@ -252,7 +252,6 @@ class Figure:
         n_points: int = 1000,
         downsample: Literal["minmax", "lttb", "fpcs", "nth"] = "minmax",
         add_gaps: bool = True,
-        axes: tuple[str, ...] = ("x", "y"),
         assume_sorted_x: bool = False,
         group_by: str | Sequence[str] | None = None,
     ) -> Figure:
@@ -282,10 +281,6 @@ class Figure:
         downsample:
             Downsampling algorithm: ``"minmax"`` (default), ``"lttb"``
             (MinMaxLTTB), ``"fpcs"``, or ``"nth"``.  All four work grouped.
-        axes:
-            Axis anchor tuple.  Defaults to ``("x", "y")`` for a single
-            cartesian axis.  Other anchor ids only change the routing
-            key; the renderer does not draw a second axis for them yet.
         assume_sorted_x:
             The engine reads x for nulls, NaN and ascending order, and raises
             `ValueError` when the column fails. That pass runs once per source
@@ -302,7 +297,6 @@ class Figure:
             color_map=color_map,
             n_points=n_points,
             downsample=downsample,
-            axes=axes,
             add_gaps=add_gaps,
             group_by=group_by,
         )
@@ -320,7 +314,6 @@ class Figure:
         name: str | None = None,
         color: str | None = None,
         color_map: dict | None = None,
-        axes: tuple[str, ...] = ("x", "y"),
         group_by: str | Sequence[str] | None = None,
     ) -> Figure:
         """Add a histogram trace backed by the figure's shared LazyFrame.
@@ -341,8 +334,6 @@ class Figure:
             Legend label.  Defaults to the column name.
         color:
             CSS colour string.
-        axes:
-            Axis anchor tuple, e.g. ``("x", "y")``.
         """
         return self._add_trace(
             Histogram(
@@ -353,7 +344,6 @@ class Figure:
                 name=name,
                 color=color,
                 color_map=color_map,
-                axes=axes,
                 group_by=group_by,
             )
         )
@@ -365,7 +355,6 @@ class Figure:
         name: str | None = None,
         color: str | None = None,
         color_map: dict | None = None,
-        axes: tuple[str, ...] = ("x", "y"),
         group_by: str | Sequence[str] | None = None,
     ) -> Figure:
         """Add a box plot trace backed by the figure's shared LazyFrame.
@@ -384,8 +373,6 @@ class Figure:
             Fixed color for an ungrouped box.
         color_map:
             Group value to color, for a grouped box plot.
-        axes:
-            Axis anchor pair used by the engine to route viewport events.
         group_by:
             Column, or list of columns, that splits the box into one per
             distinct value.
@@ -397,7 +384,6 @@ class Figure:
                 name=name,
                 color=color,
                 color_map=color_map,
-                axes=axes,
                 group_by=group_by,
             )
         )
@@ -413,7 +399,6 @@ class Figure:
         bar_mode: Literal["group", "stack"] = "group",
         group_by: str | Sequence[str] | None = None,
         color_map: dict | None = None,
-        axes: tuple[str, ...] = ("x", "y"),
     ) -> Figure:
         """Add a bar trace backed by the figure's shared LazyFrame.
 
@@ -441,8 +426,6 @@ class Figure:
             Column name for a second grouping dimension (hue / color split).
         color_map:
             Optional ``{group_value: css_color}`` override.
-        axes:
-            Axis anchor tuple, e.g. ``("x", "y")``.
         """
         return self._add_trace(
             BarPlot(
@@ -455,7 +438,6 @@ class Figure:
                 bar_mode=bar_mode,
                 group_by=group_by,
                 color_map=color_map,
-                axes=axes,
             )
         )
 
@@ -544,7 +526,6 @@ class Figure:
         color_scale: str | None = None,
         color_range: tuple[float, float] | Literal["auto"] | None = None,
         color_norm: Literal["linear", "log"] | None = None,
-        axes: tuple[str, ...] = ("x", "y"),
     ) -> Figure:
         """Add a 2D histogram / heatmap trace.
 
@@ -582,8 +563,6 @@ class Figure:
             rest. Only the colors change: a bin at or below 0 has no color but
             keeps its hover and selection, and a fixed ``color_range`` must be
             above 0.
-        axes:
-            Axis anchor tuple, e.g. ``("x", "y")``.
         """
         return self._add_trace(
             Histogram2D(
@@ -598,7 +577,6 @@ class Figure:
                 color_scale=color_scale,
                 color_range=color_range,
                 color_norm=color_norm,
-                axes=axes,
             )
         )
 
