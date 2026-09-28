@@ -635,7 +635,8 @@ class DashboardSpec(BaseModel):
 
 # Plotly axis types the client can link. A category range is in positions, so
 # copying one would be wrong. A log axis is not linkable yet: a linear member of
-# its group can zoom to a range at or below 0, which a log axis cannot show.
+# its group can zoom to a range at or below 0, which a log axis cannot show, and
+# a group of log axes only is not designed yet.
 _LINKABLE_AXIS_TYPES = (None, "-", "linear", "date")
 
 
