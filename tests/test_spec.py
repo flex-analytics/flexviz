@@ -834,6 +834,13 @@ class TestFigureHeatmapCount:
         with pytest.raises(ValueError, match="at most one heatmap-like trace"):
             fig.to_spec()
 
+    def test_heatmaps_of_different_types_raise(self):
+        fig = Figure(pl.DataFrame({"a": [0.0, 1.0, 2.0], "b": [1.0, 2.0, 3.0]}))
+        fig.add_histogram2d(x="a", y="b").add_corr_heatmap(columns=["a", "b"])
+
+        with pytest.raises(ValueError, match="at most one heatmap-like trace"):
+            fig.to_spec()
+
     @pytest.mark.parametrize(
         ("add_traces", "trace_types"),
         [
