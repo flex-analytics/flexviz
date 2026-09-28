@@ -2569,6 +2569,45 @@ class TestCrossFilterBrowser:
             "Deselect must clear selections"
         )
 
+    def test_remove_selection_posts_type_matching_state(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        # The server treats "deselect" as unfiltered, so the posted type must
+        # match the selections the posted state carries.
+        url = _dashboard_url(server_port, renderer, n_figures=3)
+        update_bodies: list[dict] = []
+
+        def capture(req: PWRequest) -> None:
+            if "/dashboard/update" in req.url and req.method == "POST":
+                update_bodies.append(json.loads(req.post_data or "{}"))
+
+        page.on("request", capture)
+        page.goto(url)
+        _wait_for_init(page, renderer)
+
+        page.evaluate("""() => {
+            const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
+            DASHBOARD_SPEC.state.selections = [0, 1].map(i => ({
+                source_figure_uid: figUids[i],
+                predicates: [{ clauses: [{ column: 'ts', range: [100, 300] }] }],
+            }));
+            return postDashboardUpdate({ type: 'selection', force_update: true });
+        }""")
+        fig_uids = page.evaluate("() => DASHBOARD_SPEC.figures.map(f => f.uid)")
+
+        count = len(update_bodies)
+        page.evaluate("uid => window.fvRemoveSelectionByFigure(uid)", fig_uids[0])
+        (body,) = update_bodies[count:]
+        assert body["event"]["type"] == "selection"
+        remaining = body["spec"]["state"]["selections"]
+        assert [s["source_figure_uid"] for s in remaining] == [fig_uids[1]]
+
+        count = len(update_bodies)
+        page.evaluate("uid => window.fvRemoveSelectionByFigure(uid)", fig_uids[1])
+        (body,) = update_bodies[count:]
+        assert body["event"]["type"] == "deselect"
+        assert body["spec"]["state"]["selections"] == []
+
     def test_panel_reset_clears_sourced_selection(
         self, page: Page, server_port: int, renderer: str
     ):

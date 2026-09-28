@@ -132,6 +132,11 @@ async function postDashboardUpdate(event) {
   // The selections the server filters this request by. The state can change
   // before the response arrives.
   const selections = DASHBOARD_SPEC.state.selections || [];
+  // Callers report a selection change as 'selection'. The server treats
+  // 'deselect' as unfiltered (cache, layers), so the wire type follows the state.
+  if (event.type === 'selection' && !selections.length) {
+    event = { ...event, type: 'deselect' };
+  }
   const cacheKey = fvCacheKeyFor(event);
   let data;
   // Client-side init cache: replay the unfiltered response without a fetch.

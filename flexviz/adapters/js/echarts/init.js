@@ -41,7 +41,7 @@ function clearFigureSelection(figUid) {
   window.fvSetSelectionState?.(remainingSelections);
   _brushAreasByFig[figUid] = [];
   postDashboardUpdate({
-    type: remainingSelections.length ? 'selection' : 'deselect',
+    type: 'selection',
     axis_ranges: {},
     force_update: true,
     figure_uid: figUid,

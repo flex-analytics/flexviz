@@ -8,7 +8,7 @@ function clearFigureSelection(figUid) {
   ) || [];
   window.fvSetSelectionState?.(remainingSelections);
   postDashboardUpdate({
-    type: remainingSelections.length ? 'selection' : 'deselect',
+    type: 'selection',
     force_update: true,
   });
 }
