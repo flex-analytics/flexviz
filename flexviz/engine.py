@@ -331,7 +331,7 @@ class FlexEngine:
         self,
         trace_infos: list[TraceInfo],
         viewports_by_figure: dict[str, dict[str, Any]],
-        selections: list[SelectionState],
+        selections: Sequence[SelectionState],
         active_source: ActiveSource,
         cube_cache: CacheBackend | None = None,
     ) -> tuple[list[bytes], dict[str, int]]:
@@ -790,7 +790,7 @@ class FlexEngine:
 
     def _active_selections(
         self, event: InteractionEvent, selections: Sequence[SelectionState]
-    ) -> list[Any]:
+    ) -> list[SelectionState]:
         if event.type in ("deselect", "init"):
             return []
         return list(selections)

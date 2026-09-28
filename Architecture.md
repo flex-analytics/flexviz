@@ -84,7 +84,7 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
                       ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  ENGINE LAYER  (FlexEngine, stateless, per-request)            │
-│  process(event, trace_infos, viewports, selections, mode)      │
+│  process(event, infos, viewports_by_figure, selections, mode)  │
 │      → List[TraceDelta]                                        │
 │    1. Take selections from state (none on init/deselect)       │
 │    2. Build cross-filter Polars exprs from source figures      │

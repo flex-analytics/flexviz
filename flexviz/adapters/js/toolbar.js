@@ -325,9 +325,8 @@ window.fvOnCfMode = async function() {
   const nextMode = mode === 'overlay' ? 'update' : 'overlay';
   DASHBOARD_SPEC.state.cross_filter_mode = nextMode;
   window.fvUpdateCfModeButton?.();
-  const selections = DASHBOARD_SPEC.state.selections || [];
   if (nextMode === 'overlay') {
-    await window.fvEnsureOverlayBackground?.(selections);
+    await window.fvEnsureOverlayBackground?.();
   }
   await postDashboardUpdate({
     type: 'selection',

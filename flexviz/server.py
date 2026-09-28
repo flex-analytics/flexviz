@@ -366,7 +366,7 @@ async def _run_cube_path(
                 engine.build_cubes,
                 trace_infos,
                 viewports_by_figure,
-                list(state.selections),
+                state.selections,
                 active_source,
                 get_cube_cache(),
             )

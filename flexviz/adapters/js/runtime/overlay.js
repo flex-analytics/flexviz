@@ -1,8 +1,8 @@
 // === FlexViz shared runtime — overlay cache restore ===
 // Requires: state.js, delta.js loaded first
 
-window.fvEnsureOverlayBackground = async function(selections) {
-  if (!(selections && selections.length)) return;
+window.fvEnsureOverlayBackground = async function() {
+  if (!(DASHBOARD_SPEC.state.selections || []).length) return;
   const missingBg = DASHBOARD_SPEC.figures.some(fig => !hasBgByFigure[fig.uid]);
   if (!missingBg) return;
   await postDashboardUpdate({ type: 'init', force_update: true });
