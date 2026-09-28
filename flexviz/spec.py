@@ -286,7 +286,7 @@ class FigureSpec(BaseModel):
         this, so a decoded spec gets the same rules as ``Figure.to_spec()``.
         """
         bar_modes = {
-            ts.display.get("bar_mode", ts.params.get("bar_mode", "group"))
+            ts.display.get("bar_mode", "group")
             for ts in self.traces
             if ts.trace_type == "bar"
         }
