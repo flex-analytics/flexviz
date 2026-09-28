@@ -48,7 +48,7 @@ from ._hist_helpers import (
 from .base import FlexTrace, TraceResult
 from .hist2d import hist2d_agg_spec, unpack_hist2d_grid
 
-_DEFAULT_COLOR_SCALE = "viridis"
+_DEFAULT_COLOR_SCALE = "Viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
 
 # Reducers backed by the flexviz_polars Rust kernel (fixed_hist2d_reduce).

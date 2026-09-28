@@ -97,7 +97,7 @@ class TestGeoHist2DConstructor:
         assert t.recompute_axes == ("coordinates",)
         assert t.update_on_zoom is True
         assert t.overlay_style == "filtered_only"
-        assert t.color_scale == "viridis"
+        assert t.color_scale == "Viridis"
         assert t.color_range == "auto"
         assert t.color_norm == "linear"
 
@@ -138,10 +138,10 @@ class TestGeoHist2DConstructor:
         t = GeoHistogram2D(
             lat="lat",
             lon="lon",
-            color_scale="plasma",
+            color_scale="Cividis",
             color_range=(0.0, 5.0),
         )
-        assert t.color_scale == "plasma"
+        assert t.color_scale == "Cividis"
         assert t.color_range == (0.0, 5.0)
 
 
@@ -543,7 +543,7 @@ class TestGeoHist2DSpec:
             histnorm="percent",
             z="value",
             name="Geo Heatmap",
-            color_scale="plasma",
+            color_scale="Cividis",
             color_range=(0.0, 100.0),
         )
         spec = t.to_trace_spec()
@@ -563,7 +563,7 @@ class TestGeoHist2DSpec:
         assert t2.histfunc == "sum"
         assert t2.histnorm == "percent"
         assert t2.z_col == "value"
-        assert t2.color_scale == "plasma"
+        assert t2.color_scale == "Cividis"
         assert t2.color_range == (0.0, 100.0)
         assert t2.color_norm == "linear"
 
@@ -593,7 +593,7 @@ class TestGeoHist2DSpec:
             recompute_axes=("coordinates",),
         )
         trace = GeoHistogram2D.from_trace_spec(spec)
-        assert trace.color_scale == "viridis"
+        assert trace.color_scale == "Viridis"
         assert trace.color_range == "auto"
         assert trace.color_norm == "linear"
         assert trace.histfunc is None
@@ -621,7 +621,7 @@ class TestGeoHist2DAdapter:
         obj = PlotlyAdapter._plotly_trace_obj(spec, "Geo", None)
         assert obj["type"] == "choroplethmap"
         assert obj["featureidkey"] == "id"
-        assert obj["colorscale"] == "viridis"
+        assert obj["colorscale"] == "Viridis"
 
 
 class TestGeoHist2DEdgeTriples:

@@ -21,11 +21,19 @@ class TestNormalizeHeatmapColorScale:
             normalize_heatmap_color_scale(None, "viridis", trace_name="T") == "viridis"
         )
 
-    def test_valid_string_passed_through(self):
-        assert (
-            normalize_heatmap_color_scale("plasma", "viridis", trace_name="T")
-            == "plasma"
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [("viridis", "Viridis"), ("RDBU", "RdBu"), ("ylGnbu", "YlGnBu")],
+    )
+    def test_name_resolves_to_plotly_spelling(self, name, expected):
+        assert normalize_heatmap_color_scale(name, "Viridis", trace_name="T") == (
+            expected
         )
+
+    def test_unknown_name_raises_with_supported_names(self):
+        # plasma is a matplotlib scale; plotly.js has no built-in of that name.
+        with pytest.raises(ValueError, match="'plasma' is not supported.*Viridis"):
+            normalize_heatmap_color_scale("plasma", "Viridis", trace_name="T")
 
     def test_empty_string_raises(self):
         with pytest.raises(TypeError, match="non-empty string"):

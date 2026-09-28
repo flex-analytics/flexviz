@@ -34,6 +34,29 @@ _HISTNORM_OPTIONS = (
     "probability density",  # count / (total * bin_width)
 )
 _COLOR_NORM_OPTIONS = ("linear", "log")
+# The built-in color scales of plotly.js 4.1.1. Plotly knows only these exact
+# spellings, and silently draws its automatic scale for any other name.
+_COLOR_SCALE_OPTIONS = (
+    "Blackbody",
+    "Bluered",
+    "Blues",
+    "Cividis",
+    "Earth",
+    "Electric",
+    "Greens",
+    "Greys",
+    "Hot",
+    "Jet",
+    "Picnic",
+    "Portland",
+    "Rainbow",
+    "RdBu",
+    "Reds",
+    "Viridis",
+    "YlGnBu",
+    "YlOrRd",
+)
+_COLOR_SCALE_BY_FOLDED_NAME = {name.casefold(): name for name in _COLOR_SCALE_OPTIONS}
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -54,14 +77,20 @@ def normalize_heatmap_color_scale(
 ) -> str:
     """Validate and normalise a ``color_scale`` value.
 
-    Returns *default* when *color_scale* is ``None``; otherwise validates that
-    it is a non-empty string and returns it unchanged.
+    Returns *default* when *color_scale* is ``None``. Otherwise matches the
+    name without regard to case and returns its Plotly spelling.
     """
     if color_scale is None:
         return default
     if not isinstance(color_scale, str) or not color_scale:
         raise TypeError(f"{trace_name} color_scale must be a non-empty string")
-    return color_scale
+    try:
+        return _COLOR_SCALE_BY_FOLDED_NAME[color_scale.casefold()]
+    except KeyError:
+        raise ValueError(
+            f"{trace_name} color_scale {color_scale!r} is not supported. "
+            f"Supported names: {', '.join(_COLOR_SCALE_OPTIONS)}"
+        ) from None
 
 
 def normalize_heatmap_color_range(

@@ -1335,12 +1335,25 @@ class TestHeatmapPlotly:
             uid="h2d",
             trace_type="histogram2d",
             axes=("x", "y"),
-            display={"color_scale": "plasma", "color_range": (0.0, 5.0)},
+            display={"color_scale": "Cividis", "color_range": (0.0, 5.0)},
         )
         trace = PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
-        assert trace["colorscale"] == "plasma"
+        assert trace["colorscale"] == "Cividis"
         assert trace["zmin"] == 0.0
         assert trace["zmax"] == 5.0
+
+    def test_plotly_heatmap_trace_resolves_lowercase_scale_name(self):
+        """An older share URL holds "viridis", and Plotly needs "Viridis"."""
+        from flexviz.adapters.plotly_adapter import PlotlyAdapter
+
+        t = TraceSpec(
+            uid="h2d",
+            trace_type="histogram2d",
+            axes=("x", "y"),
+            display={"color_scale": "viridis", "color_range": "auto"},
+        )
+        trace = PlotlyAdapter._plotly_trace_obj(t, "Heat", None)
+        assert trace["colorscale"] == "Viridis"
 
     def test_plotly_heatmap_trace_keeps_log_range_in_data_units(self):
         """The browser takes the log of the fixed range, as it does for the cells."""
@@ -1351,7 +1364,7 @@ class TestHeatmapPlotly:
             trace_type="histogram2d",
             axes=("x", "y"),
             display={
-                "color_scale": "plasma",
+                "color_scale": "Cividis",
                 "color_range": (1.0, 1000.0),
                 "color_norm": "log",
             },
@@ -1379,7 +1392,7 @@ class TestHeatmapPlotly:
             trace_type=trace_type,
             axes=("x", "y"),
             display={
-                "color_scale": "plasma",
+                "color_scale": "Cividis",
                 "color_range": "auto",
                 "color_norm": color_norm,
             },
@@ -1396,7 +1409,7 @@ class TestHeatmapPlotly:
             trace_type="histogram2d",
             axes=("x", "y"),
             display={
-                "color_scale": "plasma",
+                "color_scale": "Cividis",
                 "color_range": (0.0, 10.0),
                 "color_norm": "log",
             },
@@ -1426,7 +1439,7 @@ class TestHeatmapPlotly:
             display={"color_scale": "rdbu", "color_range": (-1.0, 1.0)},
         )
         trace = PlotlyAdapter._plotly_trace_obj(t, "Corr", None)
-        assert trace["colorscale"] == "rdbu"
+        assert trace["colorscale"] == "RdBu"
         assert trace["zmin"] == -1.0
         assert trace["zmax"] == 1.0
 
@@ -1448,7 +1461,7 @@ class TestHeatmapECharts:
             uid="h2d",
             trace_type="histogram2d",
             axes=("x", "y"),
-            display={"color_scale": "plasma", "color_range": (0.0, 5.0)},
+            display={"color_scale": "cividis", "color_range": (0.0, 5.0)},
         )
         fig = FigureSpec(uid="fig1", layout={}, traces=[t])
         return EChartsAdapter._build_initial_option(fig, 400)
@@ -1462,7 +1475,7 @@ class TestHeatmapECharts:
         assert "visualMap" in initial_option
         assert (
             initial_option["visualMap"]["inRange"]["color"]
-            == _ECHARTS_HEATMAP_COLOR_SCALES["plasma"]
+            == _ECHARTS_HEATMAP_COLOR_SCALES["cividis"]
         )
         assert initial_option["visualMap"]["min"] == 0.0
         assert initial_option["visualMap"]["max"] == 5.0

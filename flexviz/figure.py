@@ -554,7 +554,8 @@ class Figure:
         name:
             Legend label.
         color_scale:
-            Heatmap color scale name understood by the active renderer.
+            Name of a Plotly built-in color scale, such as ``"Viridis"``
+            (default) or ``"RdBu"``. Case does not matter.
         color_range:
             Fixed heatmap color range, or ``"auto"`` for dynamic scaling.
         color_norm:
@@ -622,7 +623,8 @@ class Figure:
         name:
             Legend label.
         color_scale:
-            Color scale name understood by the active renderer.
+            Name of a Plotly built-in color scale, such as ``"Viridis"``
+            (default) or ``"RdBu"``. Case does not matter.
         color_range:
             Fixed color range, or ``"auto"`` for dynamic scaling.
         color_norm:
@@ -711,7 +713,8 @@ class Figure:
         name:
             Legend label.
         color_scale:
-            Heatmap color scale name understood by the active renderer.
+            Name of a Plotly built-in color scale. Case does not matter. The
+            default is ``"RdBu"``, or ``"Viridis"`` when ``absolute`` is True.
         color_range:
             Fixed heatmap color range, or ``"auto"`` for dynamic scaling.
         """

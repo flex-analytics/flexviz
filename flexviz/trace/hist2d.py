@@ -50,7 +50,7 @@ from .base import (
 from .batch_fold import hist2d_fold_plan
 from .bin_grid import axis_edges, hist2d_count_expr, hist2d_reduce_expr
 
-_DEFAULT_COLOR_SCALE = "viridis"
+_DEFAULT_COLOR_SCALE = "Viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
 _HIST2D_HISTFUNC_OPTIONS = ("sum", "mean", "min", "max")
 

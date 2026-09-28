@@ -20,7 +20,10 @@ import math
 from typing import Any
 
 from ..spec import DashboardSpec, FigureSpec
-from ..trace._hist_helpers import normalize_heatmap_color_norm
+from ..trace._hist_helpers import (
+    normalize_heatmap_color_norm,
+    normalize_heatmap_color_scale,
+)
 from .base import (
     AbstractAdapter,
     _in_async_context,
@@ -182,12 +185,14 @@ def _auto_show_legend(traces: list) -> bool:
 
 
 def _plotly_heatmap_color_scale(ts: Any) -> str:
-    if "color_scale" not in ts.display:
+    color_scale = ts.display.get("color_scale")
+    if color_scale is None:
         raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
-    color_scale = ts.display["color_scale"]
-    if not isinstance(color_scale, str) or not color_scale:
-        raise TypeError("heatmap color_scale must be a non-empty string")
-    return color_scale
+    # An older shared spec can hold a lowercase name, and a decoded spec
+    # reaches this adapter without the trace validation.
+    return normalize_heatmap_color_scale(
+        color_scale, color_scale, trace_name=ts.trace_type
+    )
 
 
 def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:

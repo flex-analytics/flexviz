@@ -1503,6 +1503,18 @@ class TestPlotlyBrowser:
         assert page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").count() == 1
         assert page.locator(".modebar").count() == 0
 
+    def test_hist2d_default_color_scale_renders_viridis(
+        self, page: Page, server_port: int
+    ):
+        """The default color scale reaches Plotly as its built-in Viridis."""
+        page.goto(_dashboard_url_hist2d(server_port, "plotly"))
+        _wait_for_chart(page, "plotly")
+        colorscale = page.evaluate(
+            "() => document.querySelector('.js-plotly-plot')._fullData[0].colorscale"
+        )
+        assert colorscale[0] == [0, "#440154"]
+        assert colorscale[-1] == [1, "#fde725"]
+
     def test_hist2d_box_select_button_emits_selection(
         self, page: Page, server_port: int
     ):

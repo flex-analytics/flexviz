@@ -88,7 +88,7 @@ class TestHist2DConstructor:
         assert t.recompute_axes == ("x", "y")
         assert t.update_on_zoom is True
         assert t.overlay_style == "filtered_only"
-        assert t.color_scale == "viridis"
+        assert t.color_scale == "Viridis"
         assert t.color_range == "auto"
         assert t.color_norm == "linear"
 
@@ -101,10 +101,10 @@ class TestHist2DConstructor:
         t = Histogram2D(
             x="a",
             y="b",
-            color_scale="plasma",
+            color_scale="Cividis",
             color_range=(0.0, 5.0),
         )
-        assert t.color_scale == "plasma"
+        assert t.color_scale == "Cividis"
         assert t.color_range == (0.0, 5.0)
 
     def test_log_color_norm_rejects_range_from_zero(self):
@@ -476,7 +476,7 @@ class TestHist2DSpec:
             x_bins=10,
             y_bins=15,
             name="My Heatmap",
-            color_scale="plasma",
+            color_scale="Cividis",
             color_range=(0.0, 5.0),
         )
         spec = t.to_trace_spec()
@@ -484,7 +484,7 @@ class TestHist2DSpec:
         assert spec.backend_data == {"x": "a", "y": "b"}
         assert spec.params["x_bins"] == 10
         assert spec.params["y_bins"] == 15
-        assert spec.display["color_scale"] == "plasma"
+        assert spec.display["color_scale"] == "Cividis"
         assert spec.display["color_range"] == (0.0, 5.0)
         assert spec.display["color_norm"] == "linear"
 
@@ -493,7 +493,7 @@ class TestHist2DSpec:
         assert t2.y_col == "b"
         assert t2.x_bins == 10
         assert t2.y_bins == 15
-        assert t2.color_scale == "plasma"
+        assert t2.color_scale == "Cividis"
         assert t2.color_range == (0.0, 5.0)
         assert t2.color_norm == "linear"
 
@@ -533,7 +533,7 @@ class TestHist2DSpec:
         )
 
         trace = Histogram2D.from_trace_spec(spec)
-        assert trace.color_scale == "viridis"
+        assert trace.color_scale == "Viridis"
         assert trace.color_range == "auto"
         assert trace.color_norm == "linear"
         assert trace.histfunc is None

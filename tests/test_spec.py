@@ -753,14 +753,14 @@ class TestFigureAddHistogram2D:
         fig.add_histogram2d(
             x="x",
             y="y",
-            color_scale="plasma",
+            color_scale="Cividis",
             color_range=(0.0, 5.0),
         )
 
         ts = fig.to_spec(source="src").figure.traces[0]
         assert ts.trace_type == "histogram2d"
         assert ts.backend_data == {"x": "x", "y": "y"}
-        assert ts.display["color_scale"] == "plasma"
+        assert ts.display["color_scale"] == "Cividis"
         assert ts.display["color_range"] == (0.0, 5.0)
 
     def test_to_spec_materializes_default_heatmap_style(self):
@@ -768,7 +768,7 @@ class TestFigureAddHistogram2D:
         fig.add_histogram2d(x="x", y="y")
 
         ts = fig.to_spec(source="src").figure.traces[0]
-        assert ts.display["color_scale"] == "viridis"
+        assert ts.display["color_scale"] == "Viridis"
         assert ts.display["color_range"] == "auto"
         assert ts.display["color_norm"] == "linear"
 
@@ -795,14 +795,14 @@ class TestFigureAddCorrHeatmap:
         fig.add_corr_heatmap(
             columns=["a", "b"],
             absolute=True,
-            color_scale="cividis",
+            color_scale="Cividis",
             color_range="auto",
         )
 
         ts = fig.to_spec(source="src").figure.traces[0]
         assert ts.trace_type == "corr_heatmap"
         assert ts.params["absolute"] is True
-        assert ts.display["color_scale"] == "cividis"
+        assert ts.display["color_scale"] == "Cividis"
         assert ts.display["color_range"] == "auto"
 
     def test_to_spec_materializes_default_heatmap_style(self):
@@ -810,7 +810,7 @@ class TestFigureAddCorrHeatmap:
         fig.add_corr_heatmap(columns=["a", "b"], absolute=True)
 
         ts = fig.to_spec(source="src").figure.traces[0]
-        assert ts.display["color_scale"] == "viridis"
+        assert ts.display["color_scale"] == "Viridis"
         assert ts.display["color_range"] == (0.0, 1.0)
 
 
@@ -818,7 +818,7 @@ class TestFigureHeatmapValidation:
     def test_mixed_heatmap_color_scales_raise(self):
         fig = Figure(pl.DataFrame({"x": [0.0, 1.0], "y": [1.0, 2.0]}))
         fig.add_histogram2d(x="x", y="y", color_scale="viridis")
-        fig.add_histogram2d(x="x", y="y", color_scale="plasma")
+        fig.add_histogram2d(x="x", y="y", color_scale="Cividis")
 
         with pytest.raises(
             ValueError, match="same effective color_scale, color_range and color_norm"
@@ -846,7 +846,7 @@ class TestFigureHeatmapValidation:
     def test_mixed_geo_heatmap_styles_raise(self):
         fig = Figure(pl.DataFrame({"lat": [0.0, 1.0], "lon": [1.0, 2.0]}))
         fig.add_geo_histogram2d(lat="lat", lon="lon")
-        fig.add_geo_histogram2d(lat="lat", lon="lon", color_scale="plasma")
+        fig.add_geo_histogram2d(lat="lat", lon="lon", color_scale="Cividis")
 
         with pytest.raises(ValueError, match="must share the same effective"):
             fig.to_spec()
