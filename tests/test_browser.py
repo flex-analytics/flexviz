@@ -8000,8 +8000,14 @@ class TestReversedAxisBrowser:
 
     @pytest.mark.parametrize(
         "xaxis",
-        [{"autorange": "reversed"}, {"range": [999, 0]}],
-        ids=["autorange", "fixed_range"],
+        [
+            {"autorange": "reversed"},
+            {"range": [999, 0]},
+            # The fixed end is dropped, as every fixed bound is; the direction stays.
+            {"autorange": "min reversed", "range": [500, None]},
+            {"autorange": "max reversed", "range": [None, 500]},
+        ],
+        ids=["autorange", "fixed_range", "min_reversed", "max_reversed"],
     )
     def test_reversed_axis_survives_zoom_and_reset(
         self, page: Page, server_port: int, xaxis: dict

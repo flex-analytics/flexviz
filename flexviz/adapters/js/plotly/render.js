@@ -301,13 +301,15 @@ function applyCategorySelectionStyles(figUid) {
 }
 
 // The autorange an axis returns to without a viewport. It follows the rule of
-// `_axis_reversed` in spec.py: a reversed variant from the figure layout stays
-// as given, a fixed range given high to low gives 'reversed' (its bounds are
-// dropped), anything else gives true. It is read from the spec, because Plotly
-// writes `autorange: true` back into the layout it draws.
+// `_axis_reversed` in spec.py: any reversed autorange variant, or a fixed range
+// given high to low, gives 'reversed'; anything else gives true. The fixed
+// bounds are dropped, so "min reversed" and "max reversed" become 'reversed':
+// without their fixed end, Plotly draws them at a default range. It is read
+// from the spec, because Plotly writes `autorange: true` back into the layout
+// it draws.
 function declaredAutorange(figUid, layoutKey) {
   const { autorange, range } = figSpecByUid[figUid]?.layout?.[layoutKey] || {};
-  if (typeof autorange === 'string' && autorange.includes('reversed')) return autorange;
+  if (typeof autorange === 'string' && autorange.includes('reversed')) return 'reversed';
   const [r0, r1] = Array.isArray(range) && range.length === 2 ? range : [];
   return r0 != null && r1 != null && r0 > r1 ? 'reversed' : true;
 }
