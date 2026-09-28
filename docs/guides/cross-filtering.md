@@ -106,7 +106,8 @@ Rules and limits:
   numeric column on an axis set to `type="date"` cannot be linked, and date and
   linear axis types do not mix. A reversed axis links only to reversed axes.
 - Locking the axes of one figure locks every axis linked to them, at the range
-  that figure shows.
+  that figure shows. A linked figure that showed another range re-aggregates at
+  the locked range.
 - After a double-click autorange, each figure autoranges to its own data, so
   linked ranges can differ until the next zoom. In update mode a figure
   filtered by another figure's selection fits its filtered rows, while the

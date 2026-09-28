@@ -6928,6 +6928,33 @@ _SHOWN_RANGES = """() => [...document.querySelectorAll('.js-plotly-plot')].map(g
   }))"""
 
 
+def _dashboard_url_linked_pairs(
+    port: int, pairs: list[tuple[str, str]]
+) -> tuple[str, list[str]]:
+    """Pairs of lines, each pair linked on x. ``short`` spans 0..999 and
+    ``long`` 0..9999, so a pair on both autoranges apart."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import encode_spec
+
+    df = pl.DataFrame({"long": range(10_000)}).with_columns(
+        short=pl.col("long") // 10, val=pl.col("long").cast(pl.Float64)
+    )
+    register_source("_browser_linked_pairs", df)
+    dash = Dashboard(df)
+    for x_a, x_b in pairs:
+        a = dash.add_figure()
+        a.add_line(x=x_a, y="val", n_points=200)
+        b = dash.add_figure()
+        b.add_line(x=x_b, y="val", n_points=200)
+        dash.link_axes(a, b, axis="x")
+    spec = dash.to_spec(source_name="_browser_linked_pairs")
+    return (
+        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly",
+        [f.uid for f in spec.figures],
+    )
+
+
 @pytest.mark.browser
 class TestLinkedAxesBrowser:
     @staticmethod
@@ -7160,6 +7187,93 @@ class TestLinkedAxesBrowser:
         )
         page.wait_for_timeout(1_000)
         assert statuses == [200]
+
+    def test_lock_aggregates_a_member_at_the_range_it_shows(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked_pairs(server_port, [("short", "long")])
+        posts = self._open(page, url)
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(1_500)
+
+        # B takes A's range, and the server re-aggregates B for that range.
+        window = page.evaluate("""() => {
+            const gd = divs[1];
+            const [lo, hi] = gd._fullLayout.xaxis.range;
+            const xs = gd.data[0].x;
+            return {hi, n: xs.length, inside: xs.filter(x => lo <= x && x <= hi).length};
+        }""")
+        assert window["hi"] < 1_000, window
+        assert window["n"] > 100 and window["inside"] == window["n"], window
+        assert len(posts) == 1, [p["event"] for p in posts]
+        assert posts[0]["event"]["viewport_keys"] == [f"{uids[0]}/x", f"{uids[1]}/x"]
+        viewport = page.evaluate("DASHBOARD_SPEC.state.viewport")
+        ranges = page.evaluate("DASHBOARD_SPEC.client_state.axis_lock_ranges")
+        assert viewport[f"{uids[1]}/x"] == ranges[f"{uids[1]}/x"], (viewport, ranges)
+
+    def test_lock_all_sends_one_request_for_every_group(
+        self, page: Page, server_port: int
+    ):
+        url, uids = _dashboard_url_linked_pairs(
+            server_port, [("short", "long"), ("short", "long")]
+        )
+        posts = self._open(page, url)
+
+        page.click("#fv-btn-lock-all")
+        page.wait_for_timeout(1_500)
+
+        assert len(posts) == 1, [p["event"] for p in posts]
+        assert sorted(posts[0]["event"]["viewport_keys"]) == sorted(
+            f"{uid}/x" for uid in uids
+        )
+
+    def test_lock_on_members_that_show_one_range_posts_nothing(
+        self, page: Page, server_port: int
+    ):
+        url, _ = _dashboard_url_linked_pairs(server_port, [("long", "long")])
+        posts = self._open(page, url)
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
+
+    def test_lock_on_a_line_and_histogram_of_one_column_posts_nothing(
+        self, page: Page, server_port: int
+    ):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        # The line and the histogram autorange to ranges that differ by float
+        # noise only, so the lock has nothing to fix.
+        df = pl.DataFrame({"long": range(10_000)}).with_columns(
+            val=pl.col("long").cast(pl.Float64)
+        )
+        register_source("_browser_linked_hist", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="long", y="val", n_points=200)
+        dash.add_figure().add_histogram(x="long", bins=50)
+        dash.link_axes(on="long")
+        spec = dash.to_spec(source_name="_browser_linked_hist")
+        posts = self._open(
+            page,
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
+            "&renderer=plotly",
+        )
+        shown = page.evaluate(
+            "[...document.querySelectorAll('.js-plotly-plot')]"
+            ".map(gd => gd._fullLayout.xaxis.range)"
+        )
+        assert shown[0] != shown[1], shown
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(1_000)
+
+        assert posts == []
+        assert page.evaluate("DASHBOARD_SPEC.state.viewport") == {}
 
     def test_overlay_owner_in_the_group_gets_its_background(
         self, page: Page, server_port: int

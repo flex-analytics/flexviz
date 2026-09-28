@@ -145,23 +145,42 @@ function fvTryLockAxis(figUid, axisId) {
   window.fvStoreAxisLockRanges(figUid, ranges);
   return ranges;
 }
+// Figures linked on one column rarely autorange to bit-identical bounds (a line
+// shows [3e-13, 9999.0000000001] where a histogram shows [0, 9999]), so numeric
+// bounds within 1e-9 of the span count as equal. Date strings compare exactly.
+function fvSameRange(a, b) {
+  if (JSON.stringify(a) === JSON.stringify(b)) return true;
+  if (!a || !b || ![...a, ...b].every(v => typeof v === 'number')) return false;
+  const tolerance = 1e-9 * Math.abs(b[1] - b[0]);
+  return Math.abs(a[0] - b[0]) < tolerance && Math.abs(a[1] - b[1]) < tolerance;
+}
 // Lock an axis and every axis linked to it at the range this figure shows. A
 // group keeps one range (the spec validator rejects unequal lock ranges), so a
-// member that autoranged to other data takes this figure's range. Returns the
-// other figures whose display changed.
+// member that autoranged to other data takes this figure's range. The server
+// aggregated that member for its own range, so the group range also becomes
+// the viewport of the group. A group whose members already show one range
+// stays display-only: a viewport at Plotly's padded autorange can change the
+// bins. Returns the other figures whose display changed and the viewport keys
+// written.
 function fvLockAxisGroup(figUid, axisId) {
   const ranges = fvTryLockAxis(figUid, axisId);
-  if (!ranges) return [];
+  if (!ranges) return { others: [], written: [] };
   const range = ranges[axisId];
   const others = [];
+  let apart = false;
   for (const key of fvLinkedKeys(figUid + '/' + axisId)) {
     const [memberFigUid, memberAxisId] = key.split('/');
     if (memberFigUid === figUid) continue;
+    const shown = (window.fvCaptureAxisDisplayRanges?.(memberFigUid, memberAxisId) || {})[memberAxisId];
+    if (!fvSameRange(shown, range)) apart = true;
     window.fvSetAxisLocked(memberFigUid, memberAxisId, true);
     if (range) window.fvStoreAxisLockRanges(memberFigUid, { [memberAxisId]: range });
     others.push(memberFigUid);
   }
-  return others;
+  const written = apart && range
+    ? fvWriteViewport(figUid + '/' + axisId, { min: range[0], max: range[1] })
+    : [];
+  return { others, written };
 }
 window.fvOnToggleAxisLocks = async function(figUid) {
   if (!figUid) return;
@@ -178,9 +197,12 @@ window.fvOnToggleAxisLocks = async function(figUid) {
   )];
   const touchedFigUids = fvFiguresOfKeys(keys);
   const moved = new Set();
+  const written = [];
   if (shouldLock) {
     for (const axisId of availableAxes) {
-      fvLockAxisGroup(figUid, axisId).forEach(other => moved.add(other));
+      const locked = fvLockAxisGroup(figUid, axisId);
+      locked.others.forEach(other => moved.add(other));
+      written.push(...locked.written);
     }
   } else {
     for (const key of keys) {
@@ -195,6 +217,7 @@ window.fvOnToggleAxisLocks = async function(figUid) {
   }
   await Promise.all([...moved].map(touched => window.fvApplyAxisLocks?.(touched)));
   window.fvUpdateLockAllAxesButton?.();
+  await fvCommitViewportChange(figUid, written);
 };
 // ── Global "Lock All Axes" toolbar button ──────────────────────────────────
 // Returns true only when every figure with lockable axes is fully locked.
@@ -226,6 +249,7 @@ window.fvOnLockAllAxes = async function() {
   if (!uids.length) return;
   const shouldLock = !window.fvAreAllFiguresLocked();
   const applyPromises = [];
+  const written = [];
   for (const figUid of uids) {
     const availableAxes = fvCurrentLockableAxes(figUid);
     if (!availableAxes.length) continue;
@@ -233,8 +257,10 @@ window.fvOnLockAllAxes = async function() {
       for (const axisId of availableAxes) {
         // An earlier group member already locked this axis at the group range.
         if (window.fvIsAxisLocked(figUid, axisId)) continue;
-        fvLockAxisGroup(figUid, axisId)
+        const locked = fvLockAxisGroup(figUid, axisId);
+        locked.others
           .forEach(other => applyPromises.push(Promise.resolve(window.fvApplyAxisLocks?.(other))));
+        written.push(...locked.written);
       }
       window.fvUpdateAxisLockButtons?.(figUid);
       window.fvSyncFigureModeForAxisLocks?.(figUid);
@@ -249,6 +275,8 @@ window.fvOnLockAllAxes = async function() {
   }
   await Promise.all(applyPromises);
   window.fvUpdateLockAllAxesButton?.();
+  // One request for every group the locks wrote.
+  await fvCommitViewportChange(null, written);
 };
 
 // Per-figure reset. Resets ONLY this figure: clears its viewport (zoom) and
