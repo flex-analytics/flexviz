@@ -142,7 +142,7 @@ serialized state differs from the previous read; it does not say who changed it.
 
 <!-- compact-state -->
 ```json
-{"version": "0.6", "revision": 3, "state": {
+{"version": "0.7", "revision": 3, "state": {
   "viewport": {"fig1/x": {"min": 100, "max": 300}},
   "selections": [{"source_figure_uid": "fig1",
     "predicates": [{"clauses": [{"column": "value", "range": [10.0, 25.0]}]}]}],

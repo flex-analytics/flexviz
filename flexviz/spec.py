@@ -27,7 +27,7 @@ from pydantic import (
     model_validator,
 )
 
-_SPEC_VERSION = "0.6"
+_SPEC_VERSION = "0.7"
 
 
 def _check_spec_version(version: str) -> str:
