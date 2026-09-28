@@ -7973,3 +7973,167 @@ class TestHeatmapColorNormBrowser:
         else:
             assert (fg["zmin"], fg["zmax"]) == pytest.approx((0.0, 3.0))
             assert fg["colorbar"]["ticktext"] == ["1", "10", "100", "1K"]
+
+
+@pytest.mark.browser
+class TestLogAxisBrowser:
+    """Plotly holds a log axis range in log10 units. Client state holds data units."""
+
+    # x from 1 to 1e6 on a log grid.
+    _DF = pl.DataFrame(
+        {
+            "x": [10 ** (6 * i / 999) for i in range(1000)],
+            "y": [float(i) for i in range(1000)],
+        }
+    )
+
+    @staticmethod
+    def _build(dash) -> None:
+        dash.add_figure().add_line(x="x", y="y", n_points=100).update_layout(
+            xaxis={"type": "log"}
+        )
+
+    @staticmethod
+    def _wait_for_data_inside(page: Page, lo: float, hi: float) -> None:
+        page.wait_for_function(
+            """([lo, hi]) => {
+                const xs = divs[0].data[0].x.filter(v => v != null);
+                return xs.length && Math.min(...xs) >= lo && Math.max(...xs) <= hi;
+            }""",
+            arg=[lo, hi],
+            timeout=10_000,
+        )
+
+    @staticmethod
+    def _shown_range(page: Page) -> list[float]:
+        return page.evaluate("() => divs[0]._fullLayout.xaxis.range")
+
+    @pytest.mark.parametrize(
+        "layout",
+        [
+            {"xaxis": {"type": "log"}},
+            {"template": {"layout": {"xaxis": {"type": "log"}}}},
+        ],
+        ids=["axis_type", "template"],
+    )
+    def test_drag_zoom_keeps_the_viewport_in_data_units(
+        self, page: Page, server_port: int, layout: dict
+    ):
+        page.goto(
+            _color_norm_url(
+                server_port,
+                "_browser_log_axis_zoom",
+                self._DF,
+                lambda dash: (
+                    dash.add_figure()
+                    .add_line(x="x", y="y", n_points=100)
+                    .update_layout(**layout)
+                ),
+            )
+        )
+        _wait_for_init(page, "plotly")
+
+        box = page.locator("#fv-plot-0 .nsewdrag").bounding_box()
+        assert box is not None
+        y = box["y"] + box["height"] * 0.5
+        page.mouse.move(box["x"] + box["width"] * 0.3, y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * 0.6, y, steps=20)
+        page.mouse.up()
+        page.wait_for_function(
+            "() => DASHBOARD_SPEC.state.viewport[DASHBOARD_SPEC.figures[0].uid + '/x']"
+        )
+
+        # Plotly shows a log axis range in log10 units.
+        shown = self._shown_range(page)
+        [viewport] = page.evaluate("() => flexvizState().state.viewport").values()
+        lo, hi = viewport["min"], viewport["max"]
+        assert (lo, hi) == pytest.approx([10**v for v in shown])
+        self._wait_for_data_inside(page, lo, hi)
+        # The redraw with the new data writes the viewport back in log10 units.
+        assert self._shown_range(page) == pytest.approx(shown)
+
+    def test_far_zoom_out_sends_finite_bounds(self, page: Page, server_port: int):
+        page.goto(
+            _color_norm_url(server_port, "_browser_log_axis_far", self._DF, self._build)
+        )
+        _wait_for_init(page, "plotly")
+
+        # 10 ** 320 is Infinity in a double, which JSON sends as null.
+        with page.expect_response("**/dashboard/update") as response:
+            page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [-5, 320]})")
+        assert response.value.ok
+
+    def test_saved_viewport_opens_at_its_range(self, page: Page, server_port: int):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import AxisRange, encode_spec
+
+        register_source("_browser_log_axis_saved", self._DF)
+        dash = Dashboard(self._DF)
+        self._build(dash)
+        spec = dash.to_spec(source_name="_browser_log_axis_saved")
+        spec.state.viewport[f"{spec.figures[0].uid}/x"] = AxisRange(
+            min=100.0, max=10_000.0
+        )
+        page.goto(
+            f"http://127.0.0.1:{server_port}/view"
+            f"?spec={encode_spec(spec)}&renderer=plotly"
+        )
+        _wait_for_init(page, "plotly")
+
+        self._wait_for_data_inside(page, 99, 10_001)
+        assert self._shown_range(page) == pytest.approx([2, 4])
+
+    def test_lock_keeps_its_range_in_data_units(self, page: Page, server_port: int):
+        page.goto(
+            _color_norm_url(
+                server_port, "_browser_log_axis_lock", self._DF, self._build
+            )
+        )
+        _wait_for_init(page, "plotly")
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [2, 4]})")
+        self._wait_for_data_inside(page, 99, 10_001)
+
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        lock = page.evaluate("""() => flexvizState().client_state.axis_lock_ranges[
+            DASHBOARD_SPEC.figures[0].uid + '/x']""")
+        assert (lock["min"], lock["max"]) == pytest.approx((100.0, 10_000.0))
+
+        # A locked axis snaps back to its lock range after a double-click and
+        # after a global reset.
+        for act in [
+            "() => Plotly.relayout(divs[0], {'xaxis.autorange': true})",
+            "() => fvOnReset()",
+        ]:
+            page.evaluate(act)
+            page.wait_for_timeout(800)
+            assert self._shown_range(page) == pytest.approx([2, 4]), act
+            self._wait_for_data_inside(page, 99, 10_001)
+
+    def test_selection_band_spans_a_log_count_axis(self, page: Page, server_port: int):
+        page.goto(
+            _color_norm_url(
+                server_port,
+                "_browser_log_axis_band",
+                self._DF,
+                lambda d: (
+                    d.add_figure()
+                    .add_histogram(x="x", bins=20)
+                    .update_layout(yaxis={"type": "log"})
+                ),
+            )
+        )
+        _wait_for_init(page, "plotly")
+        page.evaluate("""() => flexvizApply({state: {selections: [{
+            source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+            predicates: [{clauses: [{column: 'x', range: [100000, 500000]}]}],
+        }]}})""")
+        shown = page.evaluate("""() => ({
+            box: divs[0]._fullLayout.selections[0],
+            yrange: divs[0]._fullLayout.yaxis.range,
+        })""")
+        # An x-only selection is a band: Plotly places a selection in data units.
+        assert [shown["box"]["y0"], shown["box"]["y1"]] == pytest.approx(
+            [10**v for v in shown["yrange"]]
+        )
