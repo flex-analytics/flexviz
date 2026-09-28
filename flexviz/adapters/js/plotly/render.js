@@ -75,28 +75,16 @@ window.fvHasLockableCurrentAxis = function(figUid, axisFamily) {
   return Object.keys(window.fvCaptureAxisDisplayRanges?.(figUid, axisFamily) || {}).length > 0;
 };
 
-window.fvApplyAxisLocks = function(figUid, changedAxisId) {
+window.fvApplyAxisLocks = function(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
   const ranges = { ...(window.fvAxisLockRangesForFigure?.(figUid) || {}), ...figureViewportRanges(figUid) };
-  const gd = divs[figIdx];
-  const fullLayout = (gd && gd._fullLayout) || {};
   const update = {};
   for (const [axId, range] of Object.entries(ranges)) {
     if (!/^(x|y)\d*$/.test(axId)) continue;
     const key = plotlyAxisKey(axId);
-    update[key + '.range'] = plotlyRangeFromData(figIdx, key, range);
+    update[key + '.range'] = plotlyRangeFromData(figIdx, key, orientedRange(figUid, key, range));
     update[key + '.autorange'] = false;
-  }
-  const changedFamily = String(changedAxisId || '').charAt(0);
-  if ((changedFamily === 'x' || changedFamily === 'y') && !window.fvIsAxisLocked?.(figUid, changedAxisId)) {
-    for (const layoutKey of Object.keys(fullLayout)) {
-      const match = /^(x|y)axis(\d*)$/.exec(layoutKey);
-      if (!match || match[1] !== changedFamily) continue;
-      const axId = plotlyAxisId(layoutKey);
-      if (Object.prototype.hasOwnProperty.call(ranges, axId)) continue;
-      update[layoutKey + '.autorange'] = true;
-    }
   }
   if (!Object.keys(update).length) return;
   return fvRunProgrammaticPlotlyOp(figUid, () => Plotly.relayout(divs[figIdx], update));
@@ -319,6 +307,28 @@ function applyCategorySelectionStyles(figUid) {
   }
 }
 
+// The autorange an axis returns to without a viewport. It follows the rule of
+// `_axis_reversed` in spec.py: any reversed autorange variant, or a fixed range
+// given high to low, gives 'reversed'; anything else gives true. The fixed
+// bounds are dropped, so "min reversed" and "max reversed" become 'reversed':
+// without their fixed end, Plotly draws them at a default range. It is read
+// from the spec, because Plotly writes `autorange: true` back into the layout
+// it draws.
+function declaredAutorange(figUid, layoutKey) {
+  const { autorange, range } = figSpecByUid[figUid]?.layout?.[layoutKey] || {};
+  if (typeof autorange === 'string' && autorange.includes('reversed')) return 'reversed';
+  const [r0, r1] = Array.isArray(range) && range.length === 2 ? range : [];
+  return r0 != null && r1 != null && r0 > r1 ? 'reversed' : true;
+}
+
+// A stored viewport or lock range holds only its bounds. The declared layout
+// decides the direction, so a range given low to high, for example through
+// flexvizApply, still draws a reversed axis reversed.
+function orientedRange(figUid, layoutKey, [a, b]) {
+  const reversed = declaredAutorange(figUid, layoutKey) === 'reversed';
+  return (a > b) === reversed ? [a, b] : [b, a];
+}
+
 function syncLayoutViewport(figUid) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
@@ -333,13 +343,13 @@ function syncLayoutViewport(figUid) {
   );
   for (const key of Object.keys(layout)) {
     if (/^[xy]axis\d*$/.test(key) && !Object.prototype.hasOwnProperty.call(cartesianKeys, key)) {
-      if (layout[key]) { delete layout[key].range; layout[key].autorange = true; }
+      if (layout[key]) { delete layout[key].range; layout[key].autorange = declaredAutorange(figUid, key); }
     }
   }
   for (const [axId, range] of Object.entries(cartesianRanges)) {
     const key = plotlyAxisKey(axId);
     if (!layout[key]) layout[key] = {};
-    layout[key].range = plotlyRangeFromData(figIdx, key, range);
+    layout[key].range = plotlyRangeFromData(figIdx, key, orientedRange(figUid, key, range));
     layout[key].autorange = false;
   }
 }

@@ -812,6 +812,45 @@ class TestLiveBrushCube:
         assert sum(expected) < df.height
         assert _target_y(page) == expected
 
+    def test_reversed_zoomed_source_live_updates(self, page: Page, server_port: int):
+        """A reversed axis stores its zoom high to low. The server sorts it, so
+        the client key must too, or it refuses the cube header."""
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import AxisRange, LayoutSpec, encode_spec
+
+        df = _cube_df()
+        register_source("_cube_browser_reversed", df, cache=True)
+        dash = Dashboard(df)
+        dash.add_figure().add_histogram(x="a", bins=_SRC_BINS).update_layout(
+            xaxis={"autorange": "reversed"}
+        )
+        dash.add_figure().add_histogram(x="b", bins=_TGT_BINS)
+        spec = dash.to_spec(
+            source_name="_cube_browser_reversed", layout=LayoutSpec(draggable=False)
+        )
+        spec.state.viewport[f"{spec.figures[0].uid}/x"] = AxisRange(min=90, max=10)
+        bodies = _capture_updates(page)
+        page.goto(
+            f"http://127.0.0.1:{server_port}/view"
+            f"?spec={encode_spec(spec)}&renderer=plotly"
+        )
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+
+        x1, x2, y, _ = _drag_coords(page)
+        n_before = len(bodies)
+        unfiltered = _target_y(page)
+        _drag_with_live_wait(page, x1, x2, y, unfiltered)
+        page.wait_for_timeout(1_000)
+
+        types = [b.get("event", {}).get("type") for b in bodies[n_before:]]
+        assert types == ["cube_request"], "the commit is local"
+        assert page.evaluate("_fvCubeStore.size") == 1
+        # The target shows the rows of the brushed range: some, not none or all.
+        filtered = sum(v or 0 for v in _target_y(page))
+        assert 0 < filtered < sum(v or 0 for v in unfiltered)
+
     def test_mixed_dashboard_commit_posts_once(self, page: Page, server_port: int):
         """A box-plot target is not cube-capable: it holds its pre-drag state
         during the drag, and the conditional commit falls back to exactly one

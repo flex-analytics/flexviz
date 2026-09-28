@@ -537,17 +537,18 @@ function _fvCubeSourceConstraint(figUid) {
 // convert to epoch-ms floats — a SELF-CONSISTENT key token, client-local
 // and never sent to the server (the server parses the original strings via
 // the schema dtype, contract G). The token is NOT a snap domain: temporal
-// snapping always uses the decoded header's physical domain.
+// snapping always uses the decoded header's physical domain. A reversed axis
+// stores its viewport high to low and the server sorts it, so the domain is
+// sorted too, or the key never matches the cube header.
 function _fvCubeViewportDomain(figUid, anchor) {
   if (!anchor) return null;
   const rng = figureViewportRanges(figUid)[anchor];
   if (rng === undefined) return null;
   if (Array.isArray(rng) && rng.length === 2) {
-    if (rng.every(Number.isFinite)) return [rng[0], rng[1]];
-    const ms = rng.map(v =>
+    const values = rng.every(Number.isFinite) ? rng : rng.map(v =>
       typeof v === 'string' ? fvTemporalToPhysical(v, 'ms') : NaN
     );
-    if (ms.every(Number.isFinite)) return ms;
+    if (values.every(Number.isFinite)) return [Math.min(...values), Math.max(...values)];
   }
   return undefined;
 }

@@ -130,6 +130,17 @@ def _normalize_axis_ranges(ranges: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _normalize_viewports(
+    viewports_by_figure: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """``_normalize_axis_ranges`` for every figure. Both engine entry points,
+    ``process`` and ``build_cubes``, call it first."""
+    return {
+        fig: _normalize_axis_ranges(vp)
+        for fig, vp in (viewports_by_figure or {}).items()
+    }
+
+
 class FlexEngine:
     """Renderer-agnostic, fully stateless aggregation engine.
 
@@ -179,16 +190,7 @@ class FlexEngine:
         """
         logger.info(f"FlexEngine.process: {event.type}")
         t_start_0 = time.perf_counter()
-        if viewports_by_figure is None:
-            viewports_by_figure = {}
-        else:
-            # Normalize once at ingestion; every downstream consumer
-            # (trace update ranges, cube/hist domain resolution) then holds
-            # the lo <= hi invariant.
-            viewports_by_figure = {
-                fig: _normalize_axis_ranges(vp)
-                for fig, vp in viewports_by_figure.items()
-            }
+        viewports_by_figure = _normalize_viewports(viewports_by_figure)
 
         backend_schema = (
             self._backend_lf.schema if self._backend_lf is not None else None
@@ -356,6 +358,7 @@ class FlexEngine:
         if self._backend_lf is None or self._source_name is None:
             return [], {}
 
+        viewports_by_figure = _normalize_viewports(viewports_by_figure)
         schema = self._backend_lf.schema
 
         free_spec = self._locate_free_axis(

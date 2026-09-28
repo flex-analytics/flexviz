@@ -474,6 +474,24 @@ class TestDashboardCubeRequest:
         assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
         assert dim["bins"] == n
 
+    def test_reversed_viewports_resolve_like_ascending_ones(self, client, df):
+        """A reversed axis stores its viewport high to low. The cube domains
+        must equal those of the ascending range, as the display deltas do."""
+        spec = _two_hist_dashboard(df)
+        src_fig_uid = spec.figures[0].uid
+        tgt_fig_uid = spec.figures[1].uid
+
+        def header(src: tuple[float, float], tgt: tuple[float, float]) -> dict:
+            spec.state.viewport[f"{src_fig_uid}/x"] = AxisRange(min=src[0], max=src[1])
+            spec.state.viewport[f"{tgt_fig_uid}/x"] = AxisRange(min=tgt[0], max=tgt[1])
+            resp = client.post(
+                "/dashboard/update", json=_cube_payload(spec, src_fig_uid)
+            )
+            return decode_fvcube_header(base64.b64decode(_cube_body(resp)["cubes"][0]))
+
+        ascending = header((10.0, 80.0), (5.0, 60.0))
+        assert header((80.0, 10.0), (60.0, 5.0)) == ascending
+
     def test_zoomed_hist_cube_bars_land_on_the_display_bars(self, client, df):
         """The client derives bar centers from (domain, bins), so a zoomed
         hist1d target's cube grid must reproduce the display delta's centers."""
