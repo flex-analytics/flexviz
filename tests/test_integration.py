@@ -5,6 +5,8 @@ All tests in this module are marked with ``@pytest.mark.integration``.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 
 import polars as pl
@@ -24,6 +26,7 @@ from flexviz.spec import (
     VisualizationSpec,
     decode_spec,
     encode_spec,
+    parse_spec,
 )
 
 pytestmark = pytest.mark.integration
@@ -1063,13 +1066,8 @@ class TestShareAndView:
         assert m.group(1) == '"."'
 
     @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
-    def test_view_viz_spec(self, client: TestClient, renderer: str):
-        from flexviz.spec import FigureSpec, TraceSpec
-
-        ts = TraceSpec(
-            uid="t1", trace_type="line", backend_data={"x": "ts", "y": "val"}
-        )
-        viz = VisualizationSpec(figure=FigureSpec(uid="f1", source="s", traces=[ts]))
+    def test_view_viz_spec(self, client: TestClient, integ_df, renderer: str):
+        viz = Figure(integ_df).add_line(x="ts", y="val").to_spec(source=_SRC)
         encoded = encode_spec(viz)
         resp = client.get(f"/view?spec={encoded}&renderer={renderer}")
         assert resp.status_code == 200
@@ -1077,27 +1075,11 @@ class TestShareAndView:
         assert renderer in resp.text.lower()
 
     @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
-    def test_view_dashboard_spec(self, client: TestClient, renderer: str):
-        from flexviz.spec import (
-            DashboardSpec,
-            FigureSpec,
-            InteractionState,
-            LayoutSpec,
-            TraceSpec,
-        )
-
-        ts1 = TraceSpec(
-            uid="t1", trace_type="line", backend_data={"x": "ts", "y": "val"}
-        )
-        ts2 = TraceSpec(uid="t2", trace_type="histogram", backend_data={"x": "val"})
-        dash_spec = DashboardSpec(
-            figures=[
-                FigureSpec(uid="f1", source="s", traces=[ts1]),
-                FigureSpec(uid="f2", source="s", traces=[ts2]),
-            ],
-            state=InteractionState(),
-            layout=LayoutSpec(),
-        )
+    def test_view_dashboard_spec(self, client: TestClient, integ_df, renderer: str):
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_line(x="ts", y="val")
+        dash.add_figure().add_histogram(x="val")
+        dash_spec = dash.to_spec(source_name=_SRC)
         encoded = encode_spec(dash_spec)
         resp = client.get(f"/view?spec={encoded}&renderer={renderer}")
         assert resp.status_code == 200
@@ -1122,6 +1104,120 @@ class TestShareAndView:
         assert "renderer='echarts'" in resp.json()["detail"]
         assert "geo_histogram2d" in resp.json()["detail"]
         assert "Use 'plotly'" in resp.json()["detail"]
+
+
+# ===========================================================================
+# Trace validation of decoded specs
+# ===========================================================================
+
+
+def _heatmap_spec_data(df: pl.DataFrame, trace_type: str) -> dict:
+    fig = Figure(df)
+    if trace_type == "corr_heatmap":
+        fig.add_corr_heatmap(columns=["ts", "val"])
+    elif trace_type == "geo_histogram2d":
+        fig.add_geo_histogram2d(lat="val", lon="ts")
+    else:
+        fig.add_histogram2d(x="ts", y="val")
+    return fig.to_spec(source=_SRC).model_dump(mode="json")
+
+
+def _encode_raw(data: dict) -> str:
+    """Encode a spec dict as ``encode_spec`` does, without parsing it first,
+    so a test can send a spec that the models refuse."""
+    compressed = gzip.compress(json.dumps(data).encode(), compresslevel=9)
+    return base64.urlsafe_b64encode(compressed).rstrip(b"=").decode()
+
+
+def _view_and_share(client: TestClient, data: dict) -> list:
+    return [
+        client.get(f"/view?spec={_encode_raw(data)}"),
+        client.post("/share", json={"spec": data, "server_url": "http://testserver"}),
+    ]
+
+
+class TestDecodedSpecValidation:
+    """A hand-edited or imported spec skips ``Figure.to_spec()``, so /view and
+    /share build its traces: an invalid spec gets a 400 there, not a 500 at
+    /view or a share URL that fails later."""
+
+    @pytest.mark.parametrize(
+        ("trace_type", "display", "message"),
+        [
+            ("histogram2d", {"color_range": "nope"}, "color_range must be 'auto'"),
+            ("histogram2d", {"color_range": [5, 1]}, "min < max"),
+            ("histogram2d", {"color_norm": "sqrt"}, "color_norm must be one of"),
+            (
+                "histogram2d",
+                {"color_norm": "log", "color_range": [0, 10]},
+                "color_range must be above 0",
+            ),
+            (
+                "geo_histogram2d",
+                {"color_norm": "log", "color_range": [0, 10]},
+                "color_range must be above 0",
+            ),
+            ("corr_heatmap", {"color_norm": "log"}, "has no color_norm"),
+        ],
+        ids=[
+            "range_text",
+            "range_reversed",
+            "norm_sqrt",
+            "log_from_0",
+            "geo_log_from_0",
+            "corr_log",
+        ],
+    )
+    def test_invalid_display_returns_400(
+        self, client: TestClient, integ_df, trace_type, display, message
+    ):
+        data = _heatmap_spec_data(integ_df, trace_type)
+        data["figure"]["traces"][0]["display"].update(display)
+
+        for resp in _view_and_share(client, data):
+            assert resp.status_code == 400
+            detail = resp.json()["detail"]
+            assert detail.startswith("Invalid spec: ")
+            assert message in detail
+
+    def test_two_heatmaps_in_one_figure_return_400(self, client: TestClient, integ_df):
+        data = _heatmap_spec_data(integ_df, "histogram2d")
+        traces = data["figure"]["traces"]
+        traces.append({**traces[0], "uid": "second-heatmap"})
+
+        for resp in _view_and_share(client, data):
+            assert resp.status_code == 400
+            assert "at most one heatmap-like trace" in resp.json()["detail"]
+
+    def test_two_heatmaps_are_refused_at_dashboard_update(
+        self, client: TestClient, integ_df
+    ):
+        """FigureSpec runs the figure checks, so a posted spec gets them too."""
+        dash = Dashboard(integ_df)
+        dash.add_figure().add_histogram2d(x="ts", y="val")
+        spec = dash.to_spec(source_name=_SRC).model_dump(mode="json")
+        traces = spec["figures"][0]["traces"]
+        traces.append({**traces[0], "uid": "second-heatmap"})
+
+        resp = client.post(
+            "/dashboard/update",
+            json={"spec": spec, "event": {"type": "init", "force_update": True}},
+        )
+        assert resp.status_code == 422
+        assert "at most one heatmap-like trace" in resp.text
+
+    def test_view_renders_the_plotly_spelling_of_an_old_color_scale(
+        self, client: TestClient, integ_df
+    ):
+        """The page holds the spec the traces build, so the browser and every
+        request that echoes the spec see the name Plotly knows."""
+        data = _heatmap_spec_data(integ_df, "histogram2d")
+        data["figure"]["traces"][0]["display"]["color_scale"] = "viridis"
+
+        resp = client.get(f"/view?spec={encode_spec(parse_spec(data))}")
+        assert resp.status_code == 200
+        assert '"color_scale": "Viridis"' in resp.text
+        assert '"viridis"' not in resp.text
 
 
 # ===========================================================================

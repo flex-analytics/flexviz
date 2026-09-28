@@ -192,3 +192,11 @@ class TestCorrHeatmapSpec:
         trace = CorrHeatmap.from_trace_spec(spec)
         assert trace.color_scale == "Viridis"
         assert trace.color_range == (0.0, 1.0)
+
+    @pytest.mark.parametrize("color_norm", ["log", "linear"])
+    def test_spec_with_color_norm_raises(self, color_norm):
+        """Correlations lie in [-1, 1], so the trace has no color_norm."""
+        spec = CorrHeatmap(columns=["a", "b"]).to_trace_spec()
+        spec.display["color_norm"] = color_norm
+        with pytest.raises(ValueError, match="CorrHeatmap has no color_norm"):
+            CorrHeatmap.from_trace_spec(spec)

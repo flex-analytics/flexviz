@@ -16,14 +16,9 @@ Interaction loop
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from ..spec import DashboardSpec, FigureSpec
-from ..trace._hist_helpers import (
-    normalize_heatmap_color_norm,
-    normalize_heatmap_color_scale,
-)
 from .base import (
     AbstractAdapter,
     _in_async_context,
@@ -37,7 +32,6 @@ from .runtime import (
     theme_css,
 )
 
-_HEATMAP_STYLE_INVARIANT_ERROR = "Generated heatmap specs must include explicit color_scale and color_range defaults."
 _PLOTLY_MAP_TRACE_TYPES = {"geo_histogram2d", "geo_line"}
 
 
@@ -184,47 +178,6 @@ def _auto_show_legend(traces: list) -> bool:
     return bool(traces and traces[0].params.get("group_by"))
 
 
-def _plotly_heatmap_color_scale(ts: Any) -> str:
-    color_scale = ts.display.get("color_scale")
-    if color_scale is None:
-        raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
-    # An older shared spec can hold a lowercase name, and a decoded spec
-    # reaches this adapter without the trace validation.
-    return normalize_heatmap_color_scale(
-        color_scale, color_scale, trace_name=ts.trace_type
-    )
-
-
-def _plotly_heatmap_color_range(ts: Any) -> tuple[float, float] | str:
-    if "color_range" not in ts.display:
-        raise ValueError(_HEATMAP_STYLE_INVARIANT_ERROR)
-    color_range = ts.display["color_range"]
-    if color_range == "auto":
-        return "auto"
-    if not (isinstance(color_range, (list, tuple)) and len(color_range) == 2):
-        raise TypeError(
-            "heatmap color_range must be 'auto' or a (min, max) numeric tuple"
-        )
-    lo = float(color_range[0])
-    hi = float(color_range[1])
-    if not (math.isfinite(lo) and math.isfinite(hi)):
-        raise ValueError("heatmap color_range values must be finite numbers")
-    if lo >= hi:
-        raise ValueError("heatmap color_range must satisfy min < max")
-    return (lo, hi)
-
-
-def _check_plotly_heatmap_color_norm(
-    ts: Any, color_range: tuple[float, float] | str
-) -> None:
-    # The browser reads color_norm straight from the spec, and a decoded spec
-    # reaches this adapter without the trace validation.
-    color_norm = ts.display.get("color_norm")
-    if ts.trace_type == "corr_heatmap" and color_norm not in (None, "linear"):
-        raise ValueError("corr_heatmap color_norm must be 'linear'")
-    normalize_heatmap_color_norm(color_norm, color_range, trace_name=ts.trace_type)
-
-
 def _plotly_heatmap_trace_obj(ts: Any, name: str) -> dict:
     trace = {
         "uid": ts.uid,
@@ -233,11 +186,10 @@ def _plotly_heatmap_trace_obj(ts: Any, name: str) -> dict:
         "x": [],
         "y": [],
         "z": [],
-        "colorscale": _plotly_heatmap_color_scale(ts),
+        "colorscale": ts.display["color_scale"],
         "showlegend": False,
     }
-    color_range = _plotly_heatmap_color_range(ts)
-    _check_plotly_heatmap_color_norm(ts, color_range)
+    color_range = ts.display["color_range"]
     if color_range != "auto":
         trace["zmin"], trace["zmax"] = color_range
     return trace
@@ -252,13 +204,12 @@ def _plotly_choropleth_trace_obj(ts: Any, name: str) -> dict:
         "locations": [],
         "z": [],
         "featureidkey": "id",
-        "colorscale": _plotly_heatmap_color_scale(ts),
+        "colorscale": ts.display["color_scale"],
         "showlegend": False,
         "showscale": True,
         "marker": {"line": {"width": 0}},
     }
-    color_range = _plotly_heatmap_color_range(ts)
-    _check_plotly_heatmap_color_norm(ts, color_range)
+    color_range = ts.display["color_range"]
     if color_range != "auto":
         trace["zmin"], trace["zmax"] = color_range
     return trace
