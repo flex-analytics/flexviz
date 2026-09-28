@@ -840,12 +840,16 @@ class TestLiveBrushCube:
 
         x1, x2, y, _ = _drag_coords(page)
         n_before = len(bodies)
-        _drag_with_live_wait(page, x1, x2, y, _target_y(page))
+        unfiltered = _target_y(page)
+        _drag_with_live_wait(page, x1, x2, y, unfiltered)
         page.wait_for_timeout(1_000)
 
         types = [b.get("event", {}).get("type") for b in bodies[n_before:]]
         assert types == ["cube_request"], "the commit is local"
         assert page.evaluate("_fvCubeStore.size") == 1
+        # The target shows the rows of the brushed range: some, not none or all.
+        filtered = sum(v or 0 for v in _target_y(page))
+        assert 0 < filtered < sum(v or 0 for v in unfiltered)
 
     def test_mixed_dashboard_commit_posts_once(self, page: Page, server_port: int):
         """A box-plot target is not cube-capable: it holds its pre-drag state
