@@ -1115,6 +1115,8 @@ def _heatmap_spec_data(df: pl.DataFrame, trace_type: str) -> dict:
     fig = Figure(df)
     if trace_type == "corr_heatmap":
         fig.add_corr_heatmap(columns=["ts", "val"])
+    elif trace_type == "geo_histogram2d":
+        fig.add_geo_histogram2d(lat="val", lon="ts")
     else:
         fig.add_histogram2d(x="ts", y="val")
     return fig.to_spec(source=_SRC).model_dump(mode="json")
@@ -1150,9 +1152,21 @@ class TestDecodedSpecValidation:
                 {"color_norm": "log", "color_range": [0, 10]},
                 "color_range must be above 0",
             ),
+            (
+                "geo_histogram2d",
+                {"color_norm": "log", "color_range": [0, 10]},
+                "color_range must be above 0",
+            ),
             ("corr_heatmap", {"color_norm": "log"}, "has no color_norm"),
         ],
-        ids=["range_text", "range_reversed", "norm_sqrt", "log_from_0", "corr_log"],
+        ids=[
+            "range_text",
+            "range_reversed",
+            "norm_sqrt",
+            "log_from_0",
+            "geo_log_from_0",
+            "corr_log",
+        ],
     )
     def test_invalid_display_returns_400(
         self, client: TestClient, integ_df, trace_type, display, message
