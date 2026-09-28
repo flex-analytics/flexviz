@@ -1385,12 +1385,9 @@ function _fvAxisFromRef(gd, ref) {
   return gd._fullLayout[ref.charAt(0) + 'axis' + ref.slice(1)] || null;
 }
 
-// p2r matches Plotly's own range units, which are log10 on a log axis (same
-// as axis.range). handleSelecting and the cube snap want data units instead,
-// so use p2d there, as Plotly's own makeFillRangeItems does. Only a log axis
-// switches: p2r already returns data-comparable units for date and category,
-// so the result is a Plotly range only for a non-log axis; a log axis gets
-// the data value on purpose.
+// Selections hold data units. p2r gives those on a linear, date or category
+// axis, but log10 (Plotly's range unit) on a log axis, so a rendered log axis
+// uses p2d instead, as Plotly's own makeFillRangeItems does.
 function _fvPixelToSelectionUnit(axis, px) {
   return axis.type === 'log' ? axis.p2d(px) : axis.p2r(px);
 }
@@ -1436,10 +1433,10 @@ function _fvEditReplayEventData(figUid, range, gd) {
 // category position falls inside the outline's span on the category axis.
 // Vertical bars carry the category on x, horizontal on y. The axis's d2c maps
 // each rendered label to the SAME coordinate space as the outline range
-// (_fvPixelToSelectionUnit in _fvOutlineDataRange, which is p2r for a
-// category or linear bar axis), so membership is uniform across a category
-// axis (string labels) and a linear axis (numeric labels — drawn at their
-// value, the cross-filter target). Each point mirrors the shape
+// (_fvPixelToSelectionUnit in _fvOutlineDataRange: p2r on a category or
+// linear bar axis, p2d on a log one), so membership is uniform across a
+// category axis (string labels) and a linear or log axis (numeric labels —
+// drawn at their value, the cross-filter target). Each point mirrors the shape
 // _categoricalSelectionPredicates consumes (pt.data[catKey][pt.pointNumber]).
 function _fvCoveredBarPoints(figUid, range, gd, source) {
   const isHorizontal = source.params && source.params.orientation === 'h';
