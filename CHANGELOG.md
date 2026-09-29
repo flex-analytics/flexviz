@@ -29,6 +29,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Changed
 
+- `flexviz` requires the `flexviz-polars` release that ships with it, because
+  the line envelope kernel now bins the free axis like the display kernel.
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
   another origin. For the deprecated ECharts renderer, `height` now sets only

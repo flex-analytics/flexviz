@@ -88,3 +88,22 @@ def test_build_cubes(benchmark, frame: pl.DataFrame) -> None:
     active = ActiveSource(figure_uid="fig_a", column="g", trace_uid=bar.uid)
     cubes, trace_cubes = benchmark(engine.build_cubes, infos, {}, [], active)
     assert cubes and trace_cubes == {hist.uid: 0}
+
+
+def test_build_line_cubes(benchmark, frame: pl.DataFrame) -> None:
+    """Histogram source (a range free axis), line target: the envelope cube,
+    wrapper and kernel together."""
+    hist = Histogram(x="z", bins=50)
+    line = TRACES["line-minmax"]()
+    engine = FlexEngine(
+        backend_lf=LFQueryBuilder(frame),
+        scalable_traces={hist.uid: hist, line.uid: line},
+        source_name="bench",
+    )
+    infos = [
+        TraceInfo(hist.uid, hist._axes, hist.trace_type, figure_uid="fig_a"),
+        TraceInfo(line.uid, line._axes, line.trace_type, figure_uid="fig_b"),
+    ]
+    active = ActiveSource(figure_uid="fig_a", column="z", trace_uid=hist.uid)
+    cubes, trace_cubes = benchmark(engine.build_cubes, infos, {}, [], active)
+    assert cubes and trace_cubes == {line.uid: 0}

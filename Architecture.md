@@ -773,9 +773,12 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 └── fixed_line_envelope2d(y_expr, free_expr, x_lo, x_hi, free_lo, free_hi, n_buckets, p) → pl.Expr
       One-pass exact argmin/argmax-by-y envelope per (x bucket, free bin) cell.
       Returns Struct{bucket, free_bin, y_min, x_at_ymin, y_max, x_at_ymax} with
-      one row per non-empty cell, sorted by (free_bin, bucket). Bin arithmetic is
-      the cube's natural floor on both axes, no epsilon and no clip; ties keep the
-      first row in scan order. Used by `cube.py` to build the `line_env` measure.
+      one row per non-empty cell, sorted by (free_bin, bucket). The x bucket is a
+      natural floor, no epsilon and no clip, so the domain max has a degenerate
+      top bucket; the free bin is the display kernel's rule (round epsilon,
+      clamp to p - 1). Rows outside either domain are dropped. Ties keep the
+      first row in scan order. Used by `cube.py` to build the `line_env` measure
+      from the raw free value.
 
 flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
       Bucket pass that keeps the pairing: one row per non-empty bucket, in bucket
@@ -1077,15 +1080,16 @@ implemented.
 
 A cube is one target trace's grouping × the brushed (free) axis, holding decomposable partial
 measures. A **range** free axis (hist / box / line source) is binned to a **fixed resolution
-P = 2048** over the source figure's viewport domain; a **box2d** free axis (a 2-D box-select on a
-hist2d source) is two range axes binned at **P₂D = 128** each and packed into one composite
-`free_bin`; a **categorical** free axis (bar/pie/treemap source) is the exact tuple of
-label/path column values — no binning, no domain, dictionary-encoded in sorted order. Fixed P —
-rather than Mosaic's pixel resolution — makes the cube width-independent,
-content-addressable, and shareable across sessions; shipping the whole cube to the browser
-(rather than slicing it server-side per frame) makes every drag step a local computation. Rows
-with an out-of-domain or null free/target value are **filtered, not clipped** during the build;
-a range value exactly at the domain max lands in the degenerate top bin `P`.
+P = 2048** over the source figure's viewport domain. A **box2d** free axis (a 2-D box-select on a hist2d source) is two range axes binned at
+**P₂D = 128** each and packed into one composite `free_bin`. A **categorical** free axis
+(bar/pie/treemap source) is the exact tuple of label/path column values — no binning, no domain,
+dictionary-encoded in sorted order. A resolution fixed by the spec — rather than Mosaic's pixel
+resolution — makes the cube width-independent, content-addressable, and shareable across
+sessions; shipping the whole cube to the browser (rather than slicing it server-side per frame)
+makes every drag step a local computation. Rows with an out-of-domain or null free/target value
+are **filtered, not clipped** during the build. A range free axis bins like the display kernel
+(`_fixed_hist_bin_expr`: round-epsilon, top clamp), so a value on a bin edge lands in the bin the
+source draws it in and the domain max lands in the top bin `P-1`.
 
 #### Measures (partial algebra)
 
@@ -1167,8 +1171,16 @@ range **or categorical (bar)** selection geometry:
    e.g. a numeric label dtype the client cannot see), so one incapable target never pins the
    gesture to mouseup-only. A failed/timed-out request degrades the gesture to mouseup-only.
 2. **Each further `plotly_selecting`** (rAF-throttled, superseded frames dropped) re-slices
-   locally. A range source snaps the in-progress range outward to the P-grid
-   (`lo_bin = floor((a-lo)/span·P)` clamped to `[0, P]`); a categorical source matches the
+   locally. A range source selects each bin whose center, as the display draws it, the brush covers, ends included
+   (`fvCubeSnap` / `snap_brush`) — Plotly's highlight rule for bars. A frame whose brush covers no center shows the targets'
+   pre-gesture state (in overlay mode without the live fg presentation), and its commit clears
+   the figure's selection. A box2d source does the same
+   per axis. The commit writes the **kernel's bin boundaries**, not
+   `lo + k·step`: the first edge is `lo`, an inner edge the first double the kernel puts in bin
+   `k`, found by bisecting the doubles around the float `lo + (k − 1e-9)·step` along the kernel's own rule (a bounded search: near a zero crossing billions of doubles share one value of `v − lo`), and
+   a brush reaching the top bin ends at the domain top with `closed="both"`, otherwise
+   `closed="left"`. So a committed range keeps exactly the values the display counts in its bars. The redrawn selection box sits on the same bin
+   edges, so Plotly's highlight stays on the committed bins. A categorical source matches the
    covered labels to category codes (deduped per frame on the sorted label set). The slice
    accumulates partials per composite target key over CSR row ranges and finalizes per the
    measure table; per-trace delta synthesis mirrors the Python `_to_update`/`_to_grouped_update`
@@ -1284,17 +1296,19 @@ flips the renderer into the ghost+fg presentation before any selection exists
 **Temporal sources.** Temporal free axes (and temporal binned target dims) carry a physical
 `unit` in the FVCube header — `us`/`ms` for `Datetime`, `day` for `Date`, derived from the
 schema dtype by the engine; `Datetime("ns")` and `Time` gate to no cube (the string round-trip
-is µs-precision). `unit:"day"` switches to an **integer-day snap grid** (`day_grid`: width
-`w = max(1, ceil(span/2048))` whole days, `P' = ceil(span/w)` bins, header carries `w`/`p_eff`)
-so `YYYY-MM-DD` edges round-trip bit-exactly; `us`/`ms` keep P=2048. Client side: temporal
+is µs-precision). Every unit uses the same grid as a numeric axis; edges may fall between two
+days. Client side: temporal
 viewports key as self-consistent epoch-ms tokens (never sent to the server — the server parses
 the original date strings via the schema dtype in `_cube_axis_range`); the snap grid is adopted
 from the decoded header; drag ranges convert through `fvTemporalToPhysical` (manual UTC parse,
-never bare `Date.parse`); commits emit snapped `closed="left"` **string** ranges rendered by
-`fvPhysicalToTemporal` — the edge is ceil-ed to an integral count of the unit, which preserves
-integer membership of the half-open range and makes the string parse back exactly through
-`_typed_range_bounds`. The `plotly_selected` echo guard converts both sides to physical before
-its half-bin comparison.
+never bare `Date.parse`); commits emit snapped **string** ranges rendered by
+`fvPhysicalToTemporal`, which ceils: the ceil of an exact edge is the first whole unit the
+kernel puts in its bin, and a closed upper edge (the top bin) rounds down to the last unit. So
+an integer row stays in the bar the display counts it in, and the string parses back exactly
+through `_typed_range_bounds`. The selection box keeps each
+bin edge's time of day instead (a µs string): a whole-day edge can pass the center of a bar
+narrower than two days. The `plotly_selected` echo guard converts both sides to physical before
+its half-bin comparison (half the source step).
 
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
 column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. Most
@@ -1344,7 +1358,7 @@ them.
   | hist | 1-D range, P=2048 over the viewport (or server-resolved full) domain; continuous + temporal (`us`/`ms`/`day` physical units — see “Temporal sources” below; `Datetime("ns")`/`Time` gate to no cube) |
   | box | 1-D range over the `data_col` (same shape/gates as hist) |
   | line | 1-D range over the **x** column only (line selection is x-only — see below); P=2048; source geometry independent of `downsample` |
-  | hist2d | **box2d**: two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` (`bin_y·(P₂D+1) + bin_x`); per-axis domains resolved by the engine; a rectangle brush slices a 2-D sub-grid |
+  | hist2d | **box2d**: two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` (`bin_y·P₂D + bin_x`); per-axis domains resolved by the engine; a rectangle brush slices a 2-D sub-grid |
   | bar / pie | categorical over the ordered label columns (`axis_range` ignored — label geometry is viewport-independent) |
   | treemap | categorical over the full `path` |
 

@@ -73,7 +73,7 @@ source free-axis kinds can feed each target measure.**
 
 Notes on the two `❌` columns:
 - **`box2d × {line_env, corr}` (#47):** a feasibility-free but real **cell-count / wire-size
-  wall** — a box2d `line_env` cube is `n_x_buckets × (P₂D+1)²` ≈ `500 × 129²` ≈ 8.3M cells per
+  wall** — a box2d `line_env` cube is `n_x_buckets × P₂D²` ≈ `500 × 128²` ≈ 8.2M cells per
   line. Gated off; those targets fall back to the per-commit recompute. Tracked in #47.
 - **`median` / `n_unique` / box quantiles:** mathematically not decomposable over a partition —
   never cube targets, by any source.

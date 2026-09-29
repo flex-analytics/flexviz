@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 
 import polars as pl
 import pytest
@@ -83,9 +84,11 @@ from flexviz.cube import (
     FreeAxisSpec,
     MeasureSpec,
     TargetDimSpec,
+    _fixed_hist_bin_expr,
     build_cube,
     encode_cube_bundle,
     encode_fvcube,
+    snap_brush,
 )
 from flexviz.trace.bin_grid import snap_range
 from tests.test_browser import (
@@ -487,26 +490,55 @@ def _committed_edges(page: Page, column: str) -> tuple[float, float]:
     return clause["range"][0], clause["range"][1]
 
 
+def _free_grid(
+    df: pl.DataFrame, col: str = "a", bins: int = _P
+) -> tuple[float, float, int]:
+    """An unzoomed source's free axis ``(lo, hi, p)``: *bins* over the full
+    data domain."""
+    lo, hi = float(df[col].min()), float(df[col].max())
+    return lo, hi, bins
+
+
+def _committed_bins(
+    edge_lo: float, edge_hi: float, grid: tuple[float, float, int]
+) -> tuple[int, int]:
+    """The bins a commit covers. Its edges must be the kernel's boundaries of
+    those bins, bit-equal to ``snap_brush``."""
+    lo, hi, p = grid
+    lo_bin, hi_bin, e_lo, e_hi, _closed = snap_brush(lo, hi, p, edge_lo, edge_hi)
+    assert 0 <= lo_bin <= hi_bin < p
+    assert (edge_lo, edge_hi) == (e_lo, e_hi)
+    return lo_bin, hi_bin
+
+
+def _bins_commit_edges(
+    bins: list[int], grid: tuple[float, float, int]
+) -> tuple[float, float]:
+    """The committed edges of a gesture's snapped bins (its ``lastBins``)."""
+    lo, hi, p = grid
+    step = (hi - lo) / p
+    brush = (lo + (bins[0] + 0.25) * step, lo + (bins[1] + 0.75) * step)
+    return snap_brush(lo, hi, p, *brush)[2:4]
+
+
 def _reference_slice_counts(
-    df: pl.DataFrame, edge_lo: float, edge_hi: float, free_col: str = "a"
+    df: pl.DataFrame,
+    edge_lo: float,
+    edge_hi: float,
+    free_col: str = "a",
+    bins: int = _P,
 ) -> list[float]:
     """Python reference for the target hist: ``flexviz.cube`` build + slice
     over the snapped bins recovered from committed ``closed="left"`` edges
     (the §8.2 parity property — identical to the legacy server recompute)."""
-    a_lo, a_hi = df[free_col].min(), df[free_col].max()
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
-    # Committed edges must lie exactly on the P-grid over the full domain.
-    assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-    assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+    grid = _free_grid(df, free_col, bins)
+    lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = df["b"].min(), df["b"].max()
     spec = CubeSpec(
         source_name="_reference",
         free=FreeAxisSpec(
-            column=free_col, kind="continuous", p=_P, domain=(a_lo, a_hi)
+            column=free_col, kind="continuous", p=grid[2], domain=grid[:2]
         ),
         target_dims=(
             TargetDimSpec(
@@ -536,18 +568,13 @@ def _reference_grouped_slice_counts(
     """Per-group variant of ``_reference_slice_counts``: a grouped cube
     (binned ``b`` × categorical *group_col*) built + sliced over the snapped
     bins recovered from committed ``closed="left"`` edges."""
-    a_lo, a_hi = df["a"].min(), df["a"].max()
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
-    assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-    assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+    grid = _free_grid(df)
+    lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = df["b"].min(), df["b"].max()
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=grid[2], domain=grid[:2]),
         target_dims=(
             TargetDimSpec(
                 column="b",
@@ -672,30 +699,23 @@ class TestLiveBrushCube:
         page.mouse.up()
         page.wait_for_timeout(800)
 
-        # Committed predicate: snapped to the P-grid, closed="left".
+        # Committed predicate: the kernel boundaries of the brushed bars.
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         assert len(sels) == 1
         clause = sels[0]["predicates"][0]["clauses"][0]
         assert clause["column"] == "a"
         assert clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
-
-        # Shared arithmetic (plan doc): bin(v) = floor((v-lo)/s*P),
-        # edge(b) = lo + b*s/P; committed range = [edge(lo_bin), edge(hi_bin+1)).
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        span = a_hi - a_lo
-        lo_bin = round((edge_lo - a_lo) / span * _P)
-        hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-        assert 0 <= lo_bin <= hi_bin <= _P
-        # The committed edges must lie exactly on the P-grid.
-        assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-        assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+        grid = _free_grid(df)
+        lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
         # Python reference: flexviz.cube build + slice over the same bins.
         b_lo, b_hi = df["b"].min(), df["b"].max()
         spec = CubeSpec(
             source_name="_cube_browser_auto_ref",
-            free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+            free=FreeAxisSpec(
+                column="a", kind="continuous", p=grid[2], domain=grid[:2]
+            ),
             target_dims=(
                 TargetDimSpec(
                     column="b",
@@ -761,12 +781,10 @@ class TestLiveBrushCube:
         lo, hi = clause["range"]
         # Unsnapped: an arbitrary pixel-derived range almost surely misses the
         # exact P-grid (probability ~0 of both edges landing on it).
-        df = _cube_df()
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        span = a_hi - a_lo
+        a_lo, a_hi, bars = _free_grid(_cube_df())
 
         def _on_grid(v: float) -> bool:
-            scaled = (v - a_lo) / span * _P
+            scaled = (v - a_lo) / (a_hi - a_lo) * bars
             return math.isclose(scaled, round(scaled), abs_tol=1e-6)
 
         assert not (_on_grid(lo) and _on_grid(hi)), (
@@ -4123,8 +4141,8 @@ class TestTemporalSourceCube:
         assert hi <= dt.datetime(2020, 1, 25)
 
     def test_date_source_commits_integer_day_edges(self, page: Page, server_port: int):
-        """A Date-typed source brush commits YYYY-MM-DD edges (the
-        integer-day snap grid) with full parity."""
+        """A Date-typed source brush commits YYYY-MM-DD edges (whole days,
+        ceil-ed from the kernel's bar boundaries) with full parity."""
         df = _temporal_browser_df("date")
         url = _temporal_dashboard_url(server_port, "_cube_browser_tsday", kind="date")
         bodies = _capture_updates(page)
@@ -4223,13 +4241,8 @@ class TestZoomKeyInterplayBrowser:
         assert types == ["cube_request"], types
 
         edge_lo, edge_hi = _committed_edges(page, "a")
-        span = zoom[1] - zoom[0]
-        # Edges lie exactly on the zoomed P-grid.
-        lo_bin = round((edge_lo - zoom[0]) / span * _P)
-        hi_bin = round((edge_hi - zoom[0]) / span * _P)
-        assert edge_lo == pytest.approx(zoom[0] + lo_bin * span / _P, abs=1e-9)
-        assert edge_hi == pytest.approx(zoom[0] + hi_bin * span / _P, abs=1e-9)
-        assert zoom[0] <= edge_lo < edge_hi <= zoom[1] + span / _P
+        # Edges are bin boundaries of the zoomed P-grid.
+        _committed_bins(edge_lo, edge_hi, (zoom[0], zoom[1], _P))
 
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         expr = _selection_expr(df, sels[0])
@@ -4331,7 +4344,8 @@ class TestZoomKeyInterplayBrowser:
         clause = by_fig[fig_uids[0]]["predicates"][0]["clauses"][0]
         assert clause["column"] == "a" and clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
-        assert 10.0 <= edge_lo < edge_hi <= 80.0 + (80.0 - 10.0) / _P
+        # The commit stays inside the zoomed grid, never past its top.
+        assert 10.0 <= edge_lo < edge_hi <= 80.0
         expected = _hist_counts_ref(df, expr_src & expr_third, "b", _TGT_BINS)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
@@ -4411,7 +4425,7 @@ class TestBoxLineSourceCube:
 
         # Committed client-side: one snapped closed="left" clause on "a".
         edge_lo, edge_hi = _committed_edges(page, "a")
-        expected = _reference_slice_counts(df, edge_lo, edge_hi, free_col="a")
+        expected = _reference_slice_counts(df, edge_lo, edge_hi, "a", bins=_P)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
 
@@ -4451,7 +4465,7 @@ class TestBoxLineSourceCube:
         ), "line commit must not carry a y-column clause"
 
         edge_lo, edge_hi = clause["range"]
-        expected = _reference_slice_counts(df, edge_lo, edge_hi, free_col="t")
+        expected = _reference_slice_counts(df, edge_lo, edge_hi, "t", bins=_P)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
 
@@ -4519,11 +4533,8 @@ def _reference_line_envelope(
     ``line_env`` build + ``slice_agg`` over the snapped bins recovered from the
     committed ``closed="left"`` edges, then expanded into the same
     ``{x, y}`` two-points-per-bucket shape the client emits."""
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
+    grid = _free_grid(df)
+    _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = float(df["b"].min()), float(df["b"].max())
     target_dims = [
@@ -4539,14 +4550,12 @@ def _reference_line_envelope(
         target_dims.append(TargetDimSpec(column="cat", kind="categorical"))
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=grid[2], domain=grid[:2]),
         target_dims=tuple(target_dims),
         measure=MeasureSpec(agg="line_env", value_col="a"),
     )
     result = build_cube(build_df.lazy(), spec)
-    sliced = result.slice_agg(
-        a_lo + lo_bin * span / _P, a_lo + (hi_bin + 1) * span / _P
-    )
+    sliced = result.slice_agg(edge_lo, edge_hi)
     if group_value is not None:
         sliced = sliced.filter(pl.col("cat") == group_value)
     sliced = sliced.sort("__bin__b")
@@ -5043,10 +5052,7 @@ class TestLineTargetCube:
                 return g && g.lastBins ? g.lastBins : null;
             }""")
         assert snap is not None, "expected an active live gesture mid-drag"
-        a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-        span = a_hi - a_lo
-        edge_lo = a_lo + snap[0] * span / _P
-        edge_hi = a_lo + (snap[1] + 1) * span / _P
+        edge_lo, edge_hi = _bins_commit_edges(snap, _free_grid(df))
         expected = _reference_line_envelope(df, edge_lo, edge_hi)
         assert len(expected["x"]) > 0
         _assert_xy_close(live_xy, expected)
@@ -5274,10 +5280,7 @@ class TestLineTargetCube:
                 return g && g.lastBins ? g.lastBins : null;
             }""")
         assert snap is not None
-        a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-        span = a_hi - a_lo
-        edge_lo = a_lo + snap[0] * span / _P
-        edge_hi = a_lo + (snap[1] + 1) * span / _P
+        edge_lo, edge_hi = _bins_commit_edges(snap, _free_grid(df))
 
         by_name = {t["name"]: t for t in children_mid}
         for gv in ("A", "B"):
@@ -5368,10 +5371,10 @@ def _reference_corr_matrix(
     """Python reference for the LIVE corr matrix: a ``flexviz.cube`` corr build
     + ``corr_matrix`` finalize over the committed ``closed="left"`` brush edges
     (== the client ``corrDeltaFromEntry`` path)."""
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
+    lo, hi, bars = _free_grid(df)
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=bars, domain=(lo, hi)),
         target_dims=(),
         measure=MeasureSpec(agg="corr", columns=tuple(columns)),
     )
@@ -5408,9 +5411,7 @@ def _snap_edges_from_gesture(page: Page, df: pl.DataFrame) -> tuple[float, float
             return g && g.lastBins ? g.lastBins : null;
         }""")
     assert snap is not None, "expected an active live gesture mid-drag"
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-    span = a_hi - a_lo
-    return a_lo + snap[0] * span / _P, a_lo + (snap[1] + 1) * span / _P
+    return _bins_commit_edges(snap, _free_grid(df))
 
 
 class TestCorrTargetCube:
@@ -5614,7 +5615,8 @@ class TestCorrTargetCube:
 # handleSelecting and so works for box2d unchanged. The tests below prove the
 # standard path (live updates + one cube_request) and the edit-drag replay.
 
-_BOX2D_P = 128
+_BOX2D_NX, _BOX2D_NY = 8, 6
+_BOX2D_P = 128  # the fixed per-axis grid of a box2d free axis
 
 
 def _box2d_df() -> pl.DataFrame:
@@ -5643,7 +5645,7 @@ def _box2d_dashboard_url(port: int, source_name: str, live_brush: str = "auto") 
 
     dash = Dashboard(df)
     dash.add_figure(title="Box2dSource").add_histogram2d(
-        x="a", y="b", x_bins=8, y_bins=6
+        x="a", y="b", x_bins=_BOX2D_NX, y_bins=_BOX2D_NY
     )
     dash.add_figure(title="Hist").add_histogram(x="c", bins=_TGT_BINS)
     dash.add_figure(title="Bar").add_bar(labels="g")
@@ -5664,17 +5666,6 @@ def _box2d_drag_coords(page: Page) -> dict:
         "width": box["width"],
         "height": box["height"],
     }
-
-
-def _edges_to_bins(lo: float, hi: float, dlo: float, dhi: float) -> tuple[int, int]:
-    """Recover the [lo_bin, hi_bin] inclusive bin range from snapped closed-left
-    edges over a P=128 grid (the committed edges are edge(lo_bin) and
-    edge(hi_bin+1) — do NOT re-snap them, which would add one bin)."""
-    span = dhi - dlo
-    lo_bin = round((lo - dlo) / span * _BOX2D_P)
-    hi_bin = round((hi - dlo) / span * _BOX2D_P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _BOX2D_P
-    return lo_bin, hi_bin
 
 
 def _reference_box2d_hist_counts(
@@ -5706,9 +5697,9 @@ def _reference_box2d_hist_counts(
         measure=MeasureSpec(agg="count"),
     )
     result = build_cube(df.lazy(), spec)
-    lx, hx = _edges_to_bins(ex[0], ex[1], a_lo, a_hi)
-    ly, hy = _edges_to_bins(ey[0], ey[1], b_lo, b_hi)
-    s = _BOX2D_P + 1
+    lx, hx = _committed_bins(ex[0], ex[1], (a_lo, a_hi, _BOX2D_P))
+    ly, hy = _committed_bins(ey[0], ey[1], (b_lo, b_hi, _BOX2D_P))
+    s = _BOX2D_P
     codes = []
     for by in range(ly, hy + 1):
         codes.extend(range(by * s + lx, by * s + hx + 1))
@@ -5828,15 +5819,8 @@ class TestBox2dSourceCube:
         ex = tuple(by_col["a"]["range"])
         ey = tuple(by_col["b"]["range"])
 
-        # The edges lie on the per-axis P=128 grid over the full domains.
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        b_lo, b_hi = df["b"].min(), df["b"].max()
-        for (lo, hi), (dlo, dhi) in ((ex, (a_lo, a_hi)), (ey, (b_lo, b_hi))):
-            span = dhi - dlo
-            klo = round((lo - dlo) / span * _BOX2D_P)
-            khi = round((hi - dlo) / span * _BOX2D_P)
-            assert lo == pytest.approx(dlo + klo * span / _BOX2D_P, abs=1e-9)
-            assert hi == pytest.approx(dlo + khi * span / _BOX2D_P, abs=1e-9)
+        # The edges are the kernel's bin boundaries of the P=128 grid over the
+        # full domains (_reference_box2d_hist_counts checks them).
 
         expected = _reference_box2d_hist_counts(df, ex, ey)
         assert 0 < sum(expected) < df.height
@@ -6541,3 +6525,138 @@ class TestTreeMapTargetCube:
         assert len(committed["values"]) == len(ref["values"])
         for got, want in zip(committed["values"], ref["values"]):
             assert got == pytest.approx(want, rel=1e-9, abs=1e-9), (got, want)
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: empty frames, header guard, source choice, snap parity
+# ---------------------------------------------------------------------------
+
+
+class TestCubeGridGuards:
+    def test_js_snap_matches_python_snap_brush(self, page: Page, server_port: int):
+        """fvCubeSnap and flexviz.cube.snap_brush agree bit for bit."""
+        url = _two_hist_dashboard_url(server_port, "_cube_snap_parity", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        cases = []
+        for lo, hi in (
+            (0.0, 100.0),
+            (-50.0, -10.25),
+            (0.0, 1.0),
+            (-1.0, 1.0),  # an edge next to zero
+            (1.6e15, 1.6e15 + 8.64e10),
+            # Past 2**53 a float skips whole µs.
+            (1.04e16, 1.04e16 + 1000.0),
+            (1.5778368e15, 2.534022144e17),
+        ):
+            for p in (1, 20, 2048):
+                step = (hi - lo) / p
+                for a, b in (
+                    (lo - 3 * step, hi + 3 * step),
+                    (lo + 0.5 * step, lo + 2.5 * step),
+                    (lo + 2.5 * step, lo + 0.5 * step),
+                    (lo + 0.25 * step, lo + 0.45 * step),
+                    (lo + (p - 0.5) * step, hi),
+                    (lo + 0.3 * step, lo + 0.3 * step),
+                ):
+                    cases.append([lo, hi, p, a, b])
+        # A zero span: a brush over lo covers every bar, one beside it none.
+        cases += [
+            [1e7, 1e7, 20, 1e7 - 0.01, 1e7 + 0.01],
+            [1e7, 1e7, 20, 1e7 + 0.1, 1e7 + 0.3],
+        ]
+        js = page.evaluate(
+            """(cases) => cases.map(([lo, hi, p, a, b]) => {
+                const s = fvCubeSnap([lo, hi], p, a, b);
+                return [s.loBin, s.hiBin, s.edgeLo, s.edgeHi, s.closed];
+            })""",
+            cases,
+        )
+        # A whole-valued double comes back as a Python int; float() restores it.
+        js = [
+            [lo_bin, hi_bin, float(e_lo), float(e_hi), c]
+            for lo_bin, hi_bin, e_lo, e_hi, c in js
+        ]
+        py = [list(snap_brush(*c)) for c in cases]
+        assert js == py
+
+    def test_temporal_commit_edges_are_the_kernel_bin_starts(
+        self, page: Page, server_port: int
+    ):
+        """A committed µs edge is the first whole µs the kernel puts in its
+        bin, so a restored selection keeps the rows the brush showed. The ceil
+        of lo + (k - eps) * step alone rounds to 0.25 µs near today's epochs
+        and lands about one edge in ten one µs low."""
+        from datetime import datetime, timedelta
+
+        url = _two_hist_dashboard_url(server_port, "_cube_unit_edges", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        rng = random.Random(7)
+        cases = []
+        for _ in range(300):
+            # A zoomed domain starts on a lattice point, rarely a whole µs.
+            lo = 1.7e15 + rng.randrange(10**11) + rng.choice((0.0, 0.25, 0.5))
+            hi = lo + rng.randrange(10**6, 10**13)
+            p = rng.choice((20, 37, 2048))
+            cases.append([lo, hi, p, rng.randrange(1, p - 1)])
+        edges = page.evaluate(
+            """(cases) => cases.map(([lo, hi, p, k]) => {
+                const step = (hi - lo) / p;
+                const a = lo + (k + 0.25) * step, b = lo + (k + 0.75) * step;
+                return _fvCubeCommitEdges(fvCubeSnap([lo, hi], p, a, b), 'us');
+            })""",
+            cases,
+        )
+        epoch = datetime(1970, 1, 1)
+        for (lo, hi, p, k), strs in zip(cases, edges):
+            e_lo, e_hi = (
+                (datetime.fromisoformat(s) - epoch) // timedelta(microseconds=1)
+                for s in strs
+            )
+            probe = pl.Series([e_lo - 1, e_lo, e_hi - 1, e_hi], dtype=pl.Float64)
+            bins = pl.select(_fixed_hist_bin_expr(pl.lit(probe), lo, hi, p, "b"))
+            assert bins.to_series().to_list() == [k - 1, k, k, k + 1], (lo, hi, p, k)
+
+    def test_commit_edges_past_exact_float_integers_return(
+        self, page: Page, server_port: int
+    ):
+        """Past 2**53 µs (the year 2255) a float skips whole µs. A 9999-12-31
+        sentinel puts even the first bar's upper edge there: the commit of a
+        brush over that bar must return, on the first µs of each bin."""
+        from datetime import datetime, timedelta
+
+        url = _two_hist_dashboard_url(server_port, "_cube_far_edges", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        lo, hi = 1.5778368e15, 2.534022144e17  # 2020-01-01, 9999-12-31 in µs
+        edges = page.evaluate(
+            """([lo, hi]) => {
+                const snap = fvCubeSnap([lo, hi], 20, lo, lo + 0.7 * (hi - lo) / 20);
+                return _fvCubeCommitEdges(snap, 'us');
+            }""",
+            [lo, hi],
+        )
+        _, _, _, e_hi, _ = snap_brush(lo, hi, 20, lo, lo + 0.7 * (hi - lo) / 20)
+        assert edges[0] == "2020-01-01 00:00:00.000000"
+        want = datetime(1970, 1, 1) + timedelta(microseconds=math.ceil(e_hi))
+        assert edges[1] == want.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    def test_constant_column_brush_selects_every_row(
+        self, page: Page, server_port: int
+    ):
+        """A constant column draws every bar on its one value. A narrow brush
+        over it highlights them all, so the commit must keep every row."""
+        df = pl.DataFrame({"a": [1e7] * 10, "b": [float(v) for v in range(10)]})
+        url = _two_hist_dashboard_url(server_port, "_cube_constant", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        _brush_commit(page, 0, 0.48, 0.52)
+        page.wait_for_timeout(300)
+        selections = page.evaluate("DASHBOARD_SPEC.state.selections")
+        assert len(selections) == 1
+        (clause,) = selections[0]["predicates"][0]["clauses"]
+        assert clause["range"] == [1e7, 1e7]
+        assert clause["closed"] == "both"
+        assert sum(_target_y(page)) == 10

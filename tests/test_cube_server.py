@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 from flexviz.cache import get_cache, get_cube_cache
-from flexviz.cube import decode_cube_bundle, decode_fvcube_header
+from flexviz.cube import decode_cube_bundle, decode_fvcube_header, snap_brush
 from flexviz.dashboard import Dashboard
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
@@ -213,22 +213,20 @@ def _direct_hist(
     return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
-def _snap(domain: tuple[float, float], a: float, b: float):
-    """Shared P=2048 snap arithmetic (plan doc, copied verbatim)."""
-    lo, hi = domain
-    s = hi - lo
+def _snap(free: dict, a: float, b: float):
+    """``snap_brush`` over a free block ``{"domain", "p"}`` for a brush that
+    ends below the top bin: ``(lo_bin, hi_bin, edge_lo, edge_hi)`` of a
+    ``closed="left"`` commit."""
+    lo, hi = free["domain"]
+    lo_bin, hi_bin, edge_lo, edge_hi, closed = snap_brush(lo, hi, free["p"], a, b)
+    assert closed == "left"
+    return lo_bin, hi_bin, edge_lo, edge_hi
 
-    def _bin(v: float) -> int:
-        return math.floor((v - lo) / s * _P)
 
-    def _edge(bin_idx: int) -> float:
-        return lo + bin_idx * s / _P
-
-    lo_bin = max(0, min(_P, _bin(a)))
-    hi_bin = max(0, min(_P, _bin(b)))
-    if hi_bin < lo_bin:
-        lo_bin, hi_bin = hi_bin, lo_bin
-    return lo_bin, hi_bin, _edge(lo_bin), _edge(hi_bin + 1)
+def _hist_free(lo: float, hi: float) -> dict:
+    """An unzoomed histogram source's free block: the fixed P grid over the
+    full data domain."""
+    return {"domain": [lo, hi], "p": _P}
 
 
 # ---------------------------------------------------------------------------
@@ -264,18 +262,14 @@ class TestDashboardCubeRequest:
         # target domain = full data domain of "b" + epsilon.
         a_lo, a_hi = df["a"].min(), df["a"].max()
         b_lo, b_hi = df["b"].min(), df["b"].max()
-        assert header["free"] == {
-            "kind": "continuous",
-            "p": _P,
-            "domain": [a_lo, a_hi],
-        }
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
         (dim,) = header["target_dims"]
         assert dim["name"] == "b"
         assert dim["bins"] == 12
         assert dim["domain"] == [b_lo, b_hi]
 
         # Slice the blob over a snapped brush.
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 12.3, 61.7)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 12.3, 61.7)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -955,15 +949,11 @@ class TestCategoricalSourceCubeRequest:
         blob = base64.b64decode(body["cubes"][body["trace_cubes"][tgt_uid]])
         header = decode_fvcube_header(blob)
         a_lo, a_hi = cat_df["a"].min(), cat_df["a"].max()
-        assert header["free"] == {
-            "kind": "continuous",
-            "p": _P,
-            "domain": [a_lo, a_hi],
-        }
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
         assert header["measure"] == {"agg": "sum", "value_col": "b"}
         (dim,) = header["target_dims"]
 
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 12.3, 61.7)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 12.3, 61.7)
         free_bin = _read_u32_col(blob, header, "free_bin")
         sub_code = _read_u32_col(blob, header, "sub")
         sums = _read_f64_col(blob, header, "sum")
@@ -1300,7 +1290,7 @@ class TestPassiveBaking:
 
         passive_expr = pl.col("cat").is_in(["alpha", "beta"])
         a_lo, a_hi = cat_df["a"].min(), cat_df["a"].max()
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.7, 68.3)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(_hist_free(a_lo, a_hi), 21.7, 68.3)
         active_expr = pl.col("a").is_between(edge_lo, edge_hi, closed="left")
 
         # --- count parity on the hist target ---
@@ -1582,9 +1572,7 @@ class TestZoomKeyInterplay:
         assert header["free"]["domain"] == [10.0, 80.0]
         (dim,) = header["target_dims"]
 
-        # Snap a brush on the ZOOMED grid (finer than the full-domain grid).
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((10.0, 80.0), 23.4, 57.8)
-        assert (80.0 - 10.0) / _P < (df["a"].max() - df["a"].min()) / _P
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 23.4, 57.8)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1633,7 +1621,7 @@ class TestZoomKeyInterplay:
         assert header["free"]["domain"] == [10.0, 80.0]
         (dim,) = header["target_dims"]
 
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((10.0, 80.0), 23.4, 57.8)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 23.4, 57.8)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1672,7 +1660,10 @@ class TestZoomKeyInterplay:
         assert calls["n"] == 1
         assert _cube_body(r1)["cubes"] == _cube_body(r2)["cubes"]
         header = decode_fvcube_header(base64.b64decode(_cube_body(r1)["cubes"][0]))
-        assert header["free"]["domain"] == [df["a"].min(), df["a"].max()]
+        assert (
+            header["free"]["domain"]
+            == _hist_free(df["a"].min(), df["a"].max())["domain"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1708,8 +1699,7 @@ class TestBoxLineRangeSources:
     def _slice_and_reference(self, df, blob, header, brush_lo, brush_hi):
         """Snapped cube slice vs the legacy snapped closed='left' recompute."""
         (dim,) = header["target_dims"]
-        domain = tuple(header["free"]["domain"])
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap(domain, brush_lo, brush_hi)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], brush_lo, brush_hi)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1869,10 +1859,6 @@ class TestBoxLineRangeSources:
 # ---------------------------------------------------------------------------
 
 
-_BOX2D_P = 128
-_BOX2D_S = _BOX2D_P + 1
-
-
 def _hist2d_source_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     """A hist2d(x=a, y=b) source figure; a hist(c) count target."""
     dash = Dashboard(df)
@@ -1883,17 +1869,8 @@ def _hist2d_source_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     return dash.to_spec(source_name=_SRC)
 
 
-def _snap_axis(domain: tuple[float, float], a: float, b: float, p: int = _BOX2D_P):
-    lo, hi = domain
-    s = (hi - lo) or 1.0
-
-    def _bin(v: float) -> int:
-        return max(0, min(p, math.floor((v - lo) / s * p)))
-
-    lo_b, hi_b = _bin(a), _bin(b)
-    if hi_b < lo_b:
-        lo_b, hi_b = hi_b, lo_b
-    return lo_b, hi_b, lo + lo_b * s / p, lo + (hi_b + 1) * s / p
+def _snap_axis(domain: tuple[float, float], a: float, b: float, p: int):
+    return snap_brush(domain[0], domain[1], p, a, b)
 
 
 class TestBox2dSourceCubeRequest:
@@ -1903,9 +1880,10 @@ class TestBox2dSourceCubeRequest:
         rectangle edges."""
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        lx, hx, ex0, ex1 = _snap_axis(dx, x_box[0], x_box[1])
-        ly, hy, ey0, ey1 = _snap_axis(dy, y_box[0], y_box[1])
-        s = header["free"]["p"] + 1
+        px = py = header["free"]["p"]
+        lx, hx, ex0, ex1, cx = _snap_axis(dx, x_box[0], x_box[1], px)
+        ly, hy, ey0, ey1, cy = _snap_axis(dy, y_box[0], y_box[1], py)
+        s = px
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__c")
         count = _read_u32_col(blob, header, "count")
@@ -1921,8 +1899,8 @@ class TestBox2dSourceCubeRequest:
                 sliced[tb] += n
         direct = _direct_hist(
             df,
-            pl.col("a").is_between(ex0, ex1, closed="left")
-            & pl.col("b").is_between(ey0, ey1, closed="left"),
+            pl.col("a").is_between(ex0, ex1, closed=cx)
+            & pl.col("b").is_between(ey0, ey1, closed=cy),
             "c",
             dim["domain"][0],
             dim["domain"][1],
@@ -2038,8 +2016,9 @@ class TestBox2dSourceCubeRequest:
         ]
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        _lx, _hx, ex0, ex1 = _snap_axis(dx, 30.0, 60.0)
-        _ly, _hy, ey0, ey1 = _snap_axis(dy, 10.0, 50.0)
+        px = py = header["free"]["p"]
+        _lx, _hx, ex0, ex1, _cx = _snap_axis(dx, 30.0, 60.0, px)
+        _ly, _hy, ey0, ey1, _cy = _snap_axis(dy, 10.0, 50.0, py)
         passive_expr = pl.col("a").is_between(20.0, 70.0, closed="left")
         sliced, _ = self._box2d_reslice_count(
             blob, header, (30.0, 60.0), (10.0, 50.0), df
@@ -2136,7 +2115,7 @@ class TestCorrTargetCubeRequest:
         assert header["measure"]["pairs"] == [[0, 1], [0, 2], [1, 2]]
         assert set(header["measure"]["means"]) == {"p", "q", "rr"}
         a_lo, a_hi = corr_df["a"].min(), corr_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_blob_reslice_matches_legacy_recompute(self, corr_client, corr_df):
         """The client-equivalent reslice (cube ``corr_matrix``) over a snapped
@@ -2163,7 +2142,7 @@ class TestCorrTargetCubeRequest:
                 base64.b64decode(body["cubes"][body["trace_cubes"][corr_uid]])
             )
             a_lo, a_hi = header["free"]["domain"]
-            _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
+            _lo_bin, _hi_bin, edge_lo, edge_hi = _snap(header["free"], 21.4, 73.6)
 
             # Client-equivalent: rebuild over the same (unfiltered) domain and
             # finalize the snapped slice through corr_matrix (== cube.js).
@@ -2171,7 +2150,9 @@ class TestCorrTargetCubeRequest:
                 corr_df.lazy(),
                 CubeSpec(
                     source_name=_CORR_SRC,
-                    free=FreeAxisSpec(column="a", p=_P, domain=(a_lo, a_hi)),
+                    free=FreeAxisSpec(
+                        column="a", p=header["free"]["p"], domain=(a_lo, a_hi)
+                    ),
                     target_dims=(),
                     measure=MeasureSpec(agg="corr", columns=tuple(cols)),
                 ),
@@ -2271,8 +2252,9 @@ class TestCorrTargetCubeRequest:
         )
         # Free domain stays the UNFILTERED full ``a`` domain.
         a_lo, a_hi = corr_df["a"].min(), corr_df["a"].max()
-        assert header["free"]["domain"] == [a_lo, a_hi]
-        _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 18.0, 82.0)
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
+        _lo_bin, _hi_bin, edge_lo, edge_hi = _snap(header["free"], 18.0, 82.0)
+        a_hi = header["free"]["domain"][1]
 
         passive_expr = pl.col("rr").is_between(0.0, 15.0)
         active_expr = pl.col("a").is_between(edge_lo, edge_hi, closed="left")
@@ -2407,7 +2389,7 @@ class TestHist2dTargetCubeRequest:
         assert header["target_dims"][0]["domain"] == [x_lo, x_hi]
         assert header["target_dims"][1]["domain"] == [y_lo, y_hi]
         a_lo, a_hi = hist2d_df["a"].min(), hist2d_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_serves_hist2d_cube_mean_header(self, hist2d_client, hist2d_df):
         spec = _hist2d_dashboard(hist2d_df, histfunc="mean", z="z")
@@ -2457,8 +2439,7 @@ class TestHist2dTargetCubeRequest:
         body = _cube_body(resp)
         blob = base64.b64decode(body["cubes"][body["trace_cubes"][tgt_uid]])
         header = decode_fvcube_header(blob)
-        a_lo, a_hi = header["free"]["domain"]
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 21.4, 73.6)
 
         free_bin = _read_u32_col(blob, header, "free_bin")
         bin_x = _read_u32_col(blob, header, "__bin__x")
@@ -2628,7 +2609,7 @@ class TestTreeMapTargetCubeRequest:
         assert header["measure"]["agg"] == "sum"
         assert header["measure"]["value_col"] == "val"
         a_lo, a_hi = treemap_df["a"].min(), treemap_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_second_identical_request_hits_cache(
         self, treemap_client, treemap_df, monkeypatch

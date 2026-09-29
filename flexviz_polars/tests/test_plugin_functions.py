@@ -164,12 +164,15 @@ def _envelope_reference(
     """Pure-Polars reference for fixed_line_envelope2d (contract J, plan
     2026-06-11 — pins kernel parity bit-exactly).
 
-    Shared-arithmetic semantics on BOTH axes:
-      * natural floor bin = ``floor((v - lo) / span * n)`` with true IEEE
-        division (see the divisor note below); NO epsilon, NO clip;
+    Bin semantics:
+      * x bucket = ``floor((v - lo) / span * n)`` with true IEEE division (see
+        the divisor note below); NO epsilon, NO clip, so a value exactly at the
+        domain max lands in the degenerate top bucket and buckets run
+        ``0..=n_buckets``;
+      * free bin = the display kernel's rule, ``floor((v - lo) * scale + eps)``
+        clamped to ``p - 1`` with ``scale = p / (hi - lo)`` (as flexviz's
+        ``_fixed_hist_bin_expr``), so free bins run ``0..p``;
       * rows outside ``[lo, hi]`` on either axis are FILTERED (not clipped);
-      * a value exactly at the domain max lands in the degenerate top bin, so
-        indices run ``0..=n_buckets`` and ``0..=p`` inclusive;
       * null or NaN in x, y, or free ⇒ row filtered;
       * ties (equal y within a cell): FIRST row in scan order wins for both
         min and max (Polars arg_min/arg_max return the first occurrence).
@@ -179,12 +182,12 @@ def _envelope_reference(
     float division *by a scalar* into multiplication by the reciprocal
     (e.g. ``49.0 / lit(49.0)`` → ``0.999…`` on frames with ≥2 rows), which
     is not IEEE division and can shift a domain-max value out of its
-    degenerate top bin. The kernel — like the JS client — uses true
-    division, and column/column division in Polars is true division too,
-    so dividing by a materialized column pins exactly that.
+    degenerate top bucket. The kernel — like the JS client — uses true
+    division for x, and column/column division in Polars is true division
+    too, so dividing by a materialized column pins exactly that.
     """
     x_span = (x_hi - x_lo) or 1.0
-    f_span = (free_hi - free_lo) or 1.0
+    f_scale = p / (free_hi - free_lo) if free_hi > free_lo else 0.0
     n_rows = len(x)
     return (
         pl.DataFrame(
@@ -193,7 +196,6 @@ def _envelope_reference(
                 "__y": y.cast(pl.Float64),
                 "__f": free.cast(pl.Float64),
                 "__xspan": pl.Series([x_span] * n_rows, dtype=pl.Float64),
-                "__fspan": pl.Series([f_span] * n_rows, dtype=pl.Float64),
             }
         )
         .lazy()
@@ -208,8 +210,9 @@ def _envelope_reference(
             .floor()
             .cast(pl.UInt32)
             .alias("bucket"),
-            ((pl.col("__f") - free_lo) / pl.col("__fspan") * float(p))
+            ((pl.col("__f") - free_lo) * f_scale + 1e-9)
             .floor()
+            .clip(0, p - 1)
             .cast(pl.UInt32)
             .alias("free_bin"),
         )
@@ -1302,8 +1305,9 @@ class TestFixedLineEnvelope2D:
         assert out.height == 2
         assert out["y_min"].to_list() == [1.0, 4.0]
 
-    def test_degenerate_top_bin_both_axes(self):
-        # Values exactly at the domain max land in bin n_buckets / bin p.
+    def test_domain_max_lands_in_the_top_bucket_and_free_bin(self):
+        # x == x_hi lands in the degenerate bucket n_buckets; free == free_hi
+        # is clamped into the top free bin p - 1, as the display kernel does.
         x = pl.Series("x", [0.0, 10.0, 10.0], dtype=pl.Float64)
         y = pl.Series("y", [1.0, 2.0, 3.0], dtype=pl.Float64)
         f = pl.Series("f", [0.0, 0.0, 5.0], dtype=pl.Float64)
@@ -1311,7 +1315,17 @@ class TestFixedLineEnvelope2D:
         cells = set(zip(out["bucket"].to_list(), out["free_bin"].to_list()))
         assert (0, 0) in cells
         assert (5, 0) in cells, "x == x_hi must land in degenerate bucket 5"
-        assert (5, 4) in cells, "free == free_hi must land in degenerate bin 4"
+        assert (5, 3) in cells, "free == free_hi must land in the top free bin 3"
+
+    def test_free_value_on_an_edge_lands_in_the_display_bin(self):
+        # Over [0, 0.2] in 4 bins, 0.15 sits on the edge of bin 3. A plain
+        # floor of 0.15 / 0.2 * 4 = 2.9999999999999996 drops it into bin 2;
+        # the display kernel's rule puts it in bin 3.
+        x = pl.Series("x", [5.0], dtype=pl.Float64)
+        y = pl.Series("y", [1.0], dtype=pl.Float64)
+        f = pl.Series("f", [0.15], dtype=pl.Float64)
+        out = _assert_envelope_parity(x, y, f, 0.0, 10.0, 0.0, 0.2, 4, 4)
+        assert out["free_bin"].to_list() == [3]
 
     def test_out_of_domain_filtered_not_clipped(self):
         # Out-of-domain rows vanish entirely instead of contaminating edge bins.

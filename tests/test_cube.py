@@ -19,6 +19,7 @@ from flexviz.cube import (
     FreeAxisSpec,
     MeasureSpec,
     TargetDimSpec,
+    _fixed_hist_bin_expr,
     build_cube,
     cube_content_key,
     decode_cube_bundle,
@@ -254,36 +255,167 @@ class TestFilterDontClip:
             (pl.col("active") >= lo) & (pl.col("active") < lo + width)
         ).height
         assert bin0 == direct0
-        # Bin P-1 covers [75 - width, 75): integer data has no values there, and
-        # rows above 75 must not be clipped into it.
+        # Bin P-1 covers [75 - width, 75] (the top clamp takes the domain
+        # max), and rows above 75 must not be clipped into it.
         top = cube.frame.filter(pl.col("free_bin") == p - 1)["count"].sum()
         direct_top = df.filter(
-            (pl.col("active") >= hi - width) & (pl.col("active") < hi)
+            (pl.col("active") >= hi - width) & (pl.col("active") <= hi)
         ).height
         assert top == direct_top
 
-    def test_domain_max_lands_in_degenerate_top_bin(self):
+    def test_domain_max_lands_in_top_bin(self):
         df = pl.DataFrame({"active": [0.0, 50.0, 100.0], "cat": ["a", "a", "a"]})
         cube = build_cube(df.lazy(), _cat_spec())
-        assert cube.frame.filter(pl.col("free_bin") == 64)["count"].sum() == 1
-        # A full-range slice includes the degenerate bin.
+        assert cube.frame["free_bin"].max() == 63
+        assert cube.frame.filter(pl.col("free_bin") == 63)["count"].sum() == 1
         assert cube.slice_count(0.0, 100.0)["count"].sum() == 3
 
-    def test_snap_clamps_to_degenerate_top_bin(self, df):
+    def test_integer_values_on_bin_edges_bin_like_the_kernel(self):
+        # 0..100 in 58 bins puts 50 on an edge, and float rounding moves that
+        # edge a hair above 50: a plain floor drops 50 one bin low, the
+        # kernel's round-epsilon keeps it.
+        hi, p = 100.0, 58
+        df = pl.DataFrame(
+            {"active": [float(v) for v in range(101)], "cat": ["a"] * 101}
+        )
+        spec = CubeSpec(
+            source_name="s",
+            free=FreeAxisSpec(column="active", p=p, domain=(0.0, hi)),
+            target_dims=(TargetDimSpec(column="cat", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        )
+        cube = build_cube(df.lazy(), spec)
+        got = dict(zip(cube.frame["free_bin"], cube.frame["count"]))
+        kernel = (
+            df.select(
+                pl.col("active")
+                .flexviz.fixed_hist(pl.lit(0.0), pl.lit(hi), n_bins=p)
+                .implode()
+            )
+            .item()
+            .struct.unnest()["count"]
+            .to_list()
+        )
+        assert [got.get(k, 0) for k in range(p)] == kernel
+
+    def test_snap_is_nearest_edge(self, df):
         cube = build_cube(df.lazy(), _cat_spec())
-        assert cube._snap(0.0, 100.0) == (0, 64)
-        assert cube._snap(100.0, 100.0) == (64, 64)
-        assert cube._snap(-10.0, 200.0) == (0, 64)
-        # Reversed endpoints swap, as before.
-        assert cube._snap(100.0, 0.0) == (0, 64)
+        # 64 bins over [0, 100]: the step is 1.5625.
+        assert cube._snap(0.0, 100.0) == (0, 63)
+        assert cube._snap(-10.0, 200.0) == (0, 63)
+        assert cube._snap(100.0, 0.0) == (0, 63)
+        # Covers the center of bin 0 only.
+        assert cube._snap(0.5, 1.2) == (0, 0)
+        # Covers no bin center: an empty snap.
+        lo_bin, hi_bin = cube._snap(0.1, 0.5)
+        assert hi_bin < lo_bin
+
+    def test_zero_span_snap_covers_every_bar_or_none(self):
+        # A constant column draws every bar on lo: a brush over lo selects
+        # all of them, however narrow, and a brush beside it selects none.
+        from flexviz.cube import snap_brush
+
+        v = 1e7
+        assert snap_brush(v, v, 20, v - 0.01, v + 0.01) == (0, 19, v, v, "both")
+        lo_bin, hi_bin, *_ = snap_brush(v, v, 20, v + 0.1, v + 0.3)
+        assert hi_bin < lo_bin
+
+    def test_brush_end_on_a_bar_center_includes_that_bar(self):
+        # Plotly's box selection includes a point on its edge, so a brush
+        # from center to center highlights both bars, at either end.
+        from flexviz.cube import snap_brush
+
+        assert snap_brush(0.0, 4.0, 4, 0.5, 1.5)[:2] == (0, 1)
+        assert snap_brush(0.0, 4.0, 4, 1.5, 0.5)[:2] == (0, 1)
+        assert snap_brush(0.0, 4.0, 4, 1.5, 1.5)[:2] == (1, 1)
+        # A center as the display draws it, (i + 0.5) * step + lo, can carry
+        # float noise: bar 1 of 20 over [0, 1] sits at 0.07500000000000001.
+        step = 1.0 / 20
+        c1, c3 = (1 + 0.5) * step + 0.0, (3 + 0.5) * step + 0.0
+        assert snap_brush(0.0, 1.0, 20, c1, 0.1)[:2] == (1, 1)
+        assert snap_brush(0.0, 1.0, 20, 0.1, c3)[:2] == (2, 3)
+
+    def test_edge_next_to_zero_is_found_in_few_steps(self):
+        # Near a zero crossing billions of doubles share one value of v - lo,
+        # so the first double of bin 10 must be searched, not walked to.
+        from flexviz.cube import snap_brush
+
+        lo_bin, hi_bin, e_lo, _, _ = snap_brush(-1.0, 1.0, 20, 0.02, 0.08)
+        assert (lo_bin, hi_bin) == (10, 10)
+
+        def kernel_bin(v: float) -> int:
+            return math.floor((v + 1.0) * 10.0 + 1e-9)
+
+        assert kernel_bin(e_lo) == 10
+        assert kernel_bin(math.nextafter(e_lo, -math.inf)) == 9
+
+    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Int64])
+    def test_committed_edges_keep_the_kernel_rows(self, dtype):
+        # Values packed around every edge, on the column's own value grid: a
+        # committed range keeps exactly the rows the kernel counts in its bars.
+        # The float edge lo + (k - eps) * step alone can put a value one ulp
+        # (or, for a large integer, one unit) on the wrong side.
+        from flexviz.cube import snap_brush
+        from flexviz.predicates import predicates_to_expr
+        from flexviz.spec import ClauseFilter, SelectionPredicate
+
+        rng = np.random.default_rng(7)
+        for _ in range(40):
+            p = int(rng.choice([3, 7, 20, 2048]))
+            span = float(rng.choice([1.0, rng.uniform(1e-3, 1e4), 3e10]))
+            # The last choice is a domain across zero.
+            lo = float(rng.choice([0.0, rng.uniform(-1e3, 1e3), 1.7e15, -span / 2]))
+            if dtype == pl.Int64:
+                lo, span = float(math.floor(lo)), float(math.floor(span) + p)
+            hi = lo + span
+            step = (hi - lo) / p
+            vals = [lo, hi]
+            for k in range(1, min(p, 50)):
+                for e in (lo + k * step, lo + (k - 1e-9) * step):
+                    if dtype == pl.Int64:
+                        vals += [float(math.floor(e) + d) for d in (-1, 0, 1)]
+                    else:
+                        vals += [
+                            e,
+                            math.nextafter(e, -math.inf),
+                            math.nextafter(e, math.inf),
+                        ]
+            df = pl.DataFrame({"a": pl.Series(vals).cast(dtype)})
+            df = df.filter(pl.col("a").is_between(lo, hi))
+            bins = df.select(_fixed_hist_bin_expr(pl.col("a"), lo, hi, p, "b"))["b"]
+            kernel = (
+                df.select(
+                    pl.col("a")
+                    .flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=p)
+                    .implode()
+                )
+                .item()
+                .struct.unnest()["count"]
+                .to_list()
+            )
+            assert bins.value_counts().sort("b")["count"].to_list() == [
+                c for c in kernel if c
+            ]
+            for _ in range(10):
+                k = int(rng.integers(0, min(p, 50)))
+                m = int(rng.integers(k, min(p, 50)))
+                lo_bin, hi_bin, e_lo, e_hi, closed = snap_brush(
+                    lo, hi, p, lo + (k + 0.25) * step, lo + (m + 0.75) * step
+                )
+                if hi_bin < lo_bin:
+                    continue
+                clause = ClauseFilter(column="a", range=(e_lo, e_hi), closed=closed)
+                pred = SelectionPredicate(clauses=[clause])
+                got = df.select(predicates_to_expr([pred], df.schema))[:, 0]
+                assert got.equals(bins.is_between(lo_bin, hi_bin)), (lo, hi, p, k, m)
 
 
 class TestFixedHistParity:
     def test_binned_target_matches_fixed_hist_kernel(self):
-        # Same setup hist.py produces: hi = axis_hi + 1e-10 epsilon, integer
-        # values on every visual bin boundary, plus values exactly at every
-        # internal bin edge of the (lo, hi, n) grid.
-        lo, hi, n = 0.0, 100.0 + 1e-10, 10
+        # Integer values, one of them (50) a hair below a bin edge after
+        # float rounding, plus values exactly at every internal bin edge of
+        # the (lo, hi, n) grid.
+        lo, hi, n = 0.0, 100.0, 58
         step = (hi - lo) / n
         values = [float(v) for v in range(101)]
         values += [lo + k * step for k in range(1, n)]
@@ -1119,17 +1251,17 @@ class TestFVCubeCodec:
         b = build_cube(hostile.lazy(), _measure_spec(agg))
         _assert_rebuild_equivalent(encode_fvcube(a, "k"), encode_fvcube(b, "k"))
 
-    def test_degenerate_top_bin_survives_round_trip(self):
+    def test_top_bin_survives_round_trip(self):
         df = pl.DataFrame({"active": [0.0, 50.0, 100.0], "cat": ["a", "a", "a"]})
         cube = build_cube(df.lazy(), _cat_spec())
         blob = encode_fvcube(cube, "k")
         header = decode_fvcube_header(blob)
         free_bin = _read_u32_col(blob, header, "free_bin")
-        assert 64 in free_bin  # bin == P present in the encoded rows
-        # A reslice reaching the domain max includes the degenerate bin…
+        assert 63 in free_bin  # the domain max is in the top bin P-1
+        # A reslice reaching the domain max includes the top bin…
         full = self._reslice(blob, cube, 0.0, 100.0)
         assert sum(full.values()) == 3
-        # …and a reslice stopping short of it does not.
+        # …and a reslice ending before its center does not.
         partial = self._reslice(blob, cube, 0.0, 99.0)
         assert sum(partial.values()) == 2
 
@@ -1618,10 +1750,7 @@ class TestTemporalUnits:
         header = decode_fvcube_header(blob)
         assert header["free"]["kind"] == "temporal"
         assert header["free"]["unit"] == unit
-        if unit == "day":
-            assert "w" in header["free"] and "p_eff" in header["free"]
-        else:
-            assert "w" not in header["free"]
+        assert header["free"]["p"] == 2048
 
     def test_ns_not_supported_by_temporal_unit(self):
         from flexviz.cube import temporal_unit
@@ -1630,31 +1759,24 @@ class TestTemporalUnits:
         assert temporal_unit(pl.Time) is None
         assert temporal_unit(pl.Float64) is None
 
-    def test_day_grid_short_span_unit_width(self):
-        from flexviz.cube import day_grid
-
-        # span < 2048 days ⇒ w = 1, P' = span (whole days).
-        w, p_eff = day_grid(0.0, 364.0, 2048)
-        assert w == 1
-        assert p_eff == 364
-
-    def test_day_grid_long_span_integer_width(self):
-        from flexviz.cube import day_grid
-
-        # span 10000 days ⇒ w = ceil(10000/2048) = 5, P' = ceil(10000/5) = 2000.
-        w, p_eff = day_grid(0.0, 10_000.0, 2048)
-        assert w == 5
-        assert p_eff == 2000
-        # Every snap edge lo + k*w is an integer day by construction.
-
     @pytest.mark.parametrize(
-        "unit,span_days", [("us", 365), ("ms", 365), ("day", 365), ("day", 9000)]
+        "unit,span_days,p",
+        [
+            ("us", 365, 2048),
+            ("ms", 365, 2048),
+            ("day", 365, 2048),
+            ("day", 9000, 2048),
+            # Histogram-sized grids put fractional-day edges between the days.
+            ("day", 365, 20),
+            ("day", 100, 20),
+        ],
     )
-    def test_slice_membership_equals_string_predicate(self, unit, span_days):
-        """§8.2 parity per unit: a cube slice over snapped bins selects
-        exactly the rows the committed (rendered-string, closed="left")
-        predicate selects through _typed_range_bounds — bit-exact counts."""
-        from flexviz.cube import day_grid
+    def test_slice_membership_equals_string_predicate(self, unit, span_days, p):
+        """§8.2 parity per unit: for a brush over bins k..m, the cube slice
+        selects exactly the rows the committed string predicate selects
+        through _typed_range_bounds — for every lower edge k and for a brush
+        up to the top bin (closed="both")."""
+        from flexviz.cube import snap_brush
         from flexviz.predicates import predicates_to_expr
         from flexviz.spec import ClauseFilter, SelectionPredicate
 
@@ -1663,7 +1785,7 @@ class TestTemporalUnits:
         spec = CubeSpec(
             source_name="src",
             free=FreeAxisSpec(
-                column="t", kind="temporal", p=2048, domain=(lo, hi), unit=unit
+                column="t", kind="temporal", p=p, domain=(lo, hi), unit=unit
             ),
             target_dims=(
                 TargetDimSpec(column="b", kind="binned", bins=12, domain=(0.0, 100.0)),
@@ -1671,49 +1793,40 @@ class TestTemporalUnits:
             measure=MeasureSpec(agg="count"),
         )
         result = build_cube(df.lazy(), spec)
-
-        if unit == "day":
-            w, p_eff = day_grid(lo, hi, 2048)
-        else:
-            w, p_eff = (hi - lo) / 2048, 2048
-
-        # Snap a brush to [lo_bin, hi_bin] (roughly the middle half).
-        lo_bin = p_eff // 4
-        hi_bin = (3 * p_eff) // 4
-        edge_lo = lo + lo_bin * w
-        edge_hi = lo + (hi_bin + 1) * w
-        sliced = (
-            result.frame.filter(pl.col("free_bin").is_between(lo_bin, hi_bin))[
-                "count"
-            ].sum()
-            or 0
-        )
-
-        str_lo = _physical_to_temporal_str(edge_lo, unit)
-        str_hi = _physical_to_temporal_str(edge_hi, unit)
-        if unit == "day":
-            # Integer-day grid: the strings round-trip the edges bit-exactly.
-            assert date.fromisoformat(str_lo) == date(1970, 1, 1) + timedelta(
-                days=edge_lo
+        step = (hi - lo) / p
+        brushes = [(k, min(k + p // 4, p - 1)) for k in range(0, p, max(1, p // 20))]
+        brushes.append((p // 2, p - 1))
+        for k, m in brushes:
+            # A brush covering the centers of bins k..m.
+            lo_bin, hi_bin, e_lo, e_hi, closed = snap_brush(
+                lo, hi, p, lo + (k + 0.25) * step, lo + (m + 0.75) * step
             )
-            assert date.fromisoformat(str_hi) == date(1970, 1, 1) + timedelta(
-                days=edge_hi
+            assert (lo_bin, hi_bin) == (k, m)
+            sliced = (
+                result.frame.filter(pl.col("free_bin").is_between(lo_bin, hi_bin))[
+                    "count"
+                ].sum()
+                or 0
             )
-        pred = SelectionPredicate(
-            clauses=[ClauseFilter(column="t", range=(str_lo, str_hi), closed="left")]
-        )
-        direct = df.filter(predicates_to_expr([pred], df.schema)).height
-        assert sliced == direct
-        assert 0 < sliced < df.height
+            # Mirrors _fvCubeCommitEdges: a closed top edge rounds down.
+            str_lo = _physical_to_temporal_str(e_lo, unit)
+            str_hi = _physical_to_temporal_str(
+                math.floor(e_hi) if closed == "both" else e_hi, unit
+            )
+            pred = SelectionPredicate(
+                clauses=[
+                    ClauseFilter(column="t", range=(str_lo, str_hi), closed=closed)
+                ]
+            )
+            direct = df.filter(predicates_to_expr([pred], df.schema)).height
+            assert sliced == direct, (k, m)
 
-    def test_day_degenerate_top_bin(self):
-        """A row at the exact domain max lands in the degenerate top bin
-        P' and a slice reaching it picks the row up."""
-        from flexviz.cube import day_grid
-
+    def test_day_top_bin_clamps(self):
+        """A row at the exact domain max lands in the top bin P-1 and a slice
+        reaching it picks the row up."""
         df = _temporal_df("day", span_days=365)
         lo, hi = _physical_domain(df, "t")
-        _w, p_eff = day_grid(lo, hi, 2048)
+        top_bin = 2047
         spec = CubeSpec(
             source_name="src",
             free=FreeAxisSpec(
@@ -1725,9 +1838,9 @@ class TestTemporalUnits:
             measure=MeasureSpec(agg="count"),
         )
         result = build_cube(df.lazy(), spec)
-        assert result.frame["free_bin"].max() == p_eff
+        assert result.frame["free_bin"].max() == top_bin
         n_max_rows = df.filter(pl.col("t").to_physical().cast(pl.Float64) == hi).height
-        top = result.frame.filter(pl.col("free_bin") == p_eff)["count"].sum()
+        top = result.frame.filter(pl.col("free_bin") == top_bin)["count"].sum()
         assert top == n_max_rows > 0
 
     def test_temporal_binned_target_dim_carries_unit_and_bins_physical(self):
@@ -1774,9 +1887,10 @@ def _line_env_reference(
     """Pure-Polars build reference for the line envelope (replicated from
     ``flexviz_polars/tests/test_plugin_functions.py::_envelope_reference``).
 
-    Shared-arithmetic semantics on BOTH axes: natural floor bin, NO epsilon,
-    NO clip, out-of-domain rows FILTERED, degenerate top bins (``0..=n``
-    inclusive), null/NaN rows filtered, first-row-in-scan-order tie wins.
+    The x bucket bins with a natural floor, NO epsilon, NO clip (degenerate
+    top bucket ``n``); the free axis bins like the display kernel
+    (``_fixed_hist_bin_expr``, top bin ``p-1``). Out-of-domain rows are
+    FILTERED, null/NaN rows filtered, first-row-in-scan-order tie wins.
 
     The span divisors are materialized as REAL COLUMNS: Polars rewrites float
     division *by a scalar* into multiplication by the reciprocal, which is
@@ -1809,10 +1923,9 @@ def _line_env_reference(
             .floor()
             .cast(pl.UInt32)
             .alias("bucket"),
-            ((pl.col("__f") - free_lo) / pl.col("__fspan") * float(p))
-            .floor()
-            .cast(pl.UInt32)
-            .alias("free_bin"),
+            _fixed_hist_bin_expr(pl.col("__f"), free_lo, free_hi, p, "free_bin").cast(
+                pl.UInt32
+            ),
         )
         .group_by("bucket", "free_bin")
         .agg(
@@ -1870,8 +1983,8 @@ def line_df() -> pl.DataFrame:
     # x sweeps [0, 100) with sub-integer jitter; y is a distinct-valued
     # permutation (no y ties — quantized order == exact order, ulp-bound
     # comparisons stay row-stable); free covers [0, 100). Tail rows pin edge
-    # cases: domain-max x AND free (both degenerate top bins), out-of-domain
-    # x, and null/NaN y (all filtered or binned per the shared arithmetic).
+    # cases: domain-max x (the degenerate top bucket) AND free (the top free
+    # bin), out-of-domain x, and null/NaN y (all filtered or binned).
     n = 4096
     x = [float(i % 100) + (i % 7) * 0.01 for i in range(n)]
     y = [((i * 2641) % 4096) * 0.0001 + 0.05 for i in range(n)]
@@ -1919,6 +2032,7 @@ class TestLineEnvelope:
                 column="free",
                 columns=("free", "x"),
                 kind="box2d",
+                p=8,
                 domains=((0.0, 100.0), (0.0, 100.0)),
             ),
             target_dims=(
@@ -1981,9 +2095,9 @@ class TestLineEnvelope:
         ).select("__bin__x", "free_bin", "y_min", "x_at_ymin", "y_max", "x_at_ymax")
         got = cube.frame.sort(["free_bin", "__bin__x"]).select(want.columns)
         assert got.equals(want)
-        # Degenerate top bins on both axes are present (x == 100, free == 100).
+        # x == 100 is the degenerate top bucket; free == 100 is top bin P-1.
         assert cube.frame["__bin__x"].max() == 32
-        assert cube.frame["free_bin"].max() == 64
+        assert cube.frame["free_bin"].max() == 63
 
     def test_grouped_build_equals_per_group_reference(self, line_df):
         gdf = line_df.with_columns(
@@ -2112,11 +2226,9 @@ class TestLineEnvelope:
         assert row["x_at_ymax"] == expected_x
 
     def test_day_free_axis_full_range_slice(self):
-        """unit="day" free axis: integer-day grid bins (degenerate bin P'),
+        """unit="day" free axis: the top bin takes the domain max, and the
         full-range combine matches the exact per-bucket envelope (y integers
         ⇒ f32-exact; x within bucket_width/65535)."""
-        from flexviz.cube import day_grid
-
         n = 244
         base = date(2020, 1, 1)
         df = pl.DataFrame(
@@ -2138,10 +2250,8 @@ class TestLineEnvelope:
             measure=MeasureSpec(agg="line_env", value_col="y"),
         )
         cube = build_cube(df.lazy(), spec)
-        w, p_eff = day_grid(lo, hi, 2048)
-        assert (w, p_eff) == (1, 60)
-        # Domain-max rows land in the degenerate day bin P'.
-        assert cube.frame["free_bin"].max() == p_eff
+        # Domain-max rows land in the top bin P-1.
+        assert cube.frame["free_bin"].max() == 2047
         out = cube.slice_agg(lo, hi).sort("__bin__x")
         exact = (
             df.with_columns(pl.Series("__span", [10.0] * df.height))
@@ -2490,7 +2600,7 @@ def corr_df() -> pl.DataFrame:
     x = rng.normal(5.0, 2.0, n)
     y = rng.normal(-3.0, 4.0, n) + 0.3 * x
     z = rng.normal(0.0, 1.0, n) - 0.5 * x
-    # free covers [0, 100); a few tail rows pin the domain-max degenerate bin.
+    # free covers [0, 100).
     free = [float((i * 37) % 100) for i in range(n)]
     return pl.DataFrame({"x": x, "y": y, "z": z, "free": free})
 
@@ -2527,6 +2637,7 @@ class TestCorrMeasureValidation:
                 column="free",
                 columns=("free", "x"),
                 kind="box2d",
+                p=8,
                 domains=((0.0, 100.0), (0.0, 50.0)),
             ),
             target_dims=(),
@@ -2879,10 +2990,9 @@ class TestCorrContentKey:
 # 2-D box free axis (contract H — hist2d source, composite CSR free bin)
 # ---------------------------------------------------------------------------
 
-from flexviz.cube import box2d_composite_stride
 
-_BOX2D_P = 128
-_BOX2D_S = _BOX2D_P + 1
+_BOX2D_PX = _BOX2D_PY = 128
+_BOX2D_S = _BOX2D_PX
 
 
 def _box2d_spec(
@@ -2890,7 +3000,7 @@ def _box2d_spec(
     value_col: str | None = None,
     x_domain: tuple[float, float] = (0.0, 100.0),
     y_domain: tuple[float, float] = (0.0, 50.0),
-    p: int = _BOX2D_P,
+    p: int = _BOX2D_PX,
 ) -> CubeSpec:
     return CubeSpec(
         source_name="s",
@@ -2908,13 +3018,14 @@ def _box2d_spec(
 
 @pytest.fixture()
 def box2d_df() -> pl.DataFrame:
-    # x ∈ [0,100), y ∈ [0,50), a value column tracking x; some rows pin each
-    # axis's degenerate top bin (x==100 / y==50).
+    # x ∈ [0,100), y ∈ [0,50), a value column tracking x; some rows sit on
+    # each axis's domain max (x==100 / y==50), which the top clamp puts in the
+    # top cell.
     n = 5_000
     x = [float((i * 37) % 100) for i in range(n)]
     y = [float((i * 53) % 50) for i in range(n)]
     val = [float((i * 11) % 200) for i in range(n)]
-    # A few rows exactly on each domain max → the degenerate top bins.
+    # A few rows exactly on each domain max → the top cells.
     x += [100.0, 100.0, 50.0]
     y += [25.0, 50.0, 50.0]
     val += [1.0, 2.0, 3.0]
@@ -2966,10 +3077,6 @@ class TestBox2dValidation:
                 column="x", kind="categorical", columns=("x",), domains=((0, 1), (0, 1))
             )
 
-    def test_box2d_composite_stride(self):
-        assert box2d_composite_stride(_BOX2D_P) == 129
-        assert box2d_composite_stride(2048) == 2049
-
 
 class TestBox2dBuildAndSlice:
     @pytest.mark.parametrize("agg", ["count", "mean"])
@@ -2992,10 +3099,10 @@ class TestBox2dBuildAndSlice:
         cube = build_cube(box2d_df.lazy(), spec)
         (lx, hx), (ly, hy) = cube._snap_box2d(20.0, 70.0, 10.0, 40.0)
         # Recover the snapped closed-left rectangle edges.
-        x_lo = 0.0 + lx / _BOX2D_P * 100.0
-        x_hi = 0.0 + (hx + 1) / _BOX2D_P * 100.0
-        y_lo = 0.0 + ly / _BOX2D_P * 50.0
-        y_hi = 0.0 + (hy + 1) / _BOX2D_P * 50.0
+        x_lo = 0.0 + lx / _BOX2D_PX * 100.0
+        x_hi = 0.0 + (hx + 1) / _BOX2D_PX * 100.0
+        y_lo = 0.0 + ly / _BOX2D_PY * 50.0
+        y_hi = 0.0 + (hy + 1) / _BOX2D_PY * 50.0
         sliced = cube.slice_agg_box2d(20.0, 70.0, 10.0, 40.0)
         got = sliced["value"].item() if sliced.height else None
         want = _direct_box2d_agg(box2d_df, agg, x_lo, x_hi, y_lo, y_hi)
@@ -3015,10 +3122,10 @@ class TestBox2dBuildAndSlice:
         )
         cube = build_cube(box2d_df.lazy(), spec)
         (lx, hx), (ly, hy) = cube._snap_box2d(30.0, 65.0, 15.0, 35.0)
-        x_lo = 20.0 + lx / _BOX2D_P * 60.0
-        x_hi = 20.0 + (hx + 1) / _BOX2D_P * 60.0
-        y_lo = 10.0 + ly / _BOX2D_P * 35.0
-        y_hi = 10.0 + (hy + 1) / _BOX2D_P * 35.0
+        x_lo = 20.0 + lx / _BOX2D_PX * 60.0
+        x_hi = 20.0 + (hx + 1) / _BOX2D_PX * 60.0
+        y_lo = 10.0 + ly / _BOX2D_PY * 35.0
+        y_hi = 10.0 + (hy + 1) / _BOX2D_PY * 35.0
         sliced = cube.slice_agg_box2d(30.0, 65.0, 15.0, 35.0)
         got = sliced["value"].item() if sliced.height else None
         want = _direct_box2d_agg(box2d_df, agg, x_lo, x_hi, y_lo, y_hi)
@@ -3027,14 +3134,14 @@ class TestBox2dBuildAndSlice:
         else:
             assert got == pytest.approx(want, rel=1e-9)
 
-    def test_degenerate_top_bins_each_axis(self, box2d_df):
+    def test_top_bins_clamp_each_axis(self, box2d_df):
         spec = _box2d_spec("count")
         cube = build_cube(box2d_df.lazy(), spec)
-        # A brush reaching both domain maxima selects the degenerate top bins
-        # (bin == P on each axis) — the composite index P*S + P must be present.
-        (_lx, hx), (_ly, hy) = cube._snap_box2d(100.0, 100.0, 50.0, 50.0)
-        assert hx == _BOX2D_P and hy == _BOX2D_P
-        top_code = _BOX2D_P * _BOX2D_S + _BOX2D_P
+        # A brush over both top cells selects bin n-1 on each axis, and the
+        # (x==100, y==50) row is clamped into that top cell.
+        (_lx, hx), (_ly, hy) = cube._snap_box2d(99.9, 100.0, 49.9, 50.0)
+        assert hx == _BOX2D_PX - 1 and hy == _BOX2D_PY - 1
+        top_code = (_BOX2D_PY - 1) * _BOX2D_S + _BOX2D_PX - 1
         codes = cube.frame["free_bin"].to_list()
         assert top_code in codes  # the (x==100, y==50) row landed in the top cell
         # Slicing the full rectangle conserves the total count.
@@ -3053,7 +3160,7 @@ class TestBox2dBuildAndSlice:
     def test_composite_free_bin_is_u32_range(self, box2d_df):
         cube = build_cube(box2d_df.lazy(), _box2d_spec("count"))
         codes = cube.frame["free_bin"].to_list()
-        assert all(0 <= c <= _BOX2D_S * _BOX2D_S - 1 for c in codes)
+        assert all(0 <= c <= _BOX2D_PX * _BOX2D_PY - 1 for c in codes)
 
 
 class TestBox2dCodec:
@@ -3064,7 +3171,7 @@ class TestBox2dCodec:
         free_bin = _read_u32_col(blob, header, "free_bin")
         count = _read_u32_col(blob, header, "count")
         (lx, hx), (ly, hy) = cube._snap_box2d(x[0], x[1], y[0], y[1])
-        s = header["free"]["p"] + 1
+        s = header["free"]["p"]
         codes = set()
         for by in range(ly, hy + 1):
             row = by * s

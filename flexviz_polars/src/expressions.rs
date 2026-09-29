@@ -84,7 +84,8 @@ struct FixedHistKwargs {
 const FIXED_HIST_ROUND_EPS: f64 = 1e-9;
 
 /// Per-axis bin scale for the 2D binners (`fixed_hist2d`, its rayon twin, and
-/// `fixed_hist2d_reduce`): `nb / (hi - lo)`, which gives the same bins as the
+/// `fixed_hist2d_reduce`) and the free axis of `fixed_line_envelope2d`:
+/// `nb / (hi - lo)`, which gives the same bins as the
 /// 1D `fixed_hist` (that kernel takes its `count_degenerate` branch first).
 /// The `.min(max_idx)` clamp at every call site folds a value at `hi` into
 /// the top bin, so the scale needs no span pad. A pad in absolute data units
@@ -1482,11 +1483,13 @@ fn fixed_hist2d(inputs: &[Series], kwargs: FixedHist2DKwargs) -> PolarsResult<Se
 // fixed_line_envelope2d — one-pass exact argmin/argmax-by-y per
 // (x bucket, free bin) cell (cube line-envelope target, issue #36).
 //
-// Bin arithmetic is the cube *shared arithmetic* on BOTH axes (not the
-// fixed_hist epsilon arithmetic): natural floor `floor((v - lo) / span * n)`
-// with NO epsilon and NO clip — out-of-domain rows are filtered, and a value
-// exactly at the domain max lands in the degenerate top bin, so indices run
-// 0..=n_buckets and 0..=p inclusive. Null/NaN x, y, or free ⇒ row filtered.
+// The x bucket is the cube *shared arithmetic*: natural floor
+// `floor((v - lo) / span * n)` with NO epsilon and NO clip, so a value exactly
+// at the domain max lands in the degenerate top bucket and buckets run
+// 0..=n_buckets. The free bin is the display kernel's rule (`count_value`):
+// `floor((v - lo) * scale + eps)` clamped to p - 1, so it is the bar the
+// display draws the value in and free bins run 0..p. Out-of-domain rows are
+// filtered on both axes. Null/NaN x, y, or free ⇒ row filtered.
 // Ties (equal y within a cell): the FIRST row in scan order wins for both
 // min and max (strict comparisons) — deterministic.
 //
@@ -1571,24 +1574,24 @@ fn envelope_scan(
     p: usize,
 ) -> PolarsResult<EnvelopeAcc> {
     let stride = n_buckets + 1; // buckets 0..=n_buckets (degenerate top bin)
-    let Some(n_cells) = stride.checked_mul(p + 1) else {
+    let Some(n_cells) = stride.checked_mul(p) else {
         polars_bail!(
             InvalidOperation:
-            "fixed_line_envelope2d: (n_buckets + 1) * (p + 1) overflows usize"
+            "fixed_line_envelope2d: (n_buckets + 1) * p overflows usize"
         );
     };
     let mut acc = EnvelopeAcc::new(n_cells);
 
-    // Shared arithmetic: floor((v - lo) / span * n) with true IEEE division —
-    // matching the JS client's `/` bit-exactly. (Polars' own scalar division,
-    // as in cube.py's _free_bin_expr, is multiply-by-reciprocal and can differ
-    // by 1 ulp at exact bin edges; the Polars test reference forces true
-    // division via a materialized span column.) A degenerate (lo == hi)
-    // domain admits only v == lo, which bins to 0.
+    // x: floor((v - lo) / span * n) with true IEEE division — matching the JS
+    // client's `/` bit-exactly. (Polars' own division by a scalar is
+    // multiply-by-reciprocal and can differ by 1 ulp at exact bin edges; the
+    // Polars test reference forces true division via a materialized span
+    // column.) A degenerate (lo == hi) domain admits only v == lo, which bins
+    // to 0. The free bin uses `hist2d_axis_scale`, as the display kernel does.
     let x_span = if x_hi > x_lo { x_hi - x_lo } else { 1.0 };
-    let f_span = if f_hi > f_lo { f_hi - f_lo } else { 1.0 };
     let nb_f64 = n_buckets as f64;
-    let p_f64 = p as f64;
+    let f_scale = hist2d_axis_scale(f_lo, f_hi, p);
+    let max_bf = p - 1;
 
     let mut visit = |xv: f64, yv: f64, fv: f64| {
         // Filter, don't clip: NaN fails these range checks too, so NaN in any
@@ -1596,10 +1599,10 @@ fn envelope_scan(
         if !(xv >= x_lo && xv <= x_hi && fv >= f_lo && fv <= f_hi) || yv.is_nan() {
             return;
         }
-        // In-domain ⇒ the ratio is in [0, 1] exactly, so bx <= n_buckets and
-        // bf <= p (degenerate top bins included) — idx is always in bounds.
+        // In-domain ⇒ the x ratio is in [0, 1] exactly, so bx <= n_buckets,
+        // and bf is clamped to p - 1 — idx is always in bounds.
         let bx = ((xv - x_lo) / x_span * nb_f64).floor() as usize;
-        let bf = ((fv - f_lo) / f_span * p_f64).floor() as usize;
+        let bf = (((fv - f_lo) * f_scale + FIXED_HIST_ROUND_EPS) as usize).min(max_bf);
         acc.update(bf * stride + bx, xv, yv);
     };
 
@@ -1713,7 +1716,7 @@ fn fixed_line_envelope2d(
     let mut x_at_ymin = Vec::with_capacity(n_out);
     let mut y_max = Vec::with_capacity(n_out);
     let mut x_at_ymax = Vec::with_capacity(n_out);
-    for bf in 0..=kwargs.p {
+    for bf in 0..kwargs.p {
         for bx in 0..stride {
             let idx = bf * stride + bx;
             if acc.seen[idx] {

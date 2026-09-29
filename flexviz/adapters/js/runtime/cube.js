@@ -155,8 +155,7 @@ function fvTemporalToPhysical(value, unit) {
 // unchanged (lo: v >= e ⟺ v >= ceil(e); hi open: v < e ⟺ v < ceil(e)) and
 // the string then represents the bound exactly — the server's
 // _typed_range_bounds parses it back bit-exactly (§8.2 round-trip). unit
-// "day" renders YYYY-MM-DD (edges are integer days by the day_grid
-// construction); us/ms render µs-precision datetimes.
+// "day" renders YYYY-MM-DD; us/ms render µs-precision datetimes.
 function fvPhysicalToTemporal(value, unit) {
   if (unit === 'day') {
     return new Date(Math.ceil(value) * 86400000).toISOString().slice(0, 10);
@@ -185,28 +184,6 @@ function fvPhysicalToEpochMs(value, unit) {
   if (unit === 'us') return value / 1000;
   if (unit === 'day') return value * 86400000;
   return value; // 'ms'
-}
-
-// JS mirror of Python's day_grid (contract G): integer-day snap grid for
-// unit:"day" free axes — w whole days per bin, P' = ceil(span/w) bins.
-function fvCubeDayGrid(lo, hi, p) {
-  const span = hi - lo;
-  const w = Math.max(1, Math.ceil(span / p));
-  return { w, pEff: Math.max(0, Math.ceil(span / w)) };
-}
-
-// Day-grid snap: same shape as fvCubeSnap but over the integer-day grid
-// (width w, count pEff) — all arithmetic exact over integer days.
-function fvCubeSnapDay(lo, w, pEff, a, b) {
-  let loBin = Math.max(0, Math.min(pEff, Math.floor((a - lo) / w)));
-  let hiBin = Math.max(0, Math.min(pEff, Math.floor((b - lo) / w)));
-  if (hiBin < loBin) { const t = loBin; loBin = hiBin; hiBin = t; }
-  return {
-    loBin,
-    hiBin,
-    edgeLo: lo + loBin * w,
-    edgeHi: lo + (hiBin + 1) * w,
-  };
 }
 
 // Mirror of the trace classes' overlay_style for the engine's active-selection
@@ -340,8 +317,7 @@ fvCacheReset = function () {
 // Server-resolved full-data free blocks seen in decoded headers, keyed by
 // (source, column, p). Lets a later gesture on the same unzoomed axis snap
 // even before its own cube response lands. Each record carries the
-// {domain, unit, w, p_eff} subset of the header free block (unit/w/p_eff
-// null/undefined for plain continuous axes).
+// {domain, unit} subset of the header free block.
 const _fvCubeFreeDomains = new Map();
 
 function fvCubeRememberFreeDomain(sourceName, column, p, free) {
@@ -349,8 +325,6 @@ function fvCubeRememberFreeDomain(sourceName, column, p, free) {
   _fvCubeFreeDomains.set(JSON.stringify([sourceName, column, p]), {
     domain: [free.domain[0], free.domain[1]],
     unit: free.unit || null,
-    w: free.w,
-    p_eff: free.p_eff,
   });
 }
 
@@ -422,24 +396,9 @@ function decodeFVCube(bytes) {
   }
 
   // CSR offsets over the free_bin-sorted rows: rows of bin b are
-  // binStart[b] .. binStart[b+1]-1. Range kinds span b in 0..P inclusive
-  // (degenerate top bin P included), hence P+2 slots — P being the
-  // EFFECTIVE bin count (p_eff for an integer-day grid, p otherwise); a
-  // categorical free axis has exactly one bin per category tuple (no
-  // degenerate bin). A box2d free axis (contract H) has composite bins
-  // by*S + bx with S = p+1, so every index 0..S²-1 is reachable ⇒ S² + 1
-  // slots (the prefix-sum entry indexes every composite bin).
-  let slots;
-  if (header.free.kind === 'categorical') {
-    slots = header.free.categories.length + 1;
-  } else if (header.free.kind === 'box2d') {
-    const s = header.free.p + 1;
-    slots = s * s + 1;
-  } else {
-    slots = (header.free.p_eff ?? header.free.p) + 2;
-  }
+  // binStart[b] .. binStart[b+1]-1, for every bin 0.._fvCubeMaxBin.
   const freeBin = cols.free_bin;
-  const binStart = new Uint32Array(slots);
+  const binStart = new Uint32Array(_fvCubeMaxBin(header) + 2);
   for (let i = 0; i < freeBin.length; i++) binStart[freeBin[i] + 1]++;
   for (let b = 1; b < binStart.length; b++) binStart[b] += binStart[b - 1];
   bytesTotal += binStart.byteLength;
@@ -494,59 +453,95 @@ function decodeCubeBundle(arrayBuffer) {
 // Snap + slice + delta (Shared arithmetic; mirrors Histogram._to_update)
 // ---------------------------------------------------------------------------
 
-// Natural-floor bin indices of the brush endpoints, clamped to [0, P] — P
-// included so a brush reaching the domain max selects the degenerate top bin.
-// edge(b) = lo + b*span/P; committed range = [edge(loBin), edge(hiBin+1)).
-function fvCubeSnap(domain, p, a, b) {
-  const lo = domain[0];
-  const span = (domain[1] - lo) || 1.0;
-  let loBin = Math.max(0, Math.min(p, Math.floor((a - lo) / span * p)));
-  let hiBin = Math.max(0, Math.min(p, Math.floor((b - lo) / span * p)));
-  if (hiBin < loBin) { const t = loBin; loBin = hiBin; hiBin = t; }
-  return {
-    loBin,
-    hiBin,
-    edgeLo: lo + loBin * span / p,
-    edgeHi: lo + (hiBin + 1) * span / p,
-  };
+// Mirrors the display kernel's FIXED_HIST_ROUND_EPS (flexviz.cube).
+const _FV_CUBE_ROUND_EPS = 1e-9;
+
+// Doubles in order as 64-bit integer keys (sign folded), so bisecting keys
+// bisects doubles.
+const _fvF64 = new Float64Array(1);
+const _fvI64 = new BigInt64Array(_fvF64.buffer);
+function _fvKey(x) {
+  _fvF64[0] = x;
+  const b = _fvI64[0];
+  return b < 0n ? -(b & 0x7fffffffffffffffn) : b;
+}
+function _fvFromKey(k) {
+  _fvI64[0] = k < 0n ? -k - (1n << 63n) : k;
+  return _fvF64[0];
 }
 
-// Snap a 2-D box on a box2d free axis (contract H): snap each axis
-// independently with the same per-axis arithmetic as fvCubeSnap (or the
-// integer-day grid for a unit:"day" axis), against that axis's decoded
-// physical domain / day-grid. `axes` is [{domain, unit, dayGrid}, ...] for x
-// then y. Returns {x:{loBin,hiBin,edgeLo,edgeHi}, y:{...}}.
-function fvCubeSnap2d(axes, p, box) {
-  const snapAxis = (ax, a, b) => {
-    if (ax && ax.dayGrid) {
-      return fvCubeSnapDay(ax.domain[0], ax.dayGrid.w, ax.dayGrid.pEff, a, b);
+// Snap a brush [a, b] to p bins over domain (mirrors flexviz.cube.snap_brush).
+// A bin is selected when the brush covers its center as the display draws it,
+// (i + 0.5) * step + lo, ends included: Plotly's highlight rule for bars.
+// hiBin < loBin means no center is covered. Each committed edge is the first
+// double the kernel puts in its bin, floor((v - lo) * scale + eps) >= k, found
+// by bisecting the doubles around the float edge lo + (k - eps) * step: a
+// bounded search, because near a zero crossing billions of doubles share one
+// value of v - lo. So the range keeps exactly the values the display counts
+// in those bars, and the ceil of an edge is the first whole unit of a
+// temporal bin. The first bin starts at lo; the last ends at hi inclusive
+// (the kernel's top clamp). A zero span (a constant column) draws every bar
+// on lo, so the brush covers all or none.
+function fvCubeSnap(domain, p, a, b) {
+  const [lo, hi] = domain;
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  if (!(hi > lo)) {
+    const hit = from <= lo && lo <= to;
+    return { loBin: 0, hiBin: hit ? p - 1 : -1, edgeLo: lo, edgeHi: hi, closed: 'both' };
+  }
+  const step = (hi - lo) / p;
+  const scale = p / (hi - lo);
+  const center = i => (i + 0.5) * step + lo;
+  // e0: the first bar whose center is at or above from; e1: one past the
+  // last bar whose center is at or below to. The estimate is off by at most
+  // one bar in float noise; the loops settle it on the drawn centers.
+  let e0 = Math.max(0, Math.min(p, Math.ceil((from - lo) / step - 0.5)));
+  while (e0 > 0 && center(e0 - 1) >= from) e0--;
+  while (e0 < p && center(e0) < from) e0++;
+  let e1 = Math.max(0, Math.min(p, Math.floor((to - lo) / step + 0.5)));
+  while (e1 > 0 && center(e1 - 1) > to) e1--;
+  while (e1 < p && center(e1) <= to) e1++;
+  const bin = v => Math.floor((v - lo) * scale + _FV_CUBE_ROUND_EPS);
+  const bound = k => {
+    if (k === 0) return lo;
+    // Bracket by doubling steps away from the guess, then bisect: bin(a) < k,
+    // bin(b) >= k, at most about 2 x 64 steps.
+    let a = _fvKey(lo + (k - _FV_CUBE_ROUND_EPS) * step);
+    let b = a;
+    for (let d = 1n; bin(_fvFromKey(a)) >= k; d *= 2n) a -= d;
+    for (let d = 1n; bin(_fvFromKey(b)) < k; d *= 2n) b += d;
+    while (b - a > 1n) {
+      const m = (a + b) >> 1n;
+      if (bin(_fvFromKey(m)) >= k) b = m;
+      else a = m;
     }
-    return fvCubeSnap(ax.domain, p, a, b);
+    return _fvFromKey(b);
   };
+  const top = e1 === p;
   return {
-    x: snapAxis(axes[0], box.x[0], box.x[1]),
-    y: snapAxis(axes[1], box.y[0], box.y[1]),
+    loBin: e0,
+    hiBin: e1 - 1,
+    edgeLo: bound(e0),
+    edgeHi: top ? hi : bound(e1),
+    closed: top ? 'both' : 'left',
   };
 }
 
 // The highest valid free-bin index for an entry: the last category for a
-// categorical axis, the composite top S²-1 for box2d (contract H), the
-// effective top bin otherwise. Used to clamp slice ranges.
+// categorical axis, the composite top p*p-1 for box2d (contract H), the top
+// bin p-1 otherwise. Used to clamp slice ranges.
 function _fvCubeMaxBin(header) {
   if (header.free.kind === 'categorical') return header.free.categories.length - 1;
-  if (header.free.kind === 'box2d') {
-    const s = header.free.p + 1;
-    return s * s - 1;
-  }
-  return header.free.p_eff ?? header.free.p;
+  if (header.free.kind === 'box2d') return header.free.p * header.free.p - 1;
+  return header.free.p - 1;
 }
 
 // Build the per-row composite free-bin ranges of a snapped 2-D box (contract
 // H): for each by in [ly..hy], one inclusive range [by*S+lx, by*S+hx]. The
 // rows of one by form a contiguous CSR block, so the generalized slice walks
-// binStart[by*S+lx] .. binStart[by*S+hx+1] exactly. S = header.free.p + 1.
+// binStart[by*S+lx] .. binStart[by*S+hx+1] exactly. S = p.
 function fvCubeRectRanges(header, snap2d) {
-  const s = header.free.p + 1;
+  const s = header.free.p;
   const lx = snap2d.x.loBin, hx = snap2d.x.hiBin;
   const ly = snap2d.y.loBin, hy = snap2d.y.hiBin;
   const ranges = [];
@@ -1365,11 +1360,9 @@ window.fvCubeHeaderMatchesKey = fvCubeHeaderMatchesKey;
 window.fvTemporalToPhysical = fvTemporalToPhysical;
 window.fvPhysicalToTemporal = fvPhysicalToTemporal;
 window.fvPhysicalToEpochMs = fvPhysicalToEpochMs;
-window.fvCubeDayGrid = fvCubeDayGrid;
 window.fvCubeStoreReset = fvCubeStoreReset;
 window.fvDecodeFVCube = decodeFVCube;
 window.fvDecodeCubeBundle = decodeCubeBundle;
-window.fvCubeSnap2d = fvCubeSnap2d;
 window.fvCubeRectRanges = fvCubeRectRanges;
 window.fvLineEnvCells = fvLineEnvCells;
 window.fvApplyLineGaps = fvApplyLineGaps;

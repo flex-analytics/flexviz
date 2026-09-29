@@ -104,20 +104,79 @@ def temporal_unit(dtype: pl.DataType | None) -> str | None:
     return None
 
 
-def day_grid(lo: float, hi: float, p: int) -> tuple[int, int]:
-    """The integer-day snap grid for a ``unit="day"`` free axis.
+def _double_key(x: float) -> int:
+    """``x`` as a 64-bit integer key that orders like the doubles (sign
+    folded), so bisecting keys bisects doubles. Mirrors ``_fvKey``."""
+    b = struct.unpack("<q", struct.pack("<d", x))[0]
+    return b if b >= 0 else -(b & 0x7FFF_FFFF_FFFF_FFFF)
 
-    A fixed P=2048 grid would yield fractional-day edges that ``YYYY-MM-DD``
-    cannot represent, breaking the round-trip contract. Instead the bin
-    width is ``w = max(1, ceil(span_days / p))`` whole days and the bin
-    count ``P' = ceil(span_days / w)`` (≤ p) — every snap edge
-    ``lo + k*w`` is an integer day, so date strings round-trip bit-exactly.
-    All other arithmetic is the shared arithmetic with ``P = P'`` (natural
-    floor, filter-don't-clip, degenerate top bin ``P'``)."""
-    span = hi - lo
-    w = max(1, math.ceil(span / p))
-    p_eff = max(0, math.ceil(span / w))
-    return w, p_eff
+
+def _double_from_key(k: int) -> float:
+    return struct.unpack("<d", struct.pack("<q", k if k >= 0 else -k - (1 << 63)))[0]
+
+
+def snap_brush(
+    lo: float, hi: float, p: int, a: float, b: float
+) -> tuple[int, int, float, float, str]:
+    """Snap a brush ``[a, b]`` to a free axis of ``p`` bins over ``[lo, hi]``.
+
+    Mirrors ``fvCubeSnap``. A bin is selected when the brush covers its center
+    as the display draws it, ``(i + 0.5) * step + lo``, ends included (Plotly's
+    highlight rule for bars). Returns ``(lo_bin, hi_bin, edge_lo, edge_hi,
+    closed)``; ``hi_bin < lo_bin`` means the brush covers no center.
+
+    Each committed edge is the first float the kernel puts in its bin, found by
+    bisecting the floats around ``lo + (k - eps) * step`` along
+    ``_fixed_hist_bin_expr``'s rule. So the range keeps exactly the values the
+    display counts in those bars. The first bin starts at ``lo`` and the last
+    bin ends at ``hi`` inclusive (the top clamp), because the build filters
+    rows to ``[lo, hi]``. A zero span (a constant column) draws every bar on
+    ``lo``, so the brush covers all of them or none.
+    """
+    a, b = sorted((a, b))
+    if not hi > lo:
+        return 0, p - 1 if a <= lo <= b else -1, lo, hi, "both"
+    step = (hi - lo) / p
+    scale = p / (hi - lo)
+
+    def _center(i: int) -> float:
+        return (i + 0.5) * step + lo
+
+    e0 = max(0, min(p, math.ceil((a - lo) / step - 0.5)))
+    while e0 > 0 and _center(e0 - 1) >= a:
+        e0 -= 1
+    while e0 < p and _center(e0) < a:
+        e0 += 1
+    e1 = max(0, min(p, math.floor((b - lo) / step + 0.5)))
+    while e1 > 0 and _center(e1 - 1) > b:
+        e1 -= 1
+    while e1 < p and _center(e1) <= b:
+        e1 += 1
+
+    def _bin(v: float) -> int:
+        return math.floor((v - lo) * scale + _FIXED_HIST_ROUND_EPS)
+
+    def _bound(k: int) -> float:
+        if k == 0:
+            return lo
+        lo_key = hi_key = _double_key(lo + (k - _FIXED_HIST_ROUND_EPS) * step)
+        d = 1
+        while _bin(_double_from_key(lo_key)) >= k:
+            lo_key, d = lo_key - d, d * 2
+        d = 1
+        while _bin(_double_from_key(hi_key)) < k:
+            hi_key, d = hi_key + d, d * 2
+        while hi_key - lo_key > 1:
+            mid = (lo_key + hi_key) // 2
+            if _bin(_double_from_key(mid)) >= k:
+                hi_key = mid
+            else:
+                lo_key = mid
+        return _double_from_key(hi_key)
+
+    if e1 == p:
+        return e0, e1 - 1, _bound(e0), hi, "both"
+    return e0, e1 - 1, _bound(e0), _bound(e1), "left"
 
 
 @dataclass(frozen=True)
@@ -145,7 +204,7 @@ class FreeAxisSpec:
     primary ``active_source.column`` join key), ``p = P₂D = 128`` per axis, and
     the per-axis domains live in ``domains = ((lox,hix),(loy,hiy))`` (the
     single-axis ``domain`` stays ``None``). Each axis is binned with the shared
-    arithmetic; the composite free bin is ``bin_y * (p+1) + bin_x``.
+    arithmetic; the composite free bin is ``bin_y * p + bin_x``.
     ``unit`` is per-axis for box2d — encoded as a 2-tuple ``(unit_x, unit_y)``
     — and is set by the engine from the schema dtypes.
     """
@@ -156,8 +215,7 @@ class FreeAxisSpec:
     domain: tuple[float, float] | None = None
     columns: tuple[str, ...] | None = None
     # Physical unit for kind="temporal" (contract G); the engine sets it from
-    # the schema dtype (Datetime("ns") gates to no cube at all). unit="day"
-    # switches the snap grid to integer days (see ``day_grid``). For box2d
+    # the schema dtype (Datetime("ns") gates to no cube at all). For box2d
     # (contract H) this is a per-axis 2-tuple ``(unit_x, unit_y)`` (each
     # element None or a TemporalUnit), set by the engine.
     unit: Any = None
@@ -303,8 +361,8 @@ class CubeResult:
     (``_MEASURE_PARTIALS``). For a range (continuous/temporal) free axis the
     free key is ``free_bin`` (Int32); the client slices by combining partials
     over the free bins inside the snapped brush range. Valid free bins are
-    ``0..P`` *inclusive*: a value exactly equal to the domain max lands in the
-    degenerate top bin ``P`` (natural un-clamped floor, Mosaic-style).
+    ``0..P-1``: rows bin like the display kernel, so a value at the domain max
+    lands in the top bin ``P-1`` (``_fixed_hist_bin_expr``).
 
     For a **categorical** free axis the free key is the tuple of typed
     ``__free__{col}`` columns (``free_key_cols``); there is no ``free_bin``
@@ -334,7 +392,7 @@ class CubeResult:
         """Reference (server-side) slice: count per target cell over a free range.
 
         Mirrors what ``cube.js`` does client-side — provided here for parity tests
-        and as the fallback path. ``[free_lo, free_hi]`` is snapped to the P-grid.
+        and as the fallback path. ``[free_lo, free_hi]`` is snapped with ``snap_brush``.
         """
         lo_bin, hi_bin = self._snap(free_lo, free_hi)
         tgt = list(self.group_cols)
@@ -374,7 +432,7 @@ class CubeResult:
         then combine + finalize like ``slice_agg``. Mirrors the client's
         rectangle slice (``fvCubeSliceRect``)."""
         (lx, hx), (ly, hy) = self._snap_box2d(x_lo, x_hi, y_lo, y_hi)
-        s = box2d_composite_stride(self.spec.free.p)
+        s = self.spec.free.p  # the composite stride
         codes: list[int] = []
         for by in range(ly, hy + 1):
             row = by * s
@@ -389,30 +447,14 @@ class CubeResult:
     def _snap_box2d(
         self, x_lo: float, x_hi: float, y_lo: float, y_hi: float
     ) -> tuple[tuple[int, int], tuple[int, int]]:
-        """Per-axis natural-floor bin pairs of the box's corners, each clamped
-        to ``[0, p_eff]`` (degenerate top bin included). Mirrors ``fvCubeSnap``
-        per axis against each axis's resolved physical domain / day-grid."""
+        """Per-axis ``snap_brush`` bin pairs of the box's corners, against each
+        axis's grid."""
         free = self.spec.free
         (lox, hix), (loy, hiy) = free.domains  # type: ignore[misc]
-        unit_x, unit_y = _box2d_units(free)
-
-        def _axis(lo: float, hi: float, p: int, unit: str | None, a: float, b: float):
-            if unit == "day":
-                w, p_eff = day_grid(lo, hi, p)
-                lo_b = max(0, min(p_eff, int((a - lo) / w)))
-                hi_b = max(0, min(p_eff, int((b - lo) / w)))
-            else:
-                span = (hi - lo) or 1.0
-                lo_b = max(0, min(p, int((a - lo) / span * p)))
-                hi_b = max(0, min(p, int((b - lo) / span * p)))
-            if hi_b < lo_b:
-                lo_b, hi_b = hi_b, lo_b
-            return lo_b, hi_b
-
-        return (
-            _axis(lox, hix, free.p, unit_x, x_lo, x_hi),
-            _axis(loy, hiy, free.p, unit_y, y_lo, y_hi),
-        )
+        px = py = free.p
+        x = snap_brush(lox, hix, px, x_lo, x_hi)
+        y = snap_brush(loy, hiy, py, y_lo, y_hi)
+        return (x[0], x[1]), (y[0], y[1])
 
     def corr_matrix(
         self,
@@ -569,16 +611,9 @@ class CubeResult:
         )
 
     def _snap(self, free_lo: float, free_hi: float) -> tuple[int, int]:
-        """Natural-floor bin indices of the brush endpoints, clamped to
-        ``[0, P]`` — ``P`` included so a brush reaching the domain max selects
-        the degenerate top bin (same arithmetic as the build side)."""
+        """``snap_brush`` bin indices of the brush endpoints."""
         lo, hi = self.spec.free.domain
-        p = self.spec.free.p
-        span = (hi - lo) or 1.0
-        lo_bin = max(0, min(p, int((free_lo - lo) / span * p)))
-        hi_bin = max(0, min(p, int((free_hi - lo) / span * p)))
-        if hi_bin < lo_bin:
-            lo_bin, hi_bin = hi_bin, lo_bin
+        lo_bin, hi_bin, *_ = snap_brush(lo, hi, self.spec.free.p, free_lo, free_hi)
         return lo_bin, hi_bin
 
 
@@ -672,24 +707,6 @@ def _free_value_expr(free: FreeAxisSpec) -> pl.Expr:
     return pl.col(free.column)
 
 
-def _free_bin_expr(value: pl.Expr, lo: float, hi: float, p: int) -> pl.Expr:
-    """Natural (un-clamped) floor bin: ``floor((v-lo)/(hi-lo)*p)``.
-
-    Rows are pre-filtered to ``[lo, hi]``, so indices are ``0..p`` inclusive —
-    ``p`` being the degenerate top bin for ``v == hi``. Int32 holds bin ``p``
-    and matches the descriptor spec's wire type.
-    """
-    span = (hi - lo) or 1.0
-    return ((value - lo) / span * p).floor().cast(pl.Int32).alias("free_bin")
-
-
-def _day_free_bin_expr(value: pl.Expr, lo: float, w: int) -> pl.Expr:
-    """Integer-day grid bin (contract G): ``floor((v - lo) / w)`` with whole-
-    day width ``w``. Values and edges are integer days, so the division is
-    exact; the degenerate top bin is ``P'`` for ``v == hi``."""
-    return ((value - lo) / w).floor().cast(pl.Int32).alias("free_bin")
-
-
 def _box2d_axis(column: str, unit: str | None) -> pl.Expr:
     """A box2d axis value as Float64 — physical representation for a temporal
     unit (contract G, per axis), the raw column otherwise."""
@@ -697,15 +714,6 @@ def _box2d_axis(column: str, unit: str | None) -> pl.Expr:
     if unit is not None:
         val = val.to_physical()
     return val.cast(pl.Float64)
-
-
-def _box2d_axis_bin_expr(value: pl.Expr, lo: float, hi: float, p: int) -> pl.Expr:
-    """Natural floor bin on one box2d axis — the shared range arithmetic
-    (verbatim ``_free_bin_expr``), un-aliased so the two axes compose into the
-    composite ``free_bin``. ``unit="day"`` axes pass ``hi``/``p`` derived from
-    ``day_grid`` so the per-axis arithmetic stays the integer-day grid."""
-    span = (hi - lo) or 1.0
-    return ((value - lo) / span * p).floor().cast(pl.Int32)
 
 
 def _box2d_units(free: FreeAxisSpec) -> tuple[str | None, str | None]:
@@ -934,33 +942,13 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             "domain=None (full data domain) before building"
         )
     f_lo, f_hi = free.domain
-    free_val = _free_value_expr(free)
-    filters: list[pl.Expr] = []
-    if free.unit == "day":
-        # The integer-day snap grid (contract G) is not a uniform P-grid over
-        # the domain, so the kernel cannot bin raw day values directly. Remap
-        # each row to its day-grid bin MIDPOINT ``b + 0.5`` over domain
-        # ``[0, P'+1]`` with ``p = P'+1``: ``floor((b+0.5)/(P'+1)*(P'+1)) == b``
-        # is robust to the double rounding of the kernel's true division (the
-        # value sits half a bin from any edge), and the resulting free_bin
-        # equals ``_day_free_bin_expr``'s bit-exactly. Out-of-domain rows are
-        # pre-filtered: a row just above the domain max could otherwise remap
-        # back into ``0..P'`` (the grid may overshoot the span).
-        w, p_eff = day_grid(f_lo, f_hi, free.p)
-        day_bin = _day_free_bin_expr(free_val, f_lo, w)
-        free_expr = (day_bin.cast(pl.Float64) + 0.5).alias("__f")
-        k_lo, k_hi, k_p = 0.0, float(p_eff + 1), p_eff + 1
-        filters.append(free_val.is_between(f_lo, f_hi))
-    else:
-        free_expr = free_val.cast(pl.Float64).alias("__f")
-        k_lo, k_hi, k_p = float(f_lo), float(f_hi), free.p
-
-    base = ldf.filter(*filters) if filters else ldf
-    df = base.select(
+    # The kernel bins the free axis with the display kernel's rule and filters
+    # out-of-domain rows itself, so it takes the raw value.
+    df = ldf.select(
         *[pl.col(c) for c in cat_cols],
         _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
         pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
-        free_expr,
+        _free_value_expr(free).cast(pl.Float64).alias("__f"),
     ).collect(engine="streaming")
 
     def _envelope(part: pl.DataFrame) -> pl.DataFrame:
@@ -971,10 +959,10 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
                     pl.col("__f"),
                     pl.lit(float(x_lo)),
                     pl.lit(float(x_hi)),
-                    pl.lit(k_lo),
-                    pl.lit(k_hi),
+                    pl.lit(float(f_lo)),
+                    pl.lit(float(f_hi)),
                     bucket.bins,
-                    k_p,
+                    free.p,
                 )
             )
             .to_series()
@@ -1109,11 +1097,9 @@ def _build_corr_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
         )
     free_val = _free_value_expr(free)
     lo, hi = free.domain
-    if free.unit == "day":
-        w, _ = day_grid(lo, hi, free.p)
-        free_bin = _day_free_bin_expr(free_val, lo, w)
-    else:
-        free_bin = _free_bin_expr(free_val, lo, hi, free.p)
+    # Bin like the display kernel, so a brush over bins k..m slices the rows
+    # the source trace draws in them.
+    free_bin = _fixed_hist_bin_expr(free_val, lo, hi, free.p, "free_bin")
     frame = (
         ldf.filter(free_val.is_between(lo, hi))
         .with_columns(free_bin)
@@ -1124,38 +1110,14 @@ def _build_corr_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     return CubeResult(spec=spec, frame=frame, group_cols=(), corr_means=means)
 
 
-def box2d_composite_stride(p: int) -> int:
-    """The composite-index stride ``S = p + 1`` (contract H): the free bin is
-    ``bin_y * S + bin_x``, with ``S`` large enough for the degenerate top bin
-    ``p`` on the x axis. ``P₂D = 128 ⇒ S = 129``."""
-    return p + 1
-
-
-def _box2d_axis_grid(
-    lo: float, hi: float, p: int, unit: str | None
-) -> tuple[int | float, int]:
-    """The (width-or-hi, effective-p) per box2d axis. A ``unit="day"`` axis
-    uses the integer-day snap grid (contract G) so its arithmetic is
-    ``floor((v-lo)/w)`` with whole-day width ``w`` and ``p_eff`` bins; every
-    other axis is the uniform P-grid (``floor((v-lo)/(hi-lo)*p)``)."""
-    if unit == "day":
-        w, p_eff = day_grid(lo, hi, p)
-        # Re-express the integer-day grid as a uniform-P arithmetic over
-        # [lo, lo + p_eff*w]: floor((v-lo)/(p_eff*w)*p_eff) == floor((v-lo)/w).
-        return float(lo + p_eff * w), p_eff
-    return float(hi), p
-
-
 def _build_box2d_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     """Build a 2-D box (hist2d source) cube (contract H).
 
-    A range-like build: each of the two axes is binned with the shared
-    arithmetic (natural floor, filter-don't-clip via ``is_between`` per axis,
-    degenerate top bin ``p`` per axis). The composite free key is
-    ``free_bin = bin_y * S + bin_x`` with ``S = p + 1`` (so every composite
-    index ``0..S²-1`` is reachable). Temporal axes run on their physical
-    representation per axis (contract G), and a ``unit="day"`` axis uses the
-    integer-day snap grid. Reuses ``_target_group_exprs`` / ``_measure_exprs``
+    A range-like build: each of the two axes is binned like the display
+    kernel (``_fixed_hist_bin_expr``, filter-don't-clip via ``is_between`` per axis).
+    The composite free key is ``free_bin = bin_y * p + bin_x`` (indices
+    ``0..p*p-1``). Temporal axes run on their physical representation per
+    axis (contract G). Reuses ``_target_group_exprs`` / ``_measure_exprs``
     (a pure source build has no target dims, but the path stays general).
     """
     free = spec.free
@@ -1172,17 +1134,13 @@ def _build_box2d_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     cx, cy = free.columns  # type: ignore[misc]
     (lox, hix), (loy, hiy) = free.domains
     unit_x, unit_y = _box2d_units(free)
-    p = free.p
-    s = box2d_composite_stride(p)
+    px = py = free.p
 
     val_x = _box2d_axis(cx, unit_x)
     val_y = _box2d_axis(cy, unit_y)
-    hix_eff, px = _box2d_axis_grid(lox, hix, p, unit_x)
-    hiy_eff, py = _box2d_axis_grid(loy, hiy, p, unit_y)
-
-    bin_x = _box2d_axis_bin_expr(val_x, lox, hix_eff, px)
-    bin_y = _box2d_axis_bin_expr(val_y, loy, hiy_eff, py)
-    free_bin = (bin_y * s + bin_x).cast(pl.Int32).alias("free_bin")
+    bin_x = _fixed_hist_bin_expr(val_x, lox, hix, px, "__bx")
+    bin_y = _fixed_hist_bin_expr(val_y, loy, hiy, py, "__by")
+    free_bin = (bin_y * px + bin_x).cast(pl.Int32).alias("free_bin")
 
     pre, group_cols, filters = _target_group_exprs(spec)
     frame = (
@@ -1283,11 +1241,9 @@ def build_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
         )
     free_val = _free_value_expr(free)
     lo, hi = free.domain
-    if free.unit == "day":
-        w, _ = day_grid(lo, hi, free.p)
-        free_bin = _day_free_bin_expr(free_val, lo, w)
-    else:
-        free_bin = _free_bin_expr(free_val, lo, hi, free.p)
+    # Bin like the display kernel, so a brush over bins k..m slices the rows
+    # the source trace draws in them.
+    free_bin = _fixed_hist_bin_expr(free_val, lo, hi, free.p, "free_bin")
 
     frame = (
         ldf.filter(free_val.is_between(lo, hi), *filters)
@@ -1469,11 +1425,9 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     elif spec.free.kind == "box2d":
         # The composite free_bin is already a u32 (build cast it to Int32); the
         # encode below treats it like any range free_bin. The header free block
-        # carries per-axis domains and the composite stride is recovered from
-        # "p" (S = p + 1). Per-axis temporal handling mirrors the single-axis
-        # block but as 2-element lists: "units" = [unit_x|null, unit_y|null]
-        # and "grids" = [{w, p_eff}|null, ...] (a grid entry is present only
-        # for a "day" axis). The decoder rebuilds the per-axis grids from these.
+        # carries the per-axis grid ("p" per axis and "domains"); the
+        # composite stride is p. Temporal axes add "units" =
+        # [unit_x|null, unit_y|null].
         frame = result.frame.sort(["free_bin", *group_cols])
         (lox, hix), (loy, hiy) = spec.free.domains  # type: ignore[misc]
         unit_x, unit_y = _box2d_units(spec.free)
@@ -1485,14 +1439,6 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
         }
         if unit_x is not None or unit_y is not None:
             free_block["units"] = [unit_x, unit_y]
-            grids: list = []
-            for unit, lo, hi in ((unit_x, lox, hix), (unit_y, loy, hiy)):
-                if unit == "day":
-                    w, p_eff = day_grid(lo, hi, spec.free.p)
-                    grids.append({"w": w, "p_eff": p_eff})
-                else:
-                    grids.append(None)
-            free_block["grids"] = grids
     else:
         frame = result.frame.sort(["free_bin", *group_cols])
         free_block = {
@@ -1502,10 +1448,6 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
         }
         if spec.free.unit is not None:
             free_block["unit"] = spec.free.unit
-        if spec.free.unit == "day":
-            w, p_eff = day_grid(spec.free.domain[0], spec.free.domain[1], spec.free.p)
-            free_block["w"] = w
-            free_block["p_eff"] = p_eff
     is_corr = spec.measure.agg == "corr"
     if is_corr:
         # corr partials are DYNAMIC (6 per pair) — generated from the pairs,
@@ -1773,7 +1715,8 @@ def cube_content_key(spec: CubeSpec) -> str:
         ],
         "m": _measure_content_block(spec.measure),
         "p": spec.passive_key,
-        "v": 1,  # cube schema version
+        # cube schema version: 2 = free axes bin like the display kernel
+        "v": 2,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()

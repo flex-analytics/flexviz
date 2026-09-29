@@ -389,9 +389,10 @@ function _rangeSelectionPredicates(eventData, figUid) {
 // A drag in select mode becomes a *gesture*: the first plotly_selecting event
 // resolves the cube descriptor set and checks the client store (one
 // cube_request POST on a miss); each further selecting event re-slices
-// locally, rAF-throttled — a range source snaps the in-progress range to the
-// P-grid, a categorical (bar) source matches the covered labels to category
-// codes. Commit (plotly_selected) snaps range predicates (closed="left");
+// locally, rAF-throttled — a range source snaps the in-progress range to its
+// free-axis grid, a categorical (bar) source matches the covered labels to
+// category codes. Commit (plotly_selected) snaps range predicates to the
+// kernel's bin boundaries;
 // categorical predicates stay the legacy is_in shape byte-for-byte. Either
 // way the server round-trip is skipped entirely when every cross-filter
 // target was cube-served. Pie / treemap click commits run the same
@@ -416,6 +417,7 @@ function fvCubeOverlayFgActive(figUid) {
   for (const gesture of Object.values(_fvCubeGestures)) {
     if (!gesture || gesture.inert || !gesture.live) continue;
     if (!(gesture.lastBins || gesture.lastKey)) continue; // no frame applied
+    if (gesture.emptyFrame) continue; // shows the pre-gesture state
     if ((gesture.targets || []).some(t => t.capable && t.figUid === figUid)) {
       return true;
     }
@@ -818,27 +820,17 @@ function _fvCubeGestureStart(figUid, eventData) {
 }
 
 // Adopt a decoded range free header (or a remembered free record) as the
-// gesture's snap grid: the physical domain, the temporal unit, and the
-// integer-day grid for unit:"day" (contract G). Idempotent — first adoption
-// wins; numeric zoomed gestures already hold their viewport snapDomain.
+// gesture's snap grid: the physical domain and the temporal unit (contract
+// G). Idempotent — first adoption wins; numeric zoomed gestures already hold
+// their viewport snapDomain.
 function _fvCubeAdoptFreeGrid(gesture, free) {
   if (!free || free.kind === 'categorical' || !Array.isArray(free.domain)) return;
   if (!gesture.snapDomain) gesture.snapDomain = free.domain.slice();
   if (free.unit && !gesture.unit) gesture.unit = free.unit;
-  if (free.unit === 'day' && !gesture.dayGrid) {
-    gesture.dayGrid = { w: free.w, pEff: free.p_eff };
-  }
 }
 
-// Snap a (physical) range on the gesture's grid: the integer-day grid for a
-// unit:"day" source, the shared P-grid arithmetic otherwise — the latter
-// byte-identical to Phases 1–2 (the edge arithmetic is parity-pinned).
+// Snap a (physical) range on the gesture's P-grid.
 function _fvCubeGestureSnap(gesture, a, b) {
-  if (gesture.dayGrid) {
-    return fvCubeSnapDay(
-      gesture.snapDomain[0], gesture.dayGrid.w, gesture.dayGrid.pEff, a, b
-    );
-  }
   return fvCubeSnap(gesture.snapDomain, _FV_CUBE_P, a, b);
 }
 
@@ -864,7 +856,6 @@ function _fvCubeRangeGestureStart(figUid, figSpec, constraint) {
     // never a snap domain (the column's physical unit may differ).
     snapDomain: (!temporalViewport && sourceDomain) || null,
     unit: null,
-    dayGrid: null,
     targets: _fvCubeEnumerateTargets(figUid, figSpec.source, freeDesc, passiveKey),
     live: false,
     pendingRange: null,
@@ -888,32 +879,23 @@ function _fvCubeRangeGestureStart(figUid, figSpec, constraint) {
 }
 
 // Adopt a decoded box2d free header (contract H) as the gesture's per-axis
-// snap grid: each axis's physical domain, temporal unit, and integer-day grid
-// (from the header's "units"/"grids" 2-element lists). Idempotent — first
-// adoption per axis wins; zoomed numeric axes already hold their viewport
-// snapDomain.
+// snap grid: each axis's physical domain and temporal unit (from the header's
+// "units" list). Idempotent — first adoption per axis wins; zoomed numeric
+// axes already hold their viewport snapDomain.
 function _fvCubeAdoptBox2dGrid(gesture, free) {
   if (!free || free.kind !== 'box2d' || !Array.isArray(free.domains)) return;
   const units = free.units || [null, null];
-  const grids = free.grids || [null, null];
   for (let a = 0; a < 2; a++) {
     const ax = gesture.axes[a];
     const dom = free.domains[a];
     if (!Array.isArray(dom)) continue;
     if (!ax.snapDomain) ax.snapDomain = dom.slice();
     if (units[a] && !ax.unit) ax.unit = units[a];
-    if (units[a] === 'day' && !ax.dayGrid && grids[a]) {
-      ax.dayGrid = { w: grids[a].w, pEff: grids[a].p_eff };
-    }
   }
 }
 
-// Snap one box2d axis on its grid (integer-day grid for a unit:"day" axis,
-// the shared P=128 arithmetic otherwise). Returns the fvCubeSnap result.
+// Snap one box2d axis on its P=128 grid. Returns the fvCubeSnap result.
 function _fvCubeBox2dSnapAxis(ax, a, b) {
-  if (ax.dayGrid) {
-    return fvCubeSnapDay(ax.snapDomain[0], ax.dayGrid.w, ax.dayGrid.pEff, a, b);
-  }
   return fvCubeSnap(ax.snapDomain, _FV_CUBE_BOX2D_P, a, b);
 }
 
@@ -947,8 +929,8 @@ function _fvCubeBox2dGestureStart(figUid, figSpec, constraint) {
     // Per-axis snap grids. A zoomed NUMERIC viewport is the snap domain
     // directly; a temporal/unzoomed axis defers to the decoded header.
     axes: [
-      { snapDomain: (!tempX && domX) || null, unit: null, dayGrid: null },
-      { snapDomain: (!tempY && domY) || null, unit: null, dayGrid: null },
+      { snapDomain: (!tempX && domX) || null, unit: null },
+      { snapDomain: (!tempY && domY) || null, unit: null },
     ],
     targets: _fvCubeEnumerateTargets(figUid, figSpec.source, freeDesc, passiveKey),
     live: false,
@@ -1212,6 +1194,17 @@ function _fvCubeApplyTargetSlices(targets, rangesForEntry, gesture) {
   return dirty;
 }
 
+// Put back the pre-drag layer data of every target the live loop touched.
+// Returns the figures to redraw.
+function _fvCubeRestoreSavedLayers(gesture) {
+  const dirty = new Set();
+  for (const saved of Object.values(gesture.savedLayers || {})) {
+    saved.restore();
+    dirty.add(saved.figUid);
+  }
+  return dirty;
+}
+
 // Snap the drag range and slice every cube-served target (range gestures);
 // de-dupes on unchanged snapped bins. Temporal sources convert the drag's
 // date strings to the cube's physical unit first (contract G).
@@ -1227,6 +1220,15 @@ function _fvCubeApplyRange(gesture, range) {
     && gesture.lastBins[1] === snap.hiBin
   ) return;
   gesture.lastBins = [snap.loBin, snap.hiBin];
+  // A brush that covers no bin center shows the pre-gesture state: its commit
+  // clears the selection, so an empty slice would flash every target empty
+  // first. The flag also keeps an overlay target off its live fg
+  // presentation (fvCubeOverlayFgActive).
+  gesture.emptyFrame = snap.hiBin < snap.loBin;
+  if (gesture.emptyFrame) {
+    _fvCubeRenderFigures(_fvCubeRestoreSavedLayers(gesture));
+    return;
+  }
   const dirty = _fvCubeApplyTargetSlices(
     gesture.targets, () => [[snap.loBin, snap.hiBin]], gesture
   );
@@ -1235,7 +1237,7 @@ function _fvCubeApplyRange(gesture, range) {
 
 // Snap a box2d gesture's drag box on BOTH axes (contract H). Temporal axes
 // convert their date-string range to the axis's physical unit first. Returns
-// the fvCubeSnap2d-shaped result, or null when a range is malformed.
+// {x, y} fvCubeSnap results, or null when a range is malformed.
 function _fvCubeBox2dSnap(gesture, range) {
   if (!Array.isArray(range.x) || range.x.length !== 2) return null;
   if (!Array.isArray(range.y) || range.y.length !== 2) return null;
@@ -1266,6 +1268,13 @@ function _fvCubeApplyBox2d(gesture, range) {
     x: [snap.x.loBin, snap.x.hiBin],
     y: [snap.y.loBin, snap.y.hiBin],
   };
+  // Covering no bin center on either axis is an empty frame, as in
+  // _fvCubeApplyRange.
+  gesture.emptyFrame = snap.x.hiBin < snap.x.loBin || snap.y.hiBin < snap.y.loBin;
+  if (gesture.emptyFrame) {
+    _fvCubeRenderFigures(_fvCubeRestoreSavedLayers(gesture));
+    return;
+  }
   const dirty = _fvCubeApplyTargetSlices(
     gesture.targets, entry => fvCubeRectRanges(entry.header, snap), gesture
   );
@@ -1318,11 +1327,7 @@ function _fvCubeGestureTake(figUid) {
 function _fvCubeGestureAbort(figUid) {
   const gesture = _fvCubeGestureTake(figUid);
   if (!gesture || (!gesture.savedLayers && !gesture.createdBg)) return;
-  const dirty = new Set();
-  for (const saved of Object.values(gesture.savedLayers || {})) {
-    saved.restore();
-    dirty.add(saved.figUid);
-  }
+  const dirty = _fvCubeRestoreSavedLayers(gesture);
   for (const created of (gesture.createdBg || [])) {
     for (const restore of created.restores) restore();
     bgYExtentByFig[created.figUid] = created.prevYExtent;
@@ -1364,7 +1369,7 @@ function handleSelecting(eventData, figUid) {
 // outline (group move) or its edge handles (resize) arms a rAF loop that
 // converts the outline path's bbox back to data coordinates and replays it
 // through handleSelecting — the same gesture path as a fresh draw, so cube
-// liveness gating, P-grid snapping, and the conditional commit apply
+// liveness gating, grid snapping, and the conditional commit apply
 // unchanged, and without cube coverage the gesture stays mouseup-only
 // exactly as today. A categorical (bar) source has no range gesture: its
 // replay resolves the covered bars from the outline span and feeds them as
@@ -1525,12 +1530,14 @@ function handleSelectionEditPointerDown(evt, figUid) {
   rafId = requestAnimationFrame(frame);
 }
 
-// On commit, replace the raw range predicate with the snapped closed="left"
-// one (feature-level snap policy, spec §8.2 — applies to every gesture on
-// cube-eligible source geometry while live_brush is "auto", live or not) and
-// report whether the commit can stay local. Returns null when no gesture ran
-// (programmatic selections stay byte-for-byte legacy) or no snap domain is
-// known (cold failed request on an unzoomed axis degrades to unsnapped).
+// On commit, replace the raw range predicate with the snapped one: the
+// kernel's bin boundaries, closed="left", or closed="both" when it reaches the
+// top bin (feature-level snap policy, spec §8.2 — applies to every gesture on
+// cube-eligible source geometry while live_brush is "auto", live or not), and
+// report whether the commit can stay local. Returns {clear: true} when the
+// brush covers no bin center, and null when no gesture ran (programmatic
+// selections stay byte-for-byte legacy) or no grid is known yet (a commit
+// before the first cube header lands stays unsnapped).
 function _fvCubeCommitOverride(figUid, range, box) {
   const gesture = _fvCubeGestureTake(figUid);
   if (!gesture || gesture.inert) return null;
@@ -1545,28 +1552,24 @@ function _fvCubeCommitOverride(figUid, range, box) {
   if (gesture.unit) r = r.map(v => fvTemporalToPhysical(v, gesture.unit));
   if (!r.every(Number.isFinite)) return null;
   const snap = _fvCubeGestureSnap(gesture, r[0], r[1]);
-  const edgeLoOut = gesture.unit
-    ? fvPhysicalToTemporal(snap.edgeLo, gesture.unit)
-    : snap.edgeLo;
-  const edgeHiOut = gesture.unit
-    ? fvPhysicalToTemporal(snap.edgeHi, gesture.unit)
-    : snap.edgeHi;
+  if (snap.hiBin < snap.loBin) return { clear: true };
+  const [edgeLoOut, edgeHiOut] = _fvCubeCommitEdges(snap, gesture.unit);
   const predicates = [{
     clauses: [{
       column: gesture.column,
       range: [edgeLoOut, edgeHiOut],
-      closed: 'left',
+      closed: snap.closed,
     }],
   }];
-  // The stored/rendered selection shape uses the same snapped edges.
+  const [boxLo, boxHi] = _fvCubeBoxEdges(snap, gesture.unit);
   const snappedBox = { ...(box || {}) };
   if (gesture.role === 'x') {
-    snappedBox.x0 = edgeLoOut;
-    snappedBox.x1 = edgeHiOut;
+    snappedBox.x0 = boxLo;
+    snappedBox.x1 = boxHi;
     snappedBox.xref = snappedBox.xref || 'x';
   } else {
-    snappedBox.y0 = edgeLoOut;
-    snappedBox.y1 = edgeHiOut;
+    snappedBox.y0 = boxLo;
+    snappedBox.y1 = boxHi;
     snappedBox.yref = snappedBox.yref || 'y';
   }
   if (gesture.live) {
@@ -1575,6 +1578,27 @@ function _fvCubeCommitOverride(figUid, range, box) {
     _fvCubeApplyRange(gesture, range);
   }
   return { predicates, box: snappedBox, skipPost: _fvCubeSkipPost(gesture) };
+}
+
+// A snap's committed edges in the clause's value space. A temporal edge is a
+// string of whole units: fvPhysicalToTemporal ceils, which gives the first
+// unit in the bin; a closed upper edge (the top bin) rounds down instead.
+function _fvCubeCommitEdges(snap, unit) {
+  if (!unit) return [snap.edgeLo, snap.edgeHi];
+  const hi = snap.closed === 'both' ? Math.floor(snap.edgeHi) : snap.edgeHi;
+  return [fvPhysicalToTemporal(snap.edgeLo, unit), fvPhysicalToTemporal(hi, unit)];
+}
+
+// A snap's edges for the stored and rendered selection box: the bin edges
+// themselves, in the axis's value space. Plotly highlights a bar when its
+// center is inside the box, so the highlight stays on the committed bins. A
+// whole-day commit edge can pass the center of a bar that is less than two
+// days wide, so a temporal box edge keeps its time of day (µs string).
+function _fvCubeBoxEdges(snap, unit) {
+  if (!unit) return [snap.edgeLo, snap.edgeHi];
+  return [snap.edgeLo, snap.edgeHi].map(
+    v => fvPhysicalToTemporal(fvPhysicalToEpochMs(v, unit) * 1000, 'us')
+  );
 }
 
 // Conditional commit predicate (shared by every range/box2d gesture): local
@@ -1595,30 +1619,32 @@ function _fvCubeSkipPost(gesture) {
 }
 
 // Commit a box2d gesture (contract H): ONE predicate with TWO snapped
-// closed="left" clauses (x and y) — today's two-clause hist2d selection
-// shape, snapped to the cube grid. The stored/rendered box carries the same
-// snapped edges on both axes. Conditional-commit skipPost is shared
+// clauses (x and y) — today's two-clause hist2d selection shape, snapped to
+// the cube grid. The stored/rendered box sits on the bin edges of both axes
+// (_fvCubeBoxEdges). Conditional-commit skipPost is shared
 // (_fvCubeSkipPost). Returns null if either axis has no snap domain (cold
 // degrade) or the range is malformed.
 function _fvCubeBox2dCommitOverride(gesture, range, box) {
   if (!gesture.axes[0].snapDomain || !gesture.axes[1].snapDomain) return null;
   const snap = _fvCubeBox2dSnap(gesture, range);
   if (!snap) return null;
-  const edge = (ax, e) => (ax.unit ? fvPhysicalToTemporal(e, ax.unit) : e);
-  const exLo = edge(gesture.axes[0], snap.x.edgeLo);
-  const exHi = edge(gesture.axes[0], snap.x.edgeHi);
-  const eyLo = edge(gesture.axes[1], snap.y.edgeLo);
-  const eyHi = edge(gesture.axes[1], snap.y.edgeHi);
+  if (snap.x.hiBin < snap.x.loBin || snap.y.hiBin < snap.y.loBin) {
+    return { clear: true };
+  }
+  const [exLo, exHi] = _fvCubeCommitEdges(snap.x, gesture.axes[0].unit);
+  const [eyLo, eyHi] = _fvCubeCommitEdges(snap.y, gesture.axes[1].unit);
   const predicates = [{
     clauses: [
-      { column: gesture.cols[0], range: [exLo, exHi], closed: 'left' },
-      { column: gesture.cols[1], range: [eyLo, eyHi], closed: 'left' },
+      { column: gesture.cols[0], range: [exLo, exHi], closed: snap.x.closed },
+      { column: gesture.cols[1], range: [eyLo, eyHi], closed: snap.y.closed },
     ],
   }];
+  const [bxLo, bxHi] = _fvCubeBoxEdges(snap.x, gesture.axes[0].unit);
+  const [byLo, byHi] = _fvCubeBoxEdges(snap.y, gesture.axes[1].unit);
   const snappedBox = {
     ...(box || {}),
-    x0: exLo, x1: exHi, xref: (box && box.xref) || 'x',
-    y0: eyLo, y1: eyHi, yref: (box && box.yref) || 'y',
+    x0: bxLo, x1: bxHi, xref: (box && box.xref) || 'x',
+    y0: byLo, y1: byHi, yref: (box && box.yref) || 'y',
   };
   if (gesture.live) _fvCubeApplyBox2d(gesture, range);
   return { predicates, box: snappedBox, skipPost: _fvCubeSkipPost(gesture) };
@@ -1700,7 +1726,7 @@ function _fvCubeClickCommit(figUid, tsSpec, predicates) {
 // re-emit plotly_selected (asynchronously) with a pixel-roundtripped range.
 // With a snapped cube commit the stored box is no longer pixel-aligned, so
 // the echoed range drifts off the stored edges and would re-enter the legacy
-// path as a "new" unsnapped selection (replacing the committed closed="left"
+// path as a "new" unsnapped selection (replacing the committed snapped
 // predicate and double-POSTing). Discriminator: no live-brush gesture ran
 // (programmatic re-emission never fires plotly_selecting) AND the range
 // matches the stored selection box within half a snap bin — below snap
@@ -1729,31 +1755,27 @@ function _fvCubeEchoOfStoredSelection(figUid, range) {
   const tolByRole = { x: 0, y: 0 };
   const unitByRole = { x: null, y: null };
   // A box2d source's per-axis snap grid is remembered as a box2d free header
-  // (units/grids/domains lists), not a per-column free record; resolve once.
-  const box2dGrid = constraint && constraint.kind === 'box2d' && figSpec && figSpec.source
+  // (units/domains lists), not a per-column free record; resolve once.
+  const isBox2d = !!constraint && constraint.kind === 'box2d';
+  const box2dGrid = isBox2d && figSpec && figSpec.source
     ? _fvCubeRememberedBox2dGrid(figSpec.source, [constraint.x.column, constraint.y.column])
     : null;
   for (let ci = 0; ci < axisConstraints.length; ci++) {
     const ac = axisConstraints[ci];
-    const isBox2d = constraint.kind === 'box2d';
     const p = isBox2d ? _FV_CUBE_BOX2D_P : _FV_CUBE_P;
-    // 1-D sources remember a per-(source, column) free record; box2d axes read
-    // their {domain, unit, grid} from the remembered box2d header by index.
+    // 1-D sources remember a per-(source, column, p) free record; box2d axes
+    // read their {domain, unit} from the remembered box2d header by index.
     let recDomain = null;
     let unit = null;
-    let dayW = null;
     if (isBox2d && box2dGrid) {
       recDomain = (box2dGrid.domains || [])[ci] || null;
       unit = (box2dGrid.units || [])[ci] || null;
-      const grid = (box2dGrid.grids || [])[ci];
-      dayW = grid && grid.w;
     } else if (!isBox2d) {
       const rec = figSpec && figSpec.source
         ? fvCubeFreeDomain(figSpec.source, ac.column, p)
         : null;
       recDomain = rec && rec.domain;
       unit = (rec && rec.unit) || null;
-      dayW = rec && rec.w;
     }
     unitByRole[ac.role] = unit;
     let domain = _fvCubeViewportDomain(figUid, ac.anchor);
@@ -1766,9 +1788,7 @@ function _fvCubeEchoOfStoredSelection(figUid, range) {
       domain = recDomain;
     }
     if (Array.isArray(domain)) {
-      tolByRole[ac.role] = unit === 'day' && dayW
-        ? dayW / 2
-        : (domain[1] - domain[0]) / p / 2;
+      tolByRole[ac.role] = (domain[1] - domain[0]) / p / 2;
     }
   }
   // The echoed values are date strings on temporal axes — convert both
@@ -1833,6 +1853,12 @@ function handleSelected(eventData, figUid) {
       plotlySelectionBox = _plotlySelectionBoxFromRange(eventData, figUid);
       if (predicates) {
         const cubeCommit = _fvCubeCommitOverride(figUid, eventData.range, plotlySelectionBox);
+        if (cubeCommit && cubeCommit.clear) {
+          // The brush covers no bin center, so it selects nothing.
+          clearFigureSelection(figUid);
+          _reapplyCanonicalSelectionBoxes(figUid);
+          return;
+        }
         if (cubeCommit) {
           predicates = cubeCommit.predicates;
           plotlySelectionBox = cubeCommit.box;
