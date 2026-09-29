@@ -39,9 +39,9 @@ Register data sources, then start the server::
 ``flexviz serve`` and ``show()`` start it through ``run_server``, which on a
 loopback bind also refuses a foreign ``Host`` header.
 
-The server sends no CORS headers: only pages it serves itself (``/view``,
-``/h/{n}``) call it, from their own origin. Another site's page cannot read its
-responses.
+The server sends no CORS headers: in a browser, only pages it serves itself
+(``/view``, ``/h/{n}``) call it, from their own origin, so another site's page
+cannot read its responses. Any HTTP client that reaches the port still can.
 """
 
 from __future__ import annotations

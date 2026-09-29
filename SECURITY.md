@@ -18,9 +18,10 @@ FlexViz is maintained part-time; we aim to acknowledge reports within 7 days.
 The FlexViz server is designed for local use and trusted networks: it ships
 **no authentication or authorization**. `Figure.show()` binds a local dev
 server; anyone who can reach the port can query the registered data sources.
-Only the server's own pages read its answers: it sends no CORS headers, and a
-server that `show()` or `flexviz serve` binds to loopback refuses a request for
-another host name.
+Among browser pages, only the server's own pages can read its answers: it sends
+no CORS headers, and a server that `show()` or `flexviz serve` binds to
+loopback refuses a request for another host name. Any HTTP client that reaches
+the port, such as a script, can still read them.
 If you expose FlexViz publicly, put it behind your own auth (reverse proxy,
 `mount_into()` inside an authenticated FastAPI app, or a tunnel with access
 control). Reports assuming an unauthenticated public deployment of the dev

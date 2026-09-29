@@ -1019,7 +1019,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 
 ### Origin
 
-Only the pages the server renders itself (`/view`, `/h/{n}`) call its routes, and they call them page-relative, so from the server's own origin. The server sends no CORS headers, so a page of another site cannot read its answers. The notebook and the browser both show that page: `show()` posts the spec to `/share` and opens the returned URL, in the browser or in a notebook iframe.
+In a browser, only the pages the server renders itself (`/view`, `/h/{n}`) call its routes, and they call them page-relative, so from the server's own origin. The server sends no CORS headers, so a page of another site cannot read its answers. This is a browser rule: any HTTP client that reaches the port, such as the Python `show()` posting to `/share`, the CLI or an agent, can still read them. The notebook and the browser both show that page: `show()` posts the spec to `/share` and opens the returned URL, in the browser or in a notebook iframe.
 
 `run_server(host, port)` (`server.py`) is how `show()` and `flexviz serve` start uvicorn. A bind is loopback when every address it resolves to is loopback (`is_loopback_bind`), so `127.1` and `127.0.0.2` count too. On a loopback bind it serves only the `Host` names `localhost`, a loopback IP literal, and the bind host itself. That stops DNS rebinding, which points another site's name at 127.0.0.1 so its page becomes same-origin; a literal IP cannot be rebound. A non-loopback bind is a deliberate network exposure whose host names are not known, so it serves every `Host`. An app you serve yourself, or mount with `mount_into`, gets neither check: its deployment decides.
 
