@@ -1746,6 +1746,13 @@ class TestSameOriginServer:
             ("localhost", "rebind.evil.example", 400),
             ("::1", "rebind.evil.example", 400),
             ("127.0.0.1", "[", 400),
+            # Every spelling of a loopback bind is guarded, not only three.
+            ("127.1", "rebind.evil.example", 400),
+            ("127.0.0.2", "rebind.evil.example", 400),
+            ("0:0:0:0:0:0:0:1", "rebind.evil.example", 400),
+            # A loopback IP literal cannot be rebound, so it is served.
+            ("127.0.0.2", "127.0.0.2:8000", 200),
+            ("127.0.0.1", "127.0.0.2:8000", 200),
             # A network bind is a deliberate exposure with unknown host names.
             ("0.0.0.0", "rebind.evil.example:8000", 200),
         ],

@@ -306,6 +306,24 @@ def test_serve_without_a_port_picks_a_free_one(capsys, monkeypatch, tmp_path):
     assert served["port"] == int(match.group(1))
 
 
+@pytest.mark.parametrize(
+    ("host", "warns"),
+    [("127.0.0.1", False), ("127.1", False), ("::1", False), ("0.0.0.0", True)],
+)
+def test_serve_warns_only_for_a_network_bind(
+    capsys, monkeypatch, tmp_path, host, warns
+):
+    import uvicorn
+
+    path = tmp_path / "data.parquet"
+    pl.DataFrame({"x": [1]}).write_parquet(path)
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
+
+    main(["serve", str(path), "--host", host])
+
+    assert ("WARNING" in capsys.readouterr().err) is warns
+
+
 def test_skill_install_user_scope(capsys, monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     main(["skill", "install", "--user"])

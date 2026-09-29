@@ -84,9 +84,9 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
     names = _register_files(args.files, cache=args.cache)
 
-    from flexviz.server import LOOPBACK_HOSTS, run_server
+    from flexviz.server import is_loopback_bind, run_server
 
-    if args.host not in LOOPBACK_HOSTS:
+    if not is_loopback_bind(args.host):
         print(
             f"WARNING: binding {args.host} exposes unauthenticated data endpoints "
             "to the network. Use a loopback host unless you understand the "

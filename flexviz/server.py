@@ -47,7 +47,9 @@ responses.
 from __future__ import annotations
 
 import gzip
+import ipaddress
 import logging
+import socket
 import warnings
 from contextlib import asynccontextmanager
 from typing import Any
@@ -764,16 +766,37 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
 # Serving
 # ---------------------------------------------------------------------------
 
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+def _is_loopback_ip(text: str) -> bool:
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
-def _loopback_host_only(asgi_app: Any) -> Any:
+def is_loopback_bind(host: str) -> bool:
+    """Whether a server bound to *host* is reachable only from this machine.
+
+    Decided by address, as uvicorn resolves the host to bind it: ``127.1``,
+    ``127.0.0.2`` and ``0:0:0:0:0:0:0:1`` are loopback binds too.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return all(_is_loopback_ip(info[4][0].split("%")[0]) for info in infos)
+
+
+def _loopback_host_only(asgi_app: Any, bind_host: str) -> Any:
     """Wrap *asgi_app* so it answers only a loopback ``Host`` header.
 
     Without CORS headers another site cannot read the responses, but DNS
     rebinding points a name of that site at 127.0.0.1 and so makes its page
     same-origin with this server. The ``Host`` header still carries that name.
+    A loopback IP literal cannot be rebound, and the bind host is a name the
+    user chose, so both are served.
     """
+    bind_name = bind_host.strip("[]").lower()
 
     async def guarded(scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] == "http":
@@ -782,7 +805,10 @@ def _loopback_host_only(asgi_app: Any) -> Any:
                 hostname = urlsplit("//" + host).hostname
             except ValueError:  # a malformed IPv6 literal, such as "["
                 hostname = None
-            if hostname not in LOOPBACK_HOSTS:
+            if not (
+                hostname in ("localhost", bind_name)
+                or (hostname is not None and _is_loopback_ip(hostname))
+            ):
                 response = PlainTextResponse("Invalid host header", status_code=400)
                 await response(scope, receive, send)
                 return
@@ -800,5 +826,5 @@ def run_server(host: str, port: int, log_level: str = "warning") -> None:
     """
     import uvicorn
 
-    served = _loopback_host_only(app) if host in LOOPBACK_HOSTS else app
+    served = _loopback_host_only(app, host) if is_loopback_bind(host) else app
     uvicorn.run(served, host=host, port=port, log_level=log_level)
