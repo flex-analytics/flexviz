@@ -1283,9 +1283,9 @@ function fvUrlQuote(s) {
 // values, then for each path level a node per distinct prefix whose value is the
 // SUM of the finalized leaf values under it (parents sum the leaf means too —
 // never re-finalized at parent levels). Nodes within a level are sorted by their
-// full prefix tuple (lexicographic </> — matches Polars Utf8 sort for ASCII;
-// astral / code-point > U+FFFF byte-order is a documented edge, like contract
-// D). ids/parents are url-quoted per part; the label is the RAW part. color_map
+// prefix code tuple (the header's order, like the server's sort over the path
+// columns). ids/parents are url-quoted per part; the label is the part as the
+// server's str() gives it (a null part is "None"). color_map
 // → marker.colors (PLURAL, like pie) over the FULL labels array (root="" too).
 function treemapDeltaFromEntry(traceSpec, entry, binRanges) {
   const cells = fvCubeSliceCells(entry, binRanges);
@@ -1300,25 +1300,20 @@ function treemapDeltaFromEntry(traceSpec, entry, binRanges) {
 
   for (let level = 0; level < path.length; level++) {
     // Aggregate leaf cells by their first (level+1) parts, summing value.
-    const agg = new Map(); // prefix-key -> {parts, value}
+    const agg = new Map(); // prefix-key -> {codes, parts, value}
     for (const cell of cells) {
-      const parts = cell.dims.slice(0, level + 1);
-      const key = _fvCubeCellLabel(parts);
+      const codes = cell.codes.slice(0, level + 1);
+      const key = codes.join(',');
       let node = agg.get(key);
       if (!node) {
-        node = { parts, value: 0 };
+        // The server labels a node str(value): a null path part is "None".
+        const parts = cell.dims.slice(0, level + 1).map(p => (p === null ? 'None' : p));
+        node = { codes, parts, value: 0 };
         agg.set(key, node);
       }
       node.value += cell.value;
     }
-    // Sort nodes by the full prefix tuple (lexicographic </>).
-    const nodes = Array.from(agg.values()).sort((a, b) => {
-      for (let i = 0; i < a.parts.length; i++) {
-        if (a.parts[i] < b.parts[i]) return -1;
-        if (a.parts[i] > b.parts[i]) return 1;
-      }
-      return 0;
-    });
+    const nodes = Array.from(agg.values()).sort((a, b) => _fvCompareCodes(a.codes, b.codes));
     for (const node of nodes) {
       const encoded = node.parts.map(fvUrlQuote);
       ids.push('root/' + encoded.join('/'));
