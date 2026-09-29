@@ -275,6 +275,31 @@ class TestNotebookDelivery:
         assert iframe["height"] == iframe_height
 
 
+class TestBrowserDelivery:
+    @pytest.mark.parametrize("in_notebook", [True, False])
+    def test_block_waits_only_outside_a_notebook(self, monkeypatch, in_notebook):
+        """A kernel keeps the server alive, so a notebook cell must not hang."""
+        import asyncio
+        import threading
+        import webbrowser
+
+        opened, waited = [], []
+        monkeypatch.setattr(webbrowser, "open", opened.append)
+        monkeypatch.setattr(threading.Event, "wait", lambda self: waited.append(1))
+        url = "http://127.0.0.1:8000/view?spec=x"
+
+        async def in_kernel():
+            AbstractAdapter._deliver_browser(url, block=True)
+
+        if in_notebook:
+            asyncio.run(in_kernel())
+        else:
+            AbstractAdapter._deliver_browser(url, block=True)
+
+        assert opened == [url]
+        assert waited == ([] if in_notebook else [1])
+
+
 class TestEChartsInitialOption:
     def test_line_series(self):
         from flexviz.adapters.echarts_adapter import EChartsAdapter

@@ -441,14 +441,15 @@ class AbstractAdapter(ABC):
     def _deliver_browser(url: str, block: bool = True) -> None:
         """Open the page *url* in the default browser.
 
-        With *block*, wait for Ctrl-C afterwards.  The server runs in a daemon
-        thread, so a script that returns from ``show()`` would kill it.
+        With *block*, a script waits for Ctrl-C afterwards: the server runs in
+        a daemon thread, so a script that returns from ``show()`` would kill
+        it. A notebook kernel keeps running, so a notebook cell never waits.
         """
         import webbrowser
 
         webbrowser.open(url)
 
-        if block:
+        if block and not _in_async_context():
             try:
                 threading.Event().wait()
             except KeyboardInterrupt:
