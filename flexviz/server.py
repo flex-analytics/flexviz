@@ -49,6 +49,7 @@ from __future__ import annotations
 import gzip
 import ipaddress
 import logging
+import re
 import socket
 import warnings
 from contextlib import asynccontextmanager
@@ -767,6 +768,10 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
 # ---------------------------------------------------------------------------
 
 
+# A Host header is a name or a bracketed IPv6 literal, then an optional port.
+_HOST_HEADER = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^\[\]:/@\s]+)(?::[0-9]{1,5})?")
+
+
 def _is_loopback_ip(text: str) -> bool:
     try:
         return ipaddress.ip_address(text).is_loopback
@@ -801,13 +806,11 @@ def _loopback_host_only(asgi_app: Any, bind_host: str) -> Any:
     async def guarded(scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] == "http":
             host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
-            try:
-                hostname = urlsplit("//" + host).hostname
-            except ValueError:  # a malformed IPv6 literal, such as "["
-                hostname = None
+            match = _HOST_HEADER.fullmatch(host)
+            hostname = match and match.group(1).strip("[]").lower()
             if not (
                 hostname in ("localhost", bind_name)
-                or (hostname is not None and _is_loopback_ip(hostname))
+                or (hostname and _is_loopback_ip(hostname))
             ):
                 response = PlainTextResponse("Invalid host header", status_code=400)
                 await response(scope, receive, send)

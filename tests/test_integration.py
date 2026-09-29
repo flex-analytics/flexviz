@@ -1746,6 +1746,11 @@ class TestSameOriginServer:
             ("localhost", "rebind.evil.example", 400),
             ("::1", "rebind.evil.example", 400),
             ("127.0.0.1", "[", 400),
+            # Only a plain name[:port] passes.
+            ("127.0.0.1", "localhost:bad", 400),
+            ("127.0.0.1", "evil@localhost", 400),
+            ("127.0.0.1", "localhost/evil", 400),
+            ("127.0.0.1", "LOCALHOST:8000", 200),
             # Every spelling of a loopback bind is guarded, not only three.
             ("127.1", "rebind.evil.example", 400),
             ("127.0.0.2", "rebind.evil.example", 400),
