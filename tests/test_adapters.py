@@ -233,36 +233,46 @@ class TestEChartsParseEvent:
 
         assert EChartsAdapter().parse_event({"foo": "bar"}) is None
 
-    def test_show_dashboard_notebook_path_accepts_height(self, monkeypatch):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
 
-        adapter = EChartsAdapter()
-        captured: dict[str, str | int] = {}
+class TestNotebookDelivery:
+    @pytest.mark.parametrize(
+        ("renderer", "height", "iframe_height"),
+        [("plotly", 432, 432), ("echarts", 432, 512)],
+    )
+    def test_notebook_iframe_loads_the_page_from_the_server(
+        self, server_port, monkeypatch, renderer, height, iframe_height
+    ):
+        """The page runs on the server's own origin, so it needs no CORS."""
+        import sys
+        import types
 
-        monkeypatch.setattr(adapter, "_wait_for_server", lambda _server_url: None)
-        monkeypatch.setattr(
-            adapter,
-            "_deliver_notebook",
-            lambda html, height: captured.update({"html": html, "height": height}),
+        import polars as pl
+
+        from flexviz.adapters import build_adapter
+        from flexviz.dashboard import Dashboard
+
+        shown = []
+        display_module = types.ModuleType("IPython.display")
+        display_module.IFrame = lambda src, width, height: {
+            "src": src,
+            "height": height,
+        }
+        display_module.display = shown.append
+        monkeypatch.setitem(sys.modules, "IPython", types.ModuleType("IPython"))
+        monkeypatch.setitem(sys.modules, "IPython.display", display_module)
+
+        dash = Dashboard(pl.DataFrame({"ts": [0, 1], "val": [0.0, 1.0]}))
+        dash.add_figure().add_line(x="ts", y="val")
+        spec = dash.to_spec(source_name="_browser_test")
+        server_url = f"http://127.0.0.1:{server_port}"
+        build_adapter(renderer).show_dashboard(
+            spec, server_url=server_url, notebook=True, height=height
         )
 
-        spec = DashboardSpec(
-            figures=[
-                FigureSpec(
-                    uid="fig1",
-                    traces=[TraceSpec(uid="t1", trace_type="line", axes=("x", "y"))],
-                )
-            ]
-        )
-        adapter.show_dashboard(
-            spec,
-            server_url="http://localhost:9999",
-            notebook=True,
-            height=432,
-        )
-
-        assert "<!DOCTYPE html>" in captured["html"]
-        assert captured["height"] == 512
+        (iframe,) = shown
+        assert iframe["src"].startswith(f"{server_url}/view?spec=")
+        assert iframe["src"].endswith(f"&renderer={renderer}")
+        assert iframe["height"] == iframe_height
 
 
 class TestEChartsInitialOption:

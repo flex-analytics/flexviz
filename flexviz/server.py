@@ -34,7 +34,14 @@ Register data sources, then start the server::
     register_source("sales",  pl.scan_parquet("data/sales.parquet"))
     register_source("events", pl.scan_database("SELECT * FROM events", conn))
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+``flexviz serve`` and ``show()`` start it through ``run_server``, which on a
+loopback bind also refuses a foreign ``Host`` header.
+
+The server sends no CORS headers: only pages it serves itself (``/view``,
+``/h/{n}``) call it, from their own origin. Another site's page cannot read its
+responses.
 """
 
 from __future__ import annotations
@@ -48,9 +55,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from flexviz.cache import (
@@ -410,14 +416,6 @@ app = FastAPI(title="flexviz", version="0.1", lifespan=_lifespan)
 # an interactive path. See ``test_gzip_compresslevel_reduced``.
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
 
-app.add_middleware(
-    CORSMiddleware,
-    # Override in production: set CORS_ORIGINS env-var or subclass Settings.
-    allow_origins=["*"],
-    allow_methods=["POST", "GET"],
-    allow_headers=["*"],
-)
-
 
 # Both /update and /dashboard/update return their declared JSON ``response_model``
 # *except* for an ``event.type == "cube_request"``, where they return a binary
@@ -760,3 +758,47 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
             ".mount(). Use werkzeug.middleware.dispatcher.DispatcherMiddleware "
             "for Flask/WSGI hosts."
         )
+
+
+# ---------------------------------------------------------------------------
+# Serving
+# ---------------------------------------------------------------------------
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _loopback_host_only(asgi_app: Any) -> Any:
+    """Wrap *asgi_app* so it answers only a loopback ``Host`` header.
+
+    Without CORS headers another site cannot read the responses, but DNS
+    rebinding points a name of that site at 127.0.0.1 and so makes its page
+    same-origin with this server. The ``Host`` header still carries that name.
+    """
+
+    async def guarded(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
+            try:
+                hostname = urlsplit("//" + host).hostname
+            except ValueError:  # a malformed IPv6 literal, such as "["
+                hostname = None
+            if hostname not in LOOPBACK_HOSTS:
+                response = PlainTextResponse("Invalid host header", status_code=400)
+                await response(scope, receive, send)
+                return
+        await asgi_app(scope, receive, send)
+
+    return guarded
+
+
+def run_server(host: str, port: int, log_level: str = "warning") -> None:
+    """Serve ``app`` with uvicorn until the process stops.
+
+    ``flexviz serve`` and ``show()`` start the server here. A loopback bind
+    serves only loopback ``Host`` names. Another bind is a deliberate network
+    exposure whose host names are not known here, so it serves every name.
+    """
+    import uvicorn
+
+    served = _loopback_host_only(app) if host in LOOPBACK_HOSTS else app
+    uvicorn.run(served, host=host, port=port, log_level=log_level)

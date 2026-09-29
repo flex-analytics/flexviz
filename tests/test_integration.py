@@ -1718,6 +1718,53 @@ class TestMountInto:
 
 
 # ===========================================================================
+# Same-origin server
+# ===========================================================================
+
+
+class TestSameOriginServer:
+    """Only the server's own pages read its data: it sends no CORS headers, and
+    a loopback server refuses a foreign Host, which DNS rebinding would send."""
+
+    def test_no_cors_headers_for_another_origin(self, client: TestClient):
+        origin = {"Origin": "https://evil.example"}
+        resp = client.get("/sources", headers=origin)
+        preflight = client.options(
+            "/dashboard/update",
+            headers={**origin, "Access-Control-Request-Method": "POST"},
+        )
+        assert "access-control-allow-origin" not in resp.headers
+        assert "access-control-allow-origin" not in preflight.headers
+
+    @pytest.mark.parametrize(
+        ("bind", "host", "status"),
+        [
+            ("127.0.0.1", "127.0.0.1:8000", 200),
+            ("127.0.0.1", "localhost:8000", 200),
+            ("127.0.0.1", "[::1]:8000", 200),
+            ("127.0.0.1", "rebind.evil.example:8000", 400),
+            ("localhost", "rebind.evil.example", 400),
+            ("::1", "rebind.evil.example", 400),
+            ("127.0.0.1", "[", 400),
+            # A network bind is a deliberate exposure with unknown host names.
+            ("0.0.0.0", "rebind.evil.example:8000", 200),
+        ],
+    )
+    def test_run_server_refuses_a_foreign_host_on_a_loopback_bind(
+        self, client: TestClient, monkeypatch, bind, host, status
+    ):
+        import uvicorn
+
+        from flexviz.server import run_server
+
+        served = {}
+        monkeypatch.setattr(uvicorn, "run", lambda asgi, **kw: served.update(app=asgi))
+        run_server(bind, 8000)
+        resp = TestClient(served["app"]).get("/sources", headers={"Host": host})
+        assert resp.status_code == status
+
+
+# ===========================================================================
 # Public API via flexviz.__init__
 # ===========================================================================
 

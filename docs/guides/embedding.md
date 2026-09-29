@@ -91,6 +91,11 @@ Then embed the URL. In React:
 <iframe src={url} style={{ width: "100%", height: "600px", border: 0 }} />
 ```
 
+Embed the page, do not call the routes from your own page: the server sends
+no CORS headers, so only its own pages can read its answers. When you run
+`app` yourself on a loopback address, add Starlette's `TrustedHostMiddleware`
+with the host names you serve, so a DNS rebinding page cannot reach it.
+
 ### Who owns width and height
 
 The parent page owns the iframe box. FlexViz owns what is inside it.

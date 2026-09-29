@@ -304,7 +304,7 @@ Coding agents drive FlexViz through the same stateless surface humans use.
 - **CLI** (`flexviz/cli.py`): `serve` registers Parquet/CSV files as sources
   named by file stem and runs the server. It binds loopback by default;
   non-loopback binds print a warning because the endpoints are
-  unauthenticated and CORS is open. `schema` prints columns and dtypes as
+  unauthenticated. `schema` prints columns and dtypes as
   JSON. `decode` turns a `/view` URL back into its spec. `skill install`
   copies the packaged skill (`flexviz/skills/flexviz-explore/SKILL.md`) into
   a project's `.agents/skills/` and `.claude/skills/`.
@@ -1017,6 +1017,12 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
+### Origin
+
+Only the pages the server renders itself (`/view`, `/h/{n}`) call its routes, and they call them page-relative, so from the server's own origin. The server sends no CORS headers, so a page of another site cannot read its answers. The notebook and the browser both show that page: `show()` posts the spec to `/share` and opens the returned URL, in the browser or in a notebook iframe.
+
+`run_server(host, port)` (`server.py`) is how `show()` and `flexviz serve` start uvicorn. On a loopback bind it serves only the `Host` names `127.0.0.1`, `localhost` and `[::1]`. That stops DNS rebinding, which points another site's name at 127.0.0.1 so its page becomes same-origin. A non-loopback bind is a deliberate network exposure whose host names are not known, so it serves every `Host`. An app you serve yourself, or mount with `mount_into`, gets neither check: its deployment decides.
+
 ### Request Flows
 
 **Dashboard (`POST /dashboard/update`):**
@@ -1463,10 +1469,12 @@ AbstractAdapter (ABC)
 │     shared header HTML/CSS; accepts optional ToolbarConfig to hide buttons
 ├── _mode_indicator_html(idx, lockable_axes)
 │     renders per-figure Zoom/Pan/CF toggle + Reset + Lock Axes button
-├── _deliver_notebook(html, height)
-│     base64 iframe delivery for Jupyter
-└── _deliver_browser_shared(spec, server_url, renderer)
-      POST /share → open /view?spec=...&renderer=...
+├── _share_url(spec, server_url, renderer)
+│     POST /share → the server's /view?spec=...&renderer=... page URL
+├── _deliver_notebook(url, height)
+│     notebook iframe of that page
+└── _deliver_browser(url, block)
+      opens that page in the default browser
 ```
 
 ### JS Build Pipeline
@@ -1721,7 +1729,6 @@ EChartsAdapter is currently deprecated. No goal to support this in the near futu
 | Location | Description |
 |----------|-------------|
 | `LF.py` `check_line_x` | One O(n) collect the first time a resident-frame x-width line reads an x column; the sorted flag then skips it. `assume_sorted_x=True` opts out |
-| `adapters/base.py` | `_deliver_browser_shared` always routes through `POST /share` and opens an encoded URL, even for an ordinary local `fig.show()` call |
 | `EChartsAdapter` | Does not support `BoxPlot` or `TreeMap`; supports line, histogram, bar, pie, and heatmap |
 | `trace/` interface | `_backend_data`, `_display`, `_params` dicts have `TypedDict` hints (`TraceDisplay`, `TraceParams`); `backend_data` values are `str | list[str]` |
 | `LinePlot`, `Histogram`, `Histogram2D`, `GeoHistogram2D`, `GeoLine` | All require `flexviz_polars` plugin; raise `ImportError` at import time without it (no pure-Python fallback). |

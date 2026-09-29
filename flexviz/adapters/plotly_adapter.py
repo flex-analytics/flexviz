@@ -269,11 +269,11 @@ class PlotlyAdapter(AbstractAdapter):
 
         self._wait_for_server(server_url)
 
+        url = self._share_url(spec, server_url, "plotly")
         if notebook:
-            html = self._build_dashboard_html(spec, server_url=server_url)
-            self._deliver_notebook(html, height)
+            self._deliver_notebook(url, height)
         else:
-            self._deliver_browser_shared(spec, server_url, "plotly", block)
+            self._deliver_browser(url, block)
 
     def _build_dashboard_html(
         self,

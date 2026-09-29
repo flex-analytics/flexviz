@@ -990,16 +990,9 @@ def _start_server_thread(host: str, port: int) -> None:
     if (host, port) in _started_servers:
         return
 
-    import uvicorn
+    from .server import run_server
 
-    from .server import app
-
-    threading.Thread(
-        target=uvicorn.run,
-        args=(app,),
-        kwargs={"host": host, "port": port, "log_level": "warning"},
-        daemon=True,
-    ).start()
+    threading.Thread(target=run_server, args=(host, port), daemon=True).start()
     _started_servers.add((host, port))
 
 
