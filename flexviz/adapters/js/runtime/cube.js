@@ -751,6 +751,13 @@ function _fvCubeCellLabel(parts) {
   return parts.length === 1 ? parts[0] : fvJsonDumpsAscii(parts);
 }
 
+// A grouped child's key, ≡ _group_value_key: a string stays raw, anything
+// else is JSON-encoded, so a null group is "null", not the cell label null.
+function _fvGroupValueKey(parts) {
+  const value = parts.length === 1 ? parts[0] : parts;
+  return typeof value === 'string' ? value : fvJsonDumpsAscii(value);
+}
+
 // Ascending order by dim code tuple: a code indexes the header's category
 // list, which _dim_dictionary builds in the server's sort order (a binned code
 // is its bin index). Decoded values would not do: JS compares null as 0
@@ -980,7 +987,7 @@ function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
   const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
     const parts = groupIdx.map(i => header.target_dims[i].categories[cell.codes[i]]);
-    const gvk = _fvCubeCellLabel(parts);
+    const gvk = _fvGroupValueKey(parts);
     let group = byGroup.get(gvk);
     if (!group) {
       group = { codes: groupIdx.map(i => cell.codes[i]), cells: [] };
@@ -1030,7 +1037,7 @@ function fvGroupedResultsFromCells(figUid, traceSpec, header, cells) {
   });
   const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
-    const gvk = _fvCubeCellLabel(groupIdx.map(i => cell.dims[i]));
+    const gvk = _fvGroupValueKey(groupIdx.map(i => cell.dims[i]));
     let group = byGroup.get(gvk);
     if (!group) {
       group = { codes: groupIdx.map(i => cell.codes[i]), cells: [] };

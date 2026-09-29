@@ -3233,6 +3233,9 @@ def _label_parity_df(kind: str) -> pl.DataFrame:
     df = df.with_columns(pl.Series("g", g, dtype=pl.Utf8))
     if kind == "grouped_bar_null_label":
         df = df.with_columns(pl.Series("k", ["P", "Q"] * (n // 2)))
+    if kind == "grouped_bar_null_group":
+        k = [(None, "P", "Q")[i % 3] for i in range(n)]
+        df = df.with_columns(pl.Series("k", k, dtype=pl.Utf8))
     if kind == "grouped_bar_null_group_part":
         k = ["Z" if a[i] < 35 else (None, "A")[i % 2] for i in range(n)]
         df = df.with_columns(pl.Series("k", k, dtype=pl.Utf8), pl.lit("x").alias("k2"))
@@ -3252,7 +3255,7 @@ def _label_parity_url(port: int, kind: str) -> str:
     fig = dash.add_figure(title="Target")
     if kind == "pie_null_label":
         fig.add_pie(labels="g")
-    elif kind == "grouped_bar_null_label":
+    elif kind in ("grouped_bar_null_label", "grouped_bar_null_group"):
         fig.add_bar(labels="g", group_by="k")
     elif kind == "grouped_bar_null_group_part":
         fig.add_bar(labels="g", group_by=["k", "k2"])
@@ -3285,6 +3288,7 @@ class TestCubeLabelParity:
             "pie_null_label",
             "grouped_bar_null_label",
             "grouped_bar_null_group_part",
+            "grouped_bar_null_group",
         ],
     )
     def test_committed_cube_delta_matches_server(

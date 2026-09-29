@@ -1403,7 +1403,7 @@ them.
   for strings (an `Enum`/`Categorical` column is cast to `Utf8` first, so it never sorts in
   declaration order), numeric order for numeric labels. A **null dim value is its own category**
   and ships as JSON `null` — the client then labels it exactly like the legacy server delta,
-  which also emits the raw null. A **non-finite float dim category** (NaN, infinity) keeps its
+  which also emits the raw null, and keys a null group as `"null"`, like `_group_value_key`. A **non-finite float dim category** (NaN, infinity) keeps its
   own code and ships as JSON `null` too, like the delta path: the header must be strict JSON,
   which has no `NaN` or `Infinity`. The labels and the order both match the delta: the client
   sorts cells by dim code, never by decoded value, so the header's order is the delta's. A free
