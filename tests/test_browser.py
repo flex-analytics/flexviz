@@ -4876,6 +4876,74 @@ class TestLinkedHoverBrowser:
         assert result["left"] == pytest.approx(result["plotLeft"], abs=0.5)
         assert result["right"] == pytest.approx(result["expectedRight"], abs=0.5)
 
+    def test_mouse_hover_on_a_date_axis_links_guide_and_band(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        """On a date axis Plotly reports the hovered x as a date string. The
+        linked guide and the histogram band are placed in epoch-ms, so the
+        hovered value must reach them as epoch-ms too."""
+        if renderer == "echarts":
+            pytest.skip("Plotly-specific test")
+        import datetime as dt
+
+        n = 300
+        df = pl.DataFrame(
+            {
+                "ts": [
+                    dt.datetime(2024, 6, 1) + dt.timedelta(hours=i) for i in range(n)
+                ],
+                "val": [float((i * 37) % n) for i in range(n)],
+                "v2": [float(i) for i in range(n)],
+            }
+        )
+
+        def build(dash):
+            dash.add_figure().add_line(x="ts", y="val", n_points=n)
+            dash.add_figure().add_line(x="ts", y="v2", n_points=n)
+            dash.add_figure().add_histogram(x="ts", bins=10)
+
+        page.goto(_color_norm_url(server_port, "_browser_date_hover", df, build))
+        _wait_for_init(page, "plotly")
+        center = page.evaluate("""() => {
+            if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+            DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+            window.__hoveredX = null;
+            divs[0].on('plotly_hover', e => { window.__hoveredX = e.points[0].x; });
+            const gd = divs[0], xa = gd._fullLayout.xaxis, ya = gd._fullLayout.yaxis;
+            const r = gd.getBoundingClientRect();
+            return {x: r.left + xa._offset + xa._length / 2,
+                    y: r.top + ya._offset + ya._length / 2};
+        }""")
+        page.mouse.move(center["x"] - 5, center["y"])
+        page.mouse.move(center["x"], center["y"])
+        page.wait_for_function("() => window.__hoveredX !== null")
+
+        result = page.evaluate("""() => {
+            const hovered = window.__hoveredX;
+            // Independent of the code under test: the naive datetimes are
+            // epoch-ms in UTC on the wire.
+            const ms = Date.parse(hovered.replace(' ', 'T') + 'Z');
+            const guide = divs[1].querySelector('[data-fv-hover="linked:x"]');
+            const band = divs[2].querySelector('[data-fv-hover="linked:x_band"]');
+            const xa1 = divs[1]._fullLayout.xaxis, xa2 = divs[2]._fullLayout.xaxis;
+            const histUid = DASHBOARD_SPEC.figures[2].traces[0].uid;
+            const [lo, step] = layerDataByUid[histUid].base.x_edges;
+            const bin = Math.floor((ms - lo) / step);
+            return {
+                hovered,
+                guideLeft: guide && parseFloat(guide.style.left),
+                expectedGuide: xa1._offset + xa1.l2p(ms),
+                bandLeft: band && parseFloat(band.style.left),
+                expectedBand: xa2._offset + xa2.l2p(lo + bin * step),
+            };
+        }""")
+
+        assert isinstance(result["hovered"], str), result
+        assert result["guideLeft"] is not None, f"Expected a linked guide: {result}"
+        assert result["guideLeft"] == pytest.approx(result["expectedGuide"], abs=0.5)
+        assert result["bandLeft"] is not None, f"Expected a linked band: {result}"
+        assert result["bandLeft"] == pytest.approx(result["expectedBand"], abs=0.5)
+
 
 class TestCellHoverBrowser:
     """Browser tests for Phase 3 cell hover mode."""
@@ -4973,7 +5041,7 @@ class TestCellHoverBrowser:
             };
             const visuals = planHoverVisuals(
                 fakeEvent, 'cell',
-                hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid
+                hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid
             );
             const fig0Visuals = visuals.get(fig0Uid) || [];
             return fig0Visuals.map(v => v.type);
@@ -5031,7 +5099,7 @@ class TestCellHoverBrowser:
             };
             const visuals = planHoverVisuals(
                 fakeEvent, 'cell',
-                hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid
+                hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid
             );
             return (visuals.get(fig1Uid) || []).length;
         }""")
@@ -5045,8 +5113,7 @@ class TestCellHoverBrowser:
     ):
         """A histogram declares ``axis`` as a source mode, so hovering a bar in
         axis mode must emit an x-guide on a line target sharing the column — it
-        must not be swallowed as a cell event because the bar carries customdata
-        bin bounds."""
+        must not be swallowed as a cell event because the bar has bin edges."""
         import polars as pl
 
         from flexviz.dashboard import Dashboard
@@ -5074,12 +5141,11 @@ class TestCellHoverBrowser:
             const histTraceUid = DASHBOARD_SPEC.figures[1].traces[0].uid;
             if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
             DASHBOARD_SPEC.client_state.hover_mode = 'axis';
-            // A histogram bar carries customdata bin bounds; in axis mode it must
-            // still emit a point-style x guide (at the bin centre), not a cell.
+            // A histogram bar has bin edges; in axis mode it must still emit a
+            // point-style x guide (at the bin centre), not a cell.
             handlePlotlyHover({
                 points: [{
                     x: 50, y: 3,
-                    customdata: { x0: 45, x1: 55 },
                     data: { uid: histTraceUid },
                 }],
             }, histFigUid);
@@ -5185,7 +5251,7 @@ class TestCellHoverBrowser:
 
             const visuals = planHoverVisuals(
                 fakeEvent, 'cell',
-                hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid
+                hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid
             );
             return (visuals.get(targetFigUid) || []).map(v => v.type);
         }""")
@@ -5199,10 +5265,10 @@ class TestCellHoverBrowser:
 
     @pytest.mark.browser
     @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_grouped_histogram_hover_cells_keyed_by_parent(
+    def test_grouped_histogram_hover_edges_keyed_by_parent(
         self, page: Page, server_port: int, renderer: str
     ):
-        """Grouped histogram bin bounds must be resolvable under the logical
+        """Grouped histogram bin edges must be resolvable under the logical
         parent uid (target lookups use the parent uid, not child uids)."""
         from flexviz.dashboard import Dashboard
         from flexviz.server import register_source
@@ -5226,13 +5292,13 @@ class TestCellHoverBrowser:
         page.goto(url)
         _wait_for_init(page, renderer)
 
-        n_cells = page.evaluate("""() => {
+        edges = page.evaluate("""() => {
             const parentUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
-            return (hoverCellsByTraceUid[parentUid] || []).length;
+            return hoverEdgesByTraceUid[parentUid];
         }""")
-        assert n_cells > 0, (
-            "Grouped histogram bin bounds must be stored under the parent uid; "
-            f"got {n_cells} cells"
+        assert edges and edges["x"][2] == 12, (
+            "Grouped histogram bin edges must be stored under the parent uid; "
+            f"got {edges}"
         )
 
     @pytest.mark.browser
@@ -5344,7 +5410,6 @@ class TestCellHoverBrowser:
             handlePlotlyHover({
                 points: [{
                     x: 0.1, y: 20,
-                    customdata: { x0: 0.05, x1: 0.15 },
                     data: { uid: histTraceUid },
                 }],
             }, histFigUid);
@@ -5409,7 +5474,7 @@ class TestCellHoverBrowser:
             };
             const visuals = planHoverVisuals(
                 fakeEvent, 'cell',
-                hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid
+                hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid
             );
             return (visuals.get(hist2dFigUid) || []).map(v => v.type);
         }""")
@@ -5423,12 +5488,46 @@ class TestCellHoverBrowser:
         )
 
 
+def _mouse_hover_hist2d_cell(page: Page, row: int, col: int) -> dict:
+    """Move the real mouse to the centre of one cell of the histogram2d in
+    figure 0, so Plotly itself reports the hovered point, and return the
+    linked rect drawn on figure 1."""
+    page.evaluate("""() => {
+        if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+        DASHBOARD_SPEC.client_state.hover_mode = 'on';
+    }""")
+    px, py = page.evaluate(
+        """({row, col}) => {
+            const fig = DASHBOARD_SPEC.figures[0];
+            const gd = divs[figUidToIdx[fig.uid]];
+            const base = layerDataByUid[fig.traces[0].uid].base;
+            const [xLo, xStep] = base.x_edges;
+            const [yLo, yStep] = base.y_edges;
+            const xa = gd._fullLayout.xaxis, ya = gd._fullLayout.yaxis;
+            const r = gd.getBoundingClientRect();
+            return [
+                r.left + xa._offset + xa.l2p(xLo + (col + 0.5) * xStep),
+                r.top + ya._offset + ya.l2p(yLo + (row + 0.5) * yStep),
+            ];
+        }""",
+        {"row": row, "col": col},
+    )
+    page.mouse.move(px, py)
+    page.wait_for_function(
+        """() => (__fvHoverGuidesByFig[DASHBOARD_SPEC.figures[1].uid] || [])
+            .some(g => g.tag === 'linked:rect')""",
+        timeout=5_000,
+    )
+    return page.evaluate("""() => __fvHoverGuidesByFig[DASHBOARD_SPEC.figures[1].uid]
+        .find(g => g.tag === 'linked:rect').bounds""")
+
+
 @pytest.mark.browser
 class TestBinEdgeTripleBrowser:
     """The server sends one ``[lo, step, n]`` triple per binned axis instead of
-    one hover-bounds object per bin/cell. These tests pin that the client
-    rebuilds bin bounds, geo rectangles, and the linked-hover cell lookup
-    correctly from the triple."""
+    one hover-bounds object per bin/cell. These tests pin that the client keeps
+    the triple as is (no object per bin or cell), builds the geo rectangles
+    from it, and resolves the linked-hover bin from it by arithmetic."""
 
     def test_histogram_edges_and_hover_cell_lookup(self, page: Page, server_port: int):
         from flexviz.dashboard import Dashboard
@@ -5461,18 +5560,15 @@ class TestBinEdgeTripleBrowser:
             const [lo, step, n] = layerDataByUid[traceUid].base.x_edges;
             return {
                 n, lo, step,
-                customdataLen: trace.customdata.length,
-                first: trace.customdata[0],
-                last: trace.customdata[trace.customdata.length - 1],
+                edges: hoverEdgesByTraceUid[traceUid],
+                hasCustomdata: 'customdata' in trace,
             };
         }""")
 
         n, lo, step = base["n"], base["lo"], base["step"]
-        assert base["customdataLen"] == n, "customdata must carry one bound per bin"
-        assert base["first"]["x0"] == pytest.approx(lo)
-        assert base["first"]["x1"] == pytest.approx(lo + step)
-        assert base["last"]["x0"] == pytest.approx(lo + (n - 1) * step)
-        assert base["last"]["x1"] == pytest.approx(lo + n * step)
+        assert base["edges"]["x"] == [lo, step, n], "hover keeps the triple as is"
+        assert base["edges"].get("y") is None
+        assert not base["hasCustomdata"], "a binned trace must carry no customdata"
 
         target_bin = n // 2
         probe_val = lo + (target_bin + 0.5) * step
@@ -5537,59 +5633,136 @@ class TestBinEdgeTripleBrowser:
             const [yLo, yStep, ny] = layerDataByUid[traceUid].base.y_edges;
             return {
                 nx, ny, xLo, xStep, yLo, yStep,
-                rows: trace.customdata.length,
-                cols: trace.customdata[0].length,
-                firstCell: trace.customdata[0][0],
-                lastCell: trace.customdata[ny - 1][nx - 1],
+                edges: hoverEdgesByTraceUid[traceUid],
+                hasCustomdata: 'customdata' in trace,
             };
         }""")
 
         nx, ny = base["nx"], base["ny"]
         xLo, xStep, yLo, yStep = base["xLo"], base["xStep"], base["yLo"], base["yStep"]
-        assert base["rows"] == ny, "customdata must have one row per y bin"
-        assert base["cols"] == nx, "customdata rows must have one entry per x bin"
-        first, last = base["firstCell"], base["lastCell"]
-        assert first["x0"] == pytest.approx(xLo)
-        assert first["x1"] == pytest.approx(xLo + xStep)
-        assert first["y0"] == pytest.approx(yLo)
-        assert first["y1"] == pytest.approx(yLo + yStep)
-        assert last["x0"] == pytest.approx(xLo + (nx - 1) * xStep)
-        assert last["x1"] == pytest.approx(xLo + nx * xStep)
-        assert last["y0"] == pytest.approx(yLo + (ny - 1) * yStep)
-        assert last["y1"] == pytest.approx(yLo + ny * yStep)
+        assert base["edges"] == {"x": [xLo, xStep, nx], "y": [yLo, yStep, ny]}, (
+            "hover keeps the two triples as is"
+        )
+        assert not base["hasCustomdata"], "a binned trace must carry no customdata"
 
         target_col = min(nx - 1, 3)
         target_row = min(ny - 1, 2)
-        probe_x = xLo + (target_col + 0.5) * xStep
-        probe_y = yLo + (target_row + 0.5) * yStep
-
-        rect = page.evaluate(
-            """({probeX, probeY}) => {
-                const srcFigUid = DASHBOARD_SPEC.figures[0].uid;
-                const targetFigUid = DASHBOARD_SPEC.figures[1].uid;
-                const srcTraceUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
-                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
-                DASHBOARD_SPEC.client_state.hover_mode = 'cell';
-                handlePlotlyHover({
-                    points: [{
-                        customdata: { x0: probeX, x1: probeX, y0: probeY, y1: probeY },
-                        data: { uid: srcTraceUid },
-                    }],
-                }, srcFigUid);
-                const rect = (__fvHoverGuidesByFig[targetFigUid] || [])
-                    .find(g => g.tag === 'linked:rect');
-                return rect ? rect.bounds : null;
-            }""",
-            {"probeX": probe_x, "probeY": probe_y},
-        )
-
-        assert rect is not None, (
-            "cell-mode hover must resolve the probe point to a target cell"
-        )
+        rect = _mouse_hover_hist2d_cell(page, target_row, target_col)
         assert rect["x0"] == pytest.approx(xLo + target_col * xStep)
         assert rect["x1"] == pytest.approx(xLo + (target_col + 1) * xStep)
         assert rect["y0"] == pytest.approx(yLo + target_row * yStep)
         assert rect["y1"] == pytest.approx(yLo + (target_row + 1) * yStep)
+
+    def test_temporal_histogram2d_source_hover_links_the_cell(
+        self, page: Page, server_port: int
+    ):
+        """On a date axis Plotly reports the hovered ``pt.x`` as a date string,
+        while the edges are epoch-ms. The source cell bounds must come from
+        the point index, or the date-axis source links no cell."""
+        import datetime as dt
+
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        df = pl.DataFrame(
+            {
+                "t": [
+                    dt.datetime(2024, 6, 1) + dt.timedelta(hours=i) for i in range(600)
+                ],
+                "b": [float((i * 7) % 50) for i in range(600)],
+            }
+        )
+        register_source("_browser_edges_hist2d_date", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_histogram2d(x="t", y="b", x_bins=6, y_bins=5)  # source
+        dash.add_figure().add_histogram2d(x="t", y="b", x_bins=6, y_bins=5)  # target
+        spec = dash.to_spec(source_name="_browser_edges_hist2d_date")
+        url = (
+            f"http://127.0.0.1:{server_port}/view?"
+            f"spec={encode_spec(spec)}&renderer=plotly"
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        edges = page.evaluate("""() => {
+            const base = layerDataByUid[DASHBOARD_SPEC.figures[0].traces[0].uid].base;
+            return { x: base.x_edges, y: base.y_edges };
+        }""")
+        (x_lo, x_step, _), (y_lo, y_step, _) = edges["x"], edges["y"]
+        rect = _mouse_hover_hist2d_cell(page, 2, 3)
+        assert rect["x0"] == pytest.approx(x_lo + 3 * x_step, abs=1)
+        assert rect["x1"] == pytest.approx(x_lo + 4 * x_step, abs=1)
+        assert rect["y0"] == pytest.approx(y_lo + 2 * y_step)
+        assert rect["y1"] == pytest.approx(y_lo + 3 * y_step)
+
+    def test_hover_lookup_puts_edge_values_in_the_server_bin(
+        self, page: Page, server_port: int
+    ):
+        """A value exactly on an inner bin edge and the maximum value must
+        highlight the bin the server counted that row in. Each probe value has
+        its own row count, so the server counts name the bin of each probe."""
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import encode_spec
+
+        # Grid [0.1, 0.7] in 3 bins: 0.3 is an inner edge, 0.7 the maximum.
+        # The 1-D grid pads its top edge, so there 0.3 sits just below the
+        # edge and only the kernel's round epsilon puts it in bin 1.
+        vals = [0.1] + [0.3] * 2 + [0.7] * 4
+        probes = {0.3: 2, 0.7: 4}
+        df = pl.DataFrame({"v": vals, "w": vals})
+        register_source("_browser_edges_lookup", df)
+        dash = Dashboard(df)
+        dash.add_figure().add_line(x="v", y="w")  # fig0: axis source
+        dash.add_figure().add_histogram(x="v", bins=3)  # fig1: 1-D target
+        dash.add_figure().add_histogram2d(x="v", y="w", x_bins=3, y_bins=3)  # fig2
+        spec = dash.to_spec(source_name="_browser_edges_lookup")
+        url = (
+            f"http://127.0.0.1:{server_port}/view?"
+            f"spec={encode_spec(spec)}&renderer=plotly"
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        result = page.evaluate(
+            """(probeValues) => {
+                const [line, hist, hist2d] = DASHBOARD_SPEC.figures;
+                const h1 = layerDataByUid[hist.traces[0].uid].base;
+                const h2 = layerDataByUid[hist2d.traces[0].uid].base;
+                if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+                DASHBOARD_SPEC.client_state.hover_mode = 'on';
+                const band = (figUid, tag, k) => {
+                    const g = (__fvHoverGuidesByFig[figUid] || []).find(g => g.tag === tag);
+                    return g ? [g[k + '0'], g[k + '1']] : null;
+                };
+                const bands = probeValues.map(v => {
+                    handlePlotlyHover({
+                        points: [{ x: v, y: v, data: { uid: line.traces[0].uid } }],
+                    }, line.uid);
+                    return {
+                        hist: band(hist.uid, 'linked:x_band', 'x'),
+                        h2x: band(hist2d.uid, 'linked:x_band', 'x'),
+                        h2y: band(hist2d.uid, 'linked:y_band', 'y'),
+                    };
+                });
+                return { counts: h1.y, edges: h1.x_edges, z: h2.z,
+                         xEdges: h2.x_edges, yEdges: h2.y_edges, bands };
+            }""",
+            list(probes),
+        )
+
+        def bounds(edges, i):
+            lo, step, _ = edges
+            return pytest.approx([lo + i * step, lo + (i + 1) * step])
+
+        for (value, count), band in zip(probes.items(), result["bands"]):
+            hist_bin = result["counts"].index(count)
+            row = next(r for r, zr in enumerate(result["z"]) if count in zr)
+            col = result["z"][row].index(count)
+            assert band["hist"] == bounds(result["edges"], hist_bin), value
+            assert band["h2x"] == bounds(result["xEdges"], col), value
+            assert band["h2y"] == bounds(result["yEdges"], row), value
 
     def test_geo_histogram2d_edges_and_rectangles(self, page: Page, server_port: int):
         url = _dashboard_url_geo(server_port, "plotly")

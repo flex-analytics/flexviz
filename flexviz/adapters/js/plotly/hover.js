@@ -210,6 +210,13 @@ function resumeHoverAfterDrag() {
 
 // ── Plotly → NormalizedHoverEvent ─────────────────────────────────────────
 
+// On a date axis Plotly reports a hovered value as a date string. Guides and
+// bin edges are epoch-ms, Plotly's date coordinate, so convert it with the
+// axis's own d2c.
+function hoverDataValue(axis, value) {
+  return axis && axis.type === 'date' ? axis.d2c(value) : value;
+}
+
 /**
  * Translate a native Plotly plotly_hover event into a NormalizedHoverEvent.
  * Returns null if the event is ineligible (no source trace, no columns).
@@ -230,15 +237,19 @@ function normalizePlotlyHover(eventData, traceSpecByUid, mode) {
   if (!ts.hover || !ts.hover.source_modes || !ts.hover.source_modes.length) return null;
 
   // Cell event: only in cell mode. A binned trace (histogram/histogram2d)
-  // carries customdata bin bounds, but in axis mode it acts as a normal
-  // point source (e.g. a histogram bar projects an x-guide at its bin centre),
-  // so the cell branch must not shadow the point branch outside cell mode.
-  // customdata is a bound object derived client-side from the axis edge
-  // triple: {x0,x1} or {x0,x1,y0,y1}.
-  if (mode === 'cell'
-      && pt.customdata && typeof pt.customdata === 'object' && !Array.isArray(pt.customdata)
-      && ('x0' in pt.customdata || 'y0' in pt.customdata)) {
-    const bounds = pt.customdata;
+  // has bin edges, but in axis mode it acts as a normal point source (e.g. a
+  // histogram bar projects an x-guide at its bin centre), so the cell branch
+  // must not shadow the point branch outside cell mode. The bounds come from
+  // the hovered bin's index, not from pt.x / pt.y: on a date axis Plotly
+  // reports those as date strings, while the edges are epoch-ms.
+  const edges = mode === 'cell' && hoverEdgesByTraceUid[logicalUid];
+  if (edges) {
+    // A heatmap point index is [row, col] (y bin, x bin); a bar's is its bin.
+    const pi = pt.pointIndex;
+    const [row, col] = Array.isArray(pi) ? pi : [pi, pi];
+    const bounds = {};
+    if (edges.x) [bounds.x0, bounds.x1] = binBounds(edges.x, col);
+    if (edges.y) [bounds.y0, bounds.y1] = binBounds(edges.y, row);
     const columns = {};
     if (ts.backend_data && ts.backend_data.x) columns.x = ts.backend_data.x;
     if (ts.backend_data && ts.backend_data.y) columns.y = ts.backend_data.y;
@@ -259,11 +270,11 @@ function normalizePlotlyHover(eventData, traceSpecByUid, mode) {
   const columns = {};
 
   if (pt.x !== undefined && pt.x !== null) {
-    values.x = pt.x;
+    values.x = hoverDataValue(pt.xaxis, pt.x);
     if (ts.backend_data && ts.backend_data.x) columns.x = ts.backend_data.x;
   }
   if (pt.y !== undefined && pt.y !== null) {
-    values.y = pt.y;
+    values.y = hoverDataValue(pt.yaxis, pt.y);
     if (ts.backend_data && ts.backend_data.y) columns.y = ts.backend_data.y;
   }
 
@@ -412,7 +423,7 @@ function handlePlotlyHover(eventData, sourceFigUid) {
 
   // Plan and dispatch visual instructions to each target figure.
   const visualsByFig = planHoverVisuals(
-    event, effectiveMode, hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid,
+    event, effectiveMode, hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid,
     { implementedAxisBandTargetTraceTypes: IMPLEMENTED_AXIS_BAND_TARGET_TRACE_TYPES }
   );
   for (const [figUid, visuals] of visualsByFig) {

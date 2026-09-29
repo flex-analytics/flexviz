@@ -470,8 +470,8 @@ class Histogram2D(FlexTrace):
         x_edge = self._edge_scale(self._x_temporal_dtype)
         y_edge = self._edge_scale(self._y_temporal_dtype)
 
-        # The client derives one {x0,x1,y0,y1} per cell from these triples;
-        # sending the per-cell objects instead is most of a hist2d response.
+        # The client finds a hover cell from these triples by arithmetic;
+        # sending one bound object per cell instead is most of a hist2d response.
         return TraceResult(
             updates={
                 "x": x_out,

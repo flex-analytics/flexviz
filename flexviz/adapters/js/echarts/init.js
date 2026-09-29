@@ -347,7 +347,7 @@ function handleEChartsHover(params, sourceFigUid) {
     key: null,
   };
   const visualsByFig = planHoverVisuals(
-    event, mode, hoverTargetsByColumn, hoverSourceByTrace, hoverCellsByTraceUid,
+    event, mode, hoverTargetsByColumn, hoverSourceByTrace, hoverEdgesByTraceUid,
     { implementedAxisBandTargetTraceTypes: IMPLEMENTED_AXIS_BAND_TARGET_TRACE_TYPES }
   );
   for (const [figUid, visuals] of visualsByFig) {
