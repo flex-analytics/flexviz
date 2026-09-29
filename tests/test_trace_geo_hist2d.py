@@ -376,24 +376,21 @@ class TestGeoHist2DEngine:
             ),
         ]
         # Plotly map convention: x_range = longitude, y_range = latitude
-        event = InteractionEvent(
-            type="selection",
-            force_update=True,
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_geo",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[
-                                ClauseFilter(column="lon", range=(-74.0, -73.0)),
-                                ClauseFilter(column="lat", range=(40.0, 40.5)),
-                            ]
-                        )
-                    ],
-                ),
-            ],
-        )
-        deltas = engine.process(event, infos)
+        event = InteractionEvent(type="selection", force_update=True)
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_geo",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[
+                            ClauseFilter(column="lon", range=(-74.0, -73.0)),
+                            ClauseFilter(column="lat", range=(40.0, 40.5)),
+                        ]
+                    )
+                ],
+            ),
+        ]
+        deltas = engine.process(event, infos, selections=selections)
         line_delta = next(d for d in deltas if d.uid == line.uid)
         xs = line_delta.updates["x"]
         assert max(xs) <= float(max_ts_filtered)
@@ -419,22 +416,24 @@ class TestGeoHist2DEngine:
         event = InteractionEvent(
             type="viewport",
             viewport_keys=["fig_map/coordinates"],
-            selections=[
-                SelectionState(
-                    source_figure_uid="fig_map",
-                    predicates=[
-                        SelectionPredicate(
-                            clauses=[
-                                ClauseFilter(column="lon", range=(-74.0, -72.0)),
-                                ClauseFilter(column="lat", range=(40.0, 42.0)),
-                            ]
-                        )
-                    ],
-                ),
-            ],
         )
+        selections = [
+            SelectionState(
+                source_figure_uid="fig_map",
+                predicates=[
+                    SelectionPredicate(
+                        clauses=[
+                            ClauseFilter(column="lon", range=(-74.0, -72.0)),
+                            ClauseFilter(column="lat", range=(40.0, 42.0)),
+                        ]
+                    )
+                ],
+            ),
+        ]
         viewports = {"fig_map": {"coordinates": coords}}
-        deltas = engine.process(event, infos, viewports_by_figure=viewports)
+        deltas = engine.process(
+            event, infos, viewports_by_figure=viewports, selections=selections
+        )
         assert len(deltas) == 1
         assert deltas[0].uid == geo.uid
 

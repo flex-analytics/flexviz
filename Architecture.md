@@ -84,9 +84,9 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
                       ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  ENGINE LAYER  (FlexEngine, stateless, per-request)            │
-│  process(event, trace_infos, viewports_by_figure, mode)        │
+│  process(event, infos, viewports_by_figure, selections, mode)  │
 │      → List[TraceDelta]                                        │
-│    1. Derive active selections from event                      │
+│    1. Take selections from state (none on init/deselect)       │
 │    2. Build cross-filter Polars exprs from source figures      │
 │    3. Collect regular + grouped specs per active trace         │
 │    4. Execute only the required overlay layers for the event   │
@@ -185,12 +185,17 @@ DashboardSpec
 InteractionEvent
 ├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
 ├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed
-├── selections: List[SelectionState]
 └── force_update: bool
 
 A viewport event carries no ranges: the engine reads every range from
 `state.viewport`, and a listed key absent from it means autorange. One event can
 name keys of several figures.
+
+No event carries selections: the engine reads them from `state.selections`,
+and ignores them for `init` and `deselect`. The client writes a selection to the
+state before it posts. It keeps the list that it sent: when the response
+arrives, that list tells which figures got unfiltered data
+(`isUnfilteredBaseForFigure`).
 
 "cube_request" events carry no active range and produce no deltas; they ride with
 `request_cube: true` + `active_source: {figure_uid, column, trace_uid}` on the request and return
@@ -808,11 +813,12 @@ FlexEngine
 ├── _backend_lf: LFQueryBuilder
 ├── _scalable_traces: Dict[str, FlexTrace]   ← keyed by trace uid
 │
-└── process(event, trace_infos, viewports_by_figure, cross_filter_mode) → List[TraceDelta]
+└── process(event, trace_infos, viewports_by_figure, selections, cross_filter_mode) → List[TraceDelta]
       0. Normalize axis ranges at ingestion: descending (hi, lo) viewport pairs
          (reversed plotly axes report high-to-low) are swapped so every
          consumer downstream holds the lo <= hi invariant
-      1. Derive active selections from event.type + event.selections
+      1. Take the active selections from `state.selections` (the server passes
+         them as `selections`); `init` and `deselect` drop them
       2. Decide which traces need re-aggregation (one uniform rule for cartesian
          and map traces):
          (trace.recompute_axes ∩ changed axes of its figure ≠ ∅)

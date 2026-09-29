@@ -924,7 +924,8 @@ class TestLiveBrushCube:
             for b in bodies[n_before:]
             if b.get("event", {}).get("type") == "selection"
         )
-        clause = sel_body["event"]["selections"][0]["predicates"][0]["clauses"][0]
+        selection = sel_body["spec"]["state"]["selections"][0]
+        clause = selection["predicates"][0]["clauses"][0]
         assert clause["column"] == "a"
         assert clause.get("closed") == "left", "mixed commit must POST snapped edges"
         edge_lo, edge_hi = clause["range"]
@@ -1331,7 +1332,8 @@ class TestLiveBrushCube:
             for b in bodies[n_before:]
             if b.get("event", {}).get("type") == "selection"
         )
-        clause = sel_body["event"]["selections"][0]["predicates"][0]["clauses"][0]
+        selection = sel_body["spec"]["state"]["selections"][0]
+        clause = selection["predicates"][0]["clauses"][0]
         assert clause["column"] == "a"
         assert clause.get("closed") == "left", "mixed commit must POST snapped edges"
         edge_lo, edge_hi = clause["range"]
@@ -5045,8 +5047,8 @@ class TestLineTargetCube:
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         spec,
-                        event: {type: 'selection', selections: [sel],
-                                figure_uid: srcUid, force_update: true},
+                        event: {type: 'selection', figure_uid: srcUid,
+                                force_update: true},
                     }),
                 });
                 const data = await resp.json();
@@ -5448,7 +5450,8 @@ class TestCorrTargetCube:
             for b in bodies[n_before:]
             if b.get("event", {}).get("type") == "selection"
         )
-        clause = sel_body["event"]["selections"][0]["predicates"][0]["clauses"][0]
+        selection = sel_body["spec"]["state"]["selections"][0]
+        clause = selection["predicates"][0]["clauses"][0]
         assert clause["column"] == "a" and clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
 

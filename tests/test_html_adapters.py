@@ -241,8 +241,8 @@ class TestPlotlyHtml:
 
     def test_figure_scoped_clear_keeps_other_selections(self, html):
         body = _js_function_body(html, "function clearFigureSelection(figUid)")
-        assert "type: remainingSelections.length ? 'selection' : 'deselect'" in body
-        assert "selections: remainingSelections" in body
+        assert "type: 'selection'" in body
+        assert "fvSetSelectionState?.(remainingSelections)" in body
         # Events no longer carry a figure uid; the selections say who owns what.
         assert "figure_uid" not in body
 
@@ -420,13 +420,12 @@ class TestPlotlyHtml:
 
     def test_panel_reset_event_type_adapts_to_selection(self, html):
         # When the panel sourced a cross-filter, reset-panel must send a
-        # 'selection'/'deselect' event (so other panels update), not 'viewport'.
+        # 'selection' event (so other panels update), not 'viewport'.
         # When no selection existed, the viewport commit sends a 'viewport'
         # event, and only if a cleared axis re-aggregates a trace.
         body = _js_function_body(html, "window.fvOnResetPanel = async function(figUid)")
         assert "selectionChanged" in body
-        assert "'selection'" in body
-        assert "'deselect'" in body
+        assert "type: 'selection'" in body
         assert "fvCommitViewportChange(null, clearedKeys)" in body
 
     def test_axis_lock_controls_present(self, html):
@@ -807,11 +806,8 @@ class TestEChartsHtml:
         )[0]
         assert "clearFigureSelection(figUid);" in cleared_branch
         clear_helper = _js_function_body(html, "function clearFigureSelection(figUid)")
-        assert (
-            "type: remainingSelections.length ? 'selection' : 'deselect'"
-            in clear_helper
-        )
-        assert "selections: remainingSelections" in clear_helper
+        assert "type: 'selection'" in clear_helper
+        assert "fvSetSelectionState?.(remainingSelections)" in clear_helper
         assert "figure_uid: figUid" in clear_helper
 
     def test_brush_end_emits_predicates(self, html):

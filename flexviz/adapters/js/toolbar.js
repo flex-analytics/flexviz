@@ -285,10 +285,10 @@ window.fvOnLockAllAxes = async function() {
 // to this figure — so resetting a figure that is merely a cross-filter *target*
 // re-renders it filtered-by-others at autorange, without disturbing the others.
 //
-// The emitted event type is derived from the resulting state, because the
-// engine keys its recompute/scoping on event type:
-//   * selection removed, others remain  -> 'selection' (re-apply remaining filters)
-//   * selection removed, none remain     -> 'deselect'  (whole dashboard unfiltered)
+// The event type follows what changed, because the engine keys its
+// recompute/scoping on event type:
+//   * selection removed -> 'selection' (postDashboardUpdate sends 'deselect'
+//     when none remain)
 //   * no selection changed (viewport-only reset) -> 'viewport' (names the
 //     cleared keys, so only this figure re-aggregates)
 window.fvOnResetPanel = async function(figUid) {
@@ -314,9 +314,8 @@ window.fvOnResetPanel = async function(figUid) {
   }
   for (const clearedFigUid of fvFiguresOfKeys(clearedKeys)) _fvRenderFigure(clearedFigUid);
   await postDashboardUpdate({
-    type: remaining.length ? 'selection' : 'deselect',
+    type: 'selection',
     viewport_keys: clearedKeys,
-    selections: remaining,
     force_update: true,
   });
 };
@@ -326,13 +325,11 @@ window.fvOnCfMode = async function() {
   const nextMode = mode === 'overlay' ? 'update' : 'overlay';
   DASHBOARD_SPEC.state.cross_filter_mode = nextMode;
   window.fvUpdateCfModeButton?.();
-  const selections = DASHBOARD_SPEC.state.selections || [];
   if (nextMode === 'overlay') {
-    await window.fvEnsureOverlayBackground?.(selections);
+    await window.fvEnsureOverlayBackground?.();
   }
   await postDashboardUpdate({
-    type: selections.length ? 'selection' : 'deselect',
-    selections,
+    type: 'selection',
     force_update: true,
   });
 };

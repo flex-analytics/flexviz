@@ -1,13 +1,11 @@
 // === FlexViz shared runtime — overlay cache restore ===
 // Requires: state.js, delta.js loaded first
 
-window.fvEnsureOverlayBackground = async function(selections) {
-  if (!(selections && selections.length)) return;
+window.fvEnsureOverlayBackground = async function() {
+  if (!(DASHBOARD_SPEC.state.selections || []).length) return;
   const missingBg = DASHBOARD_SPEC.figures.some(fig => !hasBgByFigure[fig.uid]);
   if (!missingBg) return;
-  await postDashboardUpdate({
-    type: 'init', selections, force_update: true,
-  });
+  await postDashboardUpdate({ type: 'init', force_update: true });
 };
 window.fvResetRuntimeCache = function() {
   // The reset is a write too: a response to an older request cannot bring
@@ -37,15 +35,11 @@ async function restoreDashboardFromSpec() {
   // One init also restores the viewport. The request carries the complete spec,
   // so the server aggregates within state.viewport; init marks every figure
   // dirty, so each figure's render applies that viewport to its layout.
-  let ok = await postDashboardUpdate({
-    type: 'init', selections: savedSelections, force_update: true,
-  });
+  let ok = await postDashboardUpdate({ type: 'init', force_update: true });
   // Stop here: a second request would clear the error reason of the first.
   if (!ok) return false;
   if (savedSelections.length) {
-    ok = await postDashboardUpdate({
-      type: 'selection', selections: savedSelections, force_update: true,
-    });
+    ok = await postDashboardUpdate({ type: 'selection', force_update: true });
   }
   window.fvRefreshSelectionSummary?.();
   // The spec can carry other axis locks (an apply, a rollback, a shared URL).

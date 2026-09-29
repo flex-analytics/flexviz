@@ -89,7 +89,7 @@ function fvCachePut(key, figureDeltas) {
 // === Figure-scoped reset cache (per-figure reset or autorange, case 3a) ===
 // A viewport event that returns figures to full autorange (a per-figure reset,
 // or a double-click that clears the last zoomed axis) names keys whose figures
-// now hold no viewport at all. When *no figure* cross-filters (event.selections
+// now hold no viewport at all. When *no figure* cross-filters (state.selections
 // empty), each such figure's unfiltered slice is exactly the slice already held
 // in the whole-dashboard unfiltered blob — so serve those slices and leave the
 // other figures untouched.
@@ -104,7 +104,7 @@ function _fvFigureCacheEligible(event) {
     _fvCacheableSources.size > 0 &&
     event.type === 'viewport' &&
     figUids.length > 0 &&
-    (event.selections || []).length === 0 &&
+    (DASHBOARD_SPEC.state.selections || []).length === 0 &&
     figUids.every(figUid => Object.keys(figureViewportRanges(figUid)).length === 0)
   );
 }

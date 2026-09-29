@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -172,6 +172,7 @@ class FlexEngine:
         event: InteractionEvent,
         trace_infos: list[TraceInfo],
         viewports_by_figure: dict[str, dict[str, Any]] | None = None,
+        selections: Sequence[SelectionState] = (),
         cross_filter_mode: Literal["update", "overlay"] = "update",
     ) -> list[TraceDelta]:
         """Process an ``InteractionEvent`` and return per-trace deltas.
@@ -187,6 +188,8 @@ class FlexEngine:
             Ordered list of all trace descriptors for the active source(s).
             Each carries a ``figure_uid`` so the engine can internally
             separate filter-expression sources from aggregation targets.
+        selections:
+            The committed selections (``state.selections``).
         """
         logger.info(f"FlexEngine.process: {event.type}")
         t_start_0 = time.perf_counter()
@@ -196,7 +199,7 @@ class FlexEngine:
             self._backend_lf.schema if self._backend_lf is not None else None
         )
         changed_axes = _changed_axes_by_figure(event.viewport_keys)
-        active_selections = self._active_selections(event)
+        active_selections = self._active_selections(event, selections)
         selection_fig_uids = {
             sel.source_figure_uid
             for sel in active_selections
@@ -328,7 +331,7 @@ class FlexEngine:
         self,
         trace_infos: list[TraceInfo],
         viewports_by_figure: dict[str, dict[str, Any]],
-        selections: list[SelectionState],
+        selections: Sequence[SelectionState],
         active_source: ActiveSource,
         cube_cache: CacheBackend | None = None,
     ) -> tuple[list[bytes], dict[str, int]]:
@@ -785,10 +788,12 @@ class FlexEngine:
             dims.append(replace(d, domain=(domain[0], domain[1] + pad), unit=unit))
         return tuple(dims)
 
-    def _active_selections(self, event: InteractionEvent) -> list[Any]:
+    def _active_selections(
+        self, event: InteractionEvent, selections: Sequence[SelectionState]
+    ) -> list[SelectionState]:
         if event.type in ("deselect", "init"):
             return []
-        return list(event.selections)
+        return list(selections)
 
     def _selection_filter_exprs(
         self,

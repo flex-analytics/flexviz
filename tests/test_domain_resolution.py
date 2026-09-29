@@ -426,9 +426,12 @@ class TestFilterStableEdges:
         event = InteractionEvent(
             type="selection" if selections else "init",
             force_update=True,
-            selections=selections,
         )
-        delta = next(d for d in engine.process(event, infos) if d.uid == trace.uid)
+        delta = next(
+            d
+            for d in engine.process(event, infos, selections=selections)
+            if d.uid == trace.uid
+        )
         if delta.group_results:  # grouped parents carry edges on their children
             return [c.updates["x"] for c in delta.group_results]
         return delta.updates["x"]
@@ -514,11 +517,12 @@ class TestFilteredLineGrid:
         event = InteractionEvent(
             type="selection" if selections else "init",
             force_update=True,
-            selections=selections,
         )
         deltas = [
             d
-            for d in engine.process(event, infos, **process_kwargs)
+            for d in engine.process(
+                event, infos, selections=selections, **process_kwargs
+            )
             if d.uid == trace.uid and d.layer != "bg"
         ]
         assert deltas, "the target produced no delta"
@@ -607,10 +611,9 @@ class TestFilteredResolveCount:
     def test_a_filtered_line_request_probes_once_with_the_filter(self, collects):
         engine, infos = self._engine([LinePlot(x="k", y="a", n_points=100)])
         engine.process(
-            InteractionEvent(
-                type="selection", force_update=True, selections=_brush("k", _BRUSH)
-            ),
+            InteractionEvent(type="selection", force_update=True),
             infos,
+            selections=_brush("k", _BRUSH),
         )
         assert len(collects.minmax) == 1
         assert "is_between" in collects.minmax[0][1]
@@ -627,10 +630,9 @@ class TestFilteredResolveCount:
             [LinePlot(x="k", y="a", n_points=100), Histogram(x="k", bins=10)]
         )
         engine.process(
-            InteractionEvent(
-                type="selection", force_update=True, selections=_brush("a", (0.0, 0.4))
-            ),
+            InteractionEvent(type="selection", force_update=True),
             infos,
+            selections=_brush("a", (0.0, 0.4)),
         )
         filtered = [c for c in collects.minmax if "is_between" in c[1]]
         assert len(collects.minmax) == 2

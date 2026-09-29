@@ -118,7 +118,7 @@ def _canonical_predicate(predicate: SelectionPredicate) -> str:
 
 
 def canonical_passive_key(
-    selections: list[SelectionState], active_figure_uid: str | None
+    selections: Iterable[SelectionState], active_figure_uid: str | None
 ) -> str | None:
     """The canonical passive key for a cube gesture (contract E).
 

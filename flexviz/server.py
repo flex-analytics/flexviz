@@ -366,7 +366,7 @@ async def _run_cube_path(
                 engine.build_cubes,
                 trace_infos,
                 viewports_by_figure,
-                list(state.selections),
+                state.selections,
                 active_source,
                 get_cube_cache(),
             )
@@ -708,6 +708,7 @@ async def dashboard_update(
                 event,
                 infos,
                 viewports_by_figure,
+                req.spec.state.selections,
                 req.spec.state.cross_filter_mode,
             )
         except Exception as exc:

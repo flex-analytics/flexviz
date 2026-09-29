@@ -8,8 +8,7 @@ function clearFigureSelection(figUid) {
   ) || [];
   window.fvSetSelectionState?.(remainingSelections);
   postDashboardUpdate({
-    type: remainingSelections.length ? 'selection' : 'deselect',
-    selections: remainingSelections,
+    type: 'selection',
     force_update: true,
   });
 }
@@ -96,7 +95,6 @@ function handleClick(eventData, figUid) {
   }
   postDashboardUpdate({
     type: 'selection',
-    selections: nextSelections,
     force_update: true,
   });
   return false;
@@ -445,9 +443,7 @@ function _fvCubeEnsureOverlayBg(gesture) {
     needed.add(t.figUid);
   }
   if (!needed.size) return;
-  const blob = fvCacheGet(fvCacheKeyFor({
-    type: 'init', selections: [], force_update: true,
-  }));
+  const blob = fvCacheGet(fvCacheKeyFor({ type: 'init', force_update: true }));
   if (!blob) return; // cold cache — degrade (skipPost bg conjunct)
   for (const figUid of needed) {
     const deltas = blob[figUid] || [];
@@ -1026,7 +1022,6 @@ async function _fvCubeFetchAndStore(figUid, source, targets, onServed) {
   const data = await fvCubeRequest(
     {
       type: 'cube_request',
-      selections: DASHBOARD_SPEC.state.selections || [],
       force_update: false,
     },
     { figure_uid: figUid, column: source.column, trace_uid: source.traceUid }
@@ -1880,7 +1875,6 @@ function handleSelected(eventData, figUid) {
   }
   postDashboardUpdate({
     type: 'selection',
-    selections: nextSelections,
     force_update: true,
   });
 }

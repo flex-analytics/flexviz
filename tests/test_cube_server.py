@@ -118,10 +118,9 @@ def _two_hist_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     return dash.to_spec(source_name=_SRC)
 
 
-def _cube_event(selections: list | None = None) -> dict:
+def _cube_event() -> dict:
     return {
         "type": "cube_request",
-        "selections": selections or [],
         "force_update": False,
     }
 
@@ -150,7 +149,6 @@ def _init_payload(spec) -> dict:
         "spec": spec.model_dump(),
         "event": {
             "type": "init",
-            "selections": [],
             "force_update": True,
         },
     }
@@ -658,7 +656,6 @@ class TestDashboardCubeRequest:
             "spec": spec.model_dump(),
             "event": {
                 "type": "init",
-                "selections": [],
                 "force_update": True,
             },
         }
