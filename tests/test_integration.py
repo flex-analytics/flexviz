@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import sys
 
 import polars as pl
 import pytest
@@ -1752,7 +1753,14 @@ class TestSameOriginServer:
             ("127.0.0.1", "localhost/evil", 400),
             ("127.0.0.1", "LOCALHOST:8000", 200),
             # Every spelling of a loopback bind is guarded, not only three.
-            ("127.1", "rebind.evil.example", 400),
+            pytest.param(
+                "127.1",
+                "rebind.evil.example",
+                400,
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="Windows does not resolve 127.1"
+                ),
+            ),
             ("127.0.0.2", "rebind.evil.example", 400),
             ("0:0:0:0:0:0:0:1", "rebind.evil.example", 400),
             # A loopback IP literal cannot be rebound, so it is served.

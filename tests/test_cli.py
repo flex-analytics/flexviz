@@ -308,7 +308,12 @@ def test_serve_without_a_port_picks_a_free_one(capsys, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     ("host", "warns"),
-    [("127.0.0.1", False), ("127.1", False), ("::1", False), ("0.0.0.0", True)],
+    [
+        ("127.0.0.1", False),
+        ("0:0:0:0:0:0:0:1", False),
+        ("::1", False),
+        ("0.0.0.0", True),
+    ],
 )
 def test_serve_warns_only_for_a_network_bind(
     capsys, monkeypatch, tmp_path, host, warns
