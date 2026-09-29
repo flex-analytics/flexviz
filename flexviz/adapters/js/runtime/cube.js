@@ -751,17 +751,19 @@ function _fvCubeCellLabel(parts) {
   return parts.length === 1 ? parts[0] : fvJsonDumpsAscii(parts);
 }
 
-// Ascending cell order by dim code: a code indexes the header's category list,
-// which _dim_dictionary builds in the server's sort order (a binned code is its
-// bin index). Decoded values would not do: JS compares null as 0 against
-// numbers and not at all against strings.
+// Ascending order by dim code tuple: a code indexes the header's category
+// list, which _dim_dictionary builds in the server's sort order (a binned code
+// is its bin index). Decoded values would not do: JS compares null as 0
+// against numbers and not at all against strings.
+function _fvCompareCodes(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
 function _fvCubeSortCells(cells) {
-  return cells.slice().sort((a, b) => {
-    for (let i = 0; i < a.codes.length; i++) {
-      if (a.codes[i] !== b.codes[i]) return a.codes[i] - b.codes[i];
-    }
-    return 0;
-  });
+  return cells.slice().sort((a, b) => _fvCompareCodes(a.codes, b.codes));
 }
 
 // Reproduce BarPlot._to_grouped_update for the ungrouped case: sorted labels,
@@ -975,13 +977,13 @@ function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
     if (groupBy.includes(d.name)) groupIdx.push(i);
   });
   // Map each group dim's index to a code→category resolver from the header.
-  const byGroup = new Map(); // group_value_key -> {parts, cells}
+  const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
     const parts = groupIdx.map(i => header.target_dims[i].categories[cell.codes[i]]);
     const gvk = _fvCubeCellLabel(parts);
     let group = byGroup.get(gvk);
     if (!group) {
-      group = { parts, cells: [] };
+      group = { codes: groupIdx.map(i => cell.codes[i]), cells: [] };
       byGroup.set(gvk, group);
     }
     group.cells.push(cell);
@@ -998,14 +1000,8 @@ function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
   };
 
   // Group order mirrors the server's sort over the group columns.
-  const ordered = [...byGroup.entries()].sort((a, b) => {
-    const pa = a[1].parts, pb = b[1].parts;
-    for (let i = 0; i < pa.length; i++) {
-      if (pa[i] < pb[i]) return -1;
-      if (pa[i] > pb[i]) return 1;
-    }
-    return 0;
-  });
+  const ordered = [...byGroup.entries()].sort(
+    (a, b) => _fvCompareCodes(a[1].codes, b[1].codes));
   const groupResults = [];
   for (const [gvk, group] of ordered) {
     const uid = uidForGroup(gvk);
@@ -1032,13 +1028,12 @@ function fvGroupedResultsFromCells(figUid, traceSpec, header, cells) {
   header.target_dims.forEach((d, i) => {
     (groupBy.includes(d.name) ? groupIdx : cellIdx).push(i);
   });
-  const byGroup = new Map(); // group_value_key -> {parts, cells}
+  const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
-    const parts = groupIdx.map(i => cell.dims[i]);
-    const gvk = _fvCubeCellLabel(parts);
+    const gvk = _fvCubeCellLabel(groupIdx.map(i => cell.dims[i]));
     let group = byGroup.get(gvk);
     if (!group) {
-      group = { parts, cells: [] };
+      group = { codes: groupIdx.map(i => cell.codes[i]), cells: [] };
       byGroup.set(gvk, group);
     }
     group.cells.push({
@@ -1059,14 +1054,8 @@ function fvGroupedResultsFromCells(figUid, traceSpec, header, cells) {
   };
 
   // Group order mirrors the server's sort over the group columns.
-  const ordered = [...byGroup.entries()].sort((a, b) => {
-    const pa = a[1].parts, pb = b[1].parts;
-    for (let i = 0; i < pa.length; i++) {
-      if (pa[i] < pb[i]) return -1;
-      if (pa[i] > pb[i]) return 1;
-    }
-    return 0;
-  });
+  const ordered = [...byGroup.entries()].sort(
+    (a, b) => _fvCompareCodes(a[1].codes, b[1].codes));
   const groupResults = [];
   for (const [gvk, group] of ordered) {
     const uid = uidForGroup(gvk);

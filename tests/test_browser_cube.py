@@ -3233,6 +3233,9 @@ def _label_parity_df(kind: str) -> pl.DataFrame:
     df = df.with_columns(pl.Series("g", g, dtype=pl.Utf8))
     if kind == "grouped_bar_null_label":
         df = df.with_columns(pl.Series("k", ["P", "Q"] * (n // 2)))
+    if kind == "grouped_bar_null_group_part":
+        k = ["Z" if a[i] < 35 else (None, "A")[i % 2] for i in range(n)]
+        df = df.with_columns(pl.Series("k", k, dtype=pl.Utf8), pl.lit("x").alias("k2"))
     return df
 
 
@@ -3251,6 +3254,8 @@ def _label_parity_url(port: int, kind: str) -> str:
         fig.add_pie(labels="g")
     elif kind == "grouped_bar_null_label":
         fig.add_bar(labels="g", group_by="k")
+    elif kind == "grouped_bar_null_group_part":
+        fig.add_bar(labels="g", group_by=["k", "k2"])
     else:
         fig.add_bar(labels="g")
     spec = dash.to_spec(source_name=name, layout=LayoutSpec(draggable=False))
@@ -3274,7 +3279,13 @@ def _json_value(v):
 class TestCubeLabelParity:
     @pytest.mark.parametrize(
         "kind",
-        ["bar_null_label", "int_null", "pie_null_label", "grouped_bar_null_label"],
+        [
+            "bar_null_label",
+            "int_null",
+            "pie_null_label",
+            "grouped_bar_null_label",
+            "grouped_bar_null_group_part",
+        ],
     )
     def test_committed_cube_delta_matches_server(
         self, page: Page, server_port: int, kind: str
