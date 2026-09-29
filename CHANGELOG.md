@@ -20,6 +20,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Removed
+
+- `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
+  `flexviz serve`.
+
 ## [0.1.0b5] - 2026-09-27
 
 ### Added

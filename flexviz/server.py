@@ -35,18 +35,12 @@ Register data sources, then start the server::
     register_source("events", pl.scan_database("SELECT * FROM events", conn))
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-Or use ``show_server`` for development / notebooks::
-
-    from flexviz.server import show_server
-    show_server(figure, source_name="sales", port=8000)
 """
 
 from __future__ import annotations
 
 import gzip
 import logging
-import threading
 import warnings
 from contextlib import asynccontextmanager
 from typing import Any
@@ -766,67 +760,3 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
             ".mount(). Use werkzeug.middleware.dispatcher.DispatcherMiddleware "
             "for Flask/WSGI hosts."
         )
-
-
-# ---------------------------------------------------------------------------
-# Development helper
-# ---------------------------------------------------------------------------
-
-
-def show_server(
-    figure,
-    source_name: str | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    **kwargs,
-) -> threading.Thread:
-    """Start a uvicorn server in a background daemon thread.
-
-    Intended for notebooks and development scripts.  For production use
-    ``uvicorn.run`` (or gunicorn + UvicornWorker) directly.
-
-    Parameters
-    ----------
-    figure:
-        An ``AbstractScalableFigure`` instance.  Its backend LazyFrame is
-        registered automatically under ``source_name`` (if provided and not
-        already registered).
-    source_name:
-        Name to register the figure's ``backend_lf`` under.  If ``None``
-        the figure is assumed to be in-memory only (no shared LazyFrame).
-    host:
-        Bind address (default ``"127.0.0.1"`` — loopback only).
-    port:
-        Port number.
-    **kwargs:
-        Extra keyword arguments forwarded to ``uvicorn.run``.
-
-    Returns
-    -------
-    threading.Thread
-        The daemon thread running the server.
-    """
-    try:
-        import uvicorn
-    except ImportError as exc:
-        raise ImportError(
-            "uvicorn is required to run the server. "
-            "Install it with:  pip install uvicorn"
-        ) from exc
-
-    if source_name is not None and source_name not in _sources:
-        if figure._backend_lf is None:
-            raise ValueError(
-                f"source_name={source_name!r} given but figure has no backend_lf"
-            )
-        register_source(source_name, figure._backend_lf._ldf)
-
-    thread = threading.Thread(
-        target=uvicorn.run,
-        args=(app,),
-        kwargs={"host": host, "port": port, **kwargs},
-        daemon=True,
-    )
-    thread.start()
-    logger.info("flexviz server running at http://%s:%d", host, port)
-    return thread
