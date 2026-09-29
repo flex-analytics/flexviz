@@ -130,10 +130,12 @@ function binBounds(edges, i) {
 
 /**
  * Bounds of the bin that holds v on a [lo, step, n] grid, or null when there
- * is no grid or v lies outside it. Same arithmetic as the fixed_hist kernels,
- * so on a numeric axis a value gets the bin the server counted it in: the epsilon keeps a value
- * on an inner edge in the upper bin despite float error, and the top edge is
- * closed, so the maximum lands in the last bin.
+ * is no grid or v lies outside it. The same rule as the fixed_hist kernels, so
+ * on a numeric axis a value gets the bin the server counted it in: the epsilon
+ * keeps a value on an inner edge in the upper bin despite float error, and the
+ * top edge is closed, so the maximum lands in the last bin. The kernels
+ * multiply by n / (hi - lo) where this divides by step, which can differ
+ * within about 1 ulp of an inner edge.
  */
 function binAt(edges, v) {
   if (!edges) return null;
