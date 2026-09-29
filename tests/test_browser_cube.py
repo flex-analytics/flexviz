@@ -3229,6 +3229,13 @@ def _label_parity_df(kind: str) -> pl.DataFrame:
         return df.with_columns(
             pl.Series("g", [vals[i % 3] for i in range(n)], dtype=pl.Int64)
         )
+    if kind == "enum_label":
+        # Declaration order differs from lexical order.
+        return df.with_columns(
+            pl.Series("g", [("z", "a", "m")[i % 3] for i in range(n)]).cast(
+                pl.Enum(["z", "a", "m"])
+            )
+        )
     g = ["b" if a[i] < 35 else (None, "a")[i % 2] for i in range(n)]
     df = df.with_columns(pl.Series("g", g, dtype=pl.Utf8))
     if kind == "grouped_bar_null_label":
@@ -3292,6 +3299,7 @@ class TestCubeLabelParity:
             "grouped_bar_null_group_part",
             "grouped_bar_null_group",
             "treemap_null_label",
+            "enum_label",
         ],
     )
     def test_committed_cube_delta_matches_server(

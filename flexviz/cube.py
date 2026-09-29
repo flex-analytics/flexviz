@@ -1382,10 +1382,11 @@ def _dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
     """Dictionary-encode one categorical target dim: (categories, u32 codes).
 
     The categories are the distinct values in **Polars sort order** — null
-    first, non-finite floats last, UTF-8 byte order for strings — and each code
-    indexes that list. A null is its own category (JSON ``null`` in the
-    header), never folded into the string ``"None"``. A NaN or infinite float
-    keeps its own code but also ships as ``null``, like the delta path.
+    first, non-finite floats last, UTF-8 byte order for strings, declaration
+    order for an Enum — and each code indexes that list. A null is its own
+    category (JSON ``null`` in the header), never folded into the string
+    ``"None"``. A NaN or infinite float keeps its own code but also ships as
+    ``null``, like the delta path.
     """
     if s.dtype.is_integer() or s.dtype.is_float():
         # Numeric categories keep their type and NUMERIC order so the cube's
@@ -1396,10 +1397,10 @@ def _dim_dictionary(s: pl.Series) -> tuple[list, pl.Series]:
         cats = s.unique().sort()
         codes = cats.drop_nulls().search_sorted(s, side="left").cast(pl.Int64)
     else:
-        # Cast to Utf8 first: an Enum/Categorical column sorts in DECLARATION
-        # order, and the header contract is lexical order.
+        # Sort in the column's own dtype, as the server delta does: an Enum
+        # keeps its declaration order.
+        cats = s.unique().sort().cast(pl.Utf8)
         s = s.cast(pl.Utf8)
-        cats = s.unique().sort()
         codes = s.cast(pl.Enum(cats.drop_nulls())).to_physical().cast(pl.Int64)
     if cats.null_count():
         # Null sorts first, so it owns code 0 and every value shifts up one.
@@ -1425,12 +1426,12 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     associative, so ``sum``/``mean``/``corr`` partials can land on different
     last bits. Do not byte-compare, hash, or ETag blobs across builds.
     Categorical target columns are dictionary-encoded: the header lists typed
-    numeric categories in numeric order, other categories in lexical (UTF-8
-    byte) order, and the column ships u32 codes into that list. Every category
-    list is in Polars sort order — null first (a null category ships as JSON
-    ``null``), non-finite floats last (they keep their own code but ship as
-    ``null`` too) — and is built with Polars expressions, never a per-row
-    Python loop.
+    numeric categories in numeric order, an Enum in declaration order, other
+    categories in lexical (UTF-8 byte) order, and the column ships u32 codes
+    into that list. Every category list is in Polars sort order — null first (a
+    null category ships as JSON ``null``), non-finite floats last (they keep
+    their own code but ship as ``null`` too) — and is built with Polars
+    expressions, never a per-row Python loop.
 
     A **categorical free axis** is dictionary-encoded the same way: the
     distinct category *tuples* over the ``__free__`` columns are listed in
@@ -1446,9 +1447,9 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     if spec.free.kind == "categorical":
         key_cols = list(result.free_key_cols)
         schema = result.frame.schema
-        # Same rule as _dim_dictionary: an Enum/Categorical key sorts in
-        # DECLARATION order, and the header contract is lexical. Numeric keys
-        # keep their type and numeric order.
+        # Enum/Categorical keys sort lexically: the client matches free
+        # categories by value, so their order never reaches a delta. Numeric
+        # keys keep their type and numeric order.
         base = result.frame.with_columns(
             pl.col(c).cast(pl.Utf8)
             for c in key_cols

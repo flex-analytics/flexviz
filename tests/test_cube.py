@@ -1173,15 +1173,18 @@ class TestCategoricalDimEncoding:
         assert sorted(codes) == [0, 1, 2]
         assert dict(zip(["a", None, "None"], codes)) == {"a": 2, None: 0, "None": 1}
 
-    @pytest.mark.parametrize(
-        "dtype", [pl.Categorical, pl.Enum(["b", "a", "c"])], ids=["categorical", "enum"]
-    )
-    def test_dictionary_dtypes_sort_lexically(self, dtype):
-        # Not in declaration/dictionary order: an Enum sorts by declaration
-        # unless the encoder casts to Utf8 first.
-        cats, codes = self._dim(pl.Series(["b", "a", "c"], dtype=dtype))
+    def test_categorical_dim_sorts_lexically(self):
+        cats, codes = self._dim(pl.Series(["b", "a", "c"], dtype=pl.Categorical))
         assert cats == ["a", "b", "c"]
         assert codes == [1, 0, 2]
+
+    def test_enum_dim_keeps_declaration_order(self):
+        # The server delta sorts an Enum label in declaration order, and the
+        # client orders cube cells by code.
+        dtype = pl.Enum(["b", "a", "c"])
+        cats, codes = self._dim(pl.Series(["c", "a", None, "b"], dtype=dtype))
+        assert cats == [None, "b", "a", "c"]
+        assert codes == [3, 2, 0, 1]
 
     def test_non_finite_numeric_dim_ships_as_null(self):
         # NaN and inf sort last and keep their own codes, but they ship as
@@ -1371,8 +1374,8 @@ def _fixture_cubes() -> dict[str, CubeResult]:
         free_key_cols=("__free__region",),
     )
 
-    # (e) Categorical- and Enum-dtyped string dims: both sort lexically in the
-    # header, never in dictionary/declaration order.
+    # (e) Categorical- and Enum-dtyped string dims: a Categorical sorts
+    # lexically, an Enum in declaration order, like the server delta.
     for name, dtype in (
         ("range_categorical_dtype_dim", pl.Categorical),
         ("range_enum_dtype_dim", pl.Enum(["b", "a", "c"])),
