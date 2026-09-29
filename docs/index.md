@@ -82,6 +82,15 @@ The `LazyFrame` stays lazy. FlexViz loads nothing until a chart needs it.
 Outside a notebook, `show()` blocks until Ctrl-C. Pass `block=False` to
 return at once.
 
+!!! note "Notebooks on a remote machine"
+    In a notebook, `show()` displays the page of its local server at
+    `http://127.0.0.1:<port>`. With a remote kernel, such as VS Code
+    Remote-SSH, your browser reaches that address only when the port is
+    forwarded, and a notebook output does not forward it. Pass a fixed `port`
+    and call `show(notebook=False, port=...)` once: VS Code forwards the port
+    when it opens the browser. After that, `show(port=...)` on the same port
+    works in the notebook.
+
 A single standalone figure works the same way, with multiple traces on one
 canvas:
 

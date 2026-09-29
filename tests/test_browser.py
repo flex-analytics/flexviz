@@ -3437,6 +3437,47 @@ class TestOverlayBrowserPlotlySafeLayerIds:
 
 
 # ---------------------------------------------------------------------------
+# Same-origin server
+# ---------------------------------------------------------------------------
+
+
+class TestSameOriginBrowser:
+    def test_a_page_from_another_origin_cannot_read_the_server(
+        self, page: Page, server_port: int
+    ):
+        # localhost and 127.0.0.1 are two origins on one server. Both are
+        # loopback, so no browser network rule blocks the request: only the
+        # server's CORS headers decide whether the page may read the answer.
+        page.goto(
+            _dashboard_url(server_port, "plotly", n_figures=1).replace(
+                "127.0.0.1", "localhost"
+            )
+        )
+        result = page.evaluate(
+            """async url => {
+                try { await fetch(url); return 'read'; }
+                catch (e) { return 'blocked'; }
+            }""",
+            f"http://127.0.0.1:{server_port}/sources",
+        )
+        assert result == "blocked"
+
+    def test_dashboard_renders_in_an_iframe_on_another_origin(
+        self, page: Page, server_port: int
+    ):
+        # A notebook embeds the server's page this way: the parent page has
+        # another origin, the dashboard in the iframe calls its own server.
+        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        page.set_content(f'<iframe src="{url}" width="900" height="600"></iframe>')
+        frame = page.wait_for_selector("iframe").content_frame()
+        frame.wait_for_function(
+            "() => typeof divs !== 'undefined' && divs.length > 0"
+            " && divs[0].data && divs[0].data.some(t => (t.x || []).length > 0)",
+            timeout=15_000,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Share URL state preservation tests
 # ---------------------------------------------------------------------------
 

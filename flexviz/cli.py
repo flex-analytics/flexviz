@@ -60,9 +60,6 @@ def _register_files(files: list[str], cache: bool) -> list[str]:
     return names
 
 
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
 def _pick_port(host: str, port: int) -> int:
     """Check *port*, or take a free one when it is 0. Returns the port to serve.
 
@@ -87,15 +84,13 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
     names = _register_files(args.files, cache=args.cache)
 
-    import uvicorn
+    from flexviz.server import is_loopback_bind, run_server
 
-    from flexviz.server import app
-
-    if args.host not in _LOOPBACK_HOSTS:
+    if not is_loopback_bind(args.host):
         print(
             f"WARNING: binding {args.host} exposes unauthenticated data endpoints "
-            "(open CORS, no auth) to the network. Use a loopback host unless you "
-            "understand the exposure.",
+            "to the network. Use a loopback host unless you understand the "
+            "exposure.",
             file=sys.stderr,
         )
     port = _pick_port(args.host, args.port or 0)
@@ -105,7 +100,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         f"starting {url} with sources: {', '.join(repr(n) for n in names)}", flush=True
     )
     print(f"poll GET {url}/sources until it responds to confirm readiness", flush=True)
-    uvicorn.run(app, host=args.host, port=port, log_level=args.log_level)
+    run_server(args.host, port, log_level=args.log_level)
 
 
 def _cmd_schema(args: argparse.Namespace) -> None:

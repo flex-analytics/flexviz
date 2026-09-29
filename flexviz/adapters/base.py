@@ -410,31 +410,16 @@ class AbstractAdapter(ABC):
         )
 
     # ------------------------------------------------------------------
-    # HTML delivery helpers
+    # Page delivery helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _deliver_notebook(html: str, height: int) -> None:
-        """Display *html* inline as an IFrame in a Jupyter / VS Code notebook."""
-        import base64
+    def _share_url(spec: DashboardSpec, server_url: str, renderer: str) -> str:
+        """POST *spec* to ``/share`` and return the server's page URL for it.
 
-        from IPython.display import IFrame, display
-
-        encoded = base64.b64encode(html.encode()).decode()
-        data_uri = f"data:text/html;base64,{encoded}"
-        display(IFrame(src=data_uri, width="100%", height=height))
-
-    @staticmethod
-    def _deliver_browser_shared(
-        spec: DashboardSpec, server_url: str, renderer: str, block: bool = True
-    ) -> None:
-        """POST *spec* to ``/share`` and open the returned URL in the browser.
-
-        With *block*, wait for Ctrl-C afterwards.  The server runs in a daemon
-        thread, so a script that returns from ``show()`` would kill it.
+        The notebook and the browser both show this page. It runs on the
+        server's own origin, so the server needs no CORS headers.
         """
-        import webbrowser
-
         import requests
 
         resp = requests.post(
@@ -443,11 +428,28 @@ class AbstractAdapter(ABC):
             timeout=5,
         )
         resp.raise_for_status()
-        url = resp.json()["url"]
-        url += f"&renderer={renderer}"
+        return f"{resp.json()['url']}&renderer={renderer}"
+
+    @staticmethod
+    def _deliver_notebook(url: str, height: int) -> None:
+        """Display the page *url* inline in a Jupyter or VS Code notebook."""
+        from IPython.display import IFrame, display
+
+        display(IFrame(src=url, width="100%", height=height))
+
+    @staticmethod
+    def _deliver_browser(url: str, block: bool = True) -> None:
+        """Open the page *url* in the default browser.
+
+        With *block*, a script waits for Ctrl-C afterwards: the server runs in
+        a daemon thread, so a script that returns from ``show()`` would kill
+        it. A notebook kernel keeps running, so a notebook cell never waits.
+        """
+        import webbrowser
+
         webbrowser.open(url)
 
-        if block:
+        if block and not _in_async_context():
             try:
                 threading.Event().wait()
             except KeyboardInterrupt:

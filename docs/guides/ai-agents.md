@@ -221,6 +221,9 @@ the embeds go blank; the markdown itself still holds every finding.
 - The server binds loopback by default. Its endpoints are unauthenticated,
   so serving on another interface prints a warning and should be a
   conscious choice.
+- The server sends no CORS headers, so a page of another site cannot read
+  it. On loopback it also refuses a request for another host name, which
+  blocks DNS rebinding.
 - Raw rows never need to enter the agent's context. Schema, samples the
   agent takes, and the ranges or categories you select do.
 - A share URL embeds the full spec, including column names and selections.

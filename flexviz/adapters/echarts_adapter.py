@@ -258,14 +258,11 @@ class EChartsAdapter(AbstractAdapter):
 
         self._wait_for_server(server_url)
 
+        url = self._share_url(spec, server_url, "echarts")
         if notebook:
-            n_figs = len(spec.figures)
-            html = self._build_dashboard_html(
-                spec, server_url=server_url, fig_height=height
-            )
-            self._deliver_notebook(html, height * n_figs + 80)
+            self._deliver_notebook(url, height * len(spec.figures) + 80)
         else:
-            self._deliver_browser_shared(spec, server_url, "echarts", block)
+            self._deliver_browser(url, block)
 
     # ------------------------------------------------------------------
     # _build_initial_option

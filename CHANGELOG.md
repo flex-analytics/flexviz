@@ -20,6 +20,25 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Security
+
+- The server sends no CORS headers any more, so a page of another site cannot
+  read its answers. A server that `show()` or `flexviz serve` binds to a
+  loopback address also refuses a request whose `Host` is not `localhost`, a
+  loopback IP or the bind host, which blocks DNS rebinding.
+
+### Changed
+
+- A notebook `show()` displays the server's own `/view` page in its iframe,
+  like the browser path, instead of a `data:` page that called the server from
+  another origin. For the deprecated ECharts renderer, `height` now sets only
+  the iframe height.
+
+### Removed
+
+- `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
+  `flexviz serve`.
+
 ## [0.1.0b5] - 2026-09-27
 
 ### Added

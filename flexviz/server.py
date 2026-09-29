@@ -34,19 +34,23 @@ Register data sources, then start the server::
     register_source("sales",  pl.scan_parquet("data/sales.parquet"))
     register_source("events", pl.scan_database("SELECT * FROM events", conn))
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 
-Or use ``show_server`` for development / notebooks::
+``flexviz serve`` and ``show()`` start it through ``run_server``, which on a
+loopback bind also refuses a foreign ``Host`` header.
 
-    from flexviz.server import show_server
-    show_server(figure, source_name="sales", port=8000)
+The server sends no CORS headers: in a browser, only pages it serves itself
+(``/view``, ``/h/{n}``) call it, from their own origin, so another site's page
+cannot read its responses. Any HTTP client that reaches the port still can.
 """
 
 from __future__ import annotations
 
 import gzip
+import ipaddress
 import logging
-import threading
+import re
+import socket
 import warnings
 from contextlib import asynccontextmanager
 from typing import Any
@@ -54,9 +58,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from flexviz.cache import (
@@ -416,14 +419,6 @@ app = FastAPI(title="flexviz", version="0.1", lifespan=_lifespan)
 # an interactive path. See ``test_gzip_compresslevel_reduced``.
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
 
-app.add_middleware(
-    CORSMiddleware,
-    # Override in production: set CORS_ORIGINS env-var or subclass Settings.
-    allow_origins=["*"],
-    allow_methods=["POST", "GET"],
-    allow_headers=["*"],
-)
-
 
 # Both /update and /dashboard/update return their declared JSON ``response_model``
 # *except* for an ``event.type == "cube_request"``, where they return a binary
@@ -769,64 +764,70 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Development helper
+# Serving
 # ---------------------------------------------------------------------------
 
 
-def show_server(
-    figure,
-    source_name: str | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    **kwargs,
-) -> threading.Thread:
-    """Start a uvicorn server in a background daemon thread.
+# A Host header is a name or a bracketed IPv6 literal, then an optional port.
+_HOST_HEADER = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^\[\]:/@\s]+)(?::[0-9]{1,5})?")
 
-    Intended for notebooks and development scripts.  For production use
-    ``uvicorn.run`` (or gunicorn + UvicornWorker) directly.
 
-    Parameters
-    ----------
-    figure:
-        An ``AbstractScalableFigure`` instance.  Its backend LazyFrame is
-        registered automatically under ``source_name`` (if provided and not
-        already registered).
-    source_name:
-        Name to register the figure's ``backend_lf`` under.  If ``None``
-        the figure is assumed to be in-memory only (no shared LazyFrame).
-    host:
-        Bind address (default ``"127.0.0.1"`` — loopback only).
-    port:
-        Port number.
-    **kwargs:
-        Extra keyword arguments forwarded to ``uvicorn.run``.
+def _is_loopback_ip(text: str) -> bool:
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
-    Returns
-    -------
-    threading.Thread
-        The daemon thread running the server.
+
+def is_loopback_bind(host: str) -> bool:
+    """Whether a server bound to *host* is reachable only from this machine.
+
+    Decided by address, as uvicorn resolves the host to bind it: ``127.1``,
+    ``127.0.0.2`` and ``0:0:0:0:0:0:0:1`` are loopback binds too.
     """
     try:
-        import uvicorn
-    except ImportError as exc:
-        raise ImportError(
-            "uvicorn is required to run the server. "
-            "Install it with:  pip install uvicorn"
-        ) from exc
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return all(_is_loopback_ip(info[4][0].split("%")[0]) for info in infos)
 
-    if source_name is not None and source_name not in _sources:
-        if figure._backend_lf is None:
-            raise ValueError(
-                f"source_name={source_name!r} given but figure has no backend_lf"
-            )
-        register_source(source_name, figure._backend_lf._ldf)
 
-    thread = threading.Thread(
-        target=uvicorn.run,
-        args=(app,),
-        kwargs={"host": host, "port": port, **kwargs},
-        daemon=True,
-    )
-    thread.start()
-    logger.info("flexviz server running at http://%s:%d", host, port)
-    return thread
+def _loopback_host_only(asgi_app: Any, bind_host: str) -> Any:
+    """Wrap *asgi_app* so it answers only a loopback ``Host`` header.
+
+    Without CORS headers another site cannot read the responses, but DNS
+    rebinding points a name of that site at 127.0.0.1 and so makes its page
+    same-origin with this server. The ``Host`` header still carries that name.
+    A loopback IP literal cannot be rebound, and the bind host is a name the
+    user chose, so both are served.
+    """
+    bind_name = bind_host.strip("[]").lower()
+
+    async def guarded(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
+            match = _HOST_HEADER.fullmatch(host)
+            hostname = match and match.group(1).strip("[]").lower()
+            if not (
+                hostname in ("localhost", bind_name)
+                or (hostname and _is_loopback_ip(hostname))
+            ):
+                response = PlainTextResponse("Invalid host header", status_code=400)
+                await response(scope, receive, send)
+                return
+        await asgi_app(scope, receive, send)
+
+    return guarded
+
+
+def run_server(host: str, port: int, log_level: str = "warning") -> None:
+    """Serve ``app`` with uvicorn until the process stops.
+
+    ``flexviz serve`` and ``show()`` start the server here. A loopback bind
+    serves only loopback ``Host`` names. Another bind is a deliberate network
+    exposure whose host names are not known here, so it serves every name.
+    """
+    import uvicorn
+
+    served = _loopback_host_only(app, host) if is_loopback_bind(host) else app
+    uvicorn.run(served, host=host, port=port, log_level=log_level)
