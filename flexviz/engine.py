@@ -449,6 +449,17 @@ class FlexEngine:
         # Only groups containing an actual target need resolving: a figure of
         # histograms none of which is cube-servable would otherwise pull its
         # columns through ``physical_minmax`` for nothing.
+        # The source figure groups its histograms the same way. When unzoomed,
+        # a group shares one axis viewport, so no sibling is zoomed either.
+        source_cols = self._histogram_domain_cols_by_uid(
+            (
+                (ti, self._scalable_traces[ti.uid], False)
+                for ti in trace_infos
+                if ti.figure_uid == active_source.figure_uid
+                and ti.uid in self._scalable_traces
+            ),
+            schema=schema,
+        ).get(active_source.trace_uid, ())
         free, domains = self._resolve_cube_domains(
             free_spec,
             [t for _, _, t in targets],
@@ -458,6 +469,7 @@ class FlexEngine:
                 for ti, _, _ in targets
                 for col in shared_domain_cols.get(ti.uid, ())
             },
+            source_cols=source_cols,
         )
         if free is None:
             return [], {}
@@ -662,14 +674,18 @@ class FlexEngine:
         target_specs: list[CubeTargetSpec],
         schema: pl.Schema | None,
         extra_cols: set[str] | None = None,
+        source_cols: tuple[str, ...] = (),
     ) -> tuple[FreeAxisSpec | None, dict[str, tuple[float, float]]]:
         """Resolve ``domain=None`` (= full data domain) to concrete floats.
+
+        ``source_cols`` is the sibling group of a histogram source. Its bars
+        span the union of the group's domains (``_histogram_bounds_exprs``), so
+        an unzoomed free axis spans that union too.
 
         One batched min/max ``select`` over the **unfiltered** LazyFrame covers
         the free axis and every unresolved binned target column (the same
         unfiltered-domain rule the aggregation path uses; the builder itself is
-        never mutated). The free axis gets the min/max verbatim — the binned-dim
-        epsilon is applied later, uniformly, in ``_resolved_target_dims``.
+        never mutated).
 
         A **categorical** free axis (bar/pie/treemap source) is not binned and
         takes no domain: free-domain resolution is skipped entirely (``domain``
@@ -716,17 +732,20 @@ class FlexEngine:
         # free axis, box2d axes, and binned target dims, so a single per-column
         # (min, max) serves all three roles.
         needed: list[str] = []
+        free_cols = [free_spec.column, *source_cols]
         if resolve_free:
-            needed.append(free_spec.column)
+            needed += free_cols
         needed += [col for _, col in box2d_axes]
         needed += unresolved_cols
         minmax = self._backend_lf.physical_minmax(needed, schema) if needed else {}
 
         free = free_spec
         if resolve_free:
-            lo, hi = minmax[free_spec.column]
-            if lo is None or hi is None:  # empty / all-null free column
+            if None in minmax[free_spec.column]:  # empty / all-null free column
                 return None, {}
+            # Like the display, an all-null sibling does not widen the union.
+            bounds = [minmax[c] for c in free_cols if None not in minmax[c]]
+            lo, hi = min(b[0] for b in bounds), max(b[1] for b in bounds)
             free = replace(free, domain=(float(lo), float(hi)))
 
         if is_box2d:

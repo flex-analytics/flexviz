@@ -3,7 +3,9 @@
 //
 // Cube live-brush path (see Architecture.md, "Cube Pre-Aggregation & Live Brushing"):
 // a cube is a pre-aggregation of one target trace's dims × the active brush
-// column binned to P=2048 (or its category tuples for a categorical source).
+// column binned to P bins (a histogram source's own bars, 128 per axis for a
+// histogram2d, 2048 for box and line; or its category tuples for a
+// categorical source).
 // The server builds + encodes it once (FVCube v1); this module decodes the
 // blob, stores it under a client-local canonical descriptor key, and
 // re-slices it per drag frame — turning every mousemove of a live brush into
@@ -201,11 +203,11 @@ function fvCubeTraceFilteredOnly(ts) {
 }
 
 // Structural guard before every store put (plan step 0b): the decoded blob's
-// free header must match the key's free descriptor — kind, column tuple,
-// p, and domain when the client knows it (`d` null is a token for a
-// server-resolved domain, not a constraint). A mismatched blob means the
-// server resolved a different source trace (or the protocol drifted): the
-// entry must NOT be stored — callers demote the target for the gesture.
+// free header must match the key's free descriptor — kind, column tuple, and
+// per range axis the grid rule of _fvCubeAxisMatchesKey. A mismatched blob
+// means the server resolved a different source trace (or the protocol
+// drifted): the entry must NOT be stored — callers demote the target for the
+// gesture.
 function fvCubeHeaderMatchesKey(key, header) {
   let keyFree;
   try { keyFree = (JSON.parse(key) || {}).free; } catch (e) { return false; }
@@ -224,35 +226,38 @@ function fvCubeHeaderMatchesKey(key, header) {
       && keyCols.every((c, i) => c === cols[i]);
   }
   if (keyFree.k === 'box2d') {
-    // The (x, y) column tuple and p must match; per-axis domains are checked
-    // only on axes the client knows (a null token is "server-resolved").
     const keyCols = Array.isArray(keyFree.c) ? keyFree.c : [keyFree.c];
     const cols = free.cols || [];
     if (keyCols.length !== 2 || cols.length !== 2) return false;
     if (!keyCols.every((c, i) => c === cols[i])) return false;
-    if (keyFree.p !== free.p) return false;
-    const doms = free.domains || [];
-    const units = free.units || [null, null];
     const keyD = Array.isArray(keyFree.d) ? keyFree.d : [null, null];
+    const units = free.units || [null, null];
+    const doms = free.domains || [];
     for (let a = 0; a < 2; a++) {
-      // Temporal axis domains are epoch-ms tokens vs the header's physical
-      // unit — only comparable for unit:"ms"; skip the check otherwise.
-      if (keyD[a] != null && !units[a]) {
-        const d = doms[a] || [];
-        if (keyD[a][0] !== d[0] || keyD[a][1] !== d[1]) return false;
+      if (!_fvCubeAxisMatchesKey(keyFree.p, keyD[a], free.p, doms[a], !!units[a])) {
+        return false;
       }
     }
     return true;
   }
-  if (keyFree.p !== free.p) return false;
-  // Temporal key domains are epoch-ms tokens while the header domain is in
-  // the column's physical unit — only comparable for unit:"ms", so the
-  // domain check is skipped for temporal headers.
-  if (keyFree.d != null && free.kind !== 'temporal') {
-    const dom = free.domain || [];
-    if (keyFree.d[0] !== dom[0] || keyFree.d[1] !== dom[1]) return false;
-  }
-  return true;
+  return _fvCubeAxisMatchesKey(
+    keyFree.p, keyFree.d, free.p, free.domain, free.kind === 'temporal'
+  );
+}
+
+// One range axis of a header against its key slot. The key holds the source
+// trace's nominal bin count and, when zoomed, the viewport. Unzoomed, the
+// header keeps that count. Zoomed, the server pads the viewport and may snap
+// it outward to a bin lattice, which adds at most one bin and covers the
+// viewport. A temporal viewport is an epoch-ms token, not the header's
+// physical unit, so only the count is compared there.
+function _fvCubeAxisMatchesKey(keyP, keyD, p, domain, temporal) {
+  if (keyD == null) return p === keyP;
+  if (p !== keyP && p !== keyP + 1) return false;
+  if (temporal) return true;
+  if (!Array.isArray(domain)) return false;
+  const slack = (domain[1] - domain[0]) / p * 1e-6; // the lattice's own epsilon
+  return domain[0] <= keyD[0] + slack && keyD[1] <= domain[1] + slack;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,13 +322,14 @@ fvCacheReset = function () {
 // Server-resolved full-data free blocks seen in decoded headers, keyed by
 // (source, column, p). Lets a later gesture on the same unzoomed axis snap
 // even before its own cube response lands. Each record carries the
-// {domain, unit} subset of the header free block.
+// {domain, p, unit} subset of the header free block.
 const _fvCubeFreeDomains = new Map();
 
-function fvCubeRememberFreeDomain(sourceName, column, p, free) {
+function fvCubeRememberFreeDomain(sourceName, column, free) {
   if (!free || !Array.isArray(free.domain) || free.domain.length !== 2) return;
-  _fvCubeFreeDomains.set(JSON.stringify([sourceName, column, p]), {
+  _fvCubeFreeDomains.set(JSON.stringify([sourceName, column, free.p]), {
     domain: [free.domain[0], free.domain[1]],
+    p: free.p,
     unit: free.unit || null,
   });
 }

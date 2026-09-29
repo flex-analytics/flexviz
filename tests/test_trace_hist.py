@@ -865,14 +865,16 @@ class TestCubeDescriptors:
         assert isinstance(spec, FreeAxisSpec)
         assert spec.column == "val"
         assert spec.kind == "continuous"
-        assert spec.p == 2048
+        assert spec.p == 10
         assert spec.domain is None
 
-    def test_source_spec_zoomed_domain_is_axis_range(self):
+    def test_source_spec_zoomed_is_the_snapped_bar_grid(self):
         trace = Histogram(x="val", bins=10)
-        spec = trace.get_cube_source_spec((10.0, 50.0))
+        spec = trace.get_cube_source_spec((10.0, 51.0))
         assert spec is not None
-        assert tuple(spec.domain) == (10.0, 50.0)
+        # The display lattice of width 4.1: [8.2, 53.3] holds 11 bars.
+        lo, hi, n = snap_range(10.0, 51.0, 10)
+        assert (tuple(spec.domain), spec.p) == ((lo, hi), n) == ((8.2, 53.3), 11)
 
     def test_source_spec_temporal_kind_from_schema(self):
         schema = pl.Schema({"ts": pl.Datetime("us")})

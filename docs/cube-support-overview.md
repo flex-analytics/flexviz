@@ -18,7 +18,7 @@ A source trace implements `get_cube_source_spec()` and produces a **free axis** 
 
 | Source trace | Free-axis kind | Geometry |
 |---|---|---|
-| `histogram` | **range** (continuous / temporal) | 1-D, P=2048 over the viewport (or full-data) domain |
+| `histogram` | **range** (continuous / temporal) | 1-D, the histogram's own bars over the viewport (or full-data) domain |
 | `box` | **range** | 1-D over the `data_col` (same gates as hist) |
 | `line` | **range** | 1-D over the **x** column only (line selection is x-only); P=2048 |
 | `histogram2d` | **box2d** | two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` |

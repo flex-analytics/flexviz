@@ -41,6 +41,21 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
   `flexviz serve`.
 
+### Fixed
+
+- A brush on a histogram snaps to the edges of its bars. The bars that Plotly
+  highlights now hold exactly the rows that the other figures keep, also for a
+  value on a bar edge and on a `Date` axis. A brush that covers no bar center
+  clears the selection. Before, the brush snapped to a fixed grid of 2048
+  steps, so the other figures also kept part of the rows of the two edge bars.
+  The live-brush data of a histogram source now grows with its number of bars
+  instead of the 2048 steps: with the default 20 bars it is about 50 times
+  smaller.
+- A histogram or a histogram2d on a `Date` column draws each bar at its bin
+  center, and its hover shows the time of day of that center. Before, the
+  center was rounded to a whole day, so a bar could sit up to half a day off
+  its bin, and bars narrower than a day stacked on one day.
+
 ## [0.1.0b5] - 2026-09-27
 
 ### Added

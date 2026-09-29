@@ -48,7 +48,7 @@ from .base import (
     _to_col_tuple,
 )
 from .batch_fold import hist1d_fold_plan
-from .bin_grid import snap_range, snapped_axis
+from .bin_grid import snapped_axis, snapped_domain
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -252,12 +252,16 @@ class Histogram(FlexTrace):
         temporal dtype (Date/Datetime/Time), else ``"continuous"`` — including
         when no schema is available. Grouped histograms are still valid
         sources: the brush is on the shared data axis, independent of the
-        grouping. ``domain`` is the viewport range verbatim (``None`` =
-        unzoomed; the engine resolves it to the full data domain).
+        grouping. The free axis is the histogram's own bar grid, so a brush
+        over bars k..m commits their edges: ``p = bins`` and ``domain=None``
+        unzoomed (the engine resolves the full data domain); zoomed, the
+        viewport snapped to the display lattice (``snapped_domain``, as for
+        the target).
         """
         dtype = _dtype_for_col(schema, self.data_col)
         kind = "temporal" if dtype is not None and dtype.is_temporal() else "continuous"
-        return FreeAxisSpec(column=self.data_col, kind=kind, p=2048, domain=axis_range)
+        domain, bins = snapped_domain(axis_range, self.bins)
+        return FreeAxisSpec(column=self.data_col, kind=kind, p=bins, domain=domain)
 
     def get_cube_target_spec(
         self,
@@ -284,12 +288,7 @@ class Histogram(FlexTrace):
         group_cols = self.group_by_cols or ()
         if group_cols and not _categorical_dims_ok(schema, group_cols):
             return None
-        bins, domain = self.bins, None
-        if axis_range is not None:
-            lo, hi, bins = snap_range(
-                float(axis_range[0]), float(axis_range[1]), self.bins
-            )
-            domain = (lo, hi)
+        domain, bins = snapped_domain(axis_range, self.bins)
         return CubeTargetSpec(
             target_dims=(
                 TargetDimSpec(

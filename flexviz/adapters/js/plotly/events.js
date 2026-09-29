@@ -494,20 +494,26 @@ function _fvCubeTargetBgOk(target) {
 //     trace (a hist2d) and no other pairs ⇒
 //     {kind:'box2d', x:{column,anchor}, y:{column,anchor}, uid}.
 // Any other count (two pairs on two different traces, three+ pairs, mixed) ⇒
-// null — today's "not a cube source" behavior.
+// null — today's "not a cube source" behavior. When two traces share a
+// (column, role) pair the later one wins, except that a binned trace
+// (histogram, histogram2d) keeps the pair: its bins are what the user sees,
+// so the brush snaps to them, not to a later line's fine grid.
 function _fvCubeSourceConstraint(figUid) {
   const figSpec = figSpecByUid[figUid];
   if (!figSpec) return null;
-  const found = new Map(); // "col:role" -> {column, role, anchor, uid}
+  const found = new Map(); // "col:role" -> {column, role, anchor, uid, binned}
   for (const ts of (figSpec.traces || [])) {
     const sel = ts.selection;
     if (!sel || sel.kind !== 'range') continue;
     const axes = ts.axes || [];
+    const binned = ts.trace_type === 'histogram' || ts.trace_type === 'histogram2d';
     for (const [anchor, col] of Object.entries(sel.axis_columns || {})) {
       if (typeof col !== 'string') continue;
       const role = anchor === axes[0] ? 'x' : (anchor === axes[1] ? 'y' : null);
       if (!role) continue;
-      found.set(col + ':' + role, { column: col, role, anchor, uid: ts.uid });
+      const pairKey = col + ':' + role;
+      if (!binned && found.has(pairKey) && found.get(pairKey).binned) continue;
+      found.set(pairKey, { column: col, role, anchor, uid: ts.uid, binned });
     }
   }
   if (found.size === 1) return found.values().next().value;
@@ -820,26 +826,39 @@ function _fvCubeGestureStart(figUid, eventData) {
 }
 
 // Adopt a decoded range free header (or a remembered free record) as the
-// gesture's snap grid: the physical domain and the temporal unit (contract
-// G). Idempotent — first adoption wins; numeric zoomed gestures already hold
-// their viewport snapDomain.
+// gesture's snap grid: the bin count, physical domain, and temporal unit.
+// The header is the only grid source: the server pads the domain and snaps a
+// histogram's zoomed viewport to its bar lattice, which the viewport alone
+// does not give. Idempotent — first adoption wins.
 function _fvCubeAdoptFreeGrid(gesture, free) {
   if (!free || free.kind === 'categorical' || !Array.isArray(free.domain)) return;
-  if (!gesture.snapDomain) gesture.snapDomain = free.domain.slice();
-  if (free.unit && !gesture.unit) gesture.unit = free.unit;
+  if (gesture.snapDomain) return;
+  gesture.snapDomain = free.domain.slice();
+  gesture.p = free.p;
+  gesture.unit = free.unit || null;
 }
 
-// Snap a (physical) range on the gesture's P-grid.
+// Snap a (physical) range on the gesture's grid.
 function _fvCubeGestureSnap(gesture, a, b) {
-  return fvCubeSnap(gesture.snapDomain, _FV_CUBE_P, a, b);
+  return fvCubeSnap(gesture.snapDomain, gesture.p, a, b);
+}
+
+// The free-axis bin count a 1-D range source asks for: a histogram brushes its
+// own bars, box and line sources a fixed fine grid. A zoom can add one bin,
+// because the server snaps the viewport outward to a lattice of width
+// (raw span / n).
+function _fvCubeSourceP(traceUid) {
+  const ts = traceSpecByUid[traceUid];
+  if (ts && ts.trace_type === 'histogram') return ts.params.bins;
+  return _FV_CUBE_P;
 }
 
 function _fvCubeRangeGestureStart(figUid, figSpec, constraint) {
   const sourceDomain = _fvCubeViewportDomain(figUid, constraint.anchor);
   if (sourceDomain === undefined) return { inert: true };
-  const temporalViewport = _fvCubeViewportIsTemporal(figUid, constraint.anchor);
+  const sourceP = _fvCubeSourceP(constraint.uid);
   const freeDesc = {
-    c: constraint.column, k: 'continuous', p: _FV_CUBE_P, d: sourceDomain,
+    c: constraint.column, k: 'continuous', p: sourceP, d: sourceDomain,
   };
   const passiveKey = fvCubePassiveKey(DASHBOARD_SPEC.state.selections, figUid);
   const gesture = {
@@ -850,11 +869,9 @@ function _fvCubeRangeGestureStart(figUid, figSpec, constraint) {
     role: constraint.role,
     sourceName: figSpec.source,
     sourceZoomed: sourceDomain != null,
-    // Snapping needs a resolved PHYSICAL domain: the zoomed numeric
-    // viewport, or (temporal/unzoomed) the server-resolved domain learned
-    // from a decoded cube header — a temporal viewport's ms token is a key,
-    // never a snap domain (the column's physical unit may differ).
-    snapDomain: (!temporalViewport && sourceDomain) || null,
+    // The snap grid, adopted from the decoded header.
+    snapDomain: null,
+    p: null,
     unit: null,
     targets: _fvCubeEnumerateTargets(figUid, figSpec.source, freeDesc, passiveKey),
     live: false,
@@ -865,7 +882,7 @@ function _fvCubeRangeGestureStart(figUid, figSpec, constraint) {
   };
   if (!gesture.sourceZoomed) {
     _fvCubeAdoptFreeGrid(
-      gesture, fvCubeFreeDomain(figSpec.source, constraint.column, _FV_CUBE_P)
+      gesture, fvCubeFreeDomain(figSpec.source, constraint.column, sourceP)
     );
   }
   const capable = gesture.targets.filter(t => t.capable);
@@ -1064,7 +1081,7 @@ async function _fvCubeFetchForGesture(gesture) {
       }
       if (!gesture.sourceZoomed) {
         fvCubeRememberFreeDomain(
-          gesture.sourceName, gesture.column, _FV_CUBE_P, entry.header.free
+          gesture.sourceName, gesture.column, entry.header.free
         );
       }
       _fvCubeAdoptFreeGrid(gesture, entry.header.free);
@@ -1760,9 +1777,12 @@ function _fvCubeEchoOfStoredSelection(figUid, range) {
   const box2dGrid = isBox2d && figSpec && figSpec.source
     ? _fvCubeRememberedBox2dGrid(figSpec.source, [constraint.x.column, constraint.y.column])
     : null;
+  const sourceP = constraint ? _fvCubeSourceP(constraint.uid) : null;
   for (let ci = 0; ci < axisConstraints.length; ci++) {
     const ac = axisConstraints[ci];
-    const p = isBox2d ? _FV_CUBE_BOX2D_P : _FV_CUBE_P;
+    // The nominal bin count: a zoom's extra lattice bin changes the step by
+    // at most 1/n, far below the half-bin tolerance.
+    const p = isBox2d ? _FV_CUBE_BOX2D_P : sourceP;
     // 1-D sources remember a per-(source, column, p) free record; box2d axes
     // read their {domain, unit} from the remembered box2d header by index.
     let recDomain = null;

@@ -101,6 +101,7 @@ from tests.test_browser import (
 
 pytestmark = pytest.mark.browser
 
+# Box and line sources brush a fixed fine grid; a histogram source its bars.
 _P = 2048
 _SRC_BINS = 16
 _TGT_BINS = 12
@@ -491,10 +492,10 @@ def _committed_edges(page: Page, column: str) -> tuple[float, float]:
 
 
 def _free_grid(
-    df: pl.DataFrame, col: str = "a", bins: int = _P
+    df: pl.DataFrame, col: str = "a", bins: int = _SRC_BINS
 ) -> tuple[float, float, int]:
-    """An unzoomed source's free axis ``(lo, hi, p)``: *bins* over the full
-    data domain."""
+    """An unzoomed source's free axis ``(lo, hi, p)``: *bins* over the
+    full data domain (a histogram's bars, or ``_P`` for box and line)."""
     lo, hi = float(df[col].min()), float(df[col].max())
     return lo, hi, bins
 
@@ -526,7 +527,7 @@ def _reference_slice_counts(
     edge_lo: float,
     edge_hi: float,
     free_col: str = "a",
-    bins: int = _P,
+    bins: int = _SRC_BINS,
 ) -> list[float]:
     """Python reference for the target hist: ``flexviz.cube`` build + slice
     over the snapped bins recovered from committed ``closed="left"`` edges
@@ -2846,7 +2847,7 @@ class TestCubeSourceIdentity:
         self, page: Page, server_port: int
     ):
         """A cube_request answered with a blob whose free header does not
-        match the gesture's descriptor (here p=1024 instead of 2048) must be
+        match the gesture's descriptor (here p=1024 instead of 16 bars) must be
         refused: nothing stored, no live updates, and the now-mixed commit
         POSTs one legacy selection that self-heals the target."""
         df = _cube_df()
@@ -4224,9 +4225,9 @@ class TestZoomKeyInterplayBrowser:
     def test_zoomed_source_brush_snaps_to_viewport_grid(
         self, page: Page, server_port: int
     ):
-        """(a): a brush on a pre-zoomed source snaps to the VIEWPORT grid
-        (finer bins): one cube_request, live updates, local commit, edges on
-        the zoomed P-grid, full parity."""
+        """(a): a brush on a pre-zoomed source snaps to the viewport's bar
+        lattice: one cube_request, live updates, local commit, edges on the
+        zoomed bar grid, full parity."""
         df = _cube_df()
         zoom = (10.0, 80.0)
         url = _zoomed_dashboard_url(server_port, "_cube_browser_zsrc", src_zoom=zoom)
@@ -4241,8 +4242,9 @@ class TestZoomKeyInterplayBrowser:
         assert types == ["cube_request"], types
 
         edge_lo, edge_hi = _committed_edges(page, "a")
-        # Edges are bin boundaries of the zoomed P-grid.
-        _committed_bins(edge_lo, edge_hi, (zoom[0], zoom[1], _P))
+        # Edges are bar boundaries of the viewport snapped to the bar lattice.
+        lo, hi, n = snap_range(zoom[0], zoom[1], _SRC_BINS)
+        _committed_bins(edge_lo, edge_hi, (lo, hi, n))
 
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         expr = _selection_expr(df, sels[0])
@@ -4344,8 +4346,9 @@ class TestZoomKeyInterplayBrowser:
         clause = by_fig[fig_uids[0]]["predicates"][0]["clauses"][0]
         assert clause["column"] == "a" and clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
-        # The commit stays inside the zoomed grid, never past its top.
-        assert 10.0 <= edge_lo < edge_hi <= 80.0
+        # The commit stays inside the snapped bar grid, never past its top.
+        lo, hi, _n = snap_range(10.0, 80.0, _SRC_BINS)
+        assert lo <= edge_lo < edge_hi <= hi
         expected = _hist_counts_ref(df, expr_src & expr_third, "b", _TGT_BINS)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
@@ -6528,11 +6531,222 @@ class TestTreeMapTargetCube:
 
 
 # ---------------------------------------------------------------------------
+# A histogram source brushes its own bars (#133)
+# ---------------------------------------------------------------------------
+
+
+def _edge_df() -> pl.DataFrame:
+    """Integer ``a`` in 0..100: with 16 bars, 25, 50 and 75 sit on bar
+    edges."""
+    n = 101 * 7
+    return pl.DataFrame(
+        {
+            "a": [float(i % 101) for i in range(n)],
+            "b": [float(i % 13) for i in range(n)],
+        }
+    )
+
+
+def _bar_fracs(page: Page, lo: float, step: float, k: int, m: int):
+    """Plot-width fractions of a brush over the centers of bars k..m only.
+    *lo* and *step* are in the axis's linear units (epoch ms on a date axis)."""
+    r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis._rl")
+    a, b = lo + (k + 0.25) * step, lo + (m + 0.75) * step
+    return (a - r0) / (r1 - r0), (b - r0) / (r1 - r0)
+
+
+class TestHistSourceBarGrid:
+    def test_brush_over_bars_commits_their_rows(self, page: Page, server_port: int):
+        """A brush over bars k..m commits exactly their kernel boundaries; the
+        bars Plotly highlights are the bars whose rows the commit filters,
+        including the integer values that sit on a bar edge."""
+        df = _edge_df()
+        url = _two_hist_dashboard_url(server_port, "_cube_bar_grid", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        source_counts = _hist_y(page, "#fv-plot-0")
+
+        grid = _free_grid(df)
+        lo, hi, bars = grid
+        step = (hi - lo) / bars
+        k, m = 4, 11  # bars 4 and 8 start on the edge values 25 and 50
+        f_lo, f_hi = _bar_fracs(page, lo, step, k, m)
+        _brush_commit(page, 0, f_lo, f_hi, live_fig_idx=1)
+
+        edge_lo, edge_hi = _committed_edges(page, "a")
+        assert _committed_bins(edge_lo, edge_hi, grid) == (k, m)
+        highlighted = page.eval_on_selector(
+            "#fv-plot-0",
+            "gd => gd.data.map(t => t.selectedpoints ? Array.from(t.selectedpoints) : null)"
+            ".filter(Boolean)",
+        )
+        assert list(range(k, m + 1)) in highlighted, highlighted
+
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        expr = _selection_expr(df, sels[0])
+        assert df.filter(expr).height == sum(source_counts[k : m + 1])
+        expected = _hist_counts_ref(df, expr, "b", _TGT_BINS)
+        _wait_for_hist_equals(page, "#fv-plot-1", expected)
+
+    def test_brush_covering_no_bar_center_clears(self, page: Page, server_port: int):
+        """A brush inside one bar that misses its center selects nothing: the
+        commit clears the figure's selection and the target shows all rows."""
+        df = _edge_df()
+        url = _two_hist_dashboard_url(server_port, "_cube_bar_clear", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        y_unfiltered = _target_y(page)
+
+        lo, hi, bars = _free_grid(df)
+        step = (hi - lo) / bars
+        f_lo, f_hi = _bar_fracs(page, lo, step, 2, 9)
+        _brush_commit(page, 0, f_lo, f_hi, live_fig_idx=1)
+        assert len(page.evaluate("DASHBOARD_SPEC.state.selections")) == 1
+
+        r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis.range")
+        # Outside the committed box: a drag inside it would move that box.
+        a, b = lo + 13.1 * step, lo + 13.4 * step
+        _brush_commit(page, 0, (a - r0) / (r1 - r0), (b - r0) / (r1 - r0))
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+        _wait_for_hist_equals(page, "#fv-plot-1", y_unfiltered)
+
+
+# ---------------------------------------------------------------------------
 # Review follow-ups: empty frames, header guard, source choice, snap parity
 # ---------------------------------------------------------------------------
 
 
+def _x_px(page: Page, fig_idx: int, value: float) -> float:
+    """Page x of a data value on figure *fig_idx*'s x axis."""
+    box = page.locator(f"#fv-plot-{fig_idx} .nsewdrag").bounding_box()
+    r0, r1 = page.eval_on_selector(
+        f"#fv-plot-{fig_idx}", "gd => gd._fullLayout.xaxis.range"
+    )
+    return box["x"] + box["width"] * (value - r0) / (r1 - r0)
+
+
+def _wait_for_layers(page: Page, sel: str, layers: list[dict], equal: bool) -> None:
+    """Wait until the rendered layers (``_rendered_layers``) of *sel* equal
+    *layers*, or differ from them when *equal* is False."""
+    page.wait_for_function(
+        """([sel, want, equal]) => {
+            const gd = document.querySelector(sel);
+            const got = (gd.data || []).map(t => ({
+                uid: t.uid, opacity: t.opacity, y: Array.from(t.y || []),
+            }));
+            return (JSON.stringify(got) === JSON.stringify(want)) === equal;
+        }""",
+        arg=[sel, layers, equal],
+        timeout=10_000,
+    )
+
+
 class TestCubeGridGuards:
+    @pytest.mark.parametrize("overlay", [False, True])
+    def test_empty_snap_mid_drag_shows_pre_gesture_state(
+        self, page: Page, server_port: int, overlay: bool
+    ):
+        """A frame whose brush covers no bar center shows the targets as they
+        were before the gesture, not an empty slice. In overlay mode that is
+        the unfiltered layer at full opacity, not the dimmed ghost."""
+        df = _cube_df()
+        if overlay:
+            url = _overlay_dashboard_url(server_port, "_cube_empty_frame_ovl")
+        else:
+            url = _two_hist_dashboard_url(server_port, "_cube_empty_frame", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        before = _rendered_layers(page, "#fv-plot-1")
+        lo, hi, bars = _free_grid(df)
+        step = (hi - lo) / bars
+        box = page.locator("#fv-plot-0 .nsewdrag").bounding_box()
+        y = box["y"] + box["height"] * 0.5
+
+        page.mouse.move(_x_px(page, 0, lo + 3.1 * step), y)
+        page.mouse.down()
+        page.mouse.move(_x_px(page, 0, lo + 8.5 * step), y, steps=8)
+        _wait_for_layers(page, "#fv-plot-1", before, equal=False)
+        # Back inside bar 3, short of its center: no bar is covered.
+        page.mouse.move(_x_px(page, 0, lo + 3.4 * step), y, steps=8)
+        _wait_for_layers(page, "#fv-plot-1", before, equal=True)
+        page.mouse.up()
+        page.wait_for_timeout(500)
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+
+    def test_header_guard_rejects_another_traces_grid(
+        self, page: Page, server_port: int
+    ):
+        """A zoomed key accepts only a header with the key's bin count or one
+        more, over a domain that covers the viewport; unzoomed, the count must
+        match. A blob built for another trace's grid is rejected."""
+        url = _two_hist_dashboard_url(server_port, "_cube_hdr_guard", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        got = page.evaluate("""() => {
+            const key = (free) => JSON.stringify({s: 's', free});
+            const one = (p, d, hp, dom, kind = 'continuous') => fvCubeHeaderMatchesKey(
+              key({c: 'a', k: 'continuous', p, d}), {free: {kind, p: hp, domain: dom}}
+            );
+            return {
+              zoomedLattice: one(16, [10, 80], 17, [8.75, 83.125]),
+              zoomedOtherTrace: one(16, [10, 80], 2048, [10, 80.0000000001]),
+              zoomedTwoMore: one(16, [10, 80], 18, [8.75, 83.125]),
+              zoomedNotCovering: one(16, [10, 80], 17, [12, 83]),
+              zoomedTemporal: one(16, [1, 2], 17, [5, 6], 'temporal'),
+              unzoomed: one(16, null, 16, [0, 99.9]),
+              unzoomedMore: one(16, null, 17, [0, 99.9]),
+            };
+        }""")
+        assert got == {
+            "zoomedLattice": True,
+            "zoomedOtherTrace": False,
+            "zoomedTwoMore": False,
+            "zoomedNotCovering": False,
+            "zoomedTemporal": True,
+            "unzoomed": True,
+            "unzoomedMore": False,
+        }
+
+    @pytest.mark.parametrize("line_first", [False, True])
+    def test_histogram_is_the_source_over_a_line_on_its_column(
+        self, page: Page, server_port: int, line_first: bool
+    ):
+        """A histogram and a line brushed on the same column: the histogram's
+        bars set the grid, whichever trace comes later."""
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import LayoutSpec, encode_spec
+
+        df = _cube_df().sort("a")
+        register_source("_cube_hist_over_line", df, cache=True)
+        dash = Dashboard(df)
+        fig = dash.add_figure(title="Source")
+        if line_first:
+            fig.add_line(x="a", y="b").add_histogram(x="a", bins=_SRC_BINS)
+        else:
+            fig.add_histogram(x="a", bins=_SRC_BINS).add_line(x="a", y="b")
+        dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
+        spec = dash.to_spec(
+            source_name="_cube_hist_over_line", layout=LayoutSpec(draggable=False)
+        )
+        page.goto(
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
+            "&renderer=plotly"
+        )
+        _wait_for_init(page, "plotly")
+        hist_uid = next(
+            t.uid for t in spec.figures[0].traces if t.trace_type == "histogram"
+        )
+        got = page.evaluate(
+            "(fig) => { const c = _fvCubeSourceConstraint(fig); "
+            "return [c.uid, _fvCubeSourceP(c.uid)]; }",
+            spec.figures[0].uid,
+        )
+        assert got == [hist_uid, _SRC_BINS]
+
     def test_js_snap_matches_python_snap_brush(self, page: Page, server_port: int):
         """fvCubeSnap and flexviz.cube.snap_brush agree bit for bit."""
         url = _two_hist_dashboard_url(server_port, "_cube_snap_parity", "auto")
@@ -6660,3 +6874,126 @@ class TestCubeGridGuards:
         assert clause["range"] == [1e7, 1e7]
         assert clause["closed"] == "both"
         assert sum(_target_y(page)) == 10
+
+
+def _short_date_df() -> pl.DataFrame:
+    """Seven days in 16 bars: bars 0.375 day wide, edges between the days."""
+    import datetime as dt
+
+    n = 7 * 40
+    return pl.DataFrame(
+        {
+            "t": [dt.date(2020, 1, 1) + dt.timedelta(days=i % 7) for i in range(n)],
+            "b": [float(i % 13) for i in range(n)],
+        }
+    )
+
+
+def _short_date_page(page: Page, server_port: int):
+    """Open a Date source hist(t) over ``_short_date_df`` + target hist(b)."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    df = _short_date_df()
+    register_source("_cube_short_date", df, cache=True)
+    dash = Dashboard(df)
+    dash.add_figure(title="Days").add_histogram(x="t", bins=_SRC_BINS)
+    dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
+    spec = dash.to_spec(
+        source_name="_cube_short_date", layout=LayoutSpec(draggable=False)
+    )
+    spec.client_state.live_brush = "auto"
+    page.goto(
+        f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}&renderer=plotly"
+    )
+    _wait_for_init(page, "plotly")
+    _enter_select_mode(page)
+    return df, spec
+
+
+class TestDateHistSource:
+    # Bar 2 holds day 1 in its upper half and bar 11 holds no day, so a
+    # whole-day box would drop bar 2's center and take bar 11's.
+    @pytest.mark.parametrize("k,m", [(2, 10), (2, _SRC_BINS - 1)])
+    def test_box_on_bar_edges_highlights_the_committed_bars(
+        self, page: Page, server_port: int, k: int, m: int
+    ):
+        """On bars narrower than a day, a brush over bars k..m commits whole
+        days that hold exactly their rows, and its box sits on the bar edges,
+        so Plotly highlights bars k..m. A brush up to the top bar commits
+        closed="both" with the last day. The echo guard tolerates half a bar."""
+        df, spec = _short_date_page(page, server_port)
+        counts = _hist_y(page, "#fv-plot-0")
+        day_ms = 86_400_000
+        lo, hi, bars = _free_grid(df.with_columns(pl.col("t").to_physical()), "t")
+        step = (hi - lo) / bars
+        _brush_commit(
+            page, 0, *_bar_fracs(page, lo * day_ms, step * day_ms, k, m), live_fig_idx=1
+        )
+
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        clause = sels[0]["predicates"][0]["clauses"][0]
+        top = m == bars - 1
+        assert clause["closed"] == ("both" if top else "left")
+        if top:
+            assert clause["range"][1] == "2020-01-07"
+        assert df.filter(_selection_expr(df, sels[0])).height == sum(counts[k : m + 1])
+        (highlighted,) = page.eval_on_selector(
+            "#fv-plot-0",
+            "gd => gd.data.map(t => t.selectedpoints ? Array.from(t.selectedpoints) : null)"
+            ".filter(Boolean)",
+        )
+        # A bar without rows has no height, so only the others show a highlight.
+        assert [i for i in highlighted if counts[i]] == [
+            i for i in range(k, m + 1) if counts[i]
+        ]
+
+        echo = page.evaluate(
+            """([fig, step]) => {
+                const sel = fvFigureSelection(fig, DASHBOARD_SPEC.state.selections);
+                const box = sel._plotly_selection_box;
+                const d = v => fvTemporalToPhysical(v, 'day');
+                const at = shift => _fvCubeEchoOfStoredSelection(
+                  fig, {x: [d(box.x0) + shift * step, d(box.x1)], y: [0, 1]}
+                );
+                return [at(0.4), at(0.6)];
+            }""",
+            [spec.figures[0].uid, step],
+        )
+        assert echo == [True, False]
+
+    # In bar units, bar 8 (day 3) is centered at 8.5, and the midnight that
+    # starts day 3 sits at 8.0, where day-rounded centers drew bars 7 and 8.
+    # The first brush covers bar 8's center but not that midnight, the second
+    # the midnight but no center. Each margin is at least 0.2 bar.
+    @pytest.mark.parametrize("a,b,bar_rows", [(8.2, 9.2, True), (7.7, 8.3, False)])
+    def test_brush_highlights_the_rows_it_commits(
+        self, page: Page, server_port: int, a: float, b: float, bar_rows: bool
+    ):
+        """Plotly highlights a bar whose drawn center is inside the brush. The
+        bar must be drawn at its bin center, not the whole day, or the brush
+        highlights one bar and commits another."""
+        df, _spec = _short_date_page(page, server_port)
+        counts = _hist_y(page, "#fv-plot-0")
+        lo, hi, bars = _free_grid(df.with_columns(pl.col("t").to_physical()), "t")
+        day_ms = 86_400_000
+        step = (hi - lo) / bars * day_ms
+        r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis._rl")
+        f_lo, f_hi = ((lo * day_ms + f * step - r0) / (r1 - r0) for f in (a, b))
+        x1, x2, y = _fig_drag_coords(page, 0, f_lo, f_hi)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move(x2, y, steps=8)
+        page.wait_for_timeout(500)
+        highlighted = page.eval_on_selector(
+            "#fv-plot-0", "gd => Array.from(gd.data[0].selectedpoints || [])"
+        )
+        page.mouse.up()
+        page.wait_for_timeout(500)
+
+        rows = counts[8] if bar_rows else 0
+        assert sum(counts[i] for i in highlighted) == rows
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        committed = df.filter(_selection_expr(df, sels[0])).height if sels else 0
+        assert committed == rows
