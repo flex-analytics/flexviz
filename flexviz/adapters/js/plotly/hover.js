@@ -210,6 +210,13 @@ function resumeHoverAfterDrag() {
 
 // ── Plotly → NormalizedHoverEvent ─────────────────────────────────────────
 
+// On a date axis Plotly reports a hovered value as a date string. Guides and
+// bin edges are epoch-ms, Plotly's date coordinate, so convert it with the
+// axis's own d2c.
+function hoverDataValue(axis, value) {
+  return axis && axis.type === 'date' ? axis.d2c(value) : value;
+}
+
 /**
  * Translate a native Plotly plotly_hover event into a NormalizedHoverEvent.
  * Returns null if the event is ineligible (no source trace, no columns).
@@ -263,11 +270,11 @@ function normalizePlotlyHover(eventData, traceSpecByUid, mode) {
   const columns = {};
 
   if (pt.x !== undefined && pt.x !== null) {
-    values.x = pt.x;
+    values.x = hoverDataValue(pt.xaxis, pt.x);
     if (ts.backend_data && ts.backend_data.x) columns.x = ts.backend_data.x;
   }
   if (pt.y !== undefined && pt.y !== null) {
-    values.y = pt.y;
+    values.y = hoverDataValue(pt.yaxis, pt.y);
     if (ts.backend_data && ts.backend_data.y) columns.y = ts.backend_data.y;
   }
 

@@ -4876,6 +4876,74 @@ class TestLinkedHoverBrowser:
         assert result["left"] == pytest.approx(result["plotLeft"], abs=0.5)
         assert result["right"] == pytest.approx(result["expectedRight"], abs=0.5)
 
+    def test_mouse_hover_on_a_date_axis_links_guide_and_band(
+        self, page: Page, server_port: int, renderer: str
+    ):
+        """On a date axis Plotly reports the hovered x as a date string. The
+        linked guide and the histogram band are placed in epoch-ms, so the
+        hovered value must reach them as epoch-ms too."""
+        if renderer == "echarts":
+            pytest.skip("Plotly-specific test")
+        import datetime as dt
+
+        n = 300
+        df = pl.DataFrame(
+            {
+                "ts": [
+                    dt.datetime(2024, 6, 1) + dt.timedelta(hours=i) for i in range(n)
+                ],
+                "val": [float((i * 37) % n) for i in range(n)],
+                "v2": [float(i) for i in range(n)],
+            }
+        )
+
+        def build(dash):
+            dash.add_figure().add_line(x="ts", y="val", n_points=n)
+            dash.add_figure().add_line(x="ts", y="v2", n_points=n)
+            dash.add_figure().add_histogram(x="ts", bins=10)
+
+        page.goto(_color_norm_url(server_port, "_browser_date_hover", df, build))
+        _wait_for_init(page, "plotly")
+        center = page.evaluate("""() => {
+            if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
+            DASHBOARD_SPEC.client_state.hover_mode = 'axis';
+            window.__hoveredX = null;
+            divs[0].on('plotly_hover', e => { window.__hoveredX = e.points[0].x; });
+            const gd = divs[0], xa = gd._fullLayout.xaxis, ya = gd._fullLayout.yaxis;
+            const r = gd.getBoundingClientRect();
+            return {x: r.left + xa._offset + xa._length / 2,
+                    y: r.top + ya._offset + ya._length / 2};
+        }""")
+        page.mouse.move(center["x"] - 5, center["y"])
+        page.mouse.move(center["x"], center["y"])
+        page.wait_for_function("() => window.__hoveredX !== null")
+
+        result = page.evaluate("""() => {
+            const hovered = window.__hoveredX;
+            // Independent of the code under test: the naive datetimes are
+            // epoch-ms in UTC on the wire.
+            const ms = Date.parse(hovered.replace(' ', 'T') + 'Z');
+            const guide = divs[1].querySelector('[data-fv-hover="linked:x"]');
+            const band = divs[2].querySelector('[data-fv-hover="linked:x_band"]');
+            const xa1 = divs[1]._fullLayout.xaxis, xa2 = divs[2]._fullLayout.xaxis;
+            const histUid = DASHBOARD_SPEC.figures[2].traces[0].uid;
+            const [lo, step] = layerDataByUid[histUid].base.x_edges;
+            const bin = Math.floor((ms - lo) / step);
+            return {
+                hovered,
+                guideLeft: guide && parseFloat(guide.style.left),
+                expectedGuide: xa1._offset + xa1.l2p(ms),
+                bandLeft: band && parseFloat(band.style.left),
+                expectedBand: xa2._offset + xa2.l2p(lo + bin * step),
+            };
+        }""")
+
+        assert isinstance(result["hovered"], str), result
+        assert result["guideLeft"] is not None, f"Expected a linked guide: {result}"
+        assert result["guideLeft"] == pytest.approx(result["expectedGuide"], abs=0.5)
+        assert result["bandLeft"] is not None, f"Expected a linked band: {result}"
+        assert result["bandLeft"] == pytest.approx(result["expectedBand"], abs=0.5)
+
 
 class TestCellHoverBrowser:
     """Browser tests for Phase 3 cell hover mode."""
