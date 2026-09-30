@@ -343,9 +343,8 @@ class Histogram2D(FlexTrace):
         """A 2-D histogram is a ``count``/reduce cube target (contract K).
 
         Its grouping dims are its own ``(x_col, y_col)`` bin axes (order pinned:
-        x first, y second) with ``bin_variant="hist2d"`` so the cube bins
-        bit-equally to the ``fixed_hist2d`` kernel (no span pad, top clamp
-        only).
+        x first, y second), binned bit-equally to the ``fixed_hist2d`` kernel
+        (top clamp, no span pad).
         The measure is a count when ``z_col`` is ``None``, else the ``histfunc``
         reduction over ``z_col``. ``histnorm`` is NOT part of the cube — it is a
         client-side display normalization applied per-slice (two hist2ds
@@ -394,14 +393,12 @@ class Histogram2D(FlexTrace):
                     kind="binned",
                     bins=self.x_bins,
                     domain=None,
-                    bin_variant="hist2d",
                 ),
                 TargetDimSpec(
                     column=y_col,
                     kind="binned",
                     bins=self.y_bins,
                     domain=None,
-                    bin_variant="hist2d",
                 ),
             ),
             measure=measure,

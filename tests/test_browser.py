@@ -5747,11 +5747,11 @@ class TestBinEdgeTripleBrowser:
         from flexviz.server import register_source
         from flexviz.spec import encode_spec
 
-        # Grid [0.1, 0.7] in 3 bins: 0.3 is an inner edge, 0.7 the maximum.
-        # The 1-D grid pads its top edge, so there 0.3 sits just below the
-        # edge and only the kernel's round epsilon puts it in bin 1.
-        vals = [0.1] + [0.3] * 2 + [0.7] * 4
-        probes = {0.3: 2, 0.7: 4}
+        # Grid [0.1, 0.4] in 3 bins: 0.2 is an inner edge, 0.4 the maximum.
+        # Float rounding puts 0.2 just below the inner edge in the kernel and
+        # in the hover lookup, so only their round epsilons put it in bin 1.
+        vals = [0.1] + [0.2] * 2 + [0.4] * 4
+        probes = {0.2: 2, 0.4: 4}
         df = pl.DataFrame({"v": vals, "w": vals})
         register_source("_browser_edges_lookup", df)
         dash = Dashboard(df)

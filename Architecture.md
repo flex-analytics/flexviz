@@ -554,7 +554,7 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
   date axis, like the line trace) and emits the bin-edge triple in epoch-ms.
   Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
   `temporal_unit` (contract G).
-- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The 1-D trace then pads `hi` by `_HIST_BIN_EPSILON`, so it bins on `[lo, hi + 1e-10]` and a value on the upper bound lands in the last bin. The 2-D path passes the raw bounds instead: the kernel's top clamp folds a value on the upper bound into the last bin.
+- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The kernel gets the raw bounds: its top clamp folds a value on the upper bound into the last bin. So the bin range is the row range the viewport mask keeps, and a cube built on the same bounds keeps the same rows.
 - A zoomed grid can hold one bin more than configured, so `_to_update` reads the grid the trace stored in `get_aggregation_spec` (`Histogram._bin_edges`) and the cube target dim carries the snapped `(domain, bins)`, not the configured `bins`. The 1-D plans emit `count` only and the kernel's `breakpoint` field is never read, so the grid travels beside the result rather than in it (issue #37). The client derives bar centers from those two, so cube-served bars land on the server's bars.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
@@ -646,7 +646,7 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
+- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, as in the 1-D trace.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"Viridis"`, `"auto"` and `"linear"`.
@@ -1352,13 +1352,13 @@ them.
 
   | trace | target dims | measure |
   |---|---|---|
-  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly; zoomed: snapped `(domain, bins)`, see the Histogram section | count |
+  | hist (ungrouped) | (binned data col) — display bin edges, so a slice reproduces the Rust `fixed_hist` membership bit-exactly; zoomed: snapped `(domain, bins)`, see the Histogram section | count |
   | hist (grouped) | (binned data col, *group cols as categorical) — same snap, `get_cube_target_spec` snaps before the grouped branch | count |
   | bar | (*label cols, *group cols — all categorical) | `count`/`sum`/`mean`/`min`/`max` over `values` |
   | pie | (*label cols as categorical) | same |
   | line | (binned x col @ `n_points/2` buckets, *group cols as categorical) — **minmax-only** | `line_env` over `y` |
   | corr_heatmap | `()` — no grouping dims; the matrix cells are the explicit `columns` pairs; `columns` must be passed explicitly for cube support | `corr` (Pearson only) |
-  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"` (only skips the domain pad; the bin expression is shared with hist1d), **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
+  | hist2d | (binned x col, binned y col) — the bin expression is shared with hist1d, **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
   | treemap | (*path cols as categorical) — the **leaf** level; the client finalizes leaf cells then **sums** them up every path level (parents = Σ of child finalized values, mirroring `_to_grouped_update`) | `count`/`sum`/`mean`/`min`/`max` over `values` |
 
   bar ≡ pie descriptor sharing falls out of content-key dedup: same labels + same measure ⇒ one
@@ -1376,9 +1376,9 @@ them.
   cube. **The line envelope caveat:** the cube ships the *minmax-bucket* envelope so the drag is
   live every frame, but a line target's commit **always POSTs** (`postRequired`) so the committed
   delta replaces the approximate envelope — keeping commit ≡ share/restore bit-exact. Both are
-  x-width envelopes, but their bucket edges can differ: the cube pads its upper bound by
-  `_HIST_BIN_EPSILON` and divides true, while `bucket_grid` rounds an integer viewport bound
-  inward and keeps a whole bucket width on integer and temporal x. Issue #24 tracks it.
+  x-width envelopes, but their bucket edges can differ: the cube divides true, while
+  `bucket_grid` rounds an integer viewport bound inward and keeps a whole bucket width on
+  integer and temporal x. Issue #24 tracks it.
 - **Dtype/name gates** (descriptor methods return `None`; a schema is required for categorical
   capability): every categorical dim column must be `String`/`Categorical`/`Enum`, with one
   exception — a **bar/pie label** column may also be **integer- or float-typed**, on **both** the

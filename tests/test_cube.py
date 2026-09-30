@@ -3182,14 +3182,12 @@ def _hist2d_target_spec(
                 kind="binned",
                 bins=_HIST2D_NB_X,
                 domain=(x_lo, x_hi),
-                bin_variant="hist2d",
             ),
             TargetDimSpec(
                 column="y",
                 kind="binned",
                 bins=_HIST2D_NB_Y,
                 domain=(y_lo, y_hi),
-                bin_variant="hist2d",
             ),
         ),
         measure=measure,
@@ -3281,7 +3279,7 @@ class TestHist2dTargetBinningParity:
         want = _hist2d_to_update_z(df, histfunc=histfunc, z_col=z_col, histnorm=None)
         assert got == want
 
-    def test_bin_variant_matches_kernel_on_edges(self):
+    def test_hist2d_bin_expr_matches_kernel_on_edges(self):
         # The cube hist2d bin expr must bin bit-equal to the fixed_hist2d
         # kernel, including a value exactly at the domain max, which the top
         # clamp folds into the top bin. Compare on a single axis.
@@ -3408,43 +3406,6 @@ class TestHist2dTargetCodec:
         a = build_cube(df.lazy(), spec)
         b = build_cube(df.lazy(), spec)
         assert encode_fvcube(a, "k") == encode_fvcube(b, "k")
-
-
-class TestHist2dTargetContentKey:
-    def test_bin_variant_does_not_change_key(self):
-        # Both variants bin with the same expression, so bin_variant cannot
-        # separate two dims that agree on column, kind, bins and domain.
-        df = _hist2d_target_df()
-        x_lo, x_hi = float(df["x"].min()), float(df["x"].max())
-        y_lo, y_hi = float(df["y"].min()), float(df["y"].max())
-        free = FreeAxisSpec(column="free", kind="continuous", p=64, domain=(0.0, 1.0))
-        dims_2d = (
-            TargetDimSpec(
-                column="x",
-                kind="binned",
-                bins=_HIST2D_NB_X,
-                domain=(x_lo, x_hi),
-                bin_variant="hist2d",
-            ),
-            TargetDimSpec(
-                column="y",
-                kind="binned",
-                bins=_HIST2D_NB_Y,
-                domain=(y_lo, y_hi),
-                bin_variant="hist2d",
-            ),
-        )
-        dims_1d = (
-            TargetDimSpec(
-                column="x", kind="binned", bins=_HIST2D_NB_X, domain=(x_lo, x_hi)
-            ),
-            TargetDimSpec(
-                column="y", kind="binned", bins=_HIST2D_NB_Y, domain=(y_lo, y_hi)
-            ),
-        )
-        k2 = cube_content_key(CubeSpec(source_name="s", free=free, target_dims=dims_2d))
-        k1 = cube_content_key(CubeSpec(source_name="s", free=free, target_dims=dims_1d))
-        assert k2 == k1
 
 
 # ---------------------------------------------------------------------------

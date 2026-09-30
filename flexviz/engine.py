@@ -31,7 +31,6 @@ from .trace.base import (
     _physical_bound_expr,
     child_uid_from_group_key,
 )
-from .trace.hist import _HIST_BIN_EPSILON
 
 # Event types whose computation is unfiltered and viewport-free. These are the
 # only events cached in Phase 1: the engine forces them to drop all
@@ -754,15 +753,8 @@ class FlexEngine:
         domains: dict[str, tuple[float, float]],
         schema: pl.Schema | None = None,
     ) -> tuple | None:
-        """Resolve binned target dims and epsilon-pad their upper bounds.
+        """Resolve binned target dims to the display's bin domain.
 
-        ``_HIST_BIN_EPSILON`` is added to every ``hist1d``-variant binned dim's
-        resolved-or-zoomed domain. This mirrors ``_histogram_bounds_exprs``,
-        which pads in both the unzoomed and zoomed cases, so cube bins align
-        with display bins. A ``hist2d``-variant dim (contract K) gets no pad:
-        the ``fixed_hist2d`` kernel and ``_fixed_hist_bin_expr`` both fold a
-        value at ``hi`` into the top bin through the top clamp. A pad here
-        would shift bins and break bit-equality with the server delta.
         Returns ``None`` when a dim's domain cannot be resolved (an all-null
         column). That target is not served.
 
@@ -784,8 +776,7 @@ class FlexEngine:
                 unit = temporal_unit(dtype)
                 if unit is None:
                     return None  # ns/Time gate
-            pad = 0.0 if d.bin_variant == "hist2d" else _HIST_BIN_EPSILON
-            dims.append(replace(d, domain=(domain[0], domain[1] + pad), unit=unit))
+            dims.append(replace(d, domain=(domain[0], domain[1]), unit=unit))
         return tuple(dims)
 
     def _active_selections(

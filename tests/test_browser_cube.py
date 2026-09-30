@@ -88,7 +88,6 @@ from flexviz.cube import (
     encode_fvcube,
 )
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON
 from tests.test_browser import (
     _COUNT_SETTLED_UPDATES,
     _hold_first_update,
@@ -514,7 +513,7 @@ def _reference_slice_counts(
                 column="b",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                domain=(b_lo, b_hi),
             ),
         ),
         measure=MeasureSpec(agg="count"),
@@ -554,7 +553,7 @@ def _reference_grouped_slice_counts(
                 column="b",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                domain=(b_lo, b_hi),
             ),
             TargetDimSpec(column=group_col, kind="categorical"),
         ),
@@ -702,7 +701,7 @@ class TestLiveBrushCube:
                     column="b",
                     kind="binned",
                     bins=_TGT_BINS,
-                    domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                    domain=(b_lo, b_hi),
                 ),
             ),
             measure=MeasureSpec(agg="count"),
@@ -1945,7 +1944,7 @@ def _reference_categorical_hist_counts(
             pl.col("b")
             .flexviz.fixed_hist(
                 pl.lit(float(b_lo)),
-                pl.lit(float(b_hi + _HIST_BIN_EPSILON)),
+                pl.lit(float(b_hi)),
                 n_bins=_TGT_BINS,
             )
             .implode()
@@ -2847,7 +2846,7 @@ class TestCubeSourceIdentity:
                     column="b",
                     kind="binned",
                     bins=_TGT_BINS,
-                    domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                    domain=(b_lo, b_hi),
                 ),
             ),
             measure=MeasureSpec(agg="count"),
@@ -3396,7 +3395,7 @@ def _hist_counts_ref(
             pl.col(col)
             .flexviz.fixed_hist(
                 pl.lit(float(lo)),
-                pl.lit(float(hi) + _HIST_BIN_EPSILON),
+                pl.lit(float(hi)),
                 n_bins=bins,
             )
             .implode()
@@ -4193,9 +4192,7 @@ def _hist_counts_ref_domain(
         .filter(filter_expr & pl.col(col).is_between(lo, hi))
         .select(
             pl.col(col)
-            .flexviz.fixed_hist(
-                pl.lit(float(lo)), pl.lit(float(hi) + _HIST_BIN_EPSILON), n_bins=bins
-            )
+            .flexviz.fixed_hist(pl.lit(float(lo)), pl.lit(float(hi)), n_bins=bins)
             .implode()
             .alias("h")
         )
@@ -4534,7 +4531,7 @@ def _reference_line_envelope(
             column="b",
             kind="binned",
             bins=_LINE_BUCKETS,
-            domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+            domain=(b_lo, b_hi),
         )
     ]
     build_df = df
@@ -5703,7 +5700,7 @@ def _reference_box2d_hist_counts(
                 column="c",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(c_lo, c_hi + _HIST_BIN_EPSILON),
+                domain=(c_lo, c_hi),
             ),
         ),
         measure=MeasureSpec(agg="count"),

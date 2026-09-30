@@ -377,21 +377,19 @@ class TestMinmaxPairsLine:
 # fixed_hist
 # ---------------------------------------------------------------------------
 
-_EPS = 1e-10  # matches _HIST_BIN_EPSILON in hist.py
-
 
 class TestFixedHist:
     # ---- output structure -------------------------------------------------------
 
     def test_struct_field_names(self):
         s = pl.Series("v", [1.0, 2.0, 3.0], dtype=pl.Float64)
-        result = _fixed_hist(s, 0.0, 4.0 + _EPS, n_bins=4)
+        result = _fixed_hist(s, 0.0, 4.0, n_bins=4)
         assert result.dtype == pl.Struct({"breakpoint": pl.Float64, "count": pl.UInt32})
 
     def test_output_length_equals_n_bins(self):
         s = pl.Series("v", list(range(100)), dtype=pl.Float64)
         for n_bins in [1, 5, 10, 20]:
-            result = _fixed_hist(s, 0.0, 100.0 + _EPS, n_bins=n_bins)
+            result = _fixed_hist(s, 0.0, 100.0, n_bins=n_bins)
             assert len(result) == n_bins, f"n_bins={n_bins}"
 
     # ---- correctness ------------------------------------------------------------
@@ -400,13 +398,13 @@ class TestFixedHist:
         """100 values spread evenly over 10 bins → each bin has count 10."""
         vals = [float(i) for i in range(100)]  # 0..99
         s = pl.Series("v", vals, dtype=pl.Float64)
-        lo, hi = 0.0, 100.0 + _EPS
+        lo, hi = 0.0, 100.0
         counts = _fixed_hist_counts(s, lo, hi, n_bins=10)
         assert counts == [10] * 10
 
     def test_total_count_equals_non_null_len(self):
         s = pl.Series("v", [1.0, 2.0, None, 4.0, 5.0], dtype=pl.Float64)
-        counts = _fixed_hist_counts(s, 0.0, 6.0 + _EPS, n_bins=3)
+        counts = _fixed_hist_counts(s, 0.0, 6.0, n_bins=3)
         assert sum(counts) == 4  # 4 non-null values
 
     def test_breakpoints_formula(self):
@@ -428,9 +426,7 @@ class TestFixedHist:
         s = pl.Series("v", vals, dtype=pl.Float64)
         lo, hi = 0.0, 100.0
         n_bins = 20
-        eps = _EPS
-        hi_eps = hi + eps
-        step = (hi_eps - lo) / n_bins
+        step = (hi - lo) / n_bins
         edges = [lo + i * step for i in range(n_bins + 1)]
 
         polars_counts = (
@@ -439,52 +435,52 @@ class TestFixedHist:
             .struct.field("count")
             .to_list()
         )
-        plugin_counts = _fixed_hist_counts(s, lo, hi_eps, n_bins=n_bins)
+        plugin_counts = _fixed_hist_counts(s, lo, hi, n_bins=n_bins)
         assert plugin_counts == polars_counts
 
     # ---- dtype support ----------------------------------------------------------
 
     def test_dtype_int32(self):
         s = pl.Series("v", list(range(50)), dtype=pl.Int32)
-        counts = _fixed_hist_counts(s, 0.0, 50.0 + _EPS, n_bins=5)
+        counts = _fixed_hist_counts(s, 0.0, 50.0, n_bins=5)
         assert sum(counts) == 50
         assert counts == [10] * 5
 
     def test_dtype_int64(self):
         s = pl.Series("v", list(range(50)), dtype=pl.Int64)
-        counts = _fixed_hist_counts(s, 0.0, 50.0 + _EPS, n_bins=5)
+        counts = _fixed_hist_counts(s, 0.0, 50.0, n_bins=5)
         assert counts == [10] * 5
 
     def test_dtype_int8(self):
         s = pl.Series("v", list(range(-10, 10)), dtype=pl.Int8)
-        counts = _fixed_hist_counts(s, -10.0, 10.0 + _EPS, n_bins=4)
+        counts = _fixed_hist_counts(s, -10.0, 10.0, n_bins=4)
         assert sum(counts) == 20
 
     def test_dtype_uint32(self):
         s = pl.Series("v", list(range(20)), dtype=pl.UInt32)
-        counts = _fixed_hist_counts(s, 0.0, 20.0 + _EPS, n_bins=4)
+        counts = _fixed_hist_counts(s, 0.0, 20.0, n_bins=4)
         assert counts == [5] * 4
 
     def test_dtype_float32(self):
         s = pl.Series("v", [float(i) for i in range(40)], dtype=pl.Float32)
-        counts = _fixed_hist_counts(s, 0.0, 40.0 + _EPS, n_bins=4)
+        counts = _fixed_hist_counts(s, 0.0, 40.0, n_bins=4)
         assert counts == [10] * 4
 
     # ---- edge cases -------------------------------------------------------------
 
     def test_empty_series_all_zero_counts(self):
         s = pl.Series("v", [], dtype=pl.Float64)
-        counts = _fixed_hist_counts(s, 0.0, 1.0 + _EPS, n_bins=5)
+        counts = _fixed_hist_counts(s, 0.0, 1.0, n_bins=5)
         assert counts == [0] * 5
 
     def test_all_nulls_all_zero_counts(self):
         s = pl.Series("v", [None, None, None], dtype=pl.Float64)
-        counts = _fixed_hist_counts(s, 0.0, 1.0 + _EPS, n_bins=5)
+        counts = _fixed_hist_counts(s, 0.0, 1.0, n_bins=5)
         assert counts == [0] * 5
 
     def test_single_bin(self):
         s = pl.Series("v", [1.0, 2.0, 3.0], dtype=pl.Float64)
-        counts = _fixed_hist_counts(s, 0.0, 4.0 + _EPS, n_bins=1)
+        counts = _fixed_hist_counts(s, 0.0, 4.0, n_bins=1)
         assert counts == [3]
 
     def test_values_at_boundary_clamped(self):
@@ -493,7 +489,7 @@ class TestFixedHist:
         n_bins = 5
         # lo lands in bin 0, hi lands in bin n_bins-1 (after clamping)
         s = pl.Series("v", [lo, hi], dtype=pl.Float64)
-        counts = _fixed_hist_counts(s, lo, hi + _EPS, n_bins=n_bins)
+        counts = _fixed_hist_counts(s, lo, hi, n_bins=n_bins)
         assert counts[0] == 1, "value at lo must be in first bin"
         assert counts[-1] == 1, "value at hi must be in last bin"
 
@@ -544,7 +540,7 @@ class TestFixedHistParallel:
         n = _MIN_PAR + 1234
         vals = [(i * 7919) % 1000 for i in range(n)]
         s = pl.Series("v", vals, dtype=dtype)
-        lo, hi = 0.0, 1000.0 + _EPS
+        lo, hi = 0.0, 1000.0
         assert _fixed_hist_counts(s, lo, hi, 256) == _ref_hist_counts(vals, lo, hi, 256)
 
     @pytest.mark.parametrize("dtype", [pl.UInt8, pl.UInt16])
@@ -553,14 +549,14 @@ class TestFixedHistParallel:
         n = _MIN_PAR + 7
         vals = [i % 200 for i in range(n)]
         s = pl.Series("v", vals, dtype=dtype)
-        lo, hi = 0.0, 200.0 + _EPS
+        lo, hi = 0.0, 200.0
         assert _fixed_hist_counts(s, lo, hi, 64) == _ref_hist_counts(vals, lo, hi, 64)
 
     def test_nan_is_skipped(self):
         n = _MIN_PAR + 500
         vals = [float("nan") if i % 1000 == 0 else float(i % 997) for i in range(n)]
         s = pl.Series("v", vals, dtype=pl.Float64)
-        lo, hi = 0.0, 997.0 + _EPS
+        lo, hi = 0.0, 997.0
         counts = _fixed_hist_counts(s, lo, hi, 128)
         assert counts == _ref_hist_counts(vals, lo, hi, 128)
         assert sum(counts) == sum(1 for v in vals if v == v)
@@ -570,7 +566,7 @@ class TestFixedHistParallel:
         n = _MIN_PAR + 321
         vals = [None if i % 500 == 0 else float(i % 313) for i in range(n)]
         s = pl.Series("v", vals, dtype=pl.Float64)
-        lo, hi = 0.0, 313.0 + _EPS
+        lo, hi = 0.0, 313.0
         counts = _fixed_hist_counts(s, lo, hi, 64)
         assert counts == _ref_hist_counts(vals, lo, hi, 64)
         assert sum(counts) == sum(1 for v in vals if v is not None)
@@ -584,7 +580,7 @@ class TestFixedHistParallel:
         """Concatenated frames are the normal case; they must not fall back."""
         n = _MIN_PAR + 999
         vals = [float((i * 31) % 500) for i in range(n)]
-        lo, hi = 0.0, 500.0 + _EPS
+        lo, hi = 0.0, 500.0
         one = pl.Series("v", vals, dtype=pl.Float64)
         # Uneven cuts, so the work-splitting sees runs of different sizes.
         cuts = (
@@ -607,7 +603,7 @@ class TestFixedHistParallel:
         must not change a single count."""
         n = 2 * _MIN_PAR
         vals = [float((i * 13) % 353) for i in range(n)]
-        lo, hi = 0.0, 353.0 + _EPS
+        lo, hi = 0.0, 353.0
         step = n // 40
         cuts = list(range(0, n, step)) + [n]
         many = pl.concat(
@@ -628,7 +624,7 @@ class TestFixedHistParallel:
         n = _MIN_PAR + 33
         n_bins = 9_000_000
         vals = [float((i * 7) % 1000) for i in range(n)]
-        lo, hi = 0.0, 1000.0 + _EPS
+        lo, hi = 0.0, 1000.0
         s = pl.Series("v", vals, dtype=pl.Float64)
         assert _fixed_hist_counts(s, lo, hi, n_bins) == _ref_hist_counts(
             vals, lo, hi, n_bins
@@ -639,14 +635,14 @@ class TestFixedHistParallel:
         """Both sides of MIN_PAR must agree — the split is an optimisation."""
         vals = [float(i % 251) for i in range(n)]
         s = pl.Series("v", vals, dtype=pl.Float64)
-        lo, hi = 0.0, 251.0 + _EPS
+        lo, hi = 0.0, 251.0
         assert _fixed_hist_counts(s, lo, hi, 32) == _ref_hist_counts(vals, lo, hi, 32)
 
     def test_values_outside_domain_clamp(self):
         n = _MIN_PAR + 64
         vals = [float(i % 300) - 100.0 for i in range(n)]  # spans [-100, 199]
         s = pl.Series("v", vals, dtype=pl.Float64)
-        lo, hi = 0.0, 100.0 + _EPS
+        lo, hi = 0.0, 100.0
         counts = _fixed_hist_counts(s, lo, hi, 10)
         assert counts == _ref_hist_counts(vals, lo, hi, 10)
         assert sum(counts) == n, "out-of-domain values clamp, they are not dropped"
@@ -668,7 +664,7 @@ class TestFixedHistParallel:
         n = _MIN_PAR + 17
         vals = [float(i % 1000) for i in range(n)]
         s = pl.Series("v", vals, dtype=pl.Float64)
-        assert _fixed_hist_counts(s, 0.0, 1000.0 + _EPS, 1) == [n]
+        assert _fixed_hist_counts(s, 0.0, 1000.0, 1) == [n]
 
 
 # ---------------------------------------------------------------------------

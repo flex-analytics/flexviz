@@ -206,11 +206,6 @@ class TargetDimSpec:
     ``unit`` marks a temporal binned dim (contract G): binning runs on the
     column's physical representation in that unit and the header dim entry
     carries it. The engine sets it from the schema dtype.
-
-    ``bin_variant`` marks a binned dim as ``"hist1d"`` (default) or
-    ``"hist2d"`` (contract K). Both bin bit-equal to their Rust kernels with
-    ``scale = n/(hi-lo)``. The variant only selects the engine's domain padding
-    (see ``_resolved_target_dims``).
     """
 
     column: str
@@ -218,7 +213,6 @@ class TargetDimSpec:
     bins: int | None = None
     domain: tuple[float, float] | None = None
     unit: str | None = None
-    bin_variant: Literal["hist1d", "hist2d"] = "hist1d"
 
     def __post_init__(self) -> None:
         if self.kind == "binned" and self.bins is None:

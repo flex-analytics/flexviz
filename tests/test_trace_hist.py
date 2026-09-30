@@ -12,7 +12,7 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
 from flexviz.trace import batch_fold as batch_fold_mod
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
+from flexviz.trace.hist import Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -240,7 +240,7 @@ class TestHistogramBinAlignment:
         centers = list(trace._to_update(df_agg).updates["x"])
         lo, hi, n = snap_range(100.0, 400.0, bins)
         assert n == bins + 1
-        step = (hi - lo + _HIST_BIN_EPSILON) / n
+        step = (hi - lo) / n
         expected = [lo + (i + 0.5) * step for i in range(n)]
         assert len(centers) == n
         for got, want in zip(centers, expected):
@@ -375,9 +375,7 @@ class TestHistogramViewportSnap:
         ref = (
             inside.select(
                 pl.col("val")
-                .flexviz.fixed_hist(
-                    pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), n_bins=n
-                )
+                .flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=n)
                 .implode()
                 .alias("u")
             )["u"]
@@ -751,7 +749,7 @@ class TestHistogramBinEdges:
         assert n == 5, "the triple carries the bin count"
         assert step > 0
         assert lo == pytest.approx(0.0)
-        assert lo + n * step == pytest.approx(19.0 + _HIST_BIN_EPSILON)
+        assert lo + n * step == pytest.approx(19.0)
         assert "y_edges" not in updates
 
     def test_histogram_horizontal_has_y_edges(self):
@@ -767,7 +765,7 @@ class TestHistogramBinEdges:
         assert "x_edges" not in updates
         lo, step, n = updates["y_edges"]
         assert n == 4
-        assert lo + n * step == pytest.approx(15.0 + _HIST_BIN_EPSILON)
+        assert lo + n * step == pytest.approx(15.0)
 
     def test_bin_edges_reproduce_the_bin_centers(self):
         """``lo + (i + 0.5) * step`` is exactly the emitted center of bin i."""
@@ -921,9 +919,9 @@ class TestCubeDescriptors:
         assert spec is not None
         assert spec.target_dims[0].domain is None
 
-    def test_target_domain_is_the_snapped_range_no_epsilon(self):
-        # The ENGINE adds _HIST_BIN_EPSILON when resolving domains; the trace
-        # emits the snapped viewport, the display grid, and nothing else.
+    def test_target_domain_is_the_snapped_range(self):
+        # The trace emits the snapped viewport, the display grid, and nothing
+        # else.
         trace = Histogram(x="val", bins=10)
         spec = trace.get_cube_target_spec((100.0, 400.0))
         assert spec is not None
@@ -939,8 +937,7 @@ class TestCubeDescriptors:
         spec = trace.get_cube_target_spec(axis_range)
         lo, hi, n_bins, _ = trace._histogram_bounds_exprs(axis_range, None)
         dim = spec.target_dims[0]
-        # The engine pads the cube dim's hi exactly like the display path.
-        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert tuple(dim.domain) == (lo, hi)
         assert dim.bins == n_bins
 
     @pytest.mark.parametrize(
@@ -964,7 +961,7 @@ class TestCubeDescriptors:
         )
         dim = trace.get_cube_target_spec(cube_range, schema=schema).target_dims[0]
         lo, hi, n_bins, _ = trace._histogram_bounds_exprs(viewport, None, schema)
-        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert tuple(dim.domain) == (lo, hi)
         assert dim.bins == n_bins
 
     def test_grouped_hist_target_dims_binned_then_groups(self):
@@ -1097,8 +1094,8 @@ class TestHistogramScanPlanEquivalence:
                 None,
                 "count",
             ),
-            # A constant column is the narrowest span the trace can build: the
-            # engine pads hi by _HIST_BIN_EPSILON, so the span never inverts.
+            # A constant column has hi == lo: the kernel and the plan both put
+            # every row in bin 0.
             ("constant", pl.Series("v", [3.0] * 8), 8, None, "count"),
             ("viewport", pl.Series("v", _VALUES), 8, (2.0, 6.0), "count"),
             ("all_below_lo", pl.Series("v", [-5.0, -3.0]), 8, (0.0, 8.0), "count"),

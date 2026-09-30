@@ -24,7 +24,6 @@ from flexviz.dashboard import Dashboard
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 pytestmark = pytest.mark.integration
 
@@ -273,7 +272,7 @@ class TestDashboardCubeRequest:
         (dim,) = header["target_dims"]
         assert dim["name"] == "b"
         assert dim["bins"] == 12
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
 
         # Slice the blob over a snapped brush.
         lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 12.3, 61.7)
@@ -301,7 +300,7 @@ class TestDashboardCubeRequest:
                 pl.col("b")
                 .flexviz.fixed_hist(
                     pl.lit(float(b_lo)),
-                    pl.lit(float(b_hi) + _HIST_BIN_EPSILON),
+                    pl.lit(float(b_hi)),
                     n_bins=dim["bins"],
                 )
                 .implode()
@@ -453,8 +452,8 @@ class TestDashboardCubeRequest:
         assert body["trace_cubes"] == {}
 
     def test_zoomed_viewports_resolve_cube_domains(self, client, df):
-        """Source viewport → free domain verbatim (no epsilon); target viewport
-        → the SNAPPED display grid + uniform _HIST_BIN_EPSILON."""
+        """Source viewport → free domain verbatim; target viewport → the
+        SNAPPED display grid."""
         spec = _two_hist_dashboard(df)
         src_fig_uid = spec.figures[0].uid
         tgt_fig_uid = spec.figures[1].uid
@@ -469,7 +468,7 @@ class TestDashboardCubeRequest:
         (dim,) = header["target_dims"]
         lo, hi, n = snap_range(5.0, 60.0, tgt_bins)
         assert n == tgt_bins + 1
-        assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [lo, hi]
         assert dim["bins"] == n
 
     def test_reversed_viewports_resolve_like_ascending_ones(self, client, df):
@@ -505,6 +504,34 @@ class TestDashboardCubeRequest:
         )
         blob = body["cubes"][body["trace_cubes"][tgt_fig.traces[0].uid]]
         assert _cube_centers(blob) == pytest.approx(display, abs=1e-9)
+
+    def test_zoomed_hist_target_keeps_the_display_rows(self, client):
+        """A zoomed hist1d target's cube keeps the rows its display bars
+        count: a row just above the snapped top edge is in neither."""
+        df = pl.DataFrame(
+            {
+                "a": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                "b": [20.0, 50.0, 99.0, 100.0, 100.0 + 5e-11, 110.0],
+            }
+        )
+        register_source(_SRC, df, cache=True)
+        dash = Dashboard(df)
+        dash.add_figure().add_histogram(x="a", bins=16)
+        dash.add_figure().add_histogram(x="b", bins=20)
+        spec = dash.to_spec(source_name=_SRC)
+        src_fig, tgt_fig = spec.figures
+        spec.state.viewport[f"{tgt_fig.uid}/x"] = AxisRange(min=0.0, max=100.0)
+
+        deltas = client.post("/dashboard/update", json=_init_payload(spec)).json()
+        display_rows = sum(deltas["figure_deltas"][tgt_fig.uid][0]["updates"]["y"])
+        body = _cube_body(
+            client.post("/dashboard/update", json=_cube_payload(spec, src_fig.uid))
+        )
+        blob = base64.b64decode(
+            body["cubes"][body["trace_cubes"][tgt_fig.traces[0].uid]]
+        )
+        cube_rows = sum(_read_u32_col(blob, decode_fvcube_header(blob), "count"))
+        assert display_rows == cube_rows == 4
 
     def test_sibling_hist_targets_share_the_display_bin_domain(self, client, df):
         """Two histograms on one figure bin over their *union* min/max in the
@@ -821,7 +848,7 @@ class TestCategoricalSourceCubeRequest:
         (dim,) = header["target_dims"]
         assert dim["name"] == "b"
         assert dim["bins"] == 12
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
 
         # Reslice over the codes for {("alpha",), ("gamma",)}.
         cats = [tuple(t) for t in header["free"]["categories"]]
@@ -1014,7 +1041,7 @@ class TestCategoricalSourceCubeRequest:
                 "name": "b",
                 "kind": "binned",
                 "bins": 8,
-                "domain": [b_lo, b_hi + _HIST_BIN_EPSILON],
+                "domain": [b_lo, b_hi],
             },
             {"name": "sub", "kind": "categorical", "categories": ["s1", "s2", "s3"]},
         ]
@@ -1283,7 +1310,7 @@ class TestPassiveBaking:
         # domain (+ epsilon) even though the passive filter shrinks the data.
         (dim,) = hist_header["target_dims"]
         b_lo, b_hi = cat_df["b"].min(), cat_df["b"].max()
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
         free_bin = _read_u32_col(hist_blob, hist_header, "free_bin")
         tgt_bin = _read_u32_col(hist_blob, hist_header, "__bin__b")
         count = _read_u32_col(hist_blob, hist_header, "count")
@@ -1296,7 +1323,7 @@ class TestPassiveBaking:
             passive_expr & active_expr,
             "b",
             b_lo,
-            b_hi + _HIST_BIN_EPSILON,
+            b_hi,
             dim["bins"],
         )
         assert 0 < sum(sliced) < cat_df.height

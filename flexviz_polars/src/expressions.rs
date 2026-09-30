@@ -758,8 +758,8 @@ where
     }
 
     // Match the old fixed_hist boundary behavior without casting the full column.
-    // The small epsilon keeps integer-like values on visual bin boundaries from
-    // falling into the previous bin when the caller has nudged `hi` upward.
+    // The small epsilon keeps a value on a bin edge from falling into the
+    // previous bin when float rounding puts it a hair below that edge.
     let scale = n_bins as f64 / (hi - lo);
     let max_idx = n_bins - 1;
 
