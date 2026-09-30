@@ -8083,6 +8083,18 @@ class TestThemeBrowser:
         }""")
         assert layout == ["#123456", "#0b0e12", "#654321"]
 
+    def test_series_hover_label_is_neutral_with_a_series_border(
+        self, page: Page, server_port: int
+    ):
+        page.emulate_media(color_scheme="light")
+        page.goto(_dashboard_url_grouped(server_port, "plotly", "line"))
+        _wait_for_init(page, "plotly")
+
+        labels = page.evaluate("""() => divs[0]._fullData.map(t => [
+            t.hoverlabel.bgcolor, t.hoverlabel.font.color, t.hoverlabel.bordercolor,
+        ])""")
+        assert labels == [["#0f172a", "#f8fafc", color] for color in _OKABE_ITO[:2]]
+
     def test_map_tiles_follow_the_mode(self, page: Page, server_port: int):
         def build(dash):
             for style in (None, "white-bg"):

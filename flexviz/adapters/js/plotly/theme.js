@@ -81,6 +81,13 @@ function fvPlotlyTemplate() {
       xaxis: { ...axis, showline: true },
       yaxis: axis,
       legend: { font: { size: 12, color: text }, bgcolor: 'rgba(0,0,0,0)' },
+      // One neutral label for every trace. buildTraceFromTemplate frames the
+      // label of a series in its color.
+      hoverlabel: {
+        bgcolor: fvThemeToken('--fv-plot-tooltip-bg'),
+        bordercolor: fvThemeToken('--fv-plot-tooltip-border'),
+        font: { family, size: 12, color: fvThemeToken('--fv-plot-tooltip-text') },
+      },
       newselection: { line: { color: fvThemeToken('--fv-plot-select'), width: 1.5 } },
       map: { style: fvIsDarkMode() ? _FV_DARK_MAP_STYLE : 'open-street-map' },
     },

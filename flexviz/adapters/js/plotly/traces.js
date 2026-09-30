@@ -453,6 +453,10 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.x = gapped.x;
     trace.y = gapped.y;
   }
+  // The template's neutral hover label, framed in the series color: text on
+  // the series color itself reads at about 3:1.
+  const seriesColor = !isHeatmapScaledTrace(trace) && (trace.line?.color || trace.marker?.color);
+  if (seriesColor) trace.hoverlabel = { ...trace.hoverlabel, bordercolor: seriesColor };
   if (trace.colorscale) trace.colorscale = fvThemeColorScale(trace.colorscale);
   if (traceSpecByUid[logicalUid]?.display.color_norm === 'log') applyLogColorNorm(trace);
   if (trace.type === 'choroplethmap') applyChoroplethLayerOpacity(trace);
