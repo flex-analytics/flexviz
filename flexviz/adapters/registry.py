@@ -54,19 +54,6 @@ PLOTLY_TRACE_TYPES = frozenset(
     }
 )
 
-ECHARTS_TRACE_TYPES = frozenset(
-    {
-        "line",
-        "histogram",
-        "box",
-        "bar",
-        "pie",
-        "treemap",
-        "histogram2d",
-        "corr_heatmap",
-    }
-)
-
 _RENDERERS: dict[str, RendererDefinition] = {
     "plotly": RendererDefinition(
         name="plotly",
@@ -74,14 +61,6 @@ _RENDERERS: dict[str, RendererDefinition] = {
         capabilities=RendererCapabilities(
             name="plotly",
             supported_trace_types=PLOTLY_TRACE_TYPES,
-        ),
-    ),
-    "echarts": RendererDefinition(
-        name="echarts",
-        adapter_import_path="flexviz.adapters.echarts_adapter.EChartsAdapter",
-        capabilities=RendererCapabilities(
-            name="echarts",
-            supported_trace_types=ECHARTS_TRACE_TYPES,
         ),
     ),
 }

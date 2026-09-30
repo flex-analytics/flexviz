@@ -3,7 +3,7 @@
 Bins two numeric columns into a 2D grid and counts occurrences (or applies
 ``"sum"``, ``"mean"``, ``"min"``, or ``"max"`` via *histfunc*).  Returns
 ``{x: [...centers], y: [...centers], z: [[counts]]}`` — the standard format
-for Plotly ``heatmap`` and ECharts ``heatmap`` series.
+for Plotly ``heatmap`` series.
 
 When *z* is omitted the trace counts rows per bin (implicit count).  When *z*
 is given, *histfunc* is required and must be one of ``"sum"``, ``"mean"``,

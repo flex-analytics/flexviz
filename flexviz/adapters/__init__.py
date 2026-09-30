@@ -1,6 +1,6 @@
 """Adapter base class and helpers.
 
-Renderer-specific adapters (PlotlyAdapter, EchartsAdapter) are imported lazily
+Renderer-specific adapters (PlotlyAdapter) are imported lazily
 to avoid hard dependencies on optional libraries.
 """
 

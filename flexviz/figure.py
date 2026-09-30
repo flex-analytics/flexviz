@@ -139,7 +139,7 @@ class Figure:
     - A list of ``FlexTrace`` instances
     - A layout config dict (renderer hints, e.g. ``title``)
 
-    The Figure does not know about Plotly, Echarts, or any other renderer.
+    The Figure does not know about Plotly or any other renderer.
     Rendering is delegated to an adapter chosen via ``show(renderer=...)``.
     """
 
@@ -867,7 +867,7 @@ class Figure:
         Parameters
         ----------
         renderer:
-            ``"plotly"`` (default) or ``"echarts"``.
+            ``"plotly"`` (the only renderer).
         source_name:
             Name under which the figure's backend LazyFrame is registered
             with the server's data-source registry.  Defaults to the

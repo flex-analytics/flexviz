@@ -13,7 +13,6 @@ Scope
 -----
 - Page loads and charts render (DOM elements present).
 - Global toolbar buttons are present.
-- Scroll zoom on ECharts triggers a ``/dashboard/update`` POST.
 - Global Reset and Deselect buttons fire the expected toolbar actions.
 """
 
@@ -66,24 +65,6 @@ def _start_server(port: int) -> None:
         except OSError:
             time.sleep(0.1)
     raise RuntimeError(f"Server did not start on port {port}")
-
-
-def _start_demo_server(port: int) -> None:
-    """Start the demo FastAPI server on *port* in a daemon thread."""
-    from demo.server import app as demo_app
-
-    config = uvicorn.Config(demo_app, host="127.0.0.1", port=port, log_level="error")
-    server = uvicorn.Server(config)
-    t = threading.Thread(target=server.run, daemon=True)
-    t.start()
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return
-        except OSError:
-            time.sleep(0.1)
-    raise RuntimeError(f"Demo server did not start on port {port}")
 
 
 def _dashboard_url(port: int, renderer: str, n_figures: int = 2) -> str:
@@ -181,35 +162,6 @@ def _dashboard_url_boxplot(port: int, renderer: str = "plotly") -> str:
     return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
 
 
-def _dashboard_url_datetime_line(port: int, renderer: str = "echarts") -> str:
-    """Single-figure dashboard with datetime x values."""
-    from datetime import datetime, timedelta, timezone
-
-    from flexviz.dashboard import Dashboard
-    from flexviz.server import register_source
-    from flexviz.spec import encode_spec
-
-    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    df = pl.DataFrame(
-        {
-            "ts": [base + timedelta(hours=i) for i in range(96)],
-            "val": [float((i * 7) % 31) for i in range(96)],
-            "group": ["A"] * 48 + ["B"] * 48,
-        }
-    )
-    source_name = "_browser_datetime_line"
-    register_source(source_name, df)
-
-    dash = Dashboard(df)
-    dash.add_figure(title="Datetime Line").add_line(
-        x="ts", y="val", group_by="group", n_points=96, assume_sorted_x=True
-    )
-    spec = dash.to_spec(source_name=source_name)
-
-    encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
-
-
 def _dashboard_url_static_pie(port: int, renderer: str = "plotly") -> str:
     """Single-figure dashboard whose Plotly panel should not render a control bar."""
     from flexviz.dashboard import Dashboard
@@ -230,46 +182,6 @@ def _dashboard_url_static_pie(port: int, renderer: str = "plotly") -> str:
 
     encoded = encode_spec(spec)
     return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
-
-
-def _dashboard_url_treemap_colormap(port: int, renderer: str = "echarts") -> str:
-    """Single treemap with deterministic colors for structure checks."""
-    from flexviz.dashboard import Dashboard
-    from flexviz.server import register_source
-    from flexviz.spec import LayoutSpec, encode_spec
-
-    df = pl.DataFrame(
-        {
-            "source": ["Solar"] * 4 + ["Wind"] * 4,
-            "country": ["DE", "ES", "FR", "IT"] * 2,
-            "value": [5.0, 4.0, 3.0, 2.0, 8.0, 7.0, 6.0, 5.0],
-        }
-    )
-    source_name = "_browser_treemap_colormap"
-    register_source(source_name, df)
-
-    dash = Dashboard(df)
-    dash.add_figure(title="Treemap").add_treemap(
-        path=["source", "country"],
-        values="value",
-        agg="sum",
-        color_map={
-            "Solar": "#e3a24d",
-            "Wind": "#5b8db8",
-            "DE": "#2f2f2f",
-            "ES": "#4f4f4f",
-            "FR": "#6f6f6f",
-            "IT": "#9a9a9a",
-        },
-    )
-    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
-
-    encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
-
-
-def _demo_url(port: int, renderer: str = "echarts") -> str:
-    return f"http://127.0.0.1:{port}/demo?renderer={renderer}"
 
 
 def _dashboard_url_grouped_line_multi_group_by(
@@ -678,22 +590,13 @@ def _dashboard_url_line_grouped_bar_target(port: int, renderer: str = "plotly") 
 
 
 def _wait_for_chart(page: Page, renderer: str) -> None:
-    if renderer == "plotly":
-        page.wait_for_selector(".js-plotly-plot", timeout=15_000)
-    else:
-        page.wait_for_selector("[id^='fv-chart-']", timeout=15_000)
+    page.wait_for_selector(".js-plotly-plot", timeout=15_000)
 
 
 def _grouped_child_count(page: Page, renderer: str) -> int:
-    if renderer == "plotly":
-        return page.evaluate(
-            """() => document.querySelector('.js-plotly-plot').data.length"""
-        )
-    return page.evaluate("""() => {
-          const el = document.querySelector("[id^='fv-chart-']");
-          const chart = echarts.getInstanceByDom(el);
-          return chart.getOption().series.length;
-        }""")
+    return page.evaluate(
+        """() => document.querySelector('.js-plotly-plot').data.length"""
+    )
 
 
 def _trace_layer(trace_id: str | None) -> str | None:
@@ -811,13 +714,6 @@ window.__updateSentAt = null;
 def server_port() -> Generator[int, None, None]:
     port = _free_port()
     _start_server(port)
-    yield port
-
-
-@pytest.fixture(scope="module")
-def demo_server_port() -> Generator[int, None, None]:
-    port = _free_port()
-    _start_demo_server(port)
     yield port
 
 
@@ -1992,7 +1888,7 @@ class TestPlotlyBrowser:
         assert len(charts) >= 1, f"Expected >=1 Plotly chart, found {len(charts)}"
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestGroupedBrowser:
     def test_grouped_line_renders_children_not_parent(
         self, page: Page, server_port: int, renderer: str
@@ -2033,454 +1929,18 @@ class TestGroupedBrowser:
 
 
 # ---------------------------------------------------------------------------
-# ECharts adapter smoke tests
-# ---------------------------------------------------------------------------
-
-
-class TestEChartsBrowser:
-    def test_page_loads_and_charts_render(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "echarts")
-        page.goto(url)
-        # ECharts renders into canvas elements inside fv-chart-* containers.
-        page.wait_for_selector("[id^='fv-chart-']", timeout=15_000)
-        charts = page.query_selector_all("[id^='fv-chart-']")
-        assert len(charts) >= 2, f"Expected >=2 ECharts containers, found {len(charts)}"
-
-    def test_toolbar_buttons_present(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "echarts")
-        page.goto(url)
-        page.wait_for_selector("#fv-btn-reset", timeout=10_000)
-        for btn_id in (
-            "fv-btn-reset",
-            "fv-btn-deselect",
-            "fv-btn-cfmode",
-            "fv-btn-grid",
-            "fv-btn-share",
-            "fv-btn-export",
-            "fv-btn-import",
-        ):
-            btn = page.query_selector(f"#{btn_id}")
-            assert btn is not None, f"Toolbar button #{btn_id} not found"
-
-    def test_live_option_has_no_toolbox(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-        toolbox_visible = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.querySelector("[id^='fv-chart-']"));
-                const option = chart && chart.getOption();
-                const toolbox = Array.isArray(option && option.toolbox) ? option.toolbox[0] : option && option.toolbox;
-                return !!(toolbox && toolbox.show);
-            }""")
-        assert toolbox_visible is False
-
-    def test_datetime_line_uses_time_axis_and_renders_points(
-        self, page: Page, server_port: int
-    ):
-        url = _dashboard_url_datetime_line(server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-        state = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.querySelector("[id^='fv-chart-']"));
-                const option = chart.getOption();
-                const axis = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
-                const series = option.series || [];
-                return {
-                    xAxisType: axis && axis.type,
-                    seriesCount: series.length,
-                    pointCounts: series.map(item => (item.data || []).length),
-                };
-            }""")
-        assert state["xAxisType"] == "time"
-        assert state["seriesCount"] == 2
-        assert all(count > 0 for count in state["pointCounts"])
-
-    def test_scroll_zoom_triggers_dashboard_update(self, page: Page, server_port: int):
-        """Scroll zoom on ECharts must trigger a /dashboard/update POST."""
-        url = _dashboard_url(server_port, "echarts")
-        update_bodies: list[dict] = []
-
-        def capture(req: PWRequest) -> None:
-            if "/dashboard/update" in req.url and req.method == "POST":
-                try:
-                    update_bodies.append(json.loads(req.post_data or "{}"))
-                except Exception:
-                    pass
-
-        page.on("request", capture)
-        page.goto(url)
-        # Wait for canvas elements (charts fully initialised).
-        page.wait_for_selector("canvas", timeout=15_000)
-        initial_count = len(update_bodies)
-
-        # Scroll on the first chart container to trigger zoom.
-        chart_container = page.query_selector("[id^='fv-chart-']")
-        assert chart_container is not None
-        box = chart_container.bounding_box()
-        cx = box["x"] + box["width"] / 2
-        cy = box["y"] + box["height"] / 2
-        page.mouse.move(cx, cy)
-        page.mouse.wheel(0, -300)  # scroll up = zoom in
-        # ECharts debounces datazoom 150 ms; wait generously.
-        page.wait_for_timeout(1_500)
-
-        viewport_events = [
-            b
-            for b in update_bodies[initial_count:]
-            if b.get("event", {}).get("type") == "viewport"
-        ]
-        assert len(viewport_events) >= 1, (
-            "Scroll zoom must produce at least one viewport /dashboard/update POST. "
-            f"Got update events: {[b.get('event', {}).get('type') for b in update_bodies[initial_count:]]}"
-        )
-
-    def test_locked_axes_ignore_scroll_zoom(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "echarts")
-        update_bodies: list[dict] = []
-
-        def capture(req: PWRequest) -> None:
-            if "/dashboard/update" in req.url and req.method == "POST":
-                try:
-                    update_bodies.append(json.loads(req.post_data or "{}"))
-                except Exception:
-                    pass
-
-        page.on("request", capture)
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-        page.wait_for_selector(
-            "#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']:not([disabled])"
-        )
-
-        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
-        page.wait_for_function("""() => {
-                const figUid = DASHBOARD_SPEC.figures[0].uid;
-                return DASHBOARD_SPEC.client_state.axis_locks[figUid + '/x'] === true
-                  && !!DASHBOARD_SPEC.client_state.axis_lock_ranges[figUid + '/x'];
-            }""")
-
-        before = page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[0].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-0'));
-                const option = chart.getOption();
-                const dz = (option.dataZoom || [])[0] || {};
-                return {
-                  lockRange: DASHBOARD_SPEC.client_state.axis_lock_ranges[figUid + '/x'],
-                  viewport: DASHBOARD_SPEC.state.viewport[figUid + '/x'] || null,
-                  startValue: dz.startValue,
-                  endValue: dz.endValue,
-                };
-            }""")
-        count_before = len(update_bodies)
-
-        chart_container = page.query_selector("#fv-chart-0")
-        assert chart_container is not None
-        box = chart_container.bounding_box()
-        cx = box["x"] + box["width"] / 2
-        cy = box["y"] + box["height"] / 2
-        page.mouse.move(cx, cy)
-        page.mouse.wheel(0, -300)
-        page.wait_for_timeout(1000)
-
-        after = page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[0].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-0'));
-                const option = chart.getOption();
-                const dz = (option.dataZoom || [])[0] || {};
-                return {
-                  viewport: DASHBOARD_SPEC.state.viewport[figUid + '/x'] || null,
-                  startValue: dz.startValue,
-                  endValue: dz.endValue,
-                };
-            }""")
-
-        viewport_events = [
-            body.get("event", {})
-            for body in update_bodies[count_before:]
-            if body.get("event", {}).get("type") == "viewport"
-        ]
-        assert viewport_events == []
-        assert after["viewport"] is None
-        assert after["startValue"] == before["startValue"]
-        assert after["endValue"] == before["endValue"]
-
-    def test_reset_button_clears_viewport(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "echarts")
-        update_requests: list[str] = []
-        page.on(
-            "request",
-            lambda req: (
-                update_requests.append(req.url)
-                if "/dashboard/update" in req.url
-                else None
-            ),
-        )
-        page.goto(url)
-        page.wait_for_selector("canvas", timeout=15_000)
-        initial_count = len(update_requests)
-
-        page.click("#fv-btn-reset")
-        page.wait_for_timeout(1_000)
-        assert len(update_requests) > initial_count, (
-            "Clicking Reset must fire at least one /dashboard/update request"
-        )
-
-    def test_share_url_roundtrip(self, page: Page, server_port: int):
-        """Share button must produce a URL that loads the same dashboard."""
-        url = _dashboard_url(server_port, "echarts")
-        page.goto(url)
-        page.wait_for_selector("canvas", timeout=15_000)
-
-        # Intercept the alert / clipboard write from the Share button.
-        share_urls: list[str] = []
-
-        def handle_dialog(dialog):
-            share_urls.append(dialog.message)
-            dialog.dismiss()
-
-        page.on("dialog", handle_dialog)
-        page.click("#fv-btn-share")
-        page.wait_for_timeout(1_000)
-
-        if share_urls:
-            # If an alert was shown with the URL, navigate to it.
-            share_url = share_urls[0].strip()
-            if share_url.startswith("http"):
-                page.goto(share_url)
-                page.wait_for_selector("[id^='fv-chart-']", timeout=15_000)
-                charts = page.query_selector_all("[id^='fv-chart-']")
-                assert len(charts) >= 2
-
-    def test_pie_click_filters_and_toggles_clear(self, page: Page, server_port: int):
-        url = _dashboard_url_treemap_pie_selection(server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-
-        page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[2].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-2'));
-                const series = (chart.getOption().series || [])[0];
-                const item = (series.data || []).find(entry => entry && entry.name === 'solar');
-                handleEChartsClick({
-                    seriesType: 'pie',
-                    seriesId: series.id,
-                    name: item.name,
-                    data: item,
-                }, figUid);
-            }""")
-        page.wait_for_function(
-            "() => (DASHBOARD_SPEC.state.selections || []).length === 1"
-        )
-        page.wait_for_timeout(800)
-
-        selection = page.evaluate("DASHBOARD_SPEC.state.selections[0]")
-        clauses = selection["predicates"][0]["clauses"]
-        assert clauses == [{"column": "source", "values": ["solar"]}]
-
-        target_labels = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-0'));
-                const series = (chart.getOption().series || [])[0] || {};
-                return (series.data || []).map(entry => Array.isArray(entry) ? entry[0] : entry.name);
-            }""")
-        assert target_labels == ["solar"]
-
-        page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[2].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-2'));
-                const series = (chart.getOption().series || [])[0];
-                const item = (series.data || []).find(entry => entry && entry.name === 'solar');
-                handleEChartsClick({
-                    seriesType: 'pie',
-                    seriesId: series.id,
-                    name: item.name,
-                    data: item,
-                }, figUid);
-            }""")
-        page.wait_for_function(
-            "() => (DASHBOARD_SPEC.state.selections || []).length === 0"
-        )
-
-    def test_treemap_leaf_click_filters_with_full_path(
-        self, page: Page, server_port: int
-    ):
-        url = _dashboard_url_treemap_pie_selection(server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-
-        page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[1].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-1'));
-                const series = (chart.getOption().series || [])[0];
-                function findNode(nodes, wantedId) {
-                    for (const node of (nodes || [])) {
-                        if (node && node.id === wantedId) return node;
-                        const child = findNode(node && node.children, wantedId);
-                        if (child) return child;
-                    }
-                    return null;
-                }
-                const node = findNode(series.data || [], 'root/solar/NL');
-                handleEChartsClick({
-                    seriesType: 'treemap',
-                    seriesId: series.id,
-                    data: node,
-                }, figUid);
-            }""")
-        page.wait_for_function(
-            "() => (DASHBOARD_SPEC.state.selections || []).length === 1"
-        )
-        page.wait_for_timeout(800)
-
-        selection = page.evaluate("DASHBOARD_SPEC.state.selections[0]")
-        clauses = selection["predicates"][0]["clauses"]
-        assert {item["column"]: item["values"] for item in clauses} == {
-            "source": ["solar"],
-            "country": ["NL"],
-        }
-
-    def test_treemap_option_exposes_named_colored_top_level_nodes(
-        self, page: Page, server_port: int
-    ):
-        url = _dashboard_url_treemap_colormap(server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-        top_nodes = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.querySelector("[id^='fv-chart-']"));
-                const series = (chart.getOption().series || [])[0] || {};
-                return (series.data || []).map(node => ({
-                    id: node.id,
-                    name: node.name,
-                    color: node.itemStyle && node.itemStyle.color,
-                    childCount: (node.children || []).length,
-                }));
-            }""")
-        assert top_nodes == [
-            {"id": "root/Solar", "name": "Solar", "color": "#e3a24d", "childCount": 4},
-            {"id": "root/Wind", "name": "Wind", "color": "#5b8db8", "childCount": 4},
-        ]
-
-
-@pytest.mark.skip(
-    reason="EChartsAdapter is deprecated (see CLAUDE.md); the ECharts demo "
-    "canvas does not render on this branch. Skipped pending removal of the "
-    "ECharts adapter rather than expanding the deprecated path."
-)
-class TestDemoEChartsBrowser:
-    def test_demo_datetime_selection_filters_targets_and_formats_timestamp(
-        self, page: Page, demo_server_port: int
-    ):
-        url = _demo_url(demo_server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-
-        before = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-1'));
-                return (chart.getOption().series || []).map(series =>
-                  (series.data || []).reduce((acc, item) => acc + (Array.isArray(item) ? item[1] : 0), 0)
-                );
-            }""")
-
-        page.evaluate("""async () => {
-                const figUid = DASHBOARD_SPEC.figures[0].uid;
-                const selection = {
-                  source_figure_uid: figUid,
-                  predicates: [{
-                    clauses: [{
-                      column: 'timestamp',
-                      range: ['2017-09-11T18:28:06.603Z', '2017-12-27T22:17:01.514Z'],
-                    }],
-                  }],
-                };
-                window.fvSetSelectionState?.([selection]);
-                await postDashboardUpdate({
-                  type: 'selection',
-                  force_update: true,
-                });
-            }""")
-        page.wait_for_function("""() => {
-                const text = document.getElementById('fv-filter-chips')?.textContent || '';
-                return (DASHBOARD_SPEC.state.selections || []).length === 1
-                  && text.includes('timestamp')
-                  && text.includes('UTC');
-            }""")
-        page.wait_for_timeout(1000)
-
-        after = page.evaluate("""() => {
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-1'));
-                const text = document.getElementById('fv-filter-chips')?.textContent || '';
-                return {
-                  sums: (chart.getOption().series || []).map(series =>
-                    (series.data || []).reduce((acc, item) => acc + (Array.isArray(item) ? item[1] : 0), 0)
-                  ),
-                  text,
-                };
-            }""")
-
-        assert all(
-            after_sum < before_sum
-            for after_sum, before_sum in zip(after["sums"], before)
-        )
-        assert "2017-09-11 18:28:06.603 UTC" in after["text"]
-        assert "1505108886603" not in after["text"]
-
-    def test_demo_treemap_uses_parent_bundle_borders(
-        self, page: Page, demo_server_port: int
-    ):
-        url = _demo_url(demo_server_port, "echarts")
-        page.goto(url)
-        _wait_for_init(page, "echarts")
-
-        treemap_state = page.evaluate("""() => {
-                const figIdx = DASHBOARD_SPEC.figures.findIndex(fig =>
-                  (fig.traces || []).some(ts => ts.trace_type === 'treemap')
-                );
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-' + figIdx));
-                const series = (chart.getOption().series || [])[0] || {};
-                const top = (series.data || []).map(node => ({
-                  name: node.name,
-                  color: node.itemStyle && node.itemStyle.color,
-                  childBorder: node.children && node.children[0] && node.children[0].itemStyle && node.children[0].itemStyle.borderColor,
-                  childWidth: node.children && node.children[0] && node.children[0].itemStyle && node.children[0].itemStyle.borderWidth,
-                }));
-                return {
-                  levels: (series.levels || []).length,
-                  top,
-                };
-            }""")
-
-        assert treemap_state["levels"] >= 3
-        assert treemap_state["top"][:2] == [
-            {
-                "name": "Solar",
-                "color": "#e3a24d",
-                "childBorder": "#e3a24d",
-                "childWidth": 3,
-            },
-            {
-                "name": "Wind",
-                "color": "#5b8db8",
-                "childBorder": "#5b8db8",
-                "childWidth": 3,
-            },
-        ]
-
-
-# ---------------------------------------------------------------------------
-# Cross-filter browser tests (parametrized for both adapters)
+# Cross-filter browser tests
 # ---------------------------------------------------------------------------
 
 
 def _wait_for_init(page: Page, renderer: str) -> None:
     """Wait until the initial data load has populated the charts."""
-    if renderer == "plotly":
-        page.wait_for_selector(".js-plotly-plot", timeout=15_000)
-    else:
-        page.wait_for_selector("canvas", timeout=15_000)
+    page.wait_for_selector(".js-plotly-plot", timeout=15_000)
     # Allow the init POST round-trip to complete.
     page.wait_for_timeout(2_000)
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestCrossFilterBrowser:
     """Test cross-filter selection across 3 figures in a headless browser."""
 
@@ -2783,7 +2243,7 @@ class TestCrossFilterBrowser:
         assert selections == [] or selections is None
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestOverlayBrowser:
     def test_overlay_toggle_with_cached_bg_avoids_warmup(
         self, page: Page, server_port: int, renderer: str
@@ -2876,8 +2336,6 @@ class TestOverlayBrowser:
         self, page: Page, server_port: int, renderer: str
     ):
         """Overlay cross-filter on histogram2d must expose only the fg colorbar."""
-        if renderer != "plotly":
-            pytest.skip("Plotly-only colorbar regression")
         url = _dashboard_url_hist2d_overlay(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
@@ -2954,8 +2412,6 @@ class TestOverlayBrowser:
         self, page: Page, server_port: int, renderer: str, geo_kwargs: dict
     ):
         """A geo_histogram2d target draws both layers; the colorbar moves to fg."""
-        if renderer != "plotly":
-            pytest.skip("ECharts has no map traces")
         errors: list[str] = []
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.on(
@@ -3046,20 +2502,11 @@ class TestOverlayBrowser:
 
         rendered = page.evaluate(
             """(renderer) => {
-                if (renderer === 'plotly') {
-                    const fig = document.querySelectorAll('.js-plotly-plot')[1];
-                    return (fig.data || []).map(t => ({
-                        id: t.uid,
-                        opacity: t.opacity ?? 1,
-                        color: (t.line && t.line.color) || (t.marker && t.marker.color) || null,
-                    }));
-                }
-                const el = document.querySelectorAll("[id^='fv-chart-']")[1];
-                const chart = echarts.getInstanceByDom(el);
-                return (chart.getOption().series || []).map(s => ({
-                    id: s.id,
-                    opacity: s.opacity ?? ((s.itemStyle && s.itemStyle.opacity) ?? 1),
-                    color: (s.lineStyle && s.lineStyle.color) || (s.itemStyle && s.itemStyle.color) || null,
+                const fig = document.querySelectorAll('.js-plotly-plot')[1];
+                return (fig.data || []).map(t => ({
+                    id: t.uid,
+                    opacity: t.opacity ?? 1,
+                    color: (t.line && t.line.color) || (t.marker && t.marker.color) || null,
                 }));
             }""",
             renderer,
@@ -3110,25 +2557,12 @@ class TestOverlayBrowser:
         # 5. After reset, no fg trace must remain; bg trace must be at full opacity.
         rendered = page.evaluate(
             """(renderer) => {
-                if (renderer === 'plotly') {
-                    // Check all Plotly figures — none should have an fg-layer trace.
-                    const figs = document.querySelectorAll('.js-plotly-plot');
-                    return Array.from(figs).flatMap(gd =>
-                        (gd.data || []).map(t => ({
-                            id: t.uid,
-                            opacity: t.opacity !== undefined ? t.opacity : 1,
-                        }))
-                    );
-                }
-                const charts = Array.from(
-                    document.querySelectorAll("[id^='fv-chart-']")
-                ).map(el => echarts.getInstanceByDom(el)).filter(Boolean);
-                return charts.flatMap(chart =>
-                    (chart.getOption().series || []).map(s => ({
-                        id: s.id,
-                        opacity: s.opacity !== undefined ? s.opacity
-                               : ((s.itemStyle && s.itemStyle.opacity) !== undefined
-                                  ? s.itemStyle.opacity : 1),
+                // Check all Plotly figures — none should have an fg-layer trace.
+                const figs = document.querySelectorAll('.js-plotly-plot');
+                return Array.from(figs).flatMap(gd =>
+                    (gd.data || []).map(t => ({
+                        id: t.uid,
+                        opacity: t.opacity !== undefined ? t.opacity : 1,
                     }))
                 );
             }""",
@@ -3180,20 +2614,10 @@ class TestOverlayBrowser:
         # 3. The non-source figure (index 1) must show bg at low opacity + fg at 1.0.
         rendered = page.evaluate(
             """(renderer) => {
-                if (renderer === 'plotly') {
-                    const fig = document.querySelectorAll('.js-plotly-plot')[1];
-                    return (fig.data || []).map(t => ({
-                        id: t.uid,
-                        opacity: t.opacity !== undefined ? t.opacity : 1,
-                    }));
-                }
-                const el = document.querySelectorAll("[id^='fv-chart-']")[1];
-                const chart = echarts.getInstanceByDom(el);
-                return (chart.getOption().series || []).map(s => ({
-                    id: s.id,
-                    opacity: s.opacity !== undefined ? s.opacity
-                           : ((s.itemStyle && s.itemStyle.opacity) !== undefined
-                              ? s.itemStyle.opacity : 1),
+                const fig = document.querySelectorAll('.js-plotly-plot')[1];
+                return (fig.data || []).map(t => ({
+                    id: t.uid,
+                    opacity: t.opacity !== undefined ? t.opacity : 1,
                 }));
             }""",
             renderer,
@@ -3482,7 +2906,7 @@ class TestSameOriginBrowser:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestShareUrlState:
     """Verify that Share → navigate preserves viewport and cross-filter state."""
 
@@ -3584,18 +3008,8 @@ class TestShareUrlState:
                 const uidA = figUids[0];
                 const uidB = figUids[1];
 
-                let initCountB, selCountB;
-
-                if (renderer === 'plotly') {
-                  const idxB = figUidToIdx[uidB];
-                  initCountB = tracesByFig[idxB][0].x.length;
-                } else {
-                  const chartB = chartsByFig[uidB];
-                  const optB = chartB.getOption();
-                  initCountB = (optB.series && optB.series[0] && optB.series[0].data
-                                ? optB.series[0].data.length
-                                : 0);
-                }
+                const idxB = figUidToIdx[uidB];
+                const initCountB = tracesByFig[idxB][0].x.length;
 
                 const sel = {
                   source_figure_uid: uidA,
@@ -3610,16 +3024,7 @@ class TestShareUrlState:
                 // Allow the selection response to apply.
                 await new Promise(r => setTimeout(r, 1000));
 
-                if (renderer === 'plotly') {
-                  const idxB = figUidToIdx[uidB];
-                  selCountB = tracesByFig[idxB][0].x.length;
-                } else {
-                  const chartB2 = chartsByFig[uidB];
-                  const optB2 = chartB2.getOption();
-                  selCountB = (optB2.series && optB2.series[0] && optB2.series[0].data
-                               ? optB2.series[0].data.length
-                               : 0);
-                }
+                const selCountB = tracesByFig[idxB][0].x.length;
 
                 const resp = await fetch(SERVER_URL + '/share', {
                   method: 'POST',
@@ -3652,17 +3057,8 @@ class TestShareUrlState:
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidB = figUids[1];
 
-                if (renderer === 'plotly') {
-                  const idxB = figUidToIdx[uidB];
-                  return tracesByFig[idxB][0].x.length;
-                } else {
-                  const chartB = chartsByFig[uidB];
-                  const optB = chartB.getOption();
-                  const data = (optB.series && optB.series[0] && optB.series[0].data)
-                    ? optB.series[0].data
-                    : [];
-                  return data.length;
-                }
+                const idxB = figUidToIdx[uidB];
+                return tracesByFig[idxB][0].x.length;
             }""",
             {"renderer": renderer},
         )
@@ -3752,16 +3148,10 @@ class TestShareUrlState:
             """({renderer}) => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
-                if (renderer === 'plotly') {
-                    const idxA = figUidToIdx[uidA];
-                    const layout = layoutsByFig[idxA] || {};
-                    const sels = layout.selections || [];
-                    return Array.isArray(sels) && sels.length > 0;
-                } else {
-                    const areasByFig = window.__fvBrushAreasByFig || {};
-                    const areas = areasByFig[uidA] || [];
-                    return Array.isArray(areas) && areas.length > 0;
-                }
+                const idxA = figUidToIdx[uidA];
+                const layout = layoutsByFig[idxA] || {};
+                const sels = layout.selections || [];
+                return Array.isArray(sels) && sels.length > 0;
             }""",
             {"renderer": renderer},
         )
@@ -3836,20 +3226,8 @@ class TestShareUrlState:
                   };
                 }
 
-                function echartsCountAndRange(uid) {
-                  const chart = chartsByFig[uid];
-                  const opt = chart.getOption();
-                  const data = (opt.series && opt.series[0] && opt.series[0].data) ? opt.series[0].data : [];
-                  const xs = data.map(p => p[0]);
-                  return {
-                    n: xs.length,
-                    min: xs.length ? Math.min(...xs) : null,
-                    max: xs.length ? Math.max(...xs) : null,
-                  };
-                }
-
-                const a = (renderer === 'plotly') ? plotlyCountAndRange(uidA) : echartsCountAndRange(uidA);
-                const b = (renderer === 'plotly') ? plotlyCountAndRange(uidB) : echartsCountAndRange(uidB);
+                const a = plotlyCountAndRange(uidA);
+                const b = plotlyCountAndRange(uidB);
                 return {a, b};
             }""",
             {"renderer": renderer},
@@ -4401,7 +3779,7 @@ def _dashboard_url_hover_minmax_shared_x(port: int, renderer: str) -> str:
     return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestLinkedHoverBrowser:
     def test_hover_button_present_and_inactive_by_default(
         self, page: Page, server_port: int, renderer: str
@@ -4474,9 +3852,6 @@ class TestLinkedHoverBrowser:
         self, page: Page, server_port: int, renderer: str
     ):
         """Axis mode hover must add a guide to the other figure."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         url = _dashboard_url_hover(server_port, renderer)
         page.goto(url)
         _wait_for_init(page, renderer)
@@ -4507,9 +3882,6 @@ class TestLinkedHoverBrowser:
     def test_plotly_unhover_clears_crosshairs(
         self, page: Page, server_port: int, renderer: str
     ):
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         url = _dashboard_url_hover(server_port, renderer)
         page.goto(url)
         _wait_for_init(page, renderer)
@@ -4530,9 +3902,6 @@ class TestLinkedHoverBrowser:
     def test_plotly_axis_hover_emits_crosshair_on_shared_axes(
         self, page: Page, server_port: int, renderer: str
     ):
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         # fig0 and fig1 are both line(x=ts, y=val), so they share BOTH the x and
         # the y column. Axis-mode hover projects the hovered point onto every
         # shared axis, so the target should show a full crosshair: one x-guide
@@ -4566,9 +3935,6 @@ class TestLinkedHoverBrowser:
         self, page: Page, server_port: int, renderer: str
     ):
         """Spec rule: no linked visual is emitted to the source figure."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         url = _dashboard_url_hover(server_port, renderer)
         page.goto(url)
         _wait_for_init(page, renderer)
@@ -4589,9 +3955,6 @@ class TestLinkedHoverBrowser:
     def test_hover_no_visual_when_off(
         self, page: Page, server_port: int, renderer: str
     ):
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         url = _dashboard_url_hover(server_port, renderer)
         page.goto(url)
         _wait_for_init(page, renderer)
@@ -4612,9 +3975,6 @@ class TestLinkedHoverBrowser:
         self, page: Page, server_port: int, renderer: str
     ):
         """Regression: linked hover should work with minmax traces without pixel-perfect point hit."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
-
         url = _dashboard_url_hover_minmax_shared_x(server_port, renderer)
         page.goto(url)
         _wait_for_init(page, renderer)
@@ -4777,8 +4137,6 @@ class TestLinkedHoverBrowser:
         browser timezone other than UTC (Brussels here) catches a conversion
         that re-derives the value through ``new Date(ms)``, which shifts by the
         local offset."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
         import datetime as dt
 
         from flexviz.dashboard import Dashboard
@@ -4858,8 +4216,6 @@ class TestLinkedHoverBrowser:
         plot. On a log axis the lattice puts that edge at 0, which has no log
         position. The band must still show, clipped to the plot area, and not
         spill over the y-axis labels."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
         df = pl.DataFrame(
             {"v": [10 ** (3 * i / 999) for i in range(1000)], "y": [0.0] * 1000}
         )
@@ -4923,8 +4279,6 @@ class TestLinkedHoverBrowser:
         """On a date axis Plotly reports the hovered x as a date string. The
         linked guide and the histogram band are placed in epoch-ms, so the
         hovered value must reach them as epoch-ms too."""
-        if renderer == "echarts":
-            pytest.skip("Plotly-specific test")
         import datetime as dt
 
         n = 300
@@ -6904,9 +6258,7 @@ def _dashboard_url_draggable(port: int, renderer: str) -> str:
 
 def _chart_bounding_boxes(page: Page, renderer: str) -> list[dict]:
     """Return bounding boxes for all chart containers."""
-    if renderer == "plotly":
-        return [el.bounding_box() for el in page.query_selector_all(".js-plotly-plot")]
-    return [el.bounding_box() for el in page.query_selector_all("[id^='fv-chart-']")]
+    return [el.bounding_box() for el in page.query_selector_all(".js-plotly-plot")]
 
 
 def _drag_grid_item_right(page: Page, sel: str) -> None:
@@ -6930,7 +6282,7 @@ def _drag_grid_item_right(page: Page, sel: str) -> None:
     page.wait_for_timeout(800)
 
 
-@pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+@pytest.mark.parametrize("renderer", ["plotly"])
 class TestDraggableGridBrowser:
     """Draggable Gridstack layout — verify charts are visible and drag is backend-free."""
 
@@ -6958,29 +6310,14 @@ class TestDraggableGridBrowser:
         _wait_for_chart(page, renderer)
         page.wait_for_timeout(2_000)
 
-        if renderer == "plotly":
-            # Each .js-plotly-plot should have at least one trace with x data.
-            trace_counts = page.evaluate("""() =>
-                Array.from(document.querySelectorAll('.js-plotly-plot'))
-                     .map(el => (el.data || []).filter(t => t.x && t.x.length > 0).length)
-            """)
-            assert all(c > 0 for c in trace_counts), (
-                f"Some Plotly charts have no rendered data: {trace_counts}"
-            )
-        else:
-            # Each ECharts instance should have at least one series with data.
-            series_counts = page.evaluate("""() =>
-                Array.from(document.querySelectorAll("[id^='fv-chart-']"))
-                     .map(el => {
-                       const chart = echarts.getInstanceByDom(el);
-                       if (!chart) return 0;
-                       const series = chart.getOption().series || [];
-                       return series.filter(s => s.data && s.data.length > 0).length;
-                     })
-            """)
-            assert all(c > 0 for c in series_counts), (
-                f"Some ECharts instances have no rendered data: {series_counts}"
-            )
+        # Each .js-plotly-plot should have at least one trace with x data.
+        trace_counts = page.evaluate("""() =>
+            Array.from(document.querySelectorAll('.js-plotly-plot'))
+                 .map(el => (el.data || []).filter(t => t.x && t.x.length > 0).length)
+        """)
+        assert all(c > 0 for c in trace_counts), (
+            f"Some Plotly charts have no rendered data: {trace_counts}"
+        )
 
     def test_drag_does_not_trigger_backend_request(
         self, page: Page, server_port: int, renderer: str

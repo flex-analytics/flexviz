@@ -117,4 +117,3 @@ Rules and limits:
   [shared URLs](sharing.md), export and import. A spec whose linked axes hold
   different ranges is rejected, so an agent that patches the viewport with
   `flexvizApply` must set every key of a group.
-- The deprecated ECharts renderer does not support linked axes.

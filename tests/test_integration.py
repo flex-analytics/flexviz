@@ -1047,7 +1047,7 @@ class TestShareAndView:
         assert m is not None, "SERVER_URL constant missing from /view HTML"
         assert m.group(1) == '"."'
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_view_viz_spec(self, client: TestClient, integ_df, renderer: str):
         viz = Figure(integ_df).add_line(x="ts", y="val").to_spec(source=_SRC)
         encoded = encode_spec(viz)
@@ -1056,7 +1056,7 @@ class TestShareAndView:
         assert "text/html" in resp.headers["content-type"]
         assert renderer in resp.text.lower()
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_view_dashboard_spec(self, client: TestClient, integ_df, renderer: str):
         dash = Dashboard(integ_df)
         dash.add_figure().add_line(x="ts", y="val")
@@ -1071,21 +1071,11 @@ class TestShareAndView:
         else:
             assert "fv-dashboard" in resp.text
 
-    def test_view_rejects_unsupported_renderer_trace_combo(self, client: TestClient):
-        from flexviz.spec import FigureSpec, TraceSpec, VisualizationSpec
-
-        ts = TraceSpec(
-            uid="geo-1",
-            trace_type="geo_histogram2d",
-            backend_data={"lon": "lon", "lat": "lat"},
-        )
-        viz = VisualizationSpec(figure=FigureSpec(uid="map-1", source="s", traces=[ts]))
-        encoded = encode_spec(viz)
+    def test_view_rejects_unknown_renderer(self, client: TestClient):
+        encoded = encode_spec(VisualizationSpec())
         resp = client.get(f"/view?spec={encoded}&renderer=echarts")
         assert resp.status_code == 400
-        assert "renderer='echarts'" in resp.json()["detail"]
-        assert "geo_histogram2d" in resp.json()["detail"]
-        assert "Use 'plotly'" in resp.json()["detail"]
+        assert "Unknown renderer 'echarts'" in resp.json()["detail"]
 
 
 # ===========================================================================
@@ -1253,7 +1243,7 @@ class TestHistoryView:
         self, client: TestClient, tmp_path, monkeypatch
     ):
         """show() appends its renderer to the URL it opens, so a recorded
-        echarts URL must not reopen as plotly."""
+        removed renderer must not reopen as plotly."""
         monkeypatch.chdir(tmp_path)
         from flexviz import history
 
@@ -1261,12 +1251,11 @@ class TestHistoryView:
         history.add(f"http://testserver/view?spec={encoded}&renderer=echarts")
 
         resp = client.get("/h/1")
-        assert resp.status_code == 200
-        assert "echarts" in resp.text.lower()
+        assert resp.status_code == 400
+        assert "Unknown renderer 'echarts'" in resp.json()["detail"]
         # An explicit query parameter still wins.
         override = client.get("/h/1?renderer=plotly")
         assert override.status_code == 200
-        assert "echarts" not in override.text.lower()
 
     def test_h_route_400s_on_an_unreadable_history_file(
         self, client: TestClient, tmp_path, monkeypatch
@@ -1806,7 +1795,7 @@ class TestPublicAPI:
         resp = client.get("/sources")
         assert "_pub_api_test" in resp.json()
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
+    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_is_valid_renderer(self, integ_df: pl.DataFrame, renderer: str):
         from flexviz.figure import Figure
 
@@ -1814,15 +1803,6 @@ class TestPublicAPI:
         fig.add_line(x="ts", y="val")
         with pytest.raises(ValueError, match=renderer):
             fig.show(renderer="__invalid__")
-
-    def test_unsupported_renderer_trace_combo_fails_fast(self):
-        from flexviz.figure import Figure
-
-        df = pl.DataFrame({"lon": [4.9, 5.1], "lat": [52.3, 52.4]})
-        fig = Figure(df)
-        fig.add_geo_histogram2d(lon="lon", lat="lat")
-        with pytest.raises(ValueError, match="renderer='echarts'"):
-            fig.show(renderer="echarts")
 
 
 # ===========================================================================
