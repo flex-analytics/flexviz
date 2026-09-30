@@ -111,7 +111,12 @@ function fvPlotlyTemplate() {
 window.fvApplyTheme = function() {
   const template = fvPlotlyTemplate();
   layoutsByFig.forEach((layout, figIdx) => {
-    if (!_fvFigureHasOwnTemplate[figIdx]) layout.template = template;
+    if (!_fvFigureHasOwnTemplate[figIdx]) {
+      layout.template = template;
+    } else if (layout.map && !layout.map.style && !layout.template.layout?.map?.style) {
+      // Plotly's default map style loads CARTO tiles.
+      layout.map.style = 'open-street-map';
+    }
   });
   for (const figUid of _fvAllFigUids) {
     if (divs[figUidToIdx[figUid]]?._fullLayout) {

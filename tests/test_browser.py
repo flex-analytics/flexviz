@@ -8018,9 +8018,10 @@ def _switch_to_dark(page: Page) -> None:
     page.click("#fv-btn-mode")
     page.click("#fv-btn-mode")
     page.wait_for_function("() => document.documentElement.dataset.fvMode === 'dark'")
-    # The switch redraws every figure with the dark template.
+    # The switch redraws every themed figure with the dark template.
     page.wait_for_function(
-        "() => divs.every(gd => gd._fullLayout.paper_bgcolor === '#0b0e12')"
+        """() => divs.every((gd, i) =>
+            _fvFigureHasOwnTemplate[i] || gd._fullLayout.paper_bgcolor === '#0b0e12')"""
     )
 
 
@@ -8114,13 +8115,20 @@ class TestThemeBrowser:
         assert swatches == ["1", "1"]
 
     def test_map_tiles_follow_the_mode(self, page: Page, server_port: int):
+        # A figure with its own template gets no theme, but never Plotly's
+        # default map style: it loads CARTO tiles.
+        layouts = [
+            {},
+            {"map": {"style": "white-bg"}},
+            {"template": {"layout": {"font": {"family": "serif"}}}},
+            {"template": {"layout": {"map": {"style": "white-bg"}}}},
+        ]
+
         def build(dash):
-            for style in (None, "white-bg"):
-                fig = dash.add_figure().add_geo_histogram2d(
+            for layout in layouts:
+                dash.add_figure().add_geo_histogram2d(
                     lat="lat", lon="lon", lat_bins=4, lon_bins=4
-                )
-                if style:
-                    fig.update_layout(map={"style": style})
+                ).update_layout(**layout)
 
         page.emulate_media(color_scheme="light")
         page.goto(
@@ -8131,10 +8139,11 @@ class TestThemeBrowser:
             const style = gd._fullLayout.map.style;
             return typeof style === 'string' ? style : style.id;
         })"""
-        assert page.evaluate(read_styles) == ["open-street-map", "white-bg"]
+        light = ["open-street-map", "white-bg", "open-street-map", "white-bg"]
+        assert page.evaluate(read_styles) == light
 
         _switch_to_dark(page)
-        assert page.evaluate(read_styles) == ["fv-osm-dark", "white-bg"]
+        assert page.evaluate(read_styles) == ["fv-osm-dark", *light[1:]]
         # The darkened OSM tiles stay under the cells and keep their attribution.
         page.wait_for_function("""() => {
             const layers = divs[0]._fullLayout.map._subplot.map.getStyle().layers;
