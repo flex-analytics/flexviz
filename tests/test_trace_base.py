@@ -214,6 +214,36 @@ class TestTypedRangeBounds:
     def test_none_range_returns_none(self):
         assert _typed_range_bounds("x", None, schema=None) is None
 
+    # A whole-number bound arrives from JSON as an int: above 2**24 it sits
+    # between two Float32 values as well.
+    @pytest.mark.parametrize("bounds", [(100 / 7, 600 / 7), (16777217, 16777219)])
+    @pytest.mark.parametrize("closed", ["both", "left", "right", "none"])
+    def test_float32_bounds_keep_the_real_membership(self, closed, bounds):
+        """A bound between two Float32 values: the nearest Float32 can land
+        on the far side of the value next to it. Each side must select the
+        Float32 values that the real bound selects."""
+        import numpy as np
+
+        lo, hi = bounds
+        vals = []
+        for bound in (lo, hi):
+            f = np.float32(bound)
+            vals += [
+                np.nextafter(f, np.float32(-np.inf)),
+                f,
+                np.nextafter(f, np.float32(np.inf)),
+            ]
+        df = pl.DataFrame({"x": pl.Series([float(v) for v in vals], dtype=pl.Float32)})
+        b_lo, b_hi = _typed_range_bounds("x", (lo, hi), df.schema, closed)
+        got = df.select(pl.col("x").is_between(b_lo, b_hi, closed=closed))["x"]
+        in_lo = (
+            (lambda v: v >= lo) if closed in ("both", "left") else (lambda v: v > lo)
+        )
+        in_hi = (
+            (lambda v: v <= hi) if closed in ("both", "right") else (lambda v: v < hi)
+        )
+        assert got.to_list() == [in_lo(v) and in_hi(v) for v in df["x"].to_list()]
+
     def test_float_bounds_on_int64_column(self):
         """Float bounds use ceil(lo)/floor(hi) so that is_between matches the viewport.
         lo=99.9 → ceil → 100, hi=100.1 → floor → 100: only x=100 included.

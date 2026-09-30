@@ -57,6 +57,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   center, and its hover shows the time of day of that center. Before, the
   center was rounded to a whole day, so a bar could sit up to half a day off
   its bin, and bars narrower than a day stacked on one day.
+- A selection or a zoom on a `Float32` column keeps exactly the values inside
+  its range. Before, each bound was rounded to the nearest `Float32`, which
+  could move a value next to the bound to the other side.
 
 ## [0.1.0b5] - 2026-09-27
 

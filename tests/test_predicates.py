@@ -26,6 +26,22 @@ class TestPredicatesToExpr:
         expr = predicates_to_expr([], df.schema)
         assert df.filter(expr).height == df.height
 
+    def test_float32_whole_number_bound_from_json_rounds(self):
+        # The browser sends a whole-number edge as a JSON integer. Above 2**24
+        # a Float32 column cannot hold every integer, so that bound must round
+        # without moving a value across it too.
+        from flexviz.predicates import predicates_to_expr
+
+        df = pl.DataFrame(
+            {"a": pl.Series([16777216.0 + 2 * i for i in range(5)], dtype=pl.Float32)}
+        )
+        pred = SelectionPredicate.model_validate_json(
+            '{"clauses": [{"column": "a", "range": [16777217, 16777219],'
+            ' "closed": "left"}]}'
+        )
+        got = df.filter(predicates_to_expr([pred], df.schema))["a"].to_list()
+        assert got == [16777218.0]
+
     def test_single_categorical_clause(self, df: pl.DataFrame):
         from flexviz.predicates import predicates_to_expr
 

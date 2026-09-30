@@ -349,7 +349,7 @@ class TestFilterDontClip:
         assert kernel_bin(e_lo) == 10
         assert kernel_bin(math.nextafter(e_lo, -math.inf)) == 9
 
-    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Int64])
+    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Float32, pl.Int64])
     def test_committed_edges_keep_the_kernel_rows(self, dtype):
         # Values packed around every edge, on the column's own value grid: a
         # committed range keeps exactly the rows the kernel counts in its bars.
@@ -368,12 +368,26 @@ class TestFilterDontClip:
             if dtype == pl.Int64:
                 lo, span = float(math.floor(lo)), float(math.floor(span) + p)
             hi = lo + span
+            if dtype == pl.Float32:
+                lo, hi = float(np.float32(lo)), float(np.float32(hi))
+                if not hi > lo:
+                    continue
             step = (hi - lo) / p
             vals = [lo, hi]
             for k in range(1, min(p, 50)):
                 for e in (lo + k * step, lo + (k - 1e-9) * step):
                     if dtype == pl.Int64:
                         vals += [float(math.floor(e) + d) for d in (-1, 0, 1)]
+                    elif dtype == pl.Float32:
+                        f = np.float32(e)
+                        vals += [
+                            float(v)
+                            for v in (
+                                f,
+                                np.nextafter(f, np.float32(-np.inf)),
+                                np.nextafter(f, np.float32(np.inf)),
+                            )
+                        ]
                     else:
                         vals += [
                             e,

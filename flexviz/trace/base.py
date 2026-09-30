@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, get_args
 from uuid import uuid4
 
+import numpy as np
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
@@ -777,9 +778,29 @@ def _typed_range_bounds(
             pl.lit(lo).cast(dtype, strict=False),
             pl.lit(hi).cast(dtype, strict=False),
         )
+    if dtype == pl.Float32:
+        # Round like an integer bound, so no Float32 value crosses it: a
+        # closed bound toward the interior, an open bound away from it. The
+        # nearest Float32 can land on the far side of a value next to the bound.
+        # A whole number arrives from JSON as an int; above 2**24 it rounds too.
+        lo_closed = closed in ("both", "left")
+        hi_closed = closed in ("both", "right")
+        if isinstance(lo, (int, float)):
+            lo = _float32_toward(lo, up=lo_closed)
+        if isinstance(hi, (int, float)):
+            hi = _float32_toward(hi, up=not hi_closed)
     # Cast to match column dtype (e.g. f32) to avoid implicit column upcast
     # to f64 (measured ~5x slower at 5M rows).
     return (pl.lit(lo).cast(dtype, strict=False), pl.lit(hi).cast(dtype, strict=False))
+
+
+def _float32_toward(x: float, up: bool) -> float:
+    """The nearest Float32 at or above ``x`` (``up``), or at or below it."""
+    # float(): NumPy would compare a Float32 with x cast to Float32 (NEP 50).
+    f = np.float32(x)
+    if (float(f) < x) if up else (float(f) > x):
+        f = np.nextafter(f, np.float32(np.inf if up else -np.inf))
+    return float(f)
 
 
 def _range_filter_expr(
