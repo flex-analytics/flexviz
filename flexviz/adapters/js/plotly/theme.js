@@ -79,7 +79,10 @@ function fvPlotlyTemplate() {
       colorway: _fvPalette,
       title: { font: { size: 14, weight: 600, color: text }, x: 0.015, xanchor: 'left' },
       xaxis: { ...axis, showline: true },
-      yaxis: axis,
+      // Long category labels widen the left margin instead of being cut off.
+      // A margin only grows past the figure's own margin.l, so labels that
+      // fit keep the plot area where it is.
+      yaxis: { ...axis, automargin: true },
       legend: { font: { size: 12, color: text }, bgcolor: 'rgba(0,0,0,0)' },
       // One neutral label for every trace. buildTraceFromTemplate frames the
       // label of a series in its color.

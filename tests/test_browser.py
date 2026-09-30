@@ -8167,3 +8167,30 @@ class TestThemeBrowser:
         page.wait_for_function(
             "() => divs[0]._fullData[0].colorscale[0][1] === '#440154'"
         )
+
+    def test_long_category_tick_labels_are_not_cut_off(
+        self, page: Page, server_port: int
+    ):
+        df = pl.DataFrame(
+            {
+                "temperature_celsius": [float(i) for i in range(50)],
+                "vibration_rms": [float(i % 7) for i in range(50)],
+            }
+        )
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_ticks",
+            df,
+            lambda d: d.add_figure().add_corr_heatmap(
+                columns=["temperature_celsius", "vibration_rms"]
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        overflow = page.evaluate("""() => {
+            const left = divs[0].getBoundingClientRect().left;
+            const ticks = [...divs[0].querySelectorAll('.ytick text')];
+            return ticks.length && Math.min(...ticks.map(t => t.getBoundingClientRect().left)) - left;
+        }""")
+        assert overflow >= 0
