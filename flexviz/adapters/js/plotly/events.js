@@ -1552,8 +1552,7 @@ function _fvCubeCommitOverride(figUid, range, box) {
   if (!Array.isArray(r) || r.length !== 2) return null;
   // Temporal sources: the drag range arrives as date strings — convert to
   // the cube's physical unit, snap, then render the snapped edges back as
-  // strings (contract G; the server's _typed_range_bounds parses them back
-  // to the exact integral-unit bounds).
+  // strings (contract G, _fvCubeCommitEdges).
   if (gesture.unit) r = r.map(v => fvTemporalToPhysical(v, gesture.unit));
   if (!r.every(Number.isFinite)) return null;
   const snap = _fvCubeGestureSnap(gesture, r[0], r[1]);
@@ -1566,15 +1565,14 @@ function _fvCubeCommitOverride(figUid, range, box) {
       closed: snap.closed,
     }],
   }];
-  const [boxLo, boxHi] = _fvCubeBoxEdges(snap, gesture.unit);
   const snappedBox = { ...(box || {}) };
   if (gesture.role === 'x') {
-    snappedBox.x0 = boxLo;
-    snappedBox.x1 = boxHi;
+    snappedBox.x0 = edgeLoOut;
+    snappedBox.x1 = edgeHiOut;
     snappedBox.xref = snappedBox.xref || 'x';
   } else {
-    snappedBox.y0 = boxLo;
-    snappedBox.y1 = boxHi;
+    snappedBox.y0 = edgeLoOut;
+    snappedBox.y1 = edgeHiOut;
     snappedBox.yref = snappedBox.yref || 'y';
   }
   if (gesture.live) {
@@ -1585,25 +1583,22 @@ function _fvCubeCommitOverride(figUid, range, box) {
   return { predicates, box: snappedBox, skipPost: _fvCubeSkipPost(gesture) };
 }
 
-// A snap's committed edges in the clause's value space. A temporal edge is a
-// string of whole units: fvPhysicalToTemporal ceils, which gives the first
-// unit in the bin; a closed upper edge (the top bin) rounds down instead.
+// A snap's committed edges in the clause's value space. The stored selection
+// box sits on them too, so a restored selection draws the same box. A temporal
+// edge is a string that fvPhysicalToTemporal ceils. On a ms or µs axis it is a
+// whole unit, and a closed upper edge (the top bin) rounds down. On a Date axis
+// it keeps its time of day (µs): a whole-day edge can pass the center of a bar
+// narrower than two days, and the server rounds each bound to whole days
+// without moving a day across it (_temporal_bound_toward).
 function _fvCubeCommitEdges(snap, unit) {
   if (!unit) return [snap.edgeLo, snap.edgeHi];
+  if (unit === 'day') {
+    return [snap.edgeLo, snap.edgeHi].map(
+      v => fvPhysicalToTemporal(fvPhysicalToEpochMs(v, 'day') * 1000, 'us')
+    );
+  }
   const hi = snap.closed === 'both' ? Math.floor(snap.edgeHi) : snap.edgeHi;
   return [fvPhysicalToTemporal(snap.edgeLo, unit), fvPhysicalToTemporal(hi, unit)];
-}
-
-// A snap's edges for the stored and rendered selection box: the bin edges
-// themselves, in the axis's value space. Plotly highlights a bar when its
-// center is inside the box, so the highlight stays on the committed bins. A
-// whole-day commit edge can pass the center of a bar that is less than two
-// days wide, so a temporal box edge keeps its time of day (µs string).
-function _fvCubeBoxEdges(snap, unit) {
-  if (!unit) return [snap.edgeLo, snap.edgeHi];
-  return [snap.edgeLo, snap.edgeHi].map(
-    v => fvPhysicalToTemporal(fvPhysicalToEpochMs(v, unit) * 1000, 'us')
-  );
 }
 
 // Conditional commit predicate (shared by every range/box2d gesture): local
@@ -1625,8 +1620,8 @@ function _fvCubeSkipPost(gesture) {
 
 // Commit a box2d gesture (contract H): ONE predicate with TWO snapped
 // clauses (x and y) — today's two-clause hist2d selection shape, snapped to
-// the cube grid. The stored/rendered box sits on the bin edges of both axes
-// (_fvCubeBoxEdges). Conditional-commit skipPost is shared
+// the cube grid. The stored/rendered box sits on the committed edges of both
+// axes (_fvCubeCommitEdges). Conditional-commit skipPost is shared
 // (_fvCubeSkipPost). Returns null if either axis has no snap domain (cold
 // degrade) or the range is malformed.
 function _fvCubeBox2dCommitOverride(gesture, range, box) {
@@ -1644,12 +1639,10 @@ function _fvCubeBox2dCommitOverride(gesture, range, box) {
       { column: gesture.cols[1], range: [eyLo, eyHi], closed: snap.y.closed },
     ],
   }];
-  const [bxLo, bxHi] = _fvCubeBoxEdges(snap.x, gesture.axes[0].unit);
-  const [byLo, byHi] = _fvCubeBoxEdges(snap.y, gesture.axes[1].unit);
   const snappedBox = {
     ...(box || {}),
-    x0: bxLo, x1: bxHi, xref: (box && box.xref) || 'x',
-    y0: byLo, y1: byHi, yref: (box && box.yref) || 'y',
+    x0: exLo, x1: exHi, xref: (box && box.xref) || 'x',
+    y0: eyLo, y1: eyHi, yref: (box && box.yref) || 'y',
   };
   if (gesture.live) _fvCubeApplyBox2d(gesture, range);
   return { predicates, box: snappedBox, skipPost: _fvCubeSkipPost(gesture) };

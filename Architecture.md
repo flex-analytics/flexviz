@@ -1314,13 +1314,15 @@ viewports key as self-consistent epoch-ms tokens (never sent to the server — t
 the original date strings via the schema dtype in `_cube_axis_range`); the snap grid is adopted
 from the decoded header; drag ranges convert through `fvTemporalToPhysical` (manual UTC parse,
 never bare `Date.parse`); commits emit snapped **string** ranges rendered by
-`fvPhysicalToTemporal`, which ceils: the ceil of an exact edge is the first whole unit the
-kernel puts in its bin, and a closed upper edge (the top bin) rounds down to the last unit. So
-an integer row stays in the bar the display counts it in, and the string parses back exactly
-through `_typed_range_bounds`. The selection box keeps each
-bin edge's time of day instead (a µs string): a whole-day edge can pass the center of a bar
-narrower than two days. The `plotly_selected` echo guard converts both sides to physical before
-its half-bin comparison (half the source step).
+`fvPhysicalToTemporal`, which ceils (`_fvCubeCommitEdges`). On a ms or µs axis an edge is a
+whole unit: the ceil of an exact edge is the first unit the kernel puts in its bin, and a closed
+upper edge (the top bin) rounds down to the last unit. On a Date axis an edge keeps its time of
+day (a µs string), because a whole-day edge can pass the center of a bar narrower than two days;
+the server rounds each Date bound of a selection to whole days without moving a day across it
+(`_temporal_bound_toward`). So an integer row stays in the bar the display counts it in. The
+stored selection box sits on the committed edges, so a restore, which rebuilds the box from the
+predicate, draws the same box. The `plotly_selected` echo guard converts both sides to physical
+before its half-bin comparison (half the source step).
 
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
 column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. Most

@@ -3066,20 +3066,21 @@ _GRID_SRC = "_cube_grid_src"
 
 def _commit_clause(column: str, snap: tuple, unit: str | None = None):
     """Mirror of the client commit (``_fvCubeCommitEdges``): one clause from a
-    ``snap_brush`` result, a Date edge rendered as a whole-day string."""
+    ``snap_brush`` result. A Date edge keeps its time of day as a µs string;
+    the server rounds it to whole days."""
     import datetime as dt
 
     from flexviz.spec import ClauseFilter
 
     _lo_bin, _hi_bin, lo, hi, closed = snap
     if unit == "day":
-        if closed == "both":
-            hi = math.floor(hi)
 
-        def _day(v: float) -> str:
-            return (dt.date(1970, 1, 1) + dt.timedelta(days=math.ceil(v))).isoformat()
+        def _us(v: float) -> str:
+            us = math.ceil(v * 86_400_000 * 1000)
+            stamp = dt.datetime(1970, 1, 1) + dt.timedelta(microseconds=us)
+            return stamp.strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        lo, hi = _day(lo), _day(hi)
+        lo, hi = _us(lo), _us(hi)
     return ClauseFilter(column=column, range=(lo, hi), closed=closed)
 
 

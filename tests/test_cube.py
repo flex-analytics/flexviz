@@ -1822,11 +1822,18 @@ class TestTemporalUnits:
                 ].sum()
                 or 0
             )
-            # Mirrors _fvCubeCommitEdges: a closed top edge rounds down.
-            str_lo = _physical_to_temporal_str(e_lo, unit)
-            str_hi = _physical_to_temporal_str(
-                math.floor(e_hi) if closed == "both" else e_hi, unit
-            )
+            # Mirrors _fvCubeCommitEdges: a Date edge keeps its time of day
+            # (µs); on a ms or µs axis a closed top edge rounds down.
+            if unit == "day":
+                str_lo, str_hi = (
+                    _physical_to_temporal_str(v * 86_400_000 * 1000, "us")
+                    for v in (e_lo, e_hi)
+                )
+            else:
+                str_lo = _physical_to_temporal_str(e_lo, unit)
+                str_hi = _physical_to_temporal_str(
+                    math.floor(e_hi) if closed == "both" else e_hi, unit
+                )
             pred = SelectionPredicate(
                 clauses=[
                     ClauseFilter(column="t", range=(str_lo, str_hi), closed=closed)

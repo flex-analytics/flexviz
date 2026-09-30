@@ -4187,9 +4187,9 @@ class TestTemporalSourceCube:
         assert lo >= dt.datetime(2020, 1, 5)
         assert hi <= dt.datetime(2020, 1, 25)
 
-    def test_date_source_commits_integer_day_edges(self, page: Page, server_port: int):
-        """A Date-typed source brush commits YYYY-MM-DD edges (whole days,
-        ceil-ed from the kernel's bar boundaries) with full parity."""
+    def test_date_source_commits_bar_edges(self, page: Page, server_port: int):
+        """A Date-typed source brush commits the kernel's bar boundaries as µs
+        strings, which the server rounds to whole days, with full parity."""
         df = _temporal_browser_df("date")
         url = _temporal_dashboard_url(server_port, "_cube_browser_tsday", kind="date")
         bodies = _capture_updates(page)
@@ -4202,9 +4202,9 @@ class TestTemporalSourceCube:
         types = [b["event"]["type"] for b in bodies[n0:]]
         assert types == ["cube_request"], types
         clause = _assert_temporal_commit_and_parity(page, df)
-        # Integer-day edges: plain dates, no time component.
+        # Bar edges keep their time of day: YYYY-MM-DD HH:MM:SS.ffffff.
         for v in clause["range"]:
-            assert len(v) == 10, v  # YYYY-MM-DD
+            assert len(v) == 26, v
 
 
 # ---------------------------------------------------------------------------
@@ -7045,10 +7045,12 @@ class TestDateHistSource:
     def test_box_on_bar_edges_highlights_the_committed_bars(
         self, page: Page, server_port: int, k: int, m: int
     ):
-        """On bars narrower than a day, a brush over bars k..m commits whole
-        days that hold exactly their rows, and its box sits on the bar edges,
-        so Plotly highlights bars k..m. A brush up to the top bar commits
-        closed="both" with the last day. The echo guard tolerates half a bar."""
+        """On bars narrower than a day, a brush over bars k..m commits the bar
+        edges, which the server rounds to the whole days that hold exactly
+        their rows. The box sits on the same edges, also when a restore
+        rebuilds it from the predicate, so Plotly highlights bars k..m. A brush
+        up to the top bar commits closed="both" up to the last day. The echo
+        guard tolerates half a bar."""
         df, spec = _short_date_page(page, server_port)
         counts = _hist_y(page, "#fv-plot-0")
         day_ms = 86_400_000
@@ -7063,8 +7065,25 @@ class TestDateHistSource:
         top = m == bars - 1
         assert clause["closed"] == ("both" if top else "left")
         if top:
-            assert clause["range"][1] == "2020-01-07"
+            assert clause["range"][1] == "2020-01-07 00:00:00.000000"
         assert df.filter(_selection_expr(df, sels[0])).height == sum(counts[k : m + 1])
+        # /share keeps only the model fields, so a restore rebuilds the box
+        # from the predicate: it must land on the same bar edges.
+        live, rebuilt = page.evaluate(
+            """(fig) => {
+                const sel = fvFigureSelection(fig, DASHBOARD_SPEC.state.selections);
+                const shared = { ...sel };
+                delete shared._plotly_selection_box;
+                const kept = DASHBOARD_SPEC.state.selections;
+                DASHBOARD_SPEC.state.selections = [shared];
+                const [box] = selectionBoxesForFigure(fig);
+                DASHBOARD_SPEC.state.selections = kept;
+                const b = sel._plotly_selection_box;
+                return [[b.x0, b.x1], [box.x0, box.x1]];
+            }""",
+            spec.figures[0].uid,
+        )
+        assert rebuilt == live
         (highlighted,) = page.eval_on_selector(
             "#fv-plot-0",
             "gd => gd.data.map(t => t.selectedpoints ? Array.from(t.selectedpoints) : null)"
