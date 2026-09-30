@@ -653,3 +653,29 @@ class TestShowKwargValidation:
 
         with pytest.raises(TypeError, match="draggable"):
             PlotlyAdapter().show_dashboard(DashboardSpec(), draggable=False)
+
+
+class TestRendererRegistry:
+    def test_plotly_supports_every_registered_trace(self):
+        """Plotly is the primary renderer, so a trace it misses fails at /view."""
+        from flexviz.adapters.registry import PLOTLY_TRACE_TYPES
+        from flexviz.trace import _REGISTRY
+
+        assert PLOTLY_TRACE_TYPES == set(_REGISTRY)
+
+    def test_unsupported_trace_type_names_the_figure(self):
+        from flexviz.adapters import validate_dashboard_renderer
+
+        trace = TraceSpec(uid="t-1", trace_type="not_in_plotly")
+        figure = FigureSpec(uid="fig-1", layout={"title": "Map"}, traces=[trace])
+        with pytest.raises(
+            ValueError,
+            match="'plotly' does not support trace type 'not_in_plotly' in figure 'Map'",
+        ):
+            validate_dashboard_renderer("plotly", DashboardSpec(figures=[figure]))
+
+    def test_renderer_name_must_match_exactly(self):
+        from flexviz.adapters import build_adapter
+
+        with pytest.raises(ValueError, match="Unknown renderer 'Plotly'"):
+            build_adapter("Plotly")
