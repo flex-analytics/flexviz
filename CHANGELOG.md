@@ -60,6 +60,10 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - A selection or a zoom on a `Float32` column keeps exactly the values inside
   its range. Before, each bound was rounded to the nearest `Float32`, which
   could move a value next to the bound to the other side.
+- A selection on a `Date` or `Datetime("ms")` column keeps exactly the values
+  inside its range. Before, a bound with a time of day (or a fraction of a
+  millisecond) was cut to the day (or millisecond), so a brush that started at
+  13:00 still kept that day.
 
 ## [0.1.0b5] - 2026-09-27
 

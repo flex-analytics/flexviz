@@ -680,6 +680,27 @@ def _typed_temporal_lit(value: Any, dtype: pl.DataType | None) -> pl.Expr:
     return pl.lit(value, dtype=dtype)
 
 
+def _temporal_bound_toward(value: Any, dtype: pl.DataType, up: bool) -> pl.Expr:
+    """A range bound as a whole unit of a ``Date`` or ``Datetime("ms")``
+    column, rounded so no value of the column crosses it: ``up`` to the first
+    unit at or after the bound, else the last unit at or before it.
+
+    ``_typed_temporal_lit`` truncates a finer bound, so a bound at 13:00 would
+    keep that day's value at 00:00. A bound carries at most microseconds, so a
+    finer column takes it as it is.
+    """
+    if dtype == pl.Date:
+        unit_us = 86_400_000_000
+    elif isinstance(dtype, pl.Datetime) and dtype.time_unit == "ms":
+        unit_us = 1_000
+    else:
+        return _typed_temporal_lit(value, dtype)
+    tz = getattr(dtype, "time_zone", None)
+    us = _typed_temporal_lit(value, pl.Datetime("us", tz)).to_physical()
+    units = -(-us // unit_us) if up else us // unit_us
+    return units.cast(pl.Int32 if dtype == pl.Date else pl.Int64).cast(dtype)
+
+
 # ---------------------------------------------------------------------------
 # Temporal ↔ physical helpers for the numeric histogram kernels.
 #

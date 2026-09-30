@@ -725,6 +725,8 @@ _range_filter_expr(col, lo, hi, schema) → pl.Expr  # is_between with typed lit
 
 All traces call these for consistent datetime, integer, and float casting in `is_between` expressions.
 
+`_typed_range_bounds` rounds an integer or `Float32` bound so that no value of the column crosses it: a closed bound toward the interior of the range, an open bound away from it. A selection predicate applies the same rule to a temporal bound that is finer than its column (`_temporal_bound_toward`, for `Date` and `Datetime("ms")`), so a brush from 13:00 does not keep that day. A viewport mask still truncates a temporal bound: rounding there would change which points a line keeps at the edge of a zoom.
+
 ---
 
 ## Plugin Layer

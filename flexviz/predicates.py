@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from .spec import ClauseFilter, SelectionPredicate, SelectionState
-from .trace.base import _dtype_for_col, _typed_range_bounds
+from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bounds
 
 
 def _values_to_typed_series(
@@ -77,7 +77,22 @@ def _clause_to_expr(
             )
         return pl.col(clause.column).is_in(typed.implode())
 
-    bounds = _typed_range_bounds(clause.column, clause.range, schema, clause.closed)
+    dtype = _dtype_for_col(schema, clause.column)
+    if clause.range is not None and dtype is not None and dtype.is_temporal():
+        # A selection keeps exactly the instants in its range: each bound
+        # rounds to a whole unit of the column without moving a value across
+        # it, like an integer bound. A viewport mask still truncates
+        # (_typed_range_bounds): rounding there would change which points a
+        # line keeps at the edge of a zoom.
+        lo, hi = clause.range
+        bounds = (
+            _temporal_bound_toward(lo, dtype, up=clause.closed in ("both", "left")),
+            _temporal_bound_toward(
+                hi, dtype, up=clause.closed not in ("both", "right")
+            ),
+        )
+    else:
+        bounds = _typed_range_bounds(clause.column, clause.range, schema, clause.closed)
     if bounds is None:
         # range was None — should never happen because the model_validator
         # rejects it, but treat as a no-op for safety.
