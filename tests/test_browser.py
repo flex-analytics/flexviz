@@ -8064,25 +8064,38 @@ class TestThemeBrowser:
 
     def test_update_layout_wins_over_the_theme(self, page: Page, server_port: int):
         df = pl.DataFrame({"x": [float(i) for i in range(50)], "y": [1.0] * 50})
+        font = {"family": "Courier New", "size": 22, "color": "#654321"}
         url = _color_norm_url(
             server_port,
             "_browser_theme_layout",
             df,
             lambda d: (
-                d.add_figure()
+                d.add_figure(title="Power")
                 .add_line(x="x", y="y")
-                .update_layout(plot_bgcolor="#123456", font={"color": "#654321"})
+                .xlabel("Time")
+                .legend(True)
+                .update_layout(plot_bgcolor="#123456", font=font)
             ),
         )
         page.emulate_media(color_scheme="dark")
         page.goto(url)
         _wait_for_init(page, "plotly")
 
+        # The figure font reaches every text, as it does without a template.
         layout = page.evaluate("""() => {
             const l = divs[0]._fullLayout;
-            return [l.plot_bgcolor, l.paper_bgcolor, l.font.color];
+            return {
+                colors: [l.plot_bgcolor, l.paper_bgcolor],
+                texts: [l.font, l.xaxis.tickfont, l.legend.font]
+                    .map(f => [f.family, f.size, f.color]),
+                titles: [l.title.font, l.xaxis.title.font].map(f => [f.family, f.color]),
+            };
         }""")
-        assert layout == ["#123456", "#0b0e12", "#654321"]
+        assert layout == {
+            "colors": ["#123456", "#0b0e12"],
+            "texts": [["Courier New", 22, "#654321"]] * 3,
+            "titles": [["Courier New", "#654321"]] * 2,
+        }
 
     def test_series_hover_label_is_neutral_with_a_series_border(
         self, page: Page, server_port: int

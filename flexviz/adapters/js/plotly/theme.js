@@ -67,13 +67,17 @@ function fvThemeColorScale(colorscale) {
   return colorscale === 'Viridis' && fvIsDarkMode() ? _FV_DARK_VIRIDIS : colorscale;
 }
 
-function fvPlotlyTemplate() {
+// A key that the figure's own font sets reaches every text, as it does
+// without a template, so the template drops that key from its text fonts.
+// The hover label keeps its font: it has its own background.
+function fvPlotlyTemplate(ownFont = {}) {
+  const font = f => Object.fromEntries(Object.entries(f).filter(([key]) => !(key in ownFont)));
   const text = fvThemeToken('--fv-plot-text');
   const tick = fvThemeToken('--fv-plot-tick');
   const bg = fvThemeToken('--fv-plot-bg');
   const family = fvThemeToken('--fv-plot-font');
   // Tick labels stay at 12px: a smaller size failed the readability check.
-  const tickfont = { family: fvThemeToken('--fv-plot-tick-font'), size: 12, color: tick };
+  const tickfont = font({ family: fvThemeToken('--fv-plot-tick-font'), size: 12, color: tick });
   const colorbar = { outlinewidth: 0, thickness: 12, tickfont };
   const axis = {
     gridcolor: fvThemeToken('--fv-plot-grid'),
@@ -81,7 +85,7 @@ function fvPlotlyTemplate() {
     tickcolor: fvThemeToken('--fv-plot-axis'),
     zeroline: false,
     tickfont,
-    title: { font: { size: 12, color: tick } },
+    title: { font: font({ size: 12, color: tick }) },
   };
   return {
     layout: {
@@ -89,13 +93,13 @@ function fvPlotlyTemplate() {
       paper_bgcolor: bg,
       plot_bgcolor: bg,
       colorway: _fvPalette,
-      title: { font: { size: 14, weight: 600, color: text }, x: 0.015, xanchor: 'left' },
+      title: { font: font({ size: 14, weight: 600, color: text }), x: 0.015, xanchor: 'left' },
       xaxis: { ...axis, showline: true },
       // Long category labels widen the left margin instead of being cut off.
       // A margin only grows past the figure's own margin.l, so labels that
       // fit keep the plot area where it is.
       yaxis: { ...axis, automargin: true },
-      legend: { font: { size: 12, color: text }, bgcolor: 'rgba(0,0,0,0)' },
+      legend: { font: font({ size: 12, color: text }), bgcolor: 'rgba(0,0,0,0)' },
       // One neutral label for every trace. fvApplySeriesHoverBorders frames
       // the label of a series in its color.
       hoverlabel: {
@@ -121,10 +125,9 @@ function fvPlotlyTemplate() {
 // The redraw is a Plotly.react from state, guarded so no Plotly event from it
 // reaches the viewport or selection handlers.
 window.fvApplyTheme = function() {
-  const template = fvPlotlyTemplate();
   layoutsByFig.forEach((layout, figIdx) => {
     if (!_fvFigureHasOwnTemplate[figIdx]) {
-      layout.template = template;
+      layout.template = fvPlotlyTemplate(layout.font);
     } else if (layout.map && !layout.map.style && !layout.template.layout?.map?.style) {
       // Plotly's default map style loads CARTO tiles.
       layout.map.style = 'open-street-map';
