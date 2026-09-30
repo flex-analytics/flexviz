@@ -613,6 +613,18 @@ class TestHistogramTemporal:
         assert len(update["x"]) == 10
         assert sum(update["y"]) == 50
 
+    def test_date_bars_sit_on_their_bin_centers(self):
+        # Plotly draws and highlights a bar at its x. Seven days in 16 bins
+        # gives centers between whole days: a day-rounded x moves the bar.
+        import datetime as dt
+
+        days = [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(7)]
+        df = pl.DataFrame({"t": pl.Series("t", days, dtype=pl.Date)})
+        update = _aggregate_hist(df, bins=16, x="t")
+        lo, step, n = update["x_edges"]
+        want = [lo + (k + 0.5) * step for k in range(n)]
+        assert update["x"].dt.epoch("ms").to_list() == pytest.approx(want, abs=1)
+
     def test_centers_are_temporal_for_date_axis(self):
         # Centers must be a temporal Series (not raw epoch ints) so the renderer
         # auto-detects a date axis, consistent with the line trace.

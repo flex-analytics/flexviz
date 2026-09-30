@@ -717,8 +717,15 @@ def _physical_to_temporal_series(
     values: Sequence[float] | pl.Series, dtype: pl.DataType, name: str = ""
 ) -> pl.Series:
     """Cast physical bin centers (floats in ``dtype``'s physical unit) back to
-    the temporal ``dtype`` (rounded to the nearest physical unit)."""
+    the temporal ``dtype`` (rounded to the nearest physical unit).
+
+    A ``Date`` center is rarely a whole day, so it becomes a ``Datetime("ms")``
+    instead: Plotly draws and highlights a bar at its center, and a
+    day-rounded center puts the bar up to half a day off its bin."""
     s = values if isinstance(values, pl.Series) else pl.Series(name, list(values))
+    if dtype == pl.Date:
+        ms = s * _phys_epoch_ms_factor(dtype)
+        return ms.round().cast(pl.Int64).cast(pl.Datetime("ms"))
     return s.round().cast(pl.Int64).cast(dtype)
 
 

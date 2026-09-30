@@ -1874,10 +1874,10 @@ class TestEngineHistogramBinAlignment:
 
         assert 0 <= min(centers["value"]) <= max(centers["value"]) <= 99
         assert (
-            base.date()
+            base
             <= min(centers["day"])
             <= max(centers["day"])
-            <= (base.date() + dt.timedelta(days=99))
+            <= (base + dt.timedelta(days=99))
         )
         for col in ("stamp_us", "stamp_ms"):
             assert (
