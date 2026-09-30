@@ -1551,11 +1551,12 @@ color or spacing values remain.
 
 - `theme.css` holds one house theme as tokens: chrome (`--fv-accent`, `--fv-bg`, `--fv-text`, ...) and plots (`--fv-series`, `--fv-plot-*`). The base `:root` block is light mode. `:root[data-fv-mode="dark"]` overrides it, so it also outranks a later plain `:root` override.
 - `theme-mode.js` runs in `<head>` before the first paint. It sets `data-fv-mode` on `<html>` from localStorage `fv-mode`, else from the OS (`prefers-color-scheme`, kept live with a `matchMedia` listener). The toolbar button `#fv-btn-mode` cycles Auto, Light and Dark. `ToolbarConfig` cannot hide it. The mode is a viewer preference: it is not in the spec, a share URL or the server.
-- `plotly/theme.js` builds a Plotly `layout.template` from the tokens (`fvPlotlyTemplate`). A template fills only unset keys, so `update_layout(...)` wins, and a figure layout with its own `template` keeps it.
+- `plotly/theme.js` builds one Plotly `layout.template` per figure from the tokens (`fvPlotlyTemplate`). A template fills only unset keys, so `update_layout(...)` wins. A template value beats inheritance from `layout.font`, so the template leaves out each key that the figure's own `font` sets, and that key reaches every text except the hover label.
+- A figure layout with its own `template` keeps it and gets no house theme. Its map still gets `open-street-map` if neither the layout nor that template sets `map.style`, because Plotly's default style loads CARTO tiles.
 - On a mode change, `window.fvApplyTheme()` rebuilds the template and redraws each drawn figure from state inside `fvRunProgrammaticPlotlyOp`. It sends no request and changes no state.
 - `--fv-series` (Okabe-Ito) is read once and is the same in both modes, because `state.group_domains` stores each group's hex and share URLs carry it.
 - Dark mode choices in `plotly/theme.js`: the template's `map.style` is a MapLibre style object with the OpenStreetMap raster tiles of Plotly's `open-street-map` style, darkened by raster paint. `fvThemeColorScale` draws `"Viridis"` without its three darkest stops. `buildTraceFromTemplate` applies it, so the cells and the colorbar match. The spec stores only the scale name, so a `"Viridis"` that the user set by name gets the lift too.
-- `buildTraceFromTemplate` gives a series trace a hover label border in its color; the label itself uses the neutral tooltip tokens.
+- `fvApplySeriesHoverBorders`, called by `buildTracesForFigure`, gives a series trace a hover label border in its color. The label itself uses the neutral tooltip tokens. A trace value beats the layout, so a figure that sets `hoverlabel.bordercolor` in its layout or its own template gets no series border.
 - The y axis uses `automargin`. The margin grows past `margin.l` only when the tick labels do not fit, so the plot area moves on a zoom only when the labels would otherwise be cut off.
 
 ### Shared Runtime (`adapters/runtime.py`)
