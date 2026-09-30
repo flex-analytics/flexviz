@@ -8032,7 +8032,7 @@ class TestThemeBrowser:
         self, page: Page, server_port: int
     ):
         page.emulate_media(color_scheme="light")
-        page.goto(_dashboard_url_grouped(server_port, "plotly", "line", n_figures=2))
+        page.goto(_dashboard_url_grouped(server_port, "line", n_figures=2))
         _wait_for_init(page, "plotly")
         # A zoom that the redraw must keep.
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [10, 40]})")
@@ -8087,7 +8087,7 @@ class TestThemeBrowser:
         self, page: Page, server_port: int
     ):
         page.emulate_media(color_scheme="light")
-        page.goto(_dashboard_url_grouped(server_port, "plotly", "line"))
+        page.goto(_dashboard_url_grouped(server_port, "line"))
         _wait_for_init(page, "plotly")
 
         labels = page.evaluate("""() => divs[0]._fullData.map(t => [
@@ -8098,7 +8098,7 @@ class TestThemeBrowser:
     def test_overlay_legend_swatches_keep_full_opacity(
         self, page: Page, server_port: int
     ):
-        page.goto(_dashboard_url_grouped(server_port, "plotly", "line", n_figures=2))
+        page.goto(_dashboard_url_grouped(server_port, "line", n_figures=2))
         _wait_for_init(page, "plotly")
         page.evaluate("""() => window.flexvizApply({state: {
             cross_filter_mode: 'overlay',
@@ -8144,7 +8144,7 @@ class TestThemeBrowser:
 
     def test_dark_mode_lifts_the_low_end_of_viridis(self, page: Page, server_port: int):
         page.emulate_media(color_scheme="dark")
-        page.goto(_dashboard_url_hist2d(server_port, "plotly"))
+        page.goto(_dashboard_url_hist2d(server_port))
         _wait_for_init(page, "plotly")
         read = """() => ({
             scale: divs[0]._fullData[0].colorscale,
