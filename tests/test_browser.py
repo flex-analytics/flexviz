@@ -8247,6 +8247,29 @@ class TestThemeBrowser:
             "() => divs[0]._fullData[0].colorscale[0][1] === '#440154'"
         )
 
+    def test_a_figure_with_its_own_template_keeps_plain_viridis(
+        self, page: Page, server_port: int
+    ):
+        df = pl.DataFrame(
+            {"x": [float(i) for i in range(50)], "y": [float(i % 7) for i in range(50)]}
+        )
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_own_viridis",
+            df,
+            lambda d: (
+                d.add_figure()
+                .add_histogram2d(x="x", y="y")
+                .update_layout(template={"layout": {}})
+            ),
+        )
+        page.emulate_media(color_scheme="dark")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        low = page.evaluate("() => divs[0]._fullData[0].colorscale[0]")
+        assert low == [0, "#440154"]
+
     def test_long_category_tick_labels_are_not_cut_off(
         self, page: Page, server_port: int
     ):

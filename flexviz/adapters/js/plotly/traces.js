@@ -453,7 +453,6 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.x = gapped.x;
     trace.y = gapped.y;
   }
-  if (trace.colorscale) trace.colorscale = fvThemeColorScale(trace.colorscale);
   if (traceSpecByUid[logicalUid]?.display.color_norm === 'log') applyLogColorNorm(trace);
   if (trace.type === 'choroplethmap') applyChoroplethLayerOpacity(trace);
   applyHeatmapColorbarPolicy(trace, renderLayer, showForeground);
@@ -538,7 +537,7 @@ function buildTracesForFigure(figUid) {
     }
   }
   syncHeatmapOverlayColorScale(traces, figSpec, showForeground);
-  fvApplySeriesHoverBorders(traces, figUid);
+  fvApplyThemeToTraces(traces, figUid);
   return traces;
 }
 

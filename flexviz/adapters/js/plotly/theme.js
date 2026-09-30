@@ -52,20 +52,19 @@ const _FV_DARK_VIRIDIS = [
   '#28ae80', '#3fbc73', '#5ec962', '#84d44b', '#addc30', '#d8e219', '#fde725',
 ].map((color, i, stops) => [i / (stops.length - 1), color]);
 
-// The template's neutral hover label, framed in the series color: text on
-// the series color itself reads at about 3:1. A trace value beats the layout,
-// so a border from the figure layout or its own template skips this.
-function fvApplySeriesHoverBorders(traces, figUid) {
+// The theme parts that a template cannot hold, because they are per trace.
+// A series hover label keeps the neutral template colors, framed in the series
+// color: text on the series color itself reads at about 3:1. A trace value
+// beats the layout, so a border from the figure layout skips this.
+function fvApplyThemeToTraces(traces, figUid) {
   const figIdx = figUidToIdx[figUid];
-  if (_fvFigureHasOwnTemplate[figIdx] || layoutsByFig[figIdx].hoverlabel?.bordercolor != null) return;
+  if (_fvFigureHasOwnTemplate[figIdx]) return;
+  const seriesBorder = layoutsByFig[figIdx].hoverlabel?.bordercolor == null;
   for (const trace of traces) {
-    const seriesColor = !isHeatmapScaledTrace(trace) && (trace.line?.color || trace.marker?.color);
+    if (trace.colorscale === 'Viridis' && fvIsDarkMode()) trace.colorscale = _FV_DARK_VIRIDIS;
+    const seriesColor = seriesBorder && !isHeatmapScaledTrace(trace) && (trace.line?.color || trace.marker?.color);
     if (seriesColor) trace.hoverlabel = { ...trace.hoverlabel, bordercolor: seriesColor };
   }
-}
-
-function fvThemeColorScale(colorscale) {
-  return colorscale === 'Viridis' && fvIsDarkMode() ? _FV_DARK_VIRIDIS : colorscale;
 }
 
 // A key that the figure's own font sets reaches every text, as it does
@@ -102,8 +101,8 @@ function fvPlotlyTemplate(ownFont) {
       // fit keep the plot area where it is.
       yaxis: { ...axis, automargin: true },
       legend: { font: font({ size: 12, color: text }), bgcolor: 'rgba(0,0,0,0)' },
-      // One neutral label for every trace. fvApplySeriesHoverBorders frames
-      // the label of a series in its color.
+      // One neutral label for every trace. fvApplyThemeToTraces frames the
+      // label of a series in its color.
       hoverlabel: {
         bgcolor: fvThemeToken('--fv-plot-tooltip-bg'),
         bordercolor: fvThemeToken('--fv-plot-tooltip-border'),
@@ -136,7 +135,9 @@ window.fvApplyTheme = function() {
     }
   });
   for (const figUid of _fvAllFigUids) {
-    if (divs[figUidToIdx[figUid]]?._fullLayout) {
+    const figIdx = figUidToIdx[figUid];
+    // No part of a figure with its own template follows the mode.
+    if (!_fvFigureHasOwnTemplate[figIdx] && divs[figIdx]?._fullLayout) {
       fvRunProgrammaticPlotlyOp(figUid, () => _fvRenderFigure(figUid));
     }
   }
