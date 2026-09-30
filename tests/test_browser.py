@@ -8111,3 +8111,29 @@ class TestThemeBrowser:
             return layers.length > 1 && 'raster-saturation' in (layers[0].paint || {});
         }""")
         assert "OpenStreetMap" in page.inner_text("#fv-plot-0 .maplibregl-ctrl-attrib")
+
+    def test_dark_mode_lifts_the_low_end_of_viridis(self, page: Page, server_port: int):
+        page.emulate_media(color_scheme="dark")
+        page.goto(_dashboard_url_hist2d(server_port, "plotly"))
+        _wait_for_init(page, "plotly")
+        read = """() => ({
+            scale: divs[0]._fullData[0].colorscale,
+            bar: (() => {
+                const fill = divs[0].querySelector('.cbfill').style.fill;
+                const id = fill.match(/#([^"')]+)/)[1];
+                return [...document.getElementById(id).querySelectorAll('stop')]
+                    .map(stop => stop.getAttribute('stop-color'));
+            })(),
+        })"""
+
+        dark = page.evaluate(read)
+        assert dark["scale"][0] == [0, "#424086"]
+        assert dark["scale"][-1] == [1, "#fde725"]
+        # The colorbar draws the same scale as the cells.
+        assert "rgb(66, 64, 134)" in dark["bar"]
+        assert "rgb(68, 1, 84)" not in dark["bar"]
+
+        page.click("#fv-btn-mode")  # Auto (dark system) -> Light
+        page.wait_for_function(
+            "() => divs[0]._fullData[0].colorscale[0][1] === '#440154'"
+        )

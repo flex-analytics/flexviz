@@ -43,6 +43,18 @@ const _FV_DARK_MAP_STYLE = {
   glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
 };
 
+// Viridis without its three darkest stops, so it starts at #424086: the
+// darkest stops almost vanish on a dark plot. The spec stores only the scale
+// name, so this also applies to a Viridis that the user picked by name.
+const _FV_DARK_VIRIDIS = [
+  '#424086', '#3b528b', '#33638d', '#2c728e', '#26828e', '#21918c', '#1fa088',
+  '#28ae80', '#3fbc73', '#5ec962', '#84d44b', '#addc30', '#d8e219', '#fde725',
+].map((color, i, stops) => [i / (stops.length - 1), color]);
+
+function fvThemeColorScale(colorscale) {
+  return colorscale === 'Viridis' && fvIsDarkMode() ? _FV_DARK_VIRIDIS : colorscale;
+}
+
 function fvPlotlyTemplate() {
   const text = fvThemeToken('--fv-plot-text');
   const tick = fvThemeToken('--fv-plot-tick');
