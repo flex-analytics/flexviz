@@ -7,6 +7,42 @@
 // A figure layout that brings its own template keeps it.
 const _fvFigureHasOwnTemplate = layoutsByFig.map(layout => layout.template !== undefined);
 
+function fvIsDarkMode() {
+  return document.documentElement.dataset.fvMode === 'dark';
+}
+
+// The OpenStreetMap tiles of Plotly's 'open-street-map' style, darkened by
+// MapLibre raster paint. The id differs from the light style, so Plotly sets
+// the style again on a mode switch.
+const _FV_DARK_MAP_STYLE = {
+  id: 'fv-osm-dark',
+  version: 8,
+  sources: {
+    'plotly-osm-tiles': {
+      type: 'raster',
+      attribution: '© <a target="_blank" href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+    },
+  },
+  layers: [{
+    id: 'plotly-osm-tiles',
+    type: 'raster',
+    source: 'plotly-osm-tiles',
+    minzoom: 0,
+    maxzoom: 22,
+    // Swapping the brightness bounds inverts the tiles; the hue turn keeps
+    // water blue, and less saturation keeps the land grey under the cells.
+    paint: {
+      'raster-brightness-min': 0.9,
+      'raster-brightness-max': 0.1,
+      'raster-hue-rotate': 180,
+      'raster-saturation': -0.9,
+    },
+  }],
+  glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
+};
+
 function fvPlotlyTemplate() {
   const text = fvThemeToken('--fv-plot-text');
   const tick = fvThemeToken('--fv-plot-tick');
@@ -34,6 +70,7 @@ function fvPlotlyTemplate() {
       yaxis: axis,
       legend: { font: { size: 12, color: text }, bgcolor: 'rgba(0,0,0,0)' },
       newselection: { line: { color: fvThemeToken('--fv-plot-select'), width: 1.5 } },
+      map: { style: fvIsDarkMode() ? _FV_DARK_MAP_STYLE : 'open-street-map' },
     },
     data: {
       heatmap: [{ colorbar }],

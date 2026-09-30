@@ -350,8 +350,8 @@ class PlotlyAdapter(AbstractAdapter):
                 for ts in fig_spec.traces
             )
             if has_geo:
+                # The map style comes from the theme template, per mode.
                 layout_obj["map"] = {
-                    "style": "open-street-map",
                     "center": {"lat": 0, "lon": 0},
                     "zoom": 1,
                 }
@@ -428,6 +428,9 @@ class PlotlyAdapter(AbstractAdapter):
   <style>
 {theme_css()}
     body {{ margin: 0; padding: 0; box-sizing: border-box; font-family: var(--fv-font); background-color: var(--fv-bg); }}
+    .maplibregl-ctrl.maplibregl-ctrl-attrib {{ background-color: var(--fv-surface-overlay); color: var(--fv-text-secondary); }}
+    .maplibregl-ctrl-attrib a {{ color: inherit; }}
+    :root[data-fv-mode="dark"] .maplibregl-ctrl-attrib-button {{ filter: invert(1); }}
     {dashboard.css}
   {self._toolbar_css()}
   </style>

@@ -8082,3 +8082,32 @@ class TestThemeBrowser:
             return [l.plot_bgcolor, l.paper_bgcolor, l.font.color];
         }""")
         assert layout == ["#123456", "#0b0e12", "#654321"]
+
+    def test_map_tiles_follow_the_mode(self, page: Page, server_port: int):
+        def build(dash):
+            for style in (None, "white-bg"):
+                fig = dash.add_figure().add_geo_histogram2d(
+                    lat="lat", lon="lon", lat_bins=4, lon_bins=4
+                )
+                if style:
+                    fig.update_layout(map={"style": style})
+
+        page.emulate_media(color_scheme="light")
+        page.goto(
+            _color_norm_url(server_port, "_browser_theme_map", _geo_browser_df(), build)
+        )
+        _wait_for_init(page, "plotly")
+        read_styles = """() => divs.map(gd => {
+            const style = gd._fullLayout.map.style;
+            return typeof style === 'string' ? style : style.id;
+        })"""
+        assert page.evaluate(read_styles) == ["open-street-map", "white-bg"]
+
+        _switch_to_dark(page)
+        assert page.evaluate(read_styles) == ["fv-osm-dark", "white-bg"]
+        # The darkened OSM tiles stay under the cells and keep their attribution.
+        page.wait_for_function("""() => {
+            const layers = divs[0]._fullLayout.map._subplot.map.getStyle().layers;
+            return layers.length > 1 && 'raster-saturation' in (layers[0].paint || {});
+        }""")
+        assert "OpenStreetMap" in page.inner_text("#fv-plot-0 .maplibregl-ctrl-attrib")
