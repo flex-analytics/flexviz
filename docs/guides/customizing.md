@@ -229,7 +229,7 @@ map_fig.update_layout(map={"style": "white-bg"})  # a map figure
 
 A `font` from `update_layout()` reaches every text of the figure except the
 hover label. A figure that sets its own `template` in `update_layout()` does
-not get the theme.
+not get the theme. `template=None` counts as unset.
 
 The page look comes from CSS custom properties (`--fv-*`). FlexViz has no
 Python option for them. If you serve the `/view` page through your own
