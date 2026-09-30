@@ -10,6 +10,7 @@ applied, so that the test suite serves as regression coverage.
 
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 
 import pytest
@@ -1056,6 +1057,36 @@ class TestThemeCss:
         assert "var(--fv-accent)" in plotly_html
         assert "var(--fv-border)" in plotly_html
         assert "var(--fv-text)" in plotly_html
+
+    def test_one_dark_block_serves_the_system_and_the_mode_button(self):
+        from flexviz.adapters.runtime import theme_css
+
+        css = theme_css()
+        assert (
+            len(re.findall(r'^:root\[data-fv-mode="dark"\] \{', css, re.MULTILINE)) == 1
+        )
+        assert "@media (prefers-color-scheme" not in css
+
+    def test_series_palette_is_the_same_in_both_modes(self):
+        # state.group_domains stores each group's hex, so the palette must not
+        # change with the mode.
+        from flexviz.adapters.runtime import theme_css
+
+        light, dark = theme_css().split('\n:root[data-fv-mode="dark"]')
+        okabe_ito = (
+            "#0072b2, #e69f00, #009e73, #cc79a7, #56b4e9, #d55e00, #9a8700, #8a8a8a"
+        )
+        assert f"--fv-series:               {okabe_ito};" in light
+        assert "--fv-series" not in dark
+
+    def test_page_head_sets_the_mode_before_the_styles(self, plotly_html):
+        head = plotly_html.split("</head>")[0]
+        assert "root.dataset.fvMode = mode" in head
+        assert head.index("root.dataset.fvMode") < head.index("<style>")
+
+    def test_no_theme_candidate_switch_ships(self, plotly_html):
+        for temporary in ("data-fv-theme", "fv_theme", "fv_mode", "Theme (temp)"):
+            assert temporary not in plotly_html
 
 
 class TestPageHead:

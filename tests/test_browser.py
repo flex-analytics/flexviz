@@ -8004,3 +8004,81 @@ class TestLogAxisBrowser:
 
         assert result["guideLeft"] is not None, "Expected an x-guide on the log target"
         assert result["guideLeft"] == pytest.approx(result["expected"], abs=0.5)
+
+
+# ---------------------------------------------------------------------------
+# Theme: light and dark mode
+# ---------------------------------------------------------------------------
+
+_OKABE_ITO = ["#0072b2", "#e69f00", "#009e73", "#cc79a7"]
+
+
+def _switch_to_dark(page: Page) -> None:
+    """Click the mode button from Auto (light system) through Light to Dark."""
+    page.click("#fv-btn-mode")
+    page.click("#fv-btn-mode")
+    page.wait_for_function("() => document.documentElement.dataset.fvMode === 'dark'")
+    # The switch redraws every figure with the dark template.
+    page.wait_for_function(
+        "() => divs.every(gd => gd._fullLayout.paper_bgcolor === '#0b0e12')"
+    )
+
+
+@pytest.mark.browser
+class TestThemeBrowser:
+    """The mode is a client-only view preference: it changes only the look."""
+
+    def test_mode_switch_sends_no_request_and_keeps_the_state(
+        self, page: Page, server_port: int
+    ):
+        page.emulate_media(color_scheme="light")
+        page.goto(_dashboard_url_grouped(server_port, "plotly", "line", n_figures=2))
+        _wait_for_init(page, "plotly")
+        # A zoom that the redraw must keep.
+        page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [10, 40]})")
+        page.wait_for_timeout(1_500)
+        read = """() => ({
+            spec: JSON.stringify([DASHBOARD_SPEC.state, DASHBOARD_SPEC.client_state]),
+            range: divs[0]._fullLayout.xaxis.range,
+            colors: divs.map(gd => gd.data.map(t => t.line.color)),
+        })"""
+        before = page.evaluate(read)
+        requests: list[str] = []
+        page.on(
+            "request",
+            lambda r: requests.append(r.url) if "/dashboard/update" in r.url else None,
+        )
+
+        _switch_to_dark(page)
+        page.evaluate("() => window.fvApplyTheme()")
+        page.wait_for_timeout(1_000)
+
+        assert requests == []
+        assert page.evaluate(read) == before
+        # Group colors keep their hex: group_domains stores it. The zoom on
+        # figure 0 leaves only group A in view.
+        assert before["colors"] == [_OKABE_ITO[:1], _OKABE_ITO[:2]]
+        assert page.inner_text("#fv-btn-mode") == "Mode: Dark"
+        assert page.evaluate("() => localStorage.getItem('fv-mode')") == "dark"
+
+    def test_update_layout_wins_over_the_theme(self, page: Page, server_port: int):
+        df = pl.DataFrame({"x": [float(i) for i in range(50)], "y": [1.0] * 50})
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_layout",
+            df,
+            lambda d: (
+                d.add_figure()
+                .add_line(x="x", y="y")
+                .update_layout(plot_bgcolor="#123456", font={"color": "#654321"})
+            ),
+        )
+        page.emulate_media(color_scheme="dark")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        layout = page.evaluate("""() => {
+            const l = divs[0]._fullLayout;
+            return [l.plot_bgcolor, l.paper_bgcolor, l.font.color];
+        }""")
+        assert layout == ["#123456", "#0b0e12", "#654321"]
