@@ -481,7 +481,7 @@ class TestPlotlyHtml:
         assert "plotly_unhover" in html
 
     def test_hover_clear_fn_exposed(self, html):
-        assert "fvClearAllCrosshairs" in html
+        assert "window.fvClearAllHoverVisuals =" in html
 
     def test_hover_state_uses_client_state(self, html):
         assert "window._hoverEnabled" not in html
