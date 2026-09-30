@@ -8096,6 +8096,37 @@ class TestThemeBrowser:
         ])""")
         assert labels == [["#0f172a", "#f8fafc", color] for color in _OKABE_ITO[:2]]
 
+    @pytest.mark.parametrize(
+        "layout",
+        [
+            {"hoverlabel": {"bordercolor": "#123456"}},
+            {"template": {"layout": {"hoverlabel": {"bordercolor": "#123456"}}}},
+        ],
+    )
+    def test_a_figure_hover_border_wins_over_the_series_border(
+        self, page: Page, server_port: int, layout: dict
+    ):
+        df = pl.DataFrame(
+            {"x": [float(i) for i in range(20)], "y": [1.0] * 20, "g": ["a", "b"] * 10}
+        )
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_hover_border",
+            df,
+            lambda d: (
+                d.add_figure()
+                .add_line(x="x", y="y", group_by="g")
+                .update_layout(**layout)
+            ),
+        )
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        borders = page.evaluate(
+            "() => divs[0]._fullData.map(t => t.hoverlabel.bordercolor)"
+        )
+        assert borders == ["#123456", "#123456"]
+
     def test_overlay_legend_swatches_keep_full_opacity(
         self, page: Page, server_port: int
     ):

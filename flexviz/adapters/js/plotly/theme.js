@@ -51,6 +51,18 @@ const _FV_DARK_VIRIDIS = [
   '#28ae80', '#3fbc73', '#5ec962', '#84d44b', '#addc30', '#d8e219', '#fde725',
 ].map((color, i, stops) => [i / (stops.length - 1), color]);
 
+// The template's neutral hover label, framed in the series color: text on
+// the series color itself reads at about 3:1. A trace value beats the layout,
+// so a border from the figure layout or its own template skips this.
+function fvApplySeriesHoverBorders(traces, figUid) {
+  const figIdx = figUidToIdx[figUid];
+  if (_fvFigureHasOwnTemplate[figIdx] || layoutsByFig[figIdx].hoverlabel?.bordercolor !== undefined) return;
+  for (const trace of traces) {
+    const seriesColor = !isHeatmapScaledTrace(trace) && (trace.line?.color || trace.marker?.color);
+    if (seriesColor) trace.hoverlabel = { ...trace.hoverlabel, bordercolor: seriesColor };
+  }
+}
+
 function fvThemeColorScale(colorscale) {
   return colorscale === 'Viridis' && fvIsDarkMode() ? _FV_DARK_VIRIDIS : colorscale;
 }
@@ -84,8 +96,8 @@ function fvPlotlyTemplate() {
       // fit keep the plot area where it is.
       yaxis: { ...axis, automargin: true },
       legend: { font: { size: 12, color: text }, bgcolor: 'rgba(0,0,0,0)' },
-      // One neutral label for every trace. buildTraceFromTemplate frames the
-      // label of a series in its color.
+      // One neutral label for every trace. fvApplySeriesHoverBorders frames
+      // the label of a series in its color.
       hoverlabel: {
         bgcolor: fvThemeToken('--fv-plot-tooltip-bg'),
         bordercolor: fvThemeToken('--fv-plot-tooltip-border'),
