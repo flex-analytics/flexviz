@@ -19,7 +19,7 @@ from flexviz.spec import (
 from tests.test_browser import _wait_for_init
 
 
-def _build_or_selection_dashboard_url(port: int, renderer: str = "plotly") -> str:
+def _build_or_selection_dashboard_url(port: int) -> str:
     """Two-figure dashboard: bar target (fig 0) + treemap source (fig 1)."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -53,10 +53,10 @@ def _build_or_selection_dashboard_url(port: int, renderer: str = "plotly") -> st
         layout=LayoutSpec(draggable=False),
     )
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _build_pie_or_dashboard_url(port: int, renderer: str = "plotly") -> str:
+def _build_pie_or_dashboard_url(port: int) -> str:
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
 
@@ -80,7 +80,7 @@ def _build_pie_or_dashboard_url(port: int, renderer: str = "plotly") -> str:
         layout=LayoutSpec(draggable=False),
     )
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _wait_for_selection_count(page: Page, expected: int) -> None:

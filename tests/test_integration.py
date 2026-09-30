@@ -1047,23 +1047,21 @@ class TestShareAndView:
         assert m is not None, "SERVER_URL constant missing from /view HTML"
         assert m.group(1) == '"."'
 
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_view_viz_spec(self, client: TestClient, integ_df, renderer: str):
+    def test_view_viz_spec(self, client: TestClient, integ_df):
         viz = Figure(integ_df).add_line(x="ts", y="val").to_spec(source=_SRC)
         encoded = encode_spec(viz)
-        resp = client.get(f"/view?spec={encoded}&renderer={renderer}")
+        resp = client.get(f"/view?spec={encoded}&renderer=plotly")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert renderer in resp.text.lower()
+        assert "plotly" in resp.text.lower()
 
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_view_dashboard_spec(self, client: TestClient, integ_df, renderer: str):
+    def test_view_dashboard_spec(self, client: TestClient, integ_df):
         dash = Dashboard(integ_df)
         dash.add_figure().add_line(x="ts", y="val")
         dash.add_figure().add_histogram(x="val")
         dash_spec = dash.to_spec(source_name=_SRC)
         encoded = encode_spec(dash_spec)
-        resp = client.get(f"/view?spec={encoded}&renderer={renderer}")
+        resp = client.get(f"/view?spec={encoded}")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         if dash_spec.layout.draggable:
@@ -1795,13 +1793,12 @@ class TestPublicAPI:
         resp = client.get("/sources")
         assert "_pub_api_test" in resp.json()
 
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_is_valid_renderer(self, integ_df: pl.DataFrame, renderer: str):
+    def test_is_valid_renderer(self, integ_df: pl.DataFrame):
         from flexviz.figure import Figure
 
         fig = Figure(integ_df)
         fig.add_line(x="ts", y="val")
-        with pytest.raises(ValueError, match=renderer):
+        with pytest.raises(ValueError, match="Unknown renderer '__invalid__'"):
             fig.show(renderer="__invalid__")
 
 

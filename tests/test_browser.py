@@ -67,8 +67,8 @@ def _start_server(port: int) -> None:
     raise RuntimeError(f"Server did not start on port {port}")
 
 
-def _dashboard_url(port: int, renderer: str, n_figures: int = 2) -> str:
-    """Return a URL that serves an N-figure dashboard via the given renderer."""
+def _dashboard_url(port: int, n_figures: int = 2) -> str:
+    """Return a URL that serves an N-figure dashboard."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import encode_spec
@@ -83,10 +83,10 @@ def _dashboard_url(port: int, renderer: str, n_figures: int = 2) -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_cached(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_cached(port: int) -> str:
     """Dashboard whose source opts into caching (cache=True)."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -103,7 +103,7 @@ def _dashboard_url_cached(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name=source_name)
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _dashboard_url_selection_duplicate_repro(port: int) -> str:
@@ -141,10 +141,10 @@ def _dashboard_url_selection_duplicate_repro(port: int) -> str:
     dash.add_figure().add_histogram(x="x", bins=21)
 
     encoded = encode_spec(dash.to_spec(source_name=source_name))
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_boxplot(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_boxplot(port: int) -> str:
     """Single-figure dashboard with a box plot trace (Plotly smoke tests)."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -159,10 +159,10 @@ def _dashboard_url_boxplot(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_static_pie(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_static_pie(port: int) -> str:
     """Single-figure dashboard whose Plotly panel should not render a control bar."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -181,12 +181,10 @@ def _dashboard_url_static_pie(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_static_pie")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_grouped_line_multi_group_by(
-    port: int, renderer: str = "plotly"
-) -> str:
+def _dashboard_url_grouped_line_multi_group_by(port: int) -> str:
     """Single grouped-line dashboard with composite group values for legend tests."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -209,10 +207,10 @@ def _dashboard_url_grouped_line_multi_group_by(
     spec = dash.to_spec(source_name=source_name)
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_treemap_with_line(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_treemap_with_line(port: int) -> str:
     """Two-figure dashboard: grouped line target + treemap source."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -238,10 +236,10 @@ def _dashboard_url_treemap_with_line(port: int, renderer: str = "plotly") -> str
     spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_treemap_pie_selection(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_treemap_pie_selection(port: int) -> str:
     """Dashboard with source bar target, two-level treemap, and pie source."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -264,12 +262,10 @@ def _dashboard_url_treemap_pie_selection(port: int, renderer: str = "plotly") ->
     spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_plotly_selection_box(
-    port: int, source_kind: str, renderer: str = "plotly"
-) -> str:
+def _dashboard_url_plotly_selection_box(port: int, source_kind: str) -> str:
     """Two-figure dashboard for Plotly source selection-box regressions."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -297,7 +293,7 @@ def _dashboard_url_plotly_selection_box(
     spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
@@ -322,7 +318,7 @@ def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
     spec = dash.to_spec(source_name="_browser_hist2d_overlay")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
@@ -351,10 +347,10 @@ def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
     spec = dash.to_spec(source_name="_browser_geo_overlay")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_hist2d(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_hist2d(port: int) -> str:
     """Single-figure dashboard with a Histogram2D trace."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -374,7 +370,7 @@ def _dashboard_url_hist2d(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _dashboard_url_weekday_hist2d(port: int) -> str:
@@ -405,7 +401,7 @@ def _dashboard_url_weekday_hist2d(port: int) -> str:
     spec = dash.to_spec(source_name=source_name)
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer=plotly"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _geo_browser_df() -> pl.DataFrame:
@@ -421,7 +417,7 @@ def _geo_browser_df() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _dashboard_url_geo(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_geo(port: int) -> str:
     """Single-figure dashboard with a geo histogram trace."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -441,10 +437,10 @@ def _dashboard_url_geo(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_geo_with_line(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_geo_with_line(port: int) -> str:
     """Two-figure dashboard: geo histogram source + linked line target."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -466,12 +462,11 @@ def _dashboard_url_geo_with_line(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _dashboard_url_grouped(
     port: int,
-    renderer: str,
     trace_type: str = "line",
     n_figures: int = 1,
 ) -> str:
@@ -511,10 +506,10 @@ def _dashboard_url_grouped(
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_line_hist_target(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_line_hist_target(port: int) -> str:
     """Two-figure dashboard: line source + histogram target."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -531,10 +526,10 @@ def _dashboard_url_line_hist_target(port: int, renderer: str = "plotly") -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_line_multi_hist_target(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_line_multi_hist_target(port: int) -> str:
     """Two-figure dashboard: line source + two histogram target traces."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -559,10 +554,10 @@ def _dashboard_url_line_multi_hist_target(port: int, renderer: str = "plotly") -
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_line_grouped_bar_target(port: int, renderer: str = "plotly") -> str:
+def _dashboard_url_line_grouped_bar_target(port: int) -> str:
     """Two-figure dashboard: line source + grouped bar target."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -586,14 +581,14 @@ def _dashboard_url_line_grouped_bar_target(port: int, renderer: str = "plotly") 
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _wait_for_chart(page: Page, renderer: str) -> None:
+def _wait_for_chart(page: Page) -> None:
     page.wait_for_selector(".js-plotly-plot", timeout=15_000)
 
 
-def _grouped_child_count(page: Page, renderer: str) -> int:
+def _grouped_child_count(page: Page) -> int:
     return page.evaluate(
         """() => document.querySelector('.js-plotly-plot').data.length"""
     )
@@ -619,7 +614,7 @@ def _layer_traces(rendered: list[dict], layer: str) -> list[dict]:
 
 
 def _dashboard_url_saved_viewport(
-    port: int, renderer: str = "plotly", x_range: tuple[float, float] = (120.0, 260.0)
+    port: int, x_range: tuple[float, float] = (120.0, 260.0)
 ) -> tuple[str, tuple[float, float]]:
     """A one-figure dashboard whose spec carries a saved x viewport.
 
@@ -641,7 +636,7 @@ def _dashboard_url_saved_viewport(
 
     encoded = encode_spec(spec)
     return (
-        f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}",
+        f"http://127.0.0.1:{port}/view?spec={encoded}",
         x_range,
     )
 
@@ -724,7 +719,7 @@ def server_port() -> Generator[int, None, None]:
 
 class TestPlotlyBrowser:
     def test_page_loads_without_browser_errors(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly")
+        url = _dashboard_url(server_port)
         browser_errors: list[str] = []
 
         page.on("pageerror", lambda exc: browser_errors.append(str(exc)))
@@ -742,7 +737,7 @@ class TestPlotlyBrowser:
         assert browser_errors == []
 
     def test_page_loads_and_charts_render(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly")
+        url = _dashboard_url(server_port)
         page.goto(url)
         # Wait for Plotly chart containers to appear.
         page.wait_for_selector(".js-plotly-plot", timeout=15_000)
@@ -757,7 +752,7 @@ class TestPlotlyBrowser:
         A second unconditional pass over all of them redraws identical data inside
         the window a user waits on.
         """
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.add_init_script(_COUNT_RENDERS_JS)
         page.goto(url)
         _wait_for_init(page, "plotly")
@@ -776,7 +771,7 @@ class TestPlotlyBrowser:
         Plotly.react plots a div that was never plotted, so no stub render is
         needed to hold a place for the response.
         """
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.add_init_script(_TRACE_DRAWS_JS)
         page.goto(url)
         _wait_for_init(page, "plotly")
@@ -798,7 +793,7 @@ class TestPlotlyBrowser:
         the figures a second time, repeats that work inside the window a user
         waits on.
         """
-        url, x_range = _dashboard_url_saved_viewport(server_port, "plotly")
+        url, x_range = _dashboard_url_saved_viewport(server_port)
         events: list[str] = []
         page.on(
             "request",
@@ -825,7 +820,7 @@ class TestPlotlyBrowser:
         assert len(renders) == 1, f"expected one data render, got {renders}"
 
     def test_toolbar_buttons_present(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly")
+        url = _dashboard_url(server_port)
         page.goto(url)
         page.wait_for_selector("#fv-btn-reset", timeout=10_000)
         for btn_id in (
@@ -843,7 +838,7 @@ class TestPlotlyBrowser:
     def test_plotly_control_bar_renders_below_plot_with_a11y_labels(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -882,14 +877,14 @@ class TestPlotlyBrowser:
         assert all(btn["tabIndex"] >= 0 for btn in geometry["buttons"])
 
     def test_plotly_static_figure_omits_control_bar(self, page: Page, server_port: int):
-        page.goto(_dashboard_url_static_pie(server_port, "plotly"))
+        page.goto(_dashboard_url_static_pie(server_port))
         _wait_for_init(page, "plotly")
         assert page.locator(".fv-panel-bar").count() == 0
 
     def test_mode_toggle_click_does_not_post_dashboard_update(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -912,7 +907,7 @@ class TestPlotlyBrowser:
         assert dragmode == "pan"
 
     def test_reset_button_fires_dashboard_update(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly")
+        url = _dashboard_url(server_port)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -933,7 +928,7 @@ class TestPlotlyBrowser:
         )
 
     def test_deselect_button_fires_dashboard_update(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly")
+        url = _dashboard_url(server_port)
         update_requests: list[str] = []
         page.on(
             "request",
@@ -958,7 +953,7 @@ class TestPlotlyBrowser:
     ):
         """With a cache=True source, the init response is reused client-side, so
         clicking Reset (same unfiltered output) issues no /dashboard/update."""
-        url = _dashboard_url_cached(server_port, "plotly")
+        url = _dashboard_url_cached(server_port)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -987,7 +982,7 @@ class TestPlotlyBrowser:
         """Regression: the client cache holds the viewport-free response, so a
         deselect issued while a figure is zoomed must NOT be served from cache —
         it must round-trip to the server for the viewport-correct result."""
-        url = _dashboard_url_cached(server_port, "plotly")
+        url = _dashboard_url_cached(server_port)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1025,7 +1020,7 @@ class TestPlotlyBrowser:
         autorange — with no other figure cross-filtering it and no axis lock — is
         served from the figure-scoped client cache (the unfiltered slice already
         held from init), so it issues no /dashboard/update."""
-        url = _dashboard_url_cached(server_port, "plotly")
+        url = _dashboard_url_cached(server_port)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1065,7 +1060,7 @@ class TestPlotlyBrowser:
         """Case 3c: a per-figure reset of a figure that is not zoomed, sources no
         selection, and has no other cross-filters in play changes nothing — so it
         must issue no /dashboard/update at all."""
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1090,7 +1085,7 @@ class TestPlotlyBrowser:
         cross-filter target (another figure sources the selection) changes
         nothing — it stays filtered-by-others at autorange — so it must issue no
         /dashboard/update and must preserve the incoming selection."""
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1138,7 +1133,7 @@ class TestPlotlyBrowser:
         back to full autorange is served from the figure-scoped client cache
         just like an unlocked one — no /dashboard/update — and the lock range
         survives."""
-        url = _dashboard_url_cached(server_port, "plotly")
+        url = _dashboard_url_cached(server_port)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1185,7 +1180,7 @@ class TestPlotlyBrowser:
         """A line is x-bound: zooming only the y-axis changes no data, so the
         client must suppress the /dashboard/update POST — yet still persist the
         new y range locally (for share/restore)."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1214,7 +1209,7 @@ class TestPlotlyBrowser:
 
     def test_line_x_zoom_posts_once(self, page: Page, server_port: int):
         """The binding axis (x) of a line must still round-trip on zoom."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1237,7 +1232,7 @@ class TestPlotlyBrowser:
 
     def test_line_y_autorange_does_not_post(self, page: Page, server_port: int):
         """Double-click autorange on the non-binding y-axis must not round-trip."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_requests: list[str] = []
 
         def capture(req: PWRequest) -> None:
@@ -1261,7 +1256,7 @@ class TestPlotlyBrowser:
     def test_filter_summary_strip_shows_global_chip_and_source_panel_echo(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -1300,7 +1295,7 @@ class TestPlotlyBrowser:
     def test_filter_chip_remove_clears_only_its_source_selection(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -1352,7 +1347,7 @@ class TestPlotlyBrowser:
     def test_filter_summary_joins_multi_clause_and_or_predicates(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -1389,9 +1384,9 @@ class TestPlotlyBrowser:
         assert summary["panel0"] == "ts 1.25 to 6.25 | val 10 to 20 OR ts 30 to 40"
 
     def test_hist2d_uses_control_bar_for_selection(self, page: Page, server_port: int):
-        url = _dashboard_url_hist2d(server_port, "plotly")
+        url = _dashboard_url_hist2d(server_port)
         page.goto(url)
-        _wait_for_chart(page, "plotly")
+        _wait_for_chart(page)
         page.wait_for_selector("#fv-bar-0[role='toolbar']", timeout=10_000)
         assert page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").count() == 1
         assert page.locator(".modebar").count() == 0
@@ -1400,8 +1395,8 @@ class TestPlotlyBrowser:
         self, page: Page, server_port: int
     ):
         """The default color scale reaches Plotly as its built-in Viridis."""
-        page.goto(_dashboard_url_hist2d(server_port, "plotly"))
-        _wait_for_chart(page, "plotly")
+        page.goto(_dashboard_url_hist2d(server_port))
+        _wait_for_chart(page)
         colorscale = page.evaluate(
             "() => document.querySelector('.js-plotly-plot')._fullData[0].colorscale"
         )
@@ -1411,7 +1406,7 @@ class TestPlotlyBrowser:
     def test_hist2d_box_select_button_emits_selection(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_hist2d(server_port, "plotly")
+        url = _dashboard_url_hist2d(server_port)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -1423,7 +1418,7 @@ class TestPlotlyBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_chart(page, "plotly")
+        _wait_for_chart(page)
         page.locator("#fv-bar-0 .fv-mode-btn[data-mode='select']").click()
         page.wait_for_timeout(300)
 
@@ -1595,7 +1590,7 @@ class TestPlotlyBrowser:
         assert browser_errors == []
 
     def test_horizontal_drag_zoom_works_with_hover(self, page: Page, server_port: int):
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_bodies: list[dict] = []
         page_errors: list[str] = []
 
@@ -1644,7 +1639,7 @@ class TestPlotlyBrowser:
     def test_geo_histogram_zoom_posts_coordinates_and_updates_trace(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_geo(server_port, "plotly")
+        url = _dashboard_url_geo(server_port)
         update_bodies: list[dict] = []
         response_statuses: list[int] = []
 
@@ -1745,7 +1740,7 @@ class TestPlotlyBrowser:
     def test_geo_histogram_keeps_zoom_pan_mode_enabled(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_geo(server_port, "plotly")
+        url = _dashboard_url_geo(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -1774,7 +1769,7 @@ class TestPlotlyBrowser:
     def test_geo_histogram_selection_filters_linked_line(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_geo_with_line(server_port, "plotly")
+        url = _dashboard_url_geo_with_line(server_port)
         update_bodies: list[dict] = []
         response_statuses: list[int] = []
 
@@ -1881,30 +1876,29 @@ class TestPlotlyBrowser:
         assert after_line_count < before_line_count
 
     def test_boxplot_page_loads_and_chart_renders(self, page: Page, server_port: int):
-        url = _dashboard_url_boxplot(server_port, "plotly")
+        url = _dashboard_url_boxplot(server_port)
         page.goto(url)
         page.wait_for_selector(".js-plotly-plot", timeout=15_000)
         charts = page.query_selector_all(".js-plotly-plot")
         assert len(charts) >= 1, f"Expected >=1 Plotly chart, found {len(charts)}"
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestGroupedBrowser:
     def test_grouped_line_renders_children_not_parent(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url_grouped(server_port, renderer, trace_type="line")
+        url = _dashboard_url_grouped(server_port, trace_type="line")
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(500)
-        assert _grouped_child_count(page, renderer) == 2
+        assert _grouped_child_count(page) == 2
 
     def test_grouped_line_viewport_removes_hidden_child(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url_grouped(server_port, renderer, trace_type="line")
+        url = _dashboard_url_grouped(server_port, trace_type="line")
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         page.evaluate("""async () => {
               const figUid = DASHBOARD_SPEC.figures[0].uid;
@@ -1916,16 +1910,14 @@ class TestGroupedBrowser:
               });
             }""")
         page.wait_for_timeout(2_000)
-        assert _grouped_child_count(page, renderer) == 1
+        assert _grouped_child_count(page) == 1
 
-    def test_grouped_bar_renders_children(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url_grouped(server_port, renderer, trace_type="bar")
+    def test_grouped_bar_renders_children(self, page: Page, server_port: int):
+        url = _dashboard_url_grouped(server_port, trace_type="bar")
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(500)
-        assert _grouped_child_count(page, renderer) == 2
+        assert _grouped_child_count(page) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1940,14 +1932,11 @@ def _wait_for_init(page: Page, renderer: str) -> None:
     page.wait_for_timeout(2_000)
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestCrossFilterBrowser:
     """Test cross-filter selection across 3 figures in a headless browser."""
 
-    def test_cross_filter_A_updates_B_and_C(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+    def test_cross_filter_A_updates_B_and_C(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -1959,7 +1948,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
         initial_count = len(update_bodies)
 
         # Trigger a selection on figure A via JS.
@@ -1984,8 +1973,8 @@ class TestCrossFilterBrowser:
         ]
         assert len(selection_events) >= 1, "Expected at least one selection event POST"
 
-    def test_deselect_clears_filter(self, page: Page, server_port: int, renderer: str):
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+    def test_deselect_clears_filter(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -1997,7 +1986,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Select on A, then deselect via toolbar.
         page.evaluate("""() => {
@@ -2030,11 +2019,11 @@ class TestCrossFilterBrowser:
         )
 
     def test_remove_selection_posts_type_matching_state(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         # The server treats "deselect" as unfiltered, so the posted type must
         # match the selections the posted state carries.
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2043,7 +2032,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         page.evaluate("""() => {
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
@@ -2068,10 +2057,8 @@ class TestCrossFilterBrowser:
         assert body["event"]["type"] == "deselect"
         assert body["spec"]["state"]["selections"] == []
 
-    def test_panel_reset_clears_sourced_selection(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+    def test_panel_reset_clears_sourced_selection(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2083,7 +2070,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Inject a selection sourced from figure 0.
         page.evaluate("""() => {
@@ -2125,14 +2112,14 @@ class TestCrossFilterBrowser:
         )
 
     def test_panel_reset_of_target_figure_keeps_incoming_filter(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Resetting a *zoomed* figure that is only a cross-filter *target* (the
         filter is sourced by another figure) must reset only its viewport via a
         'viewport' event, keep the incoming selection, and not disturb the
         source. (An *unzoomed* target reset is a no-op — see
         ``test_panel_reset_unzoomed_target_is_noop``.)"""
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2144,7 +2131,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Selection sourced from figure 0, filtering figures 1 and 2; plus a
         # viewport on figure 1 so its reset actually clears something (otherwise
@@ -2193,10 +2180,8 @@ class TestCrossFilterBrowser:
         keys = viewport_events[-1]["event"]["viewport_keys"]
         assert keys and all(k.startswith(f"{fig1_uid}/") for k in keys), keys
 
-    def test_reset_clears_zoom_and_filter(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url(server_port, renderer, n_figures=3)
+    def test_reset_clears_zoom_and_filter(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=3)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2208,7 +2193,7 @@ class TestCrossFilterBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Select on A first.
         page.evaluate("""() => {
@@ -2243,12 +2228,11 @@ class TestCrossFilterBrowser:
         assert selections == [] or selections is None
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestOverlayBrowser:
     def test_overlay_toggle_with_cached_bg_avoids_warmup(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2260,7 +2244,7 @@ class TestOverlayBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         page.evaluate("""() => {
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
@@ -2287,9 +2271,9 @@ class TestOverlayBrowser:
         assert "init" not in toggle_events
 
     def test_overlay_toggle_without_cached_bg_warms_once(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -2301,7 +2285,7 @@ class TestOverlayBrowser:
 
         page.on("request", capture)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         page.evaluate("""() => {
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
@@ -2332,9 +2316,7 @@ class TestOverlayBrowser:
         assert toggle_events.count("init") == 1
         assert toggle_events.count("selection") >= 1
 
-    def test_overlay_heatmap_shows_single_colorbar(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_overlay_heatmap_shows_single_colorbar(self, page: Page, server_port: int):
         """Overlay cross-filter on histogram2d must expose only the fg colorbar."""
         url = _dashboard_url_hist2d_overlay(server_port)
         page.goto(url)
@@ -2409,7 +2391,7 @@ class TestOverlayBrowser:
         ],
     )
     def test_overlay_map_fades_background_under_filtered_layer(
-        self, page: Page, server_port: int, renderer: str, geo_kwargs: dict
+        self, page: Page, server_port: int, geo_kwargs: dict
     ):
         """A geo_histogram2d target draws both layers; the colorbar moves to fg."""
         errors: list[str] = []
@@ -2478,11 +2460,11 @@ class TestOverlayBrowser:
                 assert min(layer["raw"]) <= 0 < max(layer["raw"])
 
     def test_overlay_reuses_same_color_and_mutes_background(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         page.evaluate("""() => {
             const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
@@ -2501,7 +2483,7 @@ class TestOverlayBrowser:
         page.wait_for_timeout(1_500)
 
         rendered = page.evaluate(
-            """(renderer) => {
+            """() => {
                 const fig = document.querySelectorAll('.js-plotly-plot')[1];
                 return (fig.data || []).map(t => ({
                     id: t.uid,
@@ -2509,7 +2491,6 @@ class TestOverlayBrowser:
                     color: (t.line && t.line.color) || (t.marker && t.marker.color) || null,
                 }));
             }""",
-            renderer,
         )
 
         bg = next(item for item in rendered if _trace_layer(item.get("id")) == "bg")
@@ -2519,13 +2500,13 @@ class TestOverlayBrowser:
         assert abs(fg["opacity"] - 1.0) < 1e-9
 
     def test_overlay_reset_clears_fg_and_restores_full_opacity(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """After Reset in overlay+selection mode, the fg trace must be removed
         and the bg trace must return to full opacity (1.0)."""
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # 1. Enable overlay mode.
         page.click("#fv-btn-cfmode")
@@ -2556,7 +2537,7 @@ class TestOverlayBrowser:
 
         # 5. After reset, no fg trace must remain; bg trace must be at full opacity.
         rendered = page.evaluate(
-            """(renderer) => {
+            """() => {
                 // Check all Plotly figures — none should have an fg-layer trace.
                 const figs = document.querySelectorAll('.js-plotly-plot');
                 return Array.from(figs).flatMap(gd =>
@@ -2566,7 +2547,6 @@ class TestOverlayBrowser:
                     }))
                 );
             }""",
-            renderer,
         )
 
         fg_traces = _layer_traces(rendered, "fg")
@@ -2580,13 +2560,13 @@ class TestOverlayBrowser:
             )
 
     def test_overlay_reset_then_new_selection_shows_correct_overlay(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """After Reset followed by a new selection in overlay mode, the overlay
         must show bg at low opacity and fg at full opacity again."""
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # 1. Enable overlay mode, make a selection, then reset.
         page.click("#fv-btn-cfmode")
@@ -2613,14 +2593,13 @@ class TestOverlayBrowser:
 
         # 3. The non-source figure (index 1) must show bg at low opacity + fg at 1.0.
         rendered = page.evaluate(
-            """(renderer) => {
+            """() => {
                 const fig = document.querySelectorAll('.js-plotly-plot')[1];
                 return (fig.data || []).map(t => ({
                     id: t.uid,
                     opacity: t.opacity !== undefined ? t.opacity : 1,
                 }));
             }""",
-            renderer,
         )
 
         bg = next((t for t in rendered if _trace_layer(t.get("id")) == "bg"), None)
@@ -2643,7 +2622,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
     def test_multi_histogram_overlay_offsets_by_logical_trace(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_line_multi_hist_target(server_port, "plotly")
+        url = _dashboard_url_line_multi_hist_target(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -2706,7 +2685,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
     def test_multi_histogram_no_selection_uses_group_barmode(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_line_multi_hist_target(server_port, "plotly")
+        url = _dashboard_url_line_multi_hist_target(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -2721,7 +2700,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
     def test_hist_target_reset_and_deselect_clear_fg_without_selector_errors(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_line_hist_target(server_port, "plotly")
+        url = _dashboard_url_line_hist_target(server_port)
         console_messages: list[str] = []
         page.on("console", lambda msg: console_messages.append(msg.text))
         page.goto(url)
@@ -2806,7 +2785,7 @@ class TestOverlayBrowserPlotlySafeLayerIds:
     def test_grouped_bar_target_reset_clears_fg_without_selector_errors(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_line_grouped_bar_target(server_port, "plotly")
+        url = _dashboard_url_line_grouped_bar_target(server_port)
         console_messages: list[str] = []
         page.on("console", lambda msg: console_messages.append(msg.text))
         page.goto(url)
@@ -2873,9 +2852,7 @@ class TestSameOriginBrowser:
         # loopback, so no browser network rule blocks the request: only the
         # server's CORS headers decide whether the page may read the answer.
         page.goto(
-            _dashboard_url(server_port, "plotly", n_figures=1).replace(
-                "127.0.0.1", "localhost"
-            )
+            _dashboard_url(server_port, n_figures=1).replace("127.0.0.1", "localhost")
         )
         result = page.evaluate(
             """async url => {
@@ -2891,7 +2868,7 @@ class TestSameOriginBrowser:
     ):
         # A notebook embeds the server's page this way: the parent page has
         # another origin, the dashboard in the iframe calls its own server.
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         page.set_content(f'<iframe src="{url}" width="900" height="600"></iframe>')
         frame = page.wait_for_selector("iframe").content_frame()
         frame.wait_for_function(
@@ -2906,14 +2883,13 @@ class TestSameOriginBrowser:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestShareUrlState:
     """Verify that Share → navigate preserves viewport and cross-filter state."""
 
-    def test_share_preserves_zoom(self, page: Page, server_port: int, renderer: str):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+    def test_share_preserves_zoom(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Programmatically set a viewport state.
         page.evaluate("""() => {
@@ -2944,10 +2920,10 @@ class TestShareUrlState:
             return new URL(data.url, window.location.href).href;
         }""")
         assert share_resp, "Share must return a URL"
-        share_url = share_resp + f"&renderer={renderer}"
+        share_url = share_resp
 
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         restored_vp = page.evaluate("DASHBOARD_SPEC.state.viewport")
         assert restored_vp, "Viewport state must be restored from shared URL"
@@ -2956,12 +2932,10 @@ class TestShareUrlState:
             f"Expected a viewport key like 'figUid/x', got {vp_keys}"
         )
 
-    def test_share_preserves_cross_filter(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+    def test_share_preserves_cross_filter(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Programmatically add a selection.
         page.evaluate("""() => {
@@ -2982,28 +2956,27 @@ class TestShareUrlState:
             return new URL(data.url, window.location.href).href;
         }""")
         assert share_url
-        share_url += f"&renderer={renderer}"
 
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         restored_sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         assert len(restored_sels) >= 1, "Selections must be restored from shared URL"
         assert restored_sels[0]["predicates"][0]["clauses"][0]["range"] == [100, 300]
 
     def test_share_preserves_cross_filter_effect_on_data(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """End-to-end: A selection on A must still narrow B after Share URL round-trip."""
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # On the first page: capture B's init count, apply a selection on A, and
         # verify that B's visible data is narrowed. Then obtain a Share URL via
         # the same /share payload that the toolbar uses.
         result = page.evaluate(
-            """async ({renderer}) => {
+            """async () => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
                 const uidB = figUids[1];
@@ -3039,28 +3012,26 @@ class TestShareUrlState:
                   shareUrl: new URL(data.url, window.location.href).href,
                 };
             }""",
-            {"renderer": renderer},
         )
 
         init_count_b = result["initCountB"]
         sel_count_b = result["selCountB"]
-        share_url = result["shareUrl"] + f"&renderer={renderer}"
+        share_url = result["shareUrl"]
 
         assert sel_count_b < init_count_b, "Selection on A must narrow B before sharing"
 
         # Now open the shared URL and assert that B remains narrowed.
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         restored_count_b = page.evaluate(
-            """({renderer}) => {
+            """() => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidB = figUids[1];
 
                 const idxB = figUidToIdx[uidB];
                 return tracesByFig[idxB][0].x.length;
             }""",
-            {"renderer": renderer},
         )
 
         assert restored_count_b == sel_count_b, (
@@ -3068,12 +3039,10 @@ class TestShareUrlState:
             "to the same narrowed data as before sharing"
         )
 
-    def test_share_preserves_zoom_and_filter(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+    def test_share_preserves_zoom_and_filter(self, page: Page, server_port: int):
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Set both viewport and selection state.
         page.evaluate("""() => {
@@ -3094,10 +3063,9 @@ class TestShareUrlState:
             return new URL((await resp.json()).url, window.location.href).href;
         }""")
         assert share_url
-        share_url += f"&renderer={renderer}"
 
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         restored_vp = page.evaluate("DASHBOARD_SPEC.state.viewport")
         restored_sels = page.evaluate("DASHBOARD_SPEC.state.selections")
@@ -3105,18 +3073,16 @@ class TestShareUrlState:
         assert len(restored_sels) >= 1, "Selections must be restored"
         assert restored_sels[0]["predicates"][0]["clauses"][0]["range"] == [100, 300]
 
-    def test_share_draws_selection_boxes(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_share_draws_selection_boxes(self, page: Page, server_port: int):
         """Share URL must restore visible selection boxes on the source figure."""
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Programmatically add a selection with both x and y ranges so that
         # a rectangular selection box can be drawn by the renderer.
         share_url = page.evaluate(
-            """async ({renderer}) => {
+            """async () => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
                 DASHBOARD_SPEC.state.selections = [{
@@ -3134,18 +3100,16 @@ class TestShareUrlState:
                 const data = await resp.json();
                 return new URL(data.url, window.location.href).href;
             }""",
-            {"renderer": renderer},
         )
         assert share_url
-        share_url += f"&renderer={renderer}"
 
         # Open the shared URL and assert that a selection box is present
         # on the source figure.
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         has_box = page.evaluate(
-            """({renderer}) => {
+            """() => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
                 const idxA = figUidToIdx[uidA];
@@ -3153,7 +3117,6 @@ class TestShareUrlState:
                 const sels = layout.selections || [];
                 return Array.isArray(sels) && sels.length > 0;
             }""",
-            {"renderer": renderer},
         )
 
         assert has_box, (
@@ -3161,15 +3124,15 @@ class TestShareUrlState:
         )
 
     def test_share_preserves_zoomed_aggregation_and_cross_filter(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Repro: zoom A + select A, then Share → reload must apply both."""
-        url = _dashboard_url(server_port, renderer, n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         share_url = page.evaluate(
-            """async ({renderer}) => {
+            """async () => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
                 const uidB = figUids[1];
@@ -3202,16 +3165,14 @@ class TestShareUrlState:
                 const data = await resp.json();
                 return new URL(data.url, window.location.href).href;
             }""",
-            {"renderer": renderer},
         )
         assert share_url
-        share_url += f"&renderer={renderer}"
 
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         restored = page.evaluate(
-            """({renderer}) => {
+            """() => {
                 const figUids = DASHBOARD_SPEC.figures.map(f => f.uid);
                 const uidA = figUids[0];
                 const uidB = figUids[1];
@@ -3230,7 +3191,6 @@ class TestShareUrlState:
                 const b = plotlyCountAndRange(uidB);
                 return {a, b};
             }""",
-            {"renderer": renderer},
         )
 
         # A should be aggregated to the zoomed viewport.
@@ -3730,7 +3690,7 @@ class TestShareBehindProxy:
 # ---------------------------------------------------------------------------
 
 
-def _dashboard_url_hover(port: int, renderer: str) -> str:
+def _dashboard_url_hover(port: int) -> str:
     """Two-figure dashboard: fig0 = line(x=ts, y=val), fig1 = line(x=ts, y=val).
     Both share the 'ts' and 'val' columns so crosshairs should sync."""
     from flexviz.dashboard import Dashboard
@@ -3748,10 +3708,10 @@ def _dashboard_url_hover(port: int, renderer: str) -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_hover_minmax_shared_x(port: int, renderer: str) -> str:
+def _dashboard_url_hover_minmax_shared_x(port: int) -> str:
     """Two minmax-downsampled line figures that only share x (user repro shape)."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -3776,17 +3736,16 @@ def _dashboard_url_hover_minmax_shared_x(port: int, renderer: str) -> str:
     spec = dash.to_spec(source_name="_browser_test")
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestLinkedHoverBrowser:
     def test_hover_button_present_and_inactive_by_default(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         btn = page.query_selector("#fv-hover-btn")
         assert btn is not None, "Hover dropdown button must be present"
@@ -3800,10 +3759,10 @@ class TestLinkedHoverBrowser:
             f"client_state.hover_mode must default to 'off', got {mode!r}"
         )
 
-    def test_hover_toggle_turns_on(self, page: Page, server_port: int, renderer: str):
-        url = _dashboard_url_hover(server_port, renderer)
+    def test_hover_toggle_turns_on(self, page: Page, server_port: int):
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Clicking the toggle turns linked hover on.
         page.click("#fv-hover-btn")
@@ -3819,10 +3778,10 @@ class TestLinkedHoverBrowser:
         )
         assert btn.get_attribute("aria-pressed") == "true"
 
-    def test_hover_toggle_turns_off(self, page: Page, server_port: int, renderer: str):
-        url = _dashboard_url_hover(server_port, renderer)
+    def test_hover_toggle_turns_off(self, page: Page, server_port: int):
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Toggle on, then off.
         page.click("#fv-hover-btn")
@@ -3836,12 +3795,10 @@ class TestLinkedHoverBrowser:
         assert "Off" in (btn.text_content() or "")
         assert btn.get_attribute("aria-pressed") == "false"
 
-    def test_hover_targets_built_at_load(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url_hover(server_port, renderer)
+    def test_hover_targets_built_at_load(self, page: Page, server_port: int):
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         targets = page.evaluate("hoverTargetsByColumn")
         assert targets is not None, "hoverTargetsByColumn must be defined"
@@ -3849,12 +3806,12 @@ class TestLinkedHoverBrowser:
         assert len(targets["ts"]) >= 1, "ts column must have at least one target entry"
 
     def test_plotly_hover_shows_crosshair_on_other_figure(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Axis mode hover must add a guide to the other figure."""
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         guides_after = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -3879,12 +3836,10 @@ class TestLinkedHoverBrowser:
             "Axis mode hover on fig0 must add at least one guide to fig1"
         )
 
-    def test_plotly_unhover_clears_crosshairs(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url_hover(server_port, renderer)
+    def test_plotly_unhover_clears_crosshairs(self, page: Page, server_port: int):
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         guides_after = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -3900,15 +3855,15 @@ class TestLinkedHoverBrowser:
         assert guides_after == 0, "Unhover must remove all hover guides"
 
     def test_plotly_axis_hover_emits_crosshair_on_shared_axes(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         # fig0 and fig1 are both line(x=ts, y=val), so they share BOTH the x and
         # the y column. Axis-mode hover projects the hovered point onto every
         # shared axis, so the target should show a full crosshair: one x-guide
         # and one y-guide.
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         linked_shape = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -3932,12 +3887,12 @@ class TestLinkedHoverBrowser:
         )
 
     def test_plotly_axis_hover_emits_no_visual_to_source_figure(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Spec rule: no linked visual is emitted to the source figure."""
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         source_guides = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -3952,12 +3907,10 @@ class TestLinkedHoverBrowser:
 
         assert source_guides == 0, "Source figure must receive no linked hover visuals"
 
-    def test_hover_no_visual_when_off(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        url = _dashboard_url_hover(server_port, renderer)
+    def test_hover_no_visual_when_off(self, page: Page, server_port: int):
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         guides_after = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -3972,12 +3925,12 @@ class TestLinkedHoverBrowser:
         assert guides_after == 0, "No hover visual when mode is 'off'"
 
     def test_plotly_minmax_hover_links_even_when_not_near_exact_point(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Regression: linked hover should work with minmax traces without pixel-perfect point hit."""
-        url = _dashboard_url_hover_minmax_shared_x(server_port, renderer)
+        url = _dashboard_url_hover_minmax_shared_x(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Enable linked hover via the toggle
         page.click("#fv-hover-btn")
@@ -4034,13 +3987,11 @@ class TestLinkedHoverBrowser:
         )
         assert after["guides"] >= 1, "Linked figure should receive crosshair from hover"
 
-    def test_hover_mode_persists_through_share(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_hover_mode_persists_through_share(self, page: Page, server_port: int):
         """Toggle hover on, share, reload — client_state.hover_mode must still be 'on'."""
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Toggle linked hover on
         page.click("#fv-hover-btn")
@@ -4057,10 +4008,9 @@ class TestLinkedHoverBrowser:
             return new URL(data.url, window.location.href).href;
         }""")
         assert share_url
-        share_url += f"&renderer={renderer}"
 
         page.goto(share_url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         mode = page.evaluate(
             "DASHBOARD_SPEC.client_state && DASHBOARD_SPEC.client_state.hover_mode"
@@ -4072,7 +4022,7 @@ class TestLinkedHoverBrowser:
         assert "On" in (btn.text_content() or ""), "Button must show 'On' after restore"
 
     def test_hover_dropdown_hidden_for_single_figure_dashboard(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Dropdown must be hidden when there are no linkable source-target pairs."""
         from flexviz.figure import Figure
@@ -4089,10 +4039,10 @@ class TestLinkedHoverBrowser:
 
         dash_spec = DashboardSpec(figures=[spec.figure], state=spec.state)
         encoded = encode_spec(dash_spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         wrapper = page.query_selector("#fv-hover-dropdown")
         if wrapper:
@@ -4101,13 +4051,11 @@ class TestLinkedHoverBrowser:
                 "Hover dropdown must be hidden for single-figure dashboard"
             )
 
-    def test_hover_toggle_aria_pressed_state(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_hover_toggle_aria_pressed_state(self, page: Page, server_port: int):
         """aria-pressed must track the on/off toggle state."""
-        url = _dashboard_url_hover(server_port, renderer)
+        url = _dashboard_url_hover(server_port)
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         btn = page.query_selector("#fv-hover-btn")
         if btn is None:
@@ -4129,7 +4077,7 @@ class TestLinkedHoverBrowser:
 
     @pytest.mark.browser_context_args(timezone_id="Europe/Brussels")
     def test_temporal_hover_band_lands_on_the_bin_edge_off_utc(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """A histogram's date x axis carries bin edges as epoch-ms numbers
         (the ``[lo, step, n]`` triple of ``TestBinEdgeTripleBrowser``). The
@@ -4156,10 +4104,7 @@ class TestLinkedHoverBrowser:
         dash.add_figure().add_line(x="ts", y="val")  # fig0: axis source
         dash.add_figure().add_histogram(x="ts", bins=10)  # fig1: axis target, date x
         spec = dash.to_spec(source_name="_browser_edges_hist_date")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer=plotly"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -4210,7 +4155,7 @@ class TestLinkedHoverBrowser:
         ids=["linear", "log"],
     )
     def test_hover_band_is_clipped_to_the_plot_area(
-        self, page: Page, server_port: int, renderer: str, log_x, zoom, probe
+        self, page: Page, server_port: int, log_x, zoom, probe
     ):
         """A zoomed grid snaps outward, so its first bin starts left of the
         plot. On a log axis the lattice puts that edge at 0, which has no log
@@ -4274,7 +4219,7 @@ class TestLinkedHoverBrowser:
         assert result["right"] == pytest.approx(result["expectedRight"], abs=0.5)
 
     def test_mouse_hover_on_a_date_axis_links_guide_and_band(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """On a date axis Plotly reports the hovered x as a date string. The
         linked guide and the histogram band are placed in epoch-ms, so the
@@ -4344,9 +4289,8 @@ class TestCellHoverBrowser:
     """Browser tests for Phase 3 cell hover mode."""
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_hover_toggle_available_for_hist_dashboard(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """The hover toggle must be offered when a histogram shares a column with
         a line (a linkable source→target pair exists)."""
@@ -4371,10 +4315,10 @@ class TestCellHoverBrowser:
         fig2.add_histogram(x="ts", bins=10)
         spec = dash.to_spec(source_name="_browser_cell_test")
         encoded = encode_spec(spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         btn = page.query_selector("#fv-hover-btn")
         assert btn is not None, "Hover toggle must be present"
@@ -4385,10 +4329,7 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_cell_hover_emits_x_band_to_line_target(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_cell_hover_emits_x_band_to_line_target(self, page: Page, server_port: int):
         """Cell hover on histogram must emit x_band to linked line figure."""
         import polars as pl
 
@@ -4411,10 +4352,10 @@ class TestCellHoverBrowser:
         fig2.add_histogram(x="ts", bins=10)
         spec = dash.to_spec(source_name="_browser_cell_test2")
         encoded = encode_spec(spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         guides = page.evaluate("""() => {
             const fig0Uid = DASHBOARD_SPEC.figures[0].uid;
@@ -4447,10 +4388,7 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_cell_hover_no_visual_to_source_figure(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_cell_hover_no_visual_to_source_figure(self, page: Page, server_port: int):
         """Cell hover must not emit any visual to the source figure."""
         import polars as pl
 
@@ -4472,10 +4410,10 @@ class TestCellHoverBrowser:
         fig2.add_histogram(x="ts", bins=10)
         spec = dash.to_spec(source_name="_browser_cell_test3")
         encoded = encode_spec(spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         source_guides = page.evaluate("""() => {
             const fig1Uid = DASHBOARD_SPEC.figures[1].uid;
@@ -4502,10 +4440,7 @@ class TestCellHoverBrowser:
         assert source_guides == 0, "Source figure must receive no linked visuals"
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
-    def test_axis_mode_histogram_source_emits_guide(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_axis_mode_histogram_source_emits_guide(self, page: Page, server_port: int):
         """A histogram declares ``axis`` as a source mode, so hovering a bar in
         axis mode must emit an x-guide on a line target sharing the column — it
         must not be swallowed as a cell event because the bar has bin edges."""
@@ -4523,12 +4458,9 @@ class TestCellHoverBrowser:
         dash.add_figure().add_line(x="ts", y="val")  # fig0: axis target
         dash.add_figure().add_histogram(x="ts", bins=10)  # fig1: axis source
         spec = dash.to_spec(source_name="_browser_hist_axis_src")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         guides = page.evaluate("""() => {
             const lineFigUid = DASHBOARD_SPEC.figures[0].uid;
@@ -4555,9 +4487,8 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_hover_toggle_hidden_for_geo_only_cell_source(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """The hover toggle must stay hidden when only an unimplemented geo cell
         source exists with no other linkable pair."""
@@ -4580,10 +4511,10 @@ class TestCellHoverBrowser:
         fig1.add_line(x="lon", y="lat")
         spec = dash.to_spec(source_name="_browser_cell_geo_only")
         encoded = encode_spec(spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         wrapper = page.query_selector("#fv-hover-dropdown")
         if wrapper:
@@ -4593,9 +4524,8 @@ class TestCellHoverBrowser:
             )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_cell_hover_uses_target_axis_for_band_orientation(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Cell fallback bands must use target axis mapping, not source axis role."""
         from flexviz.dashboard import Dashboard
@@ -4619,10 +4549,10 @@ class TestCellHoverBrowser:
         fig1.add_line(x="shared", y="src_x")
         spec = dash.to_spec(source_name="_browser_cell_target_axis")
         encoded = encode_spec(spec)
-        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}&renderer={renderer}"
+        url = f"http://127.0.0.1:{server_port}/view?spec={encoded}"
 
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         emitted = page.evaluate("""() => {
             const sourceFigUid = DASHBOARD_SPEC.figures[0].uid;
@@ -4659,9 +4589,8 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_grouped_histogram_hover_edges_keyed_by_parent(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Grouped histogram bin edges must be resolvable under the logical
         parent uid (target lookups use the parent uid, not child uids)."""
@@ -4680,12 +4609,9 @@ class TestCellHoverBrowser:
         dash = Dashboard(df)
         dash.add_figure().add_histogram(x="sin", group_by="country", bins=12)
         spec = dash.to_spec(source_name="_browser_grouped_hist_cells")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         edges = page.evaluate("""() => {
             const parentUid = DASHBOARD_SPEC.figures[0].traces[0].uid;
@@ -4697,9 +4623,8 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_axis_hover_line_emits_band_on_grouped_histograms(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """Axis-mode hover on a grouped line must place a bin-band on grouped
         histograms sharing the column — including a histogram that bins that
@@ -4727,12 +4652,9 @@ class TestCellHoverBrowser:
             x="sin", group_by="country", bins=12
         )  # fig2 vert
         spec = dash.to_spec(source_name="_browser_axis_grouped_hist")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         result = page.evaluate("""() => {
             const lineFigUid = DASHBOARD_SPEC.figures[0].uid;
@@ -4767,9 +4689,8 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_axis_hover_histogram_x_source_emits_y_guide_on_line(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """A vertical (x=) histogram bins its column on x, but a line that plots
         that same column on y must receive a HORIZONTAL (y) guide at the bin
@@ -4789,12 +4710,9 @@ class TestCellHoverBrowser:
         dash.add_figure().add_line(x="x", y="sin")  # fig0: sin on y axis
         dash.add_figure().add_histogram(x="sin", bins=10)  # fig1: sin on x axis
         spec = dash.to_spec(source_name="_browser_axis_hist_x_to_line")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         axes = page.evaluate("""() => {
             const lineFigUid = DASHBOARD_SPEC.figures[0].uid;
@@ -4820,9 +4738,8 @@ class TestCellHoverBrowser:
         )
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly"])
     def test_cell_hover_1d_histogram_emits_band_not_cell_on_hist2d(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
         """A 1D histogram only constrains one axis, so a 2D target (histogram2d)
         must receive a band/strip on the shared-column axis — never a single
@@ -4844,12 +4761,9 @@ class TestCellHoverBrowser:
             x="x", y="sin", x_bins=10, y_bins=8
         )  # fig1: sin on y
         spec = dash.to_spec(source_name="_browser_cell_1d_to_2d")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
-        _wait_for_init(page, renderer)
+        _wait_for_init(page, "plotly")
 
         # Drive the cell projection directly: a 1D cell event (constrains only x)
         # whose column maps to the hist2d's y axis must yield a y-band, not a rect.
@@ -4940,10 +4854,7 @@ class TestBinEdgeTripleBrowser:
         dash.add_figure().add_line(x="ts", y="val")  # fig0: axis source
         dash.add_figure().add_histogram(x="val", bins=10)  # fig1: axis target
         spec = dash.to_spec(source_name="_browser_edges_hist")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer=plotly"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5012,10 +4923,7 @@ class TestBinEdgeTripleBrowser:
             x="a", y="b", x_bins=6, y_bins=5
         )  # fig1: target
         spec = dash.to_spec(source_name="_browser_edges_hist2d")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer=plotly"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5073,10 +4981,7 @@ class TestBinEdgeTripleBrowser:
         dash.add_figure().add_histogram2d(x="t", y="b", x_bins=6, y_bins=5)  # source
         dash.add_figure().add_histogram2d(x="t", y="b", x_bins=6, y_bins=5)  # target
         spec = dash.to_spec(source_name="_browser_edges_hist2d_date")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer=plotly"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5113,10 +5018,7 @@ class TestBinEdgeTripleBrowser:
         dash.add_figure().add_histogram(x="v", bins=3)  # fig1: 1-D target
         dash.add_figure().add_histogram2d(x="v", y="w", x_bins=3, y_bins=3)  # fig2
         spec = dash.to_spec(source_name="_browser_edges_lookup")
-        url = (
-            f"http://127.0.0.1:{server_port}/view?"
-            f"spec={encode_spec(spec)}&renderer=plotly"
-        )
+        url = f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5160,7 +5062,7 @@ class TestBinEdgeTripleBrowser:
             assert band["h2y"] == bounds(result["yEdges"], row), value
 
     def test_geo_histogram2d_edges_and_rectangles(self, page: Page, server_port: int):
-        url = _dashboard_url_geo(server_port, "plotly")
+        url = _dashboard_url_geo(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5245,7 +5147,7 @@ class TestResetCleanupBrowser:
 
     def test_reset_clears_plotly_selection_boxes(self, page: Page, server_port: int):
         """Clicking toolbar Reset must clear Plotly's visual selection rectangle."""
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5289,7 +5191,7 @@ class TestResetCleanupBrowser:
     ):
         """A reset button posts one request, although no guard is on while the
         response redraws the figures and clears the selection box."""
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5321,7 +5223,7 @@ class TestResetCleanupBrowser:
         type:'reset' with selections:[] — wiping the cross-filter state.
         Now they send type:'viewport' with the current selections preserved.
         """
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5380,7 +5282,7 @@ class TestResetCleanupBrowser:
         selection (sends deselect/selection event) and clears its viewport.
         Other figures' viewports are not affected.
         """
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5448,7 +5350,7 @@ class TestResetCleanupBrowser:
         """Locking an axis stores its current range; resetting an otherwise-clean
         locked figure leaves the lock intact and is a no-op (axis locks are
         view-only, so nothing the figure shows changes — see #32)."""
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5512,7 +5414,7 @@ class TestResetCleanupBrowser:
         self, page: Page, server_port: int
     ):
         """Initial no-zoom locks must not freeze Plotly's empty bootstrap range."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5679,7 +5581,7 @@ class TestResetCleanupBrowser:
         the locked x is pruned and snapped back, the y persists CLIENT-SIDE
         only — a line's y is not a recompute axis, so the fvNeedsFetch gate
         (commit bfcdf8a) suppresses the no-op POST entirely."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5747,7 +5649,7 @@ class TestResetCleanupBrowser:
         """The positive case of the fvNeedsFetch gate: with y locked, a
         relayout touching both axes still POSTs (the line's x re-aggregates)
         and the POSTed event names only the unlocked x as changed."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         update_bodies: list[dict] = []
 
         def capture(req: PWRequest) -> None:
@@ -5810,7 +5712,7 @@ class TestResetCleanupBrowser:
         self, page: Page, server_port: int
     ):
         """Global reset clears viewport/selections but keeps explicit axis locks."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5876,7 +5778,7 @@ class TestResetCleanupBrowser:
     def test_resets_keep_a_locked_zoomed_axis(self, page: Page, server_port: int):
         """Panel reset, global reset and double-click leave a locked, zoomed axis
         at its lock range, and the data stays aggregated inside that range."""
-        url = _dashboard_url(server_port, "plotly", n_figures=1)
+        url = _dashboard_url(server_port, n_figures=1)
         posts: list[dict] = []
         page.on(
             "request",
@@ -5922,7 +5824,7 @@ class TestLegendVisibilityBrowser:
     def test_grouped_line_multi_group_by_hidden_trace_stays_hidden_after_zoom(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_grouped_line_multi_group_by(server_port, "plotly")
+        url = _dashboard_url_grouped_line_multi_group_by(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -5961,7 +5863,7 @@ class TestTreemapClickBrowser:
     """Plotly treemap clicks should drive FlexViz selection state consistently."""
 
     def test_treemap_click_toggle_keeps_root_view(self, page: Page, server_port: int):
-        url = _dashboard_url_treemap_with_line(server_port, "plotly")
+        url = _dashboard_url_treemap_with_line(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -6019,7 +5921,7 @@ class TestTreemapClickBrowser:
     def test_treemap_leaf_selection_filters_with_parent_path(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url_treemap_pie_selection(server_port, "plotly")
+        url = _dashboard_url_treemap_pie_selection(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -6065,7 +5967,7 @@ class TestTreemapClickBrowser:
         self, page: Page, server_port: int
     ):
         page.set_viewport_size({"width": 1400, "height": 800})
-        url = _dashboard_url_treemap_pie_selection(server_port, "plotly")
+        url = _dashboard_url_treemap_pie_selection(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -6192,7 +6094,7 @@ class TestPieClickBrowser:
     """Plotly pie click toggles should leave visible source feedback."""
 
     def test_pie_click_dims_unselected_slices(self, page: Page, server_port: int):
-        url = _dashboard_url_treemap_pie_selection(server_port, "plotly")
+        url = _dashboard_url_treemap_pie_selection(server_port)
         page.goto(url)
         _wait_for_init(page, "plotly")
 
@@ -6236,7 +6138,7 @@ class TestPieClickBrowser:
 # ---------------------------------------------------------------------------
 
 
-def _dashboard_url_draggable(port: int, renderer: str) -> str:
+def _dashboard_url_draggable(port: int) -> str:
     """Return a URL for a 2-figure draggable-grid dashboard."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -6253,10 +6155,10 @@ def _dashboard_url_draggable(port: int, renderer: str) -> str:
     spec = dash.to_spec(source_name="_browser_drag_test", layout=LayoutSpec())
 
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _chart_bounding_boxes(page: Page, renderer: str) -> list[dict]:
+def _chart_bounding_boxes(page: Page) -> list[dict]:
     """Return bounding boxes for all chart containers."""
     return [el.bounding_box() for el in page.query_selector_all(".js-plotly-plot")]
 
@@ -6282,32 +6184,29 @@ def _drag_grid_item_right(page: Page, sel: str) -> None:
     page.wait_for_timeout(800)
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestDraggableGridBrowser:
     """Draggable Gridstack layout — verify charts are visible and drag is backend-free."""
 
-    def test_charts_are_visible(self, page: Page, server_port: int, renderer: str):
+    def test_charts_are_visible(self, page: Page, server_port: int):
         """Charts must have non-zero width and height after the page loads."""
-        url = _dashboard_url_draggable(server_port, renderer)
+        url = _dashboard_url_draggable(server_port)
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         # Wait for the init POST to complete so charts have data.
         page.wait_for_timeout(2_000)
 
-        boxes = _chart_bounding_boxes(page, renderer)
+        boxes = _chart_bounding_boxes(page)
         assert len(boxes) == 2, f"Expected 2 chart containers, got {len(boxes)}"
         for i, box in enumerate(boxes):
             assert box is not None, f"Chart {i} has no bounding box (not in DOM)"
             assert box["width"] > 0, f"Chart {i} width is 0 — chart is invisible"
             assert box["height"] > 0, f"Chart {i} height is 0 — chart is invisible"
 
-    def test_charts_have_rendered_data(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_charts_have_rendered_data(self, page: Page, server_port: int):
         """Charts must contain actual rendered trace data after the init POST."""
-        url = _dashboard_url_draggable(server_port, renderer)
+        url = _dashboard_url_draggable(server_port)
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(2_000)
 
         # Each .js-plotly-plot should have at least one trace with x data.
@@ -6319,13 +6218,11 @@ class TestDraggableGridBrowser:
             f"Some Plotly charts have no rendered data: {trace_counts}"
         )
 
-    def test_drag_does_not_trigger_backend_request(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_drag_does_not_trigger_backend_request(self, page: Page, server_port: int):
         """Dragging a Gridstack item must NOT fire a /dashboard/update request."""
-        url = _dashboard_url_draggable(server_port, renderer)
+        url = _dashboard_url_draggable(server_port)
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(2_000)
 
         backend_calls: list[str] = []
@@ -6358,13 +6255,11 @@ class TestDraggableGridBrowser:
             f"Dragging a grid item fired {new_calls} backend request(s) — should be 0"
         )
 
-    def test_drag_updates_spec_layout(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_drag_updates_spec_layout(self, page: Page, server_port: int):
         """After page load, DASHBOARD_SPEC.layout.grid_items must be populated from Gridstack."""
-        url = _dashboard_url_draggable(server_port, renderer)
+        url = _dashboard_url_draggable(server_port)
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(2_000)
 
         # grid_items must be populated immediately from GridStack.init(), before any drag.
@@ -6411,13 +6306,11 @@ class TestDraggableGridBrowser:
             f"after={(new_item['x'], new_item['y'])}"
         )
 
-    def test_grid_toggle_locks_and_unlocks_drag(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_grid_toggle_locks_and_unlocks_drag(self, page: Page, server_port: int):
         """Toolbar grid button should lock and unlock Gridstack drag/resize."""
-        url = _dashboard_url_draggable(server_port, renderer)
+        url = _dashboard_url_draggable(server_port)
         page.goto(url)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         page.wait_for_timeout(2_000)
 
         btn = page.query_selector("#fv-btn-grid")
@@ -6474,14 +6367,12 @@ class TestDraggableGridBrowser:
         )
 
 
-@pytest.mark.parametrize("renderer", ["plotly"])
 class TestLockedLayoutBrowser:
     """A read-only embed: no layout button, and panel height honours GridItem.h."""
 
     def _url(
         self,
         port: int,
-        renderer: str,
         h: int,
         draggable: bool = False,
         gap: str = "8px",
@@ -6515,25 +6406,21 @@ class TestLockedLayoutBrowser:
                 ],
             ),
         )
-        return (
-            f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer={renderer}"
-        )
+        return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}"
 
-    def test_layout_button_is_hidden(self, page: Page, server_port: int, renderer: str):
-        page.goto(self._url(server_port, renderer, 7))
+    def test_layout_button_is_hidden(self, page: Page, server_port: int):
+        page.goto(self._url(server_port, 7))
         page.wait_for_selector("#fv-btn-reset", timeout=10_000)
-        _wait_for_chart(page, renderer)
+        _wait_for_chart(page)
         btn = page.query_selector("#fv-btn-grid")
         assert btn is None or not btn.is_visible(), "Layout button should be hidden"
 
-    def test_grid_item_height_drives_the_panel(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_grid_item_height_drives_the_panel(self, page: Page, server_port: int):
         """h is h * 80 px on both layout paths, gap included."""
         for h in (4, 7):
             for draggable in (True, False):
-                page.goto(self._url(server_port, renderer, h, draggable, gap="24px"))
-                _wait_for_chart(page, renderer)
+                page.goto(self._url(server_port, h, draggable, gap="24px"))
+                _wait_for_chart(page)
                 page.wait_for_timeout(1_000)
                 sel = ".grid-stack-item" if draggable else ".fv-dashboard-item"
                 items = page.query_selector_all(sel)
@@ -6551,9 +6438,7 @@ class TestLockedLayoutBrowser:
                     visible_gap = panels[1]["y"] - panels[0]["y"] - panels[0]["height"]
                     assert abs(visible_gap - 24) <= 1, visible_gap
 
-    def test_report_embed_height_matches_the_page(
-        self, page: Page, server_port: int, renderer: str
-    ):
+    def test_report_embed_height_matches_the_page(self, page: Page, server_port: int):
         """A report iframe is tall enough that the embedded page never scrolls."""
         from flexviz.report import _iframe_height
 
@@ -6561,9 +6446,9 @@ class TestLockedLayoutBrowser:
         # content height instead of the viewport's.
         page.set_viewport_size({"width": 1280, "height": 300})
         for draggable in (True, False):
-            url = self._url(server_port, renderer, 4, draggable, gap="24px")
+            url = self._url(server_port, 4, draggable, gap="24px")
             page.goto(url)
-            _wait_for_chart(page, renderer)
+            _wait_for_chart(page)
             page.wait_for_timeout(1_000)
             measured = page.evaluate("() => document.documentElement.scrollHeight")
             assert abs(_iframe_height(url) - measured) <= 1, (draggable, measured)
@@ -6577,7 +6462,7 @@ def test_report_page_sanitizes_the_markdown_html(
     from flexviz.report import to_html
 
     monkeypatch.chdir(tmp_path)
-    history.add(_dashboard_url(server_port, "plotly"))
+    history.add(_dashboard_url(server_port))
     md = "# Findings\n\n<img src=x onerror=\"document.title='pwned'\">\n\nfv:1\n"
     out = tmp_path / "report.html"
     out.write_text(to_html(md), encoding="utf-8")
@@ -6628,7 +6513,7 @@ def _dashboard_url_linked(
         group = next(g for g in (x_group, y_group) if key in g)
         spec.state.viewport.update(dict.fromkeys(group, AxisRange(min=lo, max=hi)))
     return (
-        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly",
+        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}",
         uids,
     )
 
@@ -6661,7 +6546,7 @@ def _dashboard_url_linked_pairs(
         dash.link_axes(a, b, axis="x")
     spec = dash.to_spec(source_name="_browser_linked_pairs")
     return (
-        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly",
+        f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}",
         [f.uid for f in spec.figures],
     )
 
@@ -6967,8 +6852,7 @@ class TestLinkedAxesBrowser:
         spec = dash.to_spec(source_name="_browser_linked_hist")
         posts = self._open(
             page,
-            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
-            "&renderer=plotly",
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}",
         )
         shown = page.evaluate(
             "[...document.querySelectorAll('.js-plotly-plot')]"
@@ -7154,7 +7038,7 @@ class TestResponseOrderBrowser:
     ):
         """A brush on C re-aggregates A and B. A zoom on A before that response
         re-aggregates only A. The late brush response must still filter B."""
-        url = _dashboard_url(server_port, "plotly", n_figures=3)
+        url = _dashboard_url(server_port, n_figures=3)
         posts = self._open(page, url)
         held = _hold_first_update(page)
 
@@ -7176,7 +7060,7 @@ class TestResponseOrderBrowser:
         """Overlay mode, with a brush on C. A zoom on A re-aggregates the bg and
         fg of A. A newer brush on C re-aggregates only the fg of A. The late
         zoom response must still set the bg of A, but not its older fg."""
-        url = _dashboard_url(server_port, "plotly", n_figures=3)
+        url = _dashboard_url(server_port, n_figures=3)
         posts = self._open(page, url)
         page.evaluate("window.flexvizApply({state: {cross_filter_mode: 'overlay'}})")
         page.evaluate(_SELECT_TS, [2, [100, 300]])
@@ -7206,7 +7090,7 @@ class TestResponseOrderBrowser:
     def test_a_late_zoom_response_does_not_undo_a_reset(
         self, page: Page, server_port: int, button: str
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         posts = self._open(page, url)
         held = _hold_first_update(page)
 
@@ -7231,7 +7115,7 @@ class TestResponseOrderBrowser:
     def test_a_zoom_while_a_reset_is_pending_posts_and_keeps_its_data(
         self, page: Page, server_port: int, button: str
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         posts = self._open(page, url)
         uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 200]})")
@@ -7255,7 +7139,7 @@ class TestResponseOrderBrowser:
     def test_the_guard_ignores_only_its_figure_until_its_last_operation_ends(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         posts = self._open(page, url)
         uids = page.evaluate("DASHBOARD_SPEC.figures.map(f => f.uid)")
         page.evaluate(
@@ -7283,7 +7167,7 @@ class TestResponseOrderBrowser:
     def test_the_guard_ignores_a_deselect_on_its_figure(
         self, page: Page, server_port: int
     ):
-        url = _dashboard_url(server_port, "plotly", n_figures=2)
+        url = _dashboard_url(server_port, n_figures=2)
         posts = self._open(page, url)
         page.evaluate(_SELECT_TS, [0, [100, 300]])
         _wait_settled(page, 1)
@@ -7331,7 +7215,7 @@ class TestResponseOrderBrowser:
     ):
         # Two owners only: a third figure would lose its background on the
         # zoom, and the warm-up init would then refresh every figure's.
-        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        self._open(page, _dashboard_url(server_port, n_figures=2))
         page.evaluate("""() => {
             const uids = DASHBOARD_SPEC.figures.map(f => f.uid);
             window.fvSetSelectionState([[0, [50, 450]], [1, [200, 250]]].map(
@@ -7355,7 +7239,7 @@ class TestResponseOrderBrowser:
     ):
         # A reset that clears a zoom and a selection together is a selection
         # event with viewport keys, not a viewport event.
-        self._open(page, _dashboard_url(server_port, "plotly", n_figures=2))
+        self._open(page, _dashboard_url(server_port, n_figures=2))
         page.evaluate("() => Plotly.relayout(divs[0], {'xaxis.range': [100, 400]})")
         _wait_settled(page, 1)
         page.evaluate("""() => {
@@ -7389,7 +7273,7 @@ def _color_norm_url(port: int, source: str, df: pl.DataFrame, build) -> str:
     dash = Dashboard(df)
     build(dash)
     spec = dash.to_spec(source_name=source)
-    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}"
 
 
 # Rendered heatmap/choropleth traces of every Plotly figure, reduced to the
@@ -8017,10 +7901,7 @@ class TestLogAxisBrowser:
         spec.state.viewport[f"{spec.figures[0].uid}/x"] = AxisRange(
             min=100.0, max=10_000.0
         )
-        page.goto(
-            f"http://127.0.0.1:{server_port}/view"
-            f"?spec={encode_spec(spec)}&renderer=plotly"
-        )
+        page.goto(f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}")
         _wait_for_init(page, "plotly")
 
         self._wait_for_data_inside(page, 99, 10_001)

@@ -219,12 +219,8 @@ class TestPlotlyModebarConfig:
 
 
 class TestNotebookDelivery:
-    @pytest.mark.parametrize(
-        ("renderer", "height", "iframe_height"),
-        [("plotly", 432, 432)],
-    )
     def test_notebook_iframe_loads_the_page_from_the_server(
-        self, server_port, monkeypatch, renderer, height, iframe_height
+        self, server_port, monkeypatch
     ):
         """The page runs on the server's own origin, so it needs no CORS."""
         import sys
@@ -249,14 +245,14 @@ class TestNotebookDelivery:
         dash.add_figure().add_line(x="ts", y="val")
         spec = dash.to_spec(source_name="_browser_test")
         server_url = f"http://127.0.0.1:{server_port}"
-        build_adapter(renderer).show_dashboard(
-            spec, server_url=server_url, notebook=True, height=height
+        build_adapter("plotly").show_dashboard(
+            spec, server_url=server_url, notebook=True, height=432
         )
 
         (iframe,) = shown
         assert iframe["src"].startswith(f"{server_url}/view?spec=")
-        assert iframe["src"].endswith(f"&renderer={renderer}")
-        assert iframe["height"] == iframe_height
+        assert iframe["src"].endswith("&renderer=plotly")
+        assert iframe["height"] == 432
 
 
 class TestBrowserDelivery:
