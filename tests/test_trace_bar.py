@@ -413,40 +413,6 @@ class TestBarPlotSpec:
         restored = BarPlot.from_trace_spec(spec)
         assert restored.uid == original.uid
 
-    def test_backward_compat_old_spec_with_xy(self):
-        """Old specs stored backend_data as {"x": ..., "y": ...}."""
-        from flexviz.spec import TraceSpec
-
-        old_spec = TraceSpec(
-            uid="test",
-            trace_type="bar",
-            backend_data={"x": "category", "y": "revenue"},
-            display={"name": "old", "bar_mode": "group"},
-            params={"agg": "sum", "orientation": "v"},
-            axes=("x", "y"),
-        )
-        restored = BarPlot.from_trace_spec(old_spec)
-        assert restored.label_cols == ("category",)
-        assert restored.values_col == "revenue"
-        assert restored.agg == "sum"
-
-    def test_backward_compat_old_count_spec(self):
-        """Old specs with agg='count' → values_col becomes None."""
-        from flexviz.spec import TraceSpec
-
-        old_spec = TraceSpec(
-            uid="test",
-            trace_type="bar",
-            backend_data={"x": "category", "y": "ignored_col"},
-            display={"name": "old", "bar_mode": "group"},
-            params={"agg": "count", "orientation": "v"},
-            axes=("x", "y"),
-        )
-        restored = BarPlot.from_trace_spec(old_spec)
-        assert restored.label_cols == ("category",)
-        assert restored.values_col is None
-        assert restored.agg == "count"
-
 
 class TestBarColorMap:
     @pytest.fixture()

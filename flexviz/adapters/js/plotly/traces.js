@@ -506,7 +506,7 @@ function buildTracesForFigure(figUid) {
   const bgDataLayer = backgroundDataLayerForFigure(figUid);
   const traces = [];
   for (const ts of figSpec.traces) {
-    const barMode = (ts.display && ts.display.bar_mode) || (ts.params && ts.params.bar_mode) || 'group';
+    const barMode = (ts.display && ts.display.bar_mode) || 'group';
     const forceBarOffsetgroup = showForeground && barMode !== 'stack';
     if (isGroupedParent(ts)) {
       const childLayers = groupedDataByParent[figUid][ts.uid] || { base: [], bg: [], fg: [] };
@@ -544,9 +544,7 @@ function baseBarmodeForFigure(figSpec) {
   if (!figSpec) return null;
   const barTs = figSpec.traces.find(ts => ts.trace_type === 'bar');
   if (barTs) {
-    return (barTs.display && barTs.display.bar_mode)
-      || (barTs.params && barTs.params.bar_mode)
-      || 'group';
+    return (barTs.display && barTs.display.bar_mode) || 'group';
   }
   return figSpec.traces.some(ts => ts.trace_type === 'histogram') ? 'group' : null;
 }

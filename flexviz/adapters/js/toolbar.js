@@ -388,12 +388,7 @@ function fvInitHoverDropdown() {
   const btn = document.getElementById('fv-hover-btn');
   if (!btn) return;
 
-  // Ensure client_state exists; coerce any legacy per-mode value onto on/off.
   if (!DASHBOARD_SPEC.client_state) DASHBOARD_SPEC.client_state = {};
-  const cur = DASHBOARD_SPEC.client_state.hover_mode;
-  if (cur !== 'on' && cur !== 'off') {
-    DASHBOARD_SPEC.client_state.hover_mode = cur ? 'on' : 'off';
-  }
 
   // Hover is offered only when at least one linkable source→target pair exists.
   const gates = {

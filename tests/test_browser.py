@@ -602,9 +602,9 @@ def _grouped_child_count(page: Page, renderer: str) -> int:
 def _trace_layer(trace_id: str | None) -> str | None:
     if not trace_id:
         return None
-    if trace_id.endswith(("__fv_layer_bg", "::bg")):
+    if trace_id.endswith("__fv_layer_bg"):
         return "bg"
-    if trace_id.endswith(("__fv_layer_fg", "::fg")):
+    if trace_id.endswith("__fv_layer_fg"):
         return "fg"
     return None
 

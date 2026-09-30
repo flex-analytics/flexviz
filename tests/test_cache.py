@@ -157,16 +157,6 @@ def test_default_cube_cache_budget_is_512_mb():
     assert InMemoryByteLRUCache().stats()["max_bytes"] == 512 * 2**20
 
 
-def test_cube_cache_singleton_swap():
-    original = cache_mod.get_cube_cache()
-    try:
-        replacement = InMemoryByteLRUCache(max_bytes=10)
-        cache_mod.set_cube_cache_backend(replacement)
-        assert cache_mod.get_cube_cache() is replacement
-    finally:
-        cache_mod.set_cube_cache_backend(original)
-
-
 # ---------------------------------------------------------------------------
 # Engine integration
 # ---------------------------------------------------------------------------

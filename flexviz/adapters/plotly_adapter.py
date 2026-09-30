@@ -340,9 +340,7 @@ class PlotlyAdapter(AbstractAdapter):
                 (ts for ts in fig_spec.traces if ts.trace_type == "bar"), None
             )
             if bar_ts is not None:
-                layout_obj["barmode"] = bar_ts.display.get(
-                    "bar_mode", bar_ts.params.get("bar_mode", "group")
-                )
+                layout_obj["barmode"] = bar_ts.display.get("bar_mode", "group")
             elif any(ts.trace_type == "histogram" for ts in fig_spec.traces):
                 # Plotly's default barmode is 'stack', which is wrong for
                 # independent-variable histograms.  Mirror in JS baseBarmodeForFigure.
@@ -511,7 +509,7 @@ class PlotlyAdapter(AbstractAdapter):
             obj = {"uid": ts.uid, "type": "bar", "name": name, "x": [], "y": []}
             if ts.params.get("orientation") == "h":
                 obj["orientation"] = "h"
-            bar_mode = ts.display.get("bar_mode", ts.params.get("bar_mode", "group"))
+            bar_mode = ts.display.get("bar_mode", "group")
             if bar_mode != "stack":
                 obj["offsetgroup"] = ts.uid
                 obj["alignmentgroup"] = "fv-bars"

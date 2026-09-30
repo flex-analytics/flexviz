@@ -65,14 +65,6 @@ class CorrHeatmap(FlexTrace):
     }
 
     @classmethod
-    def default_color_scale(cls, *, absolute: bool) -> str:
-        return cls.DEFAULT_COLOR_SCALE_BY_ABSOLUTE[bool(absolute)]
-
-    @classmethod
-    def default_color_range(cls, *, absolute: bool) -> HeatmapColorRange:
-        return cls.DEFAULT_COLOR_RANGE_BY_ABSOLUTE[bool(absolute)]
-
-    @classmethod
     def _normalize_color_scale(cls, color_scale: str | None, *, absolute: bool) -> str:
         return normalize_heatmap_color_scale(
             color_scale,

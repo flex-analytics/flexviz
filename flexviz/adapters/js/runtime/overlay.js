@@ -22,7 +22,6 @@ window.fvResetRuntimeCache = function() {
       for (const layerKey of layerKeys) setGroupedLayerData(fig.uid, parentUid, layerKey, [], seq);
     }
   }
-  if (typeof _fvResetRendererCache === 'function') _fvResetRendererCache();
 };
 async function restoreDashboardFromSpec() {
   window.fvResetRuntimeCache?.();

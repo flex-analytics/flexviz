@@ -229,8 +229,7 @@ class PiePlot(FlexTrace):
     def from_trace_spec(cls, spec: TraceSpec) -> PiePlot:
         old_agg = spec.params.get("agg", "sum")
         stored_values = spec.backend_data.get("values")
-        # Backward compat: old specs always had "values"; if agg was "count" the
-        # values column was ignored — reconstruct as values=None.
+        # A pie with no values column stores agg="count"; rebuild it as values=None.
         values = None if old_agg == "count" else stored_values
         agg = "sum" if old_agg == "count" else old_agg
         trace = cls(

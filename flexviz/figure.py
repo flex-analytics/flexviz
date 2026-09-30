@@ -916,13 +916,6 @@ class Figure:
         )
 
 
-def _registered_sources() -> list[str]:
-    """Return names of already-registered sources (avoids double-registration)."""
-    from .server import _sources
-
-    return list(_sources)
-
-
 def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
     """Couple ``live_brush`` to caching: cubes are only built for ``cache=True``
     sources (the "data is static" contract), so live-brush cannot function

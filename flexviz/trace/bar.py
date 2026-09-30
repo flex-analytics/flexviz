@@ -261,7 +261,7 @@ class BarPlot(FlexTrace):
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
-        """Backward-compatible alias for grouped query output parsing."""
+        """Bar always runs grouped, so the abstract hook forwards."""
         return self._to_grouped_update(df)
 
     def _to_grouped_update(self, df: pl.DataFrame) -> TraceResult:
@@ -328,17 +328,9 @@ class BarPlot(FlexTrace):
     @classmethod
     def from_trace_spec(cls, spec: TraceSpec) -> BarPlot:
         bar_mode = spec.display.get("bar_mode", "group")
-        if "x" in spec.backend_data:
-            # Backward compat: old specs stored {"x": labels_col, "y": values_col}
-            labels = spec.backend_data["x"]
-            old_y = spec.backend_data["y"]
-            old_agg = spec.params.get("agg", "sum")
-            values = None if old_agg == "count" else old_y
-            agg = "sum" if old_agg == "count" else old_agg
-        else:
-            labels = spec.backend_data["labels"]
-            values = spec.backend_data.get("values")
-            agg = spec.params.get("agg", "sum")
+        labels = spec.backend_data["labels"]
+        values = spec.backend_data.get("values")
+        agg = spec.params.get("agg", "sum")
         trace = cls(
             labels=labels,
             values=values,

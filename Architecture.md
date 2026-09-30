@@ -2,7 +2,7 @@
 
 **flexviz** — renderer-agnostic, scalable, linked visualizations for large datasets.
 
-**Spec version:** `0.5` — `GeoHistogram2D` params no longer carry `bin_boundaries`.
+**Spec version:** `0.7`.
 
 ## Core Properties
 
@@ -528,7 +528,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan, the grouped histogram plan and the domain probe (filtered or not) are the exceptions: all stream on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
 - Viewport restriction, ungrouped lines: an ungrouped x-width line on a resident frame is sorted by contract, so its viewport is a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. The scan plan passes an `is_between` mask into `pairs_plan` instead. A resident `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines and both scan plans always mask (the filter runs frame-level, before `group_by` or the gather).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_viewports` in `engine.py`, the first step of both `process` and `build_cubes` — so neither formulation nor a cube domain ever sees a reversed pair.
-- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/plotly/traces.js`) for every line trace — init, commit, and live cube.
+- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init, commit, and live cube.
 - Range-brush selections emit a `ClauseFilter(range=...)` per axis; the predicate compiler applies typed `is_between` filters.
 
 ### Histogram
@@ -998,7 +998,7 @@ The response cache covers only the **unfiltered *and* viewport-free** computatio
 - `init` is viewport-free whenever `state.viewport` is empty (the global reset clears it first);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
 
-In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (a Redis/disk backend swaps in through the same interface), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
+In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (a Redis or disk backend can implement the same interface), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
 
 A `static` source also memoizes each column's resolved unfiltered min/max (`LFQueryBuilder.physical_minmax`) on the builder for the source's lifetime, so a cached request never re-scans the data to resolve bin-edge domains. Static means a resident frame or a `cache=True` scan. A `cache=False` scan recomputes those bounds on every request that needs them, so an uncached reset always sees the current source data. Re-registering a source with raw data or a new builder replaces the builder and drops the memo. Re-registering the same builder object invalidates nothing, and the server warns.
 
@@ -1528,13 +1528,9 @@ Shared runtime responsibilities:
 - **Layer data** — `ensureGroupColor`, `setLayerData`, `setGroupedLayerData`, `setHasBackground`. Every write carries a number from one counter (`fvNextWriteSeq`): a request's number, taken when it is sent, or a new number for a client-side write (cube live brush, runtime cache reset). Each slot (a trace layer, a figure's background flag) refuses a write older than the data it holds. An abandoned live-brush gesture puts back each slot it changed together with the slot's earlier number (`fvSaveLayerData`, `fvSaveHasBackground`), so a response to a request sent before the gesture still applies.
 - **Delta application** — `postDashboardUpdate` separates request, delta-apply, and render error handling; updates layer caches, tracks bg y-extent for axis anchoring, and renders each dirty figure with per-figure guards. Responses can arrive in any order: the newest data wins per slot, and a late response still fills the slots that newer requests did not re-aggregate. The init cache key is taken when the request is sent.
 - **Overlay restore** — `fvEnsureOverlayBackground`, `fvResetRuntimeCache`, `fvRestoreFromSpec`
-- **Linked hover** — `stripLayerSuffix` (handles new suffixes and legacy `::bg` / `::fg`), `getHoverPayload`, `_fvIsHoverEnabled`, `dispatchCrosshairs`, `planHoverVisuals` with the bin lookup `binAt`
+- **Linked hover** — `stripLayerSuffix` (strips the `__fv_layer_bg` / `__fv_layer_fg` suffixes), `getHoverPayload`, `_fvIsHoverEnabled`, `planHoverVisuals` with the bin lookup `binAt`
 
-Each adapter defines four renderer-specific hooks:
-- `_fvRenderFigure(figUid)` — re-render one figure
-- `_fvShowCrosshair(figUid, axis, value)` — draw a crosshair line
-- `_fvClearAllCrosshairs()` — clear hover guides from all figures
-- `_fvResetRendererCache()` — reset adapter-specific caches
+The adapter defines one renderer-specific hook: `_fvRenderFigure(figUid)`, which re-renders one figure.
 
 ### GridStack dashboard layout
 
