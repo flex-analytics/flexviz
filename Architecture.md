@@ -706,6 +706,7 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="RdBu", color_range="auto")
 - A figure holds at most one heatmap-like trace (`histogram2d`, `corr_heatmap`, `geo_histogram2d`): each one is opaque and draws its own figure-wide colorbar, so a second one hides the first and duplicates the colorbar. `FigureSpec` checks this when it is built or parsed, so the builder, a decoded spec and every request get the same rule. A heatmap together with non-heatmap traces, such as a line over a `histogram2d`, stays allowed.
 - Renderer split:
   - Plotly receives `color_scale` in the Plotly spelling that the trace stored. The server rebuilds a decoded spec, so an older lowercase name still renders its scale. With a linear norm, it applies `zmin` / `zmax` only when `color_range` is fixed.
+  - Plotly dark mode: the client draws `"Viridis"` without its three darkest stops (see [Theme and light/dark mode](#theme-and-lightdark-mode)). Other scales do not change.
   - Plotly log norm: Plotly has no log color axis, so the client colors by `log10(z)`, pins the color range in log10 space and labels the colorbar ticks with round data values. Only the colors change: the hover shows the raw values, and a cell at or below 0, which has no log, has no color but keeps its hover and its selection. The transform (`applyLogColorNorm` in `plotly/traces.js`) runs when a trace is built from its template, so it covers every delta, from the server or the cube.
 
 ### Dtype-Aware Filtering
@@ -1513,7 +1514,8 @@ bundle composition (which sources go into `shared` / `plotly`) is declared in
 
 ```
 adapters/js/
-├── theme.css                 ← CSS custom properties (design tokens)
+├── theme.css                 ← CSS custom properties (design tokens), light and dark
+├── theme-mode.js             ← light/dark mode, inlined in <head> by page_head_html()
 ├── toolbar.css               ← toolbar and header styles
 ├── toolbar.js                ← shared toolbar hooks + state helpers
 ├── gridstack-bridge.js       ← GridStack.init() IIFE + change/resizestop handlers
@@ -1529,6 +1531,7 @@ adapters/js/
 │   └── hover.js              ← linked-hover dispatch
 └── plotly/
     ├── traces.js             ← configsByFig, trace template builders
+    ├── theme.js              ← Plotly layout template from the tokens, fvApplyTheme
     ├── render.js             ← _fvRenderFigure, axis helpers, lock/capture
     ├── events.js             ← relayout/selected/deselect/click handlers
     ├── hover.js              ← Plotly crosshair helpers
@@ -1537,11 +1540,23 @@ adapters/js/
 
 `runtime.py` assembles two bundles from these sources at import: `shared` (panel.js +
 runtime/*.js + toolbar.js) and `plotly` (plotly/*.js); `theme.css`
-and `gridstack-bridge.js` are served verbatim.
+and `gridstack-bridge.js` are served verbatim, and `page_head_html()` inlines
+`theme-mode.js`.
 
 Each adapter's `<style>` block starts with `theme_css()` so all CSS custom properties
 are available.  `_toolbar_css()` uses `var(--fv-*)` references throughout — no hardcoded
 color or spacing values remain.
+
+### Theme and light/dark mode
+
+- `theme.css` holds one house theme as tokens: chrome (`--fv-accent`, `--fv-bg`, `--fv-text`, ...) and plots (`--fv-series`, `--fv-plot-*`). The base `:root` block is light mode. `:root[data-fv-mode="dark"]` overrides it, so it also outranks a later plain `:root` override.
+- `theme-mode.js` runs in `<head>` before the first paint. It sets `data-fv-mode` on `<html>` from localStorage `fv-mode`, else from the OS (`prefers-color-scheme`, kept live with a `matchMedia` listener). The toolbar button `#fv-btn-mode` cycles Auto, Light and Dark. `ToolbarConfig` cannot hide it. The mode is a viewer preference: it is not in the spec, a share URL or the server.
+- `plotly/theme.js` builds a Plotly `layout.template` from the tokens (`fvPlotlyTemplate`). A template fills only unset keys, so `update_layout(...)` wins, and a figure layout with its own `template` keeps it.
+- On a mode change, `window.fvApplyTheme()` rebuilds the template and redraws each drawn figure from state inside `fvRunProgrammaticPlotlyOp`. It sends no request and changes no state.
+- `--fv-series` (Okabe-Ito) is read once and is the same in both modes, because `state.group_domains` stores each group's hex and share URLs carry it.
+- Dark mode choices in `plotly/theme.js`: the template's `map.style` is a MapLibre style object with the OpenStreetMap raster tiles of Plotly's `open-street-map` style, darkened by raster paint. `fvThemeColorScale` draws `"Viridis"` without its three darkest stops. `buildTraceFromTemplate` applies it, so the cells and the colorbar match. The spec stores only the scale name, so a `"Viridis"` that the user set by name gets the lift too.
+- `buildTraceFromTemplate` gives a series trace a hover label border in its color; the label itself uses the neutral tooltip tokens.
+- The y axis uses `automargin`. The margin grows past `margin.l` only when the tick labels do not fit, so the plot area moves on a zoom only when the labels would otherwise be cut off.
 
 ### Shared Runtime (`adapters/runtime.py`)
 
