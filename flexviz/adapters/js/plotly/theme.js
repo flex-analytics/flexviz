@@ -4,8 +4,9 @@
 // the chrome and the plots. A template only fills what the figure layout
 // leaves unset: update_layout(...) values still win.
 
-// A figure layout that brings its own template keeps it.
-const _fvFigureHasOwnTemplate = layoutsByFig.map(layout => layout.template !== undefined);
+// A figure layout that brings its own template keeps it. Python None arrives
+// as null, which Plotly reads as unset, so the theme reads it that way too.
+const _fvFigureHasOwnTemplate = layoutsByFig.map(layout => layout.template != null);
 
 function fvIsDarkMode() {
   return document.documentElement.dataset.fvMode === 'dark';
@@ -56,7 +57,7 @@ const _FV_DARK_VIRIDIS = [
 // so a border from the figure layout or its own template skips this.
 function fvApplySeriesHoverBorders(traces, figUid) {
   const figIdx = figUidToIdx[figUid];
-  if (_fvFigureHasOwnTemplate[figIdx] || layoutsByFig[figIdx].hoverlabel?.bordercolor !== undefined) return;
+  if (_fvFigureHasOwnTemplate[figIdx] || layoutsByFig[figIdx].hoverlabel?.bordercolor != null) return;
   for (const trace of traces) {
     const seriesColor = !isHeatmapScaledTrace(trace) && (trace.line?.color || trace.marker?.color);
     if (seriesColor) trace.hoverlabel = { ...trace.hoverlabel, bordercolor: seriesColor };
@@ -70,8 +71,9 @@ function fvThemeColorScale(colorscale) {
 // A key that the figure's own font sets reaches every text, as it does
 // without a template, so the template drops that key from its text fonts.
 // The hover label keeps its font: it has its own background.
-function fvPlotlyTemplate(ownFont = {}) {
-  const font = f => Object.fromEntries(Object.entries(f).filter(([key]) => !(key in ownFont)));
+function fvPlotlyTemplate(ownFont) {
+  const ownKeys = Object.keys(ownFont ?? {});
+  const font = f => Object.fromEntries(Object.entries(f).filter(([key]) => !ownKeys.includes(key)));
   const text = fvThemeToken('--fv-plot-text');
   const tick = fvThemeToken('--fv-plot-tick');
   const bg = fvThemeToken('--fv-plot-bg');

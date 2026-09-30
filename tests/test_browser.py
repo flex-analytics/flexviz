@@ -8195,6 +8195,32 @@ class TestThemeBrowser:
         }""")
         assert "OpenStreetMap" in page.inner_text("#fv-plot-0 .maplibregl-ctrl-attrib")
 
+    @pytest.mark.parametrize(
+        "layout", [{"font": None}, {"font": "serif"}, {"template": None}]
+    )
+    def test_an_unset_or_invalid_layout_value_keeps_the_theme(
+        self, page: Page, server_port: int, layout: dict
+    ):
+        # Python None reaches the page as null, which Plotly reads as unset.
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_unset",
+            _geo_browser_df(),
+            lambda d: (
+                d.add_figure()
+                .add_geo_histogram2d(lat="lat", lon="lon", lat_bins=4, lon_bins=4)
+                .update_layout(**layout)
+            ),
+        )
+        page.emulate_media(color_scheme="light")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        drawn = page.evaluate(
+            "() => [divs[0]._fullLayout.paper_bgcolor, divs[0]._fullLayout.map.style]"
+        )
+        assert drawn == ["#ffffff", "open-street-map"]
+
     def test_dark_mode_lifts_the_low_end_of_viridis(self, page: Page, server_port: int):
         page.emulate_media(color_scheme="dark")
         page.goto(_dashboard_url_hist2d(server_port))
