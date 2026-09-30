@@ -11,11 +11,8 @@ Node and no separate build step are required — editing a file under ``js/`` is
 picked up on the next import.  The concatenated strings are cached in module
 globals; the public ``*_js()`` / ``theme_css()`` accessors just return them.
 
-Each adapter must define the following globals **before** the shared
-runtime is included:
-
-- ``_fvAllFigUids``    — ``string[]`` of all figure UIDs
-- ``_fvRenderFigure(figUid)`` — re-render one figure via the renderer
+The shared runtime calls hooks that each adapter must define. The Shared
+Runtime section of ``Architecture.md`` lists them.
 """
 
 from __future__ import annotations

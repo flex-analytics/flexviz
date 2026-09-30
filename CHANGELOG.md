@@ -31,8 +31,7 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
-  another origin. For the deprecated ECharts renderer, `height` now sets only
-  the iframe height.
+  another origin.
 
 ### Removed
 
@@ -42,6 +41,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   `ValueError`. A share URL or `flexviz history` entry with
   `renderer=echarts` returns HTTP 400 at `/view` and `/h/{n}`. The renderer
   name must now be exactly `"plotly"`, so `renderer="Plotly"` also raises.
+- `flexviz.cache.set_cache_backend` and `flexviz.cache.set_cube_cache_backend`,
+  which replaced the server-side delta cache and cube cache.
 
 ## [0.1.0b5] - 2026-09-27
 

@@ -1530,7 +1530,19 @@ Shared runtime responsibilities:
 - **Overlay restore** — `fvEnsureOverlayBackground`, `fvResetRuntimeCache`, `fvRestoreFromSpec`
 - **Linked hover** — `stripLayerSuffix` (strips the `__fv_layer_bg` / `__fv_layer_fg` suffixes), `getHoverPayload`, `_fvIsHoverEnabled`, `planHoverVisuals` with the bin lookup `binAt`
 
-The adapter defines one renderer-specific hook: `_fvRenderFigure(figUid)`, which re-renders one figure.
+The shared runtime and `toolbar.js` call these renderer hooks. The adapter page defines `_fvAllFigUids`, and the renderer bundle (`plotly/*.js`) defines the others. A second renderer must define all of them.
+
+| Hook | Job |
+|---|---|
+| `_fvAllFigUids` | The UIDs of all figures on the page (`string[]`). |
+| `_fvRenderFigure(figUid)` | Re-render one figure from the layer caches. |
+| `window.__fvApplyHoverVisuals(figUid, visuals)` | Draw the linked-hover guides on one figure. |
+| `window.fvClearAllHoverVisuals()` | Clear the hover guides on all figures. |
+| `window.fvHasLockableCurrentAxis(figUid, axisFamily)` | Tell if the figure has an `x` or `y` axis that the toolbar can lock. |
+| `window.fvCaptureAxisDisplayRanges(figUid, axisFamily)` | Return the shown range of each axis in the family, in data units. |
+| `window.fvApplyAxisLocks(figUid)` | Apply the locked axis ranges to one figure. |
+| `window.fvSyncFigureModeForAxisLocks(figUid)` | Change zoom or pan to select when the axes of the figure are locked. |
+| `window.fvOnReset()`, `window.fvOnDeselect()` | Run the Reset and Deselect toolbar buttons. |
 
 ### GridStack dashboard layout
 
