@@ -111,6 +111,7 @@ class BoxPlot(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A brush on a box plot defines a 1-D free axis on its data column.
 

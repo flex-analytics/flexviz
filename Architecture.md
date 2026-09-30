@@ -1079,12 +1079,13 @@ dataset size — and adds drag-time updates that flexviz previously did not have
 implemented.
 
 A cube is one target trace's grouping × the brushed (free) axis, holding decomposable partial
-measures. A **range** free axis on a histogram source is its bars (`P = bins` over the display
-grid's domain, `bins + 1` when a zoom snaps to the bar lattice), so a snapped brush edge is a bar
-edge, and the commit, the redrawn box, the cube slice and Plotly's highlight cover the same bars.
-Box and line sources have no bins and keep a **fixed resolution P = 2048** over the viewport
-domain. A **box2d** free axis (a 2-D box-select on a hist2d source) is two range axes binned at
-**P₂D = 128** each and packed into one composite `free_bin`. A **categorical** free axis
+measures. A **binned** source brushes its own grid: a **range** free axis on a histogram
+source is its bars (`P = bins` over the display grid's domain, `bins + 1` when a zoom snaps to the
+bar lattice), and a **box2d** free axis (a 2-D box-select on a hist2d source) is its cells — two
+range axes of `(nx, ny)` cells over the display grid's domains, packed into one composite
+`free_bin`. So a snapped brush edge is a bar or cell edge, and the commit, the redrawn box, the
+cube slice and Plotly's highlight cover the same bins. Box and line sources have no bins and keep
+a **fixed resolution P = 2048** over the viewport domain. A **categorical** free axis
 (bar/pie/treemap source) is the exact tuple of label/path column values — no binning, no domain,
 dictionary-encoded in sorted order. A resolution fixed by the spec — rather than Mosaic's pixel
 resolution — makes the cube width-independent, content-addressable, and shareable across
@@ -1178,9 +1179,9 @@ range **or categorical (bar)** selection geometry:
    (`fvCubeSnap` / `snap_brush`) — Plotly's highlight rule for bars. A frame whose brush covers no center shows the targets'
    pre-gesture state (in overlay mode without the live fg presentation), and its commit clears
    the figure's selection. A box2d source does the same
-   per axis. A 1-D grid (`p`, domain, unit) is adopted from the decoded header only: the server
-   resolves the unzoomed domain and a histogram snaps a zoomed axis to its bar lattice, so the
-   viewport alone does not give it (a commit before the first header lands stays unsnapped). Before a blob is stored,
+   per axis. The grid (`p`, domain, unit) is adopted from the decoded header only: the server resolves
+   the unzoomed domain and a binned trace snaps a zoomed axis to its lattice, so the viewport alone
+   does not give it (a commit before the first header lands stays unsnapped). Before a blob is stored,
    `fvCubeHeaderMatchesKey` checks each range axis against the key: unzoomed, the header keeps the
    key's `p`; zoomed, it has `p` or `p + 1` bins and (numeric axes) a domain that covers the
    viewport. When a histogram and a non-binned trace share the brushed column in one figure, the
@@ -1351,7 +1352,7 @@ them.
   | `histogram` | yes | yes | Source is a 1-D range axis on its own bar grid (`P = bins`, or `bins + 1` zoomed). Target is a binned count; grouped histograms add categorical group dims. |
   | `box` | yes | no | Source is a 1-D range over the box data axis. Box is not a target because quantiles are not decomposable. |
   | `line` | yes | yes, limited | Source is an x-only range at `P=2048`. Target requires `downsample="minmax"` and numeric `y`; the target is a live-only `line_env`, and commit always POSTs. |
-  | `histogram2d` | yes | yes, limited | Source is a `box2d` free axis at `128 x 128`. Target is full-data-only 2-D binned count/reduce; zoomed target axes fall back to the normal POST path. |
+  | `histogram2d` | yes | yes, limited | Source is a `box2d` free axis on its own `x_bins x y_bins` cell grid. Target is full-data-only 2-D binned count/reduce; zoomed target axes fall back to the normal POST path. |
   | `bar` | yes | yes | Source is categorical labels. Target dims are label columns plus optional string `group_by`; supports `count`/`sum`/`mean`/`min`/`max`. |
   | `pie` | yes | yes | Source is categorical labels. Target is equivalent to an ungrouped bar with the same labels and measure. |
   | `treemap` | yes | yes | Source is the categorical full `path`. Target stores leaf path cells, and the client rolls them up into the hierarchy. |
@@ -1367,7 +1368,7 @@ them.
   | hist | 1-D range on the bar grid: `p = bins` and `domain=None` unzoomed (the engine resolves the full domain, unioned with the source's sibling histograms like its bars), the viewport snapped with `snap_range` zoomed (`bins` or `bins + 1`); continuous + temporal (`us`/`ms`/`day` physical units — see “Temporal sources” below; `Datetime("ns")`/`Time` gate to no cube) |
   | box | 1-D range over the `data_col` (same shape/gates as hist) |
   | line | 1-D range over the **x** column only (line selection is x-only — see below); P=2048; source geometry independent of `downsample` |
-  | hist2d | **box2d**: two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` (`bin_y·P₂D + bin_x`); per-axis domains resolved by the engine; a rectangle brush slices a 2-D sub-grid |
+  | hist2d | **box2d**: two range axes (x, y) on the source's cell grid, `p = (nx, ny)`, packed into one composite `free_bin` (`bin_y·nx + bin_x`); the trace emits `(x_bins, y_bins)` and snaps a zoomed axis (the engine passes one viewport per select anchor) with `snap_range`, the same lattice as the display grid (which can add a cell); the engine resolves an unzoomed axis to the full data domain; a rectangle brush slices a 2-D sub-grid |
   | bar / pie | categorical over the ordered label columns (`axis_range` ignored — label geometry is viewport-independent) |
   | treemap | categorical over the full `path` |
 

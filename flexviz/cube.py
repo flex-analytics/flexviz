@@ -201,17 +201,20 @@ class FreeAxisSpec:
 
     A ``"box2d"`` axis (hist2d source, contract H) is a 2-D rectangular brush:
     ``columns = (x_col, y_col)`` with ``columns[0] == column`` (x is the
-    primary ``active_source.column`` join key), ``p = P₂D = 128`` per axis, and
-    the per-axis domains live in ``domains = ((lox,hix),(loy,hiy))`` (the
-    single-axis ``domain`` stays ``None``). Each axis is binned with the shared
-    arithmetic; the composite free bin is ``bin_y * p + bin_x``.
-    ``unit`` is per-axis for box2d — encoded as a 2-tuple ``(unit_x, unit_y)``
-    — and is set by the engine from the schema dtypes.
+    primary ``active_source.column`` join key). It is the source's own cell
+    grid: ``p = (nx, ny)`` cells per axis over the per-axis domains in
+    ``domains = ((lox,hix),(loy,hiy))`` (the single-axis ``domain`` stays
+    ``None``), so a snapped brush edge is a cell edge. Each axis is binned with
+    the shared arithmetic; the composite free bin is
+    ``bin_y * nx + bin_x``. ``unit`` is per-axis for box2d — encoded as a
+    2-tuple ``(unit_x, unit_y)`` — and is set by the engine from the schema
+    dtypes.
     """
 
     column: str
     kind: FreeAxisKind = "continuous"
-    p: int = 2048
+    # Bins per axis; a (nx, ny) pair for box2d.
+    p: int | tuple[int, int] = 2048
     domain: tuple[float, float] | None = None
     columns: tuple[str, ...] | None = None
     # Physical unit for kind="temporal" (contract G); the engine sets it from
@@ -246,7 +249,11 @@ class FreeAxisSpec:
                 )
             if self.domain is not None:
                 raise ValueError("box2d free axis takes no single domain (use domains)")
+            if not (isinstance(self.p, tuple) and len(self.p) == 2):
+                raise ValueError("box2d free axis requires p = (nx, ny)")
         else:
+            if not isinstance(self.p, int):
+                raise ValueError(f"free axis kind {self.kind!r} takes an int p")
             if self.columns is not None:
                 raise ValueError(f"free axis kind {self.kind!r} takes no columns")
             if self.domains is not None:
@@ -432,7 +439,7 @@ class CubeResult:
         then combine + finalize like ``slice_agg``. Mirrors the client's
         rectangle slice (``fvCubeSliceRect``)."""
         (lx, hx), (ly, hy) = self._snap_box2d(x_lo, x_hi, y_lo, y_hi)
-        s = self.spec.free.p  # the composite stride
+        s = self.spec.free.p[0]  # the composite stride nx
         codes: list[int] = []
         for by in range(ly, hy + 1):
             row = by * s
@@ -448,10 +455,10 @@ class CubeResult:
         self, x_lo: float, x_hi: float, y_lo: float, y_hi: float
     ) -> tuple[tuple[int, int], tuple[int, int]]:
         """Per-axis ``snap_brush`` bin pairs of the box's corners, against each
-        axis's grid."""
+        axis's cell grid."""
         free = self.spec.free
         (lox, hix), (loy, hiy) = free.domains  # type: ignore[misc]
-        px = py = free.p
+        px, py = free.p
         x = snap_brush(lox, hix, px, x_lo, x_hi)
         y = snap_brush(loy, hiy, py, y_lo, y_hi)
         return (x[0], x[1]), (y[0], y[1])
@@ -1115,8 +1122,8 @@ def _build_box2d_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
 
     A range-like build: each of the two axes is binned like the display
     kernel (``_fixed_hist_bin_expr``, filter-don't-clip via ``is_between`` per axis).
-    The composite free key is ``free_bin = bin_y * p + bin_x`` (indices
-    ``0..p*p-1``). Temporal axes run on their physical representation per
+    The composite free key is ``free_bin = bin_y * nx + bin_x`` (indices
+    ``0..nx*ny-1``). Temporal axes run on their physical representation per
     axis (contract G). Reuses ``_target_group_exprs`` / ``_measure_exprs``
     (a pure source build has no target dims, but the path stays general).
     """
@@ -1134,7 +1141,7 @@ def _build_box2d_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     cx, cy = free.columns  # type: ignore[misc]
     (lox, hix), (loy, hiy) = free.domains
     unit_x, unit_y = _box2d_units(free)
-    px = py = free.p
+    px, py = free.p
 
     val_x = _box2d_axis(cx, unit_x)
     val_y = _box2d_axis(cy, unit_y)
@@ -1425,8 +1432,8 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
     elif spec.free.kind == "box2d":
         # The composite free_bin is already a u32 (build cast it to Int32); the
         # encode below treats it like any range free_bin. The header free block
-        # carries the per-axis grid ("p" per axis and "domains"); the
-        # composite stride is p. Temporal axes add "units" =
+        # carries the per-axis cell grid ("p" = [nx, ny] and "domains"); the
+        # composite stride is nx. Temporal axes add "units" =
         # [unit_x|null, unit_y|null].
         frame = result.frame.sort(["free_bin", *group_cols])
         (lox, hix), (loy, hiy) = spec.free.domains  # type: ignore[misc]
@@ -1434,7 +1441,7 @@ def encode_fvcube(result: CubeResult, cube_id: str) -> bytes:
         free_block = {
             "kind": "box2d",
             "cols": list(spec.free.columns or ()),
-            "p": spec.free.p,
+            "p": list(spec.free.p),
             "domains": [[lox, hix], [loy, hiy]],
         }
         if unit_x is not None or unit_y is not None:
@@ -1691,7 +1698,7 @@ def cube_content_key(spec: CubeSpec) -> str:
         free_payload = {
             "c": list(spec.free.columns or ()),
             "k": spec.free.kind,
-            "p": spec.free.p,
+            "p": list(spec.free.p),
             "d": [list(domains[0]), list(domains[1])] if domains else None,
         }
     else:

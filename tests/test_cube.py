@@ -2032,7 +2032,7 @@ class TestLineEnvelope:
                 column="free",
                 columns=("free", "x"),
                 kind="box2d",
-                p=8,
+                p=(8, 8),
                 domains=((0.0, 100.0), (0.0, 100.0)),
             ),
             target_dims=(
@@ -2637,7 +2637,7 @@ class TestCorrMeasureValidation:
                 column="free",
                 columns=("free", "x"),
                 kind="box2d",
-                p=8,
+                p=(8, 8),
                 domains=((0.0, 100.0), (0.0, 50.0)),
             ),
             target_dims=(),
@@ -2991,7 +2991,7 @@ class TestCorrContentKey:
 # ---------------------------------------------------------------------------
 
 
-_BOX2D_PX = _BOX2D_PY = 128
+_BOX2D_PX, _BOX2D_PY = 128, 64
 _BOX2D_S = _BOX2D_PX
 
 
@@ -3000,7 +3000,7 @@ def _box2d_spec(
     value_col: str | None = None,
     x_domain: tuple[float, float] = (0.0, 100.0),
     y_domain: tuple[float, float] = (0.0, 50.0),
-    p: int = _BOX2D_PX,
+    p: tuple[int, int] = (_BOX2D_PX, _BOX2D_PY),
 ) -> CubeSpec:
     return CubeSpec(
         source_name="s",
@@ -3051,6 +3051,16 @@ class TestBox2dValidation:
                 column="x", kind="box2d", columns=("x",), domains=((0, 1), (0, 1))
             )
 
+    def test_box2d_requires_per_axis_p(self):
+        with pytest.raises(ValueError):
+            FreeAxisSpec(
+                column="x",
+                kind="box2d",
+                p=128,
+                columns=("x", "y"),
+                domains=((0, 1), (0, 1)),
+            )
+
     def test_box2d_columns0_must_equal_column(self):
         with pytest.raises(ValueError):
             FreeAxisSpec(
@@ -3076,6 +3086,10 @@ class TestBox2dValidation:
             FreeAxisSpec(
                 column="x", kind="categorical", columns=("x",), domains=((0, 1), (0, 1))
             )
+
+    def test_range_kinds_require_int_p(self):
+        with pytest.raises(ValueError):
+            FreeAxisSpec(column="x", kind="continuous", p=(8, 8), domain=(0, 1))
 
 
 class TestBox2dBuildAndSlice:
@@ -3171,7 +3185,7 @@ class TestBox2dCodec:
         free_bin = _read_u32_col(blob, header, "free_bin")
         count = _read_u32_col(blob, header, "count")
         (lx, hx), (ly, hy) = cube._snap_box2d(x[0], x[1], y[0], y[1])
-        s = header["free"]["p"]
+        s = header["free"]["p"][0]
         codes = set()
         for by in range(ly, hy + 1):
             row = by * s
@@ -3191,7 +3205,7 @@ class TestBox2dCodec:
         assert header["free"] == {
             "kind": "box2d",
             "cols": ["x", "y"],
-            "p": 128,
+            "p": [128, 64],
             "domains": [[0.0, 100.0], [0.0, 50.0]],
         }
         # No target dims for a pure source build; the free_bin and count buffers

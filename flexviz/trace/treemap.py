@@ -74,6 +74,7 @@ class TreeMap(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A node click defines a categorical free axis on the full ``path``:
         the free key is the root-to-leaf tuple; a depth-``k`` click is a

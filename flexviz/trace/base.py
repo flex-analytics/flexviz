@@ -164,8 +164,8 @@ class FlexTrace(ABC):
         """The anchor ids this trace emits selection clauses on.
 
         Computed (not cached) from ``_default_select_axes()``; the cube engine
-        (``FlexEngine._locate_free_axis`` / ``_locate_box2d_axis``) reads it to
-        map a brushed source trace onto its free-axis column(s)."""
+        (``FlexEngine._locate_free_axis``) reads it to map a brushed source
+        trace onto its free-axis column(s)."""
         return self._default_select_axes()
 
     def _make_selection_spec(self) -> TraceSelectionSpec:
@@ -206,11 +206,15 @@ class FlexTrace(ABC):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        *,
+        y_range: tuple[float, float] | None = None,
     ) -> FreeAxisSpec | None:
         """The free axis a brush on this trace defines, or None (not a cube source).
 
-        axis_range — the source figure's viewport on this trace's selectable axis
-        (None = unzoomed; domain resolution happens in the engine).
+        axis_range — the source figure's viewport on this trace's first
+        selectable axis, y_range on its second (a 2-D source); None = unzoomed
+        (the engine resolves the full data domain). A binned trace snaps a
+        viewport to its own bin lattice here, so it owns its grid.
         """
         return None
 

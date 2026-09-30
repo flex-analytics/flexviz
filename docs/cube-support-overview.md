@@ -21,7 +21,7 @@ A source trace implements `get_cube_source_spec()` and produces a **free axis** 
 | `histogram` | **range** (continuous / temporal) | 1-D, the histogram's own bars over the viewport (or full-data) domain |
 | `box` | **range** | 1-D over the `data_col` (same gates as hist) |
 | `line` | **range** | 1-D over the **x** column only (line selection is x-only); P=2048 |
-| `histogram2d` | **box2d** | two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` |
+| `histogram2d` | **box2d** | two range axes (x, y) on the source's own `x_bins × y_bins` cell grid, packed into one composite `free_bin` |
 | `bar` | **categorical** | over the ordered label column(s) |
 | `pie` | **categorical** | over the label column(s) |
 | `treemap` | **categorical** | over the full `path` (prefix selects a subtree) |
@@ -73,8 +73,8 @@ source free-axis kinds can feed each target measure.**
 
 Notes on the two `❌` columns:
 - **`box2d × {line_env, corr}` (#47):** a feasibility-free but real **cell-count / wire-size
-  wall** — a box2d `line_env` cube is `n_x_buckets × P₂D²` ≈ `500 × 128²` ≈ 8.2M cells per
-  line. Gated off; those targets fall back to the per-commit recompute. Tracked in #47.
+  wall** — a box2d `line_env` cube is `n_x_buckets × nx·ny` cells per line, for example
+  `500 × 128²` ≈ 8.2M for a 128 × 128 cell source. Gated off; those targets fall back to the per-commit recompute. Tracked in #47.
 - **`median` / `n_unique` / box quantiles:** mathematically not decomposable over a partition —
   never cube targets, by any source.
 

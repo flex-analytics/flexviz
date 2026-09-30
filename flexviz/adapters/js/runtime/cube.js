@@ -3,9 +3,8 @@
 //
 // Cube live-brush path (see Architecture.md, "Cube Pre-Aggregation & Live Brushing"):
 // a cube is a pre-aggregation of one target trace's dims × the active brush
-// column binned to P bins (a histogram source's own bars, 128 per axis for a
-// histogram2d, 2048 for box and line; or its category tuples for a
-// categorical source).
+// column binned to P bins (a binned source's own grid, 2048 for box and line;
+// or its category tuples for a categorical source).
 // The server builds + encodes it once (FVCube v1); this module decodes the
 // blob, stores it under a client-local canonical descriptor key, and
 // re-slices it per drag frame — turning every mousemove of a live brush into
@@ -27,7 +26,6 @@
 //     the existing delta-application path (`setLayerData` + `_fvRenderFigure`).
 
 const _FV_CUBE_P = 2048;
-const _FV_CUBE_BOX2D_P = 128; // P₂D — the per-axis resolution of a box2d source
 let _FV_CUBE_STORE_BUDGET_BYTES = 256 * 1024 * 1024;
 
 // Test hook: override the store byte budget; returns the previous value.
@@ -232,9 +230,10 @@ function fvCubeHeaderMatchesKey(key, header) {
     if (!keyCols.every((c, i) => c === cols[i])) return false;
     const keyD = Array.isArray(keyFree.d) ? keyFree.d : [null, null];
     const units = free.units || [null, null];
+    const p = free.p || [];
     const doms = free.domains || [];
     for (let a = 0; a < 2; a++) {
-      if (!_fvCubeAxisMatchesKey(keyFree.p, keyD[a], free.p, doms[a], !!units[a])) {
+      if (!_fvCubeAxisMatchesKey(keyFree.p[a], keyD[a], p[a], doms[a], !!units[a])) {
         return false;
       }
     }
@@ -339,17 +338,18 @@ function fvCubeFreeDomain(sourceName, column, p) {
 }
 
 // Server-resolved box2d free headers seen in decoded headers (contract H),
-// keyed by (source, [cx, cy]). Lets a later unzoomed box2d gesture on the
-// same source adopt its per-axis snap grid before its own response lands.
+// keyed by the source trace uid: the grid is that trace's own cells, so two
+// hist2d traces over the same columns can differ. Lets a later unzoomed box2d
+// gesture adopt its per-axis snap grid before its own response lands.
 const _fvCubeBox2dGrids = new Map();
 
-function _fvCubeRememberBox2dGrid(sourceName, cols, free) {
+function _fvCubeRememberBox2dGrid(traceUid, free) {
   if (!free || free.kind !== 'box2d' || !Array.isArray(free.domains)) return;
-  _fvCubeBox2dGrids.set(JSON.stringify([sourceName, cols]), free);
+  _fvCubeBox2dGrids.set(traceUid, free);
 }
 
-function _fvCubeRememberedBox2dGrid(sourceName, cols) {
-  return _fvCubeBox2dGrids.get(JSON.stringify([sourceName, cols])) || null;
+function _fvCubeRememberedBox2dGrid(traceUid) {
+  return _fvCubeBox2dGrids.get(traceUid) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,9 +402,15 @@ function decodeFVCube(bytes) {
   }
 
   // CSR offsets over the free_bin-sorted rows: rows of bin b are
-  // binStart[b] .. binStart[b+1]-1, for every bin 0.._fvCubeMaxBin.
+  // binStart[b] .. binStart[b+1]-1, for every bin 0.._fvCubeMaxBin. A fine
+  // histogram2d grid makes this index large even for a small blob, so an entry
+  // over the store budget is only sized, not built: fvCubeStorePut refuses it.
   const freeBin = cols.free_bin;
-  const binStart = new Uint32Array(_fvCubeMaxBin(header) + 2);
+  const slots = _fvCubeMaxBin(header) + 2;
+  if (bytesTotal + 4 * slots > _FV_CUBE_STORE_BUDGET_BYTES) {
+    return { header, bytes: bytesTotal + 4 * slots };
+  }
+  const binStart = new Uint32Array(slots);
   for (let i = 0; i < freeBin.length; i++) binStart[freeBin[i] + 1]++;
   for (let b = 1; b < binStart.length; b++) binStart[b] += binStart[b - 1];
   bytesTotal += binStart.byteLength;
@@ -534,20 +540,20 @@ function fvCubeSnap(domain, p, a, b) {
 }
 
 // The highest valid free-bin index for an entry: the last category for a
-// categorical axis, the composite top p*p-1 for box2d (contract H), the top
-// bin p-1 otherwise. Used to clamp slice ranges.
+// categorical axis, the composite top nx*ny-1 for box2d (contract H), the
+// top bin p-1 otherwise. Used to clamp slice ranges.
 function _fvCubeMaxBin(header) {
   if (header.free.kind === 'categorical') return header.free.categories.length - 1;
-  if (header.free.kind === 'box2d') return header.free.p * header.free.p - 1;
+  if (header.free.kind === 'box2d') return header.free.p[0] * header.free.p[1] - 1;
   return header.free.p - 1;
 }
 
 // Build the per-row composite free-bin ranges of a snapped 2-D box (contract
 // H): for each by in [ly..hy], one inclusive range [by*S+lx, by*S+hx]. The
 // rows of one by form a contiguous CSR block, so the generalized slice walks
-// binStart[by*S+lx] .. binStart[by*S+hx+1] exactly. S = p.
+// binStart[by*S+lx] .. binStart[by*S+hx+1] exactly. S = nx.
 function fvCubeRectRanges(header, snap2d) {
-  const s = header.free.p;
+  const s = header.free.p[0];
   const lx = snap2d.x.loBin, hx = snap2d.x.hiBin;
   const ly = snap2d.y.loBin, hy = snap2d.y.hiBin;
   const ranges = [];

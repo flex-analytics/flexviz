@@ -993,3 +993,31 @@ def test_collect_batches_chunking_semantics():
     assert len(batches) == math.ceil(n / chunk)
     assert sum(b.height for b in batches) == n
     assert sorted(v for b in batches for v in b["a"].to_list()) == values
+
+
+class TestCubeSourceSpec:
+    """A hist2d source's free axis is its own cell grid (#133)."""
+
+    def test_unzoomed_is_the_nominal_cell_grid(self):
+        from flexviz.trace.hist2d import Histogram2D
+
+        spec = Histogram2D(x="a", y="b", x_bins=200, y_bins=150).get_cube_source_spec(
+            None
+        )
+        assert spec.kind == "box2d"
+        assert spec.p == (200, 150)
+        assert spec.domains is None
+
+    def test_zoomed_axes_snap_to_the_cell_lattice(self):
+        from flexviz.trace.bin_grid import snap_range
+        from flexviz.trace.hist2d import Histogram2D
+
+        trace = Histogram2D(x="a", y="b", x_bins=8, y_bins=6)
+        spec = trace.get_cube_source_spec((10.3, 80.7), y_range=None)
+        lo, hi, n = snap_range(10.3, 80.7, 8)
+        assert spec.p == (n, 6) == (9, 6)
+        assert spec.domains == ((lo, hi), None)
+        spec = trace.get_cube_source_spec(None, y_range=(5.1, 70.9))
+        lo, hi, n = snap_range(5.1, 70.9, 6)
+        assert spec.p == (8, n) == (8, 7)
+        assert spec.domains == (None, (lo, hi))

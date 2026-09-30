@@ -140,6 +140,24 @@ def _normalize_viewports(
     }
 
 
+def _box2d_with_units(
+    candidate: FreeAxisSpec, schema: pl.Schema | None
+) -> FreeAxisSpec | None:
+    """A box2d (hist2d) free axis with each temporal axis's physical unit from
+    the schema dtype (contract H); ``None`` gates the cube when an axis is
+    ``Datetime("ns")`` or ``Time``."""
+    units: list[str | None] = []
+    for col in candidate.columns or ():
+        dtype = _dtype_for_col(schema, col)
+        unit = None
+        if dtype is not None and dtype.is_temporal():
+            unit = temporal_unit(dtype)
+            if unit is None:
+                return None
+        units.append(unit)
+    return replace(candidate, unit=(units[0], units[1]) if any(units) else None)
+
+
 class FlexEngine:
     """Renderer-agnostic, fully stateless aggregation engine.
 
@@ -546,16 +564,21 @@ class FlexEngine:
             trace = self._scalable_traces.get(ti.uid)
             if trace is None:
                 return None
-            anchor = trace.select_axes[0] if trace.select_axes else None
-            candidate = trace.get_cube_source_spec(
+            # One viewport per selectable anchor: a 2-D source (hist2d) snaps
+            # both axes to its own cell grid. A missing anchor is unzoomed.
+            columns = trace._make_selection_spec().axis_columns
+            axis_range, y_range = (
                 self._cube_axis_range(
                     viewports_by_figure,
                     ti.figure_uid,
                     anchor,
                     schema=schema,
-                    column=active_source.column,
-                ),
-                schema=schema,
+                    column=columns.get(anchor),
+                )
+                for anchor in (*trace.select_axes, None, None)[:2]
+            )
+            candidate = trace.get_cube_source_spec(
+                axis_range, schema=schema, y_range=y_range
             )
             if candidate is not None and candidate.column == active_source.column:
                 if candidate.kind == "temporal":
@@ -567,65 +590,10 @@ class FlexEngine:
                         return None
                     candidate = replace(candidate, unit=unit)
                 elif candidate.kind == "box2d":
-                    candidate = self._locate_box2d_axis(
-                        candidate, ti, viewports_by_figure, schema
-                    )
+                    candidate = _box2d_with_units(candidate, schema)
                 return candidate
             return None
         return None
-
-    def _locate_box2d_axis(
-        self,
-        candidate: FreeAxisSpec,
-        ti: TraceInfo,
-        viewports_by_figure: dict[str, dict[str, Any]],
-        schema: pl.Schema | None,
-    ) -> FreeAxisSpec | None:
-        """Resolve a box2d (hist2d) free axis's per-axis units and viewports
-        (contract H). ``active_source.column`` is the x column (validated in
-        ``_locate_free_axis``); the trace's two select anchors map to its two
-        columns. Each temporal axis takes its physical unit from the schema
-        dtype (Datetime("ns")/Time gate to no cube); each axis's viewport range
-        is resolved independently (``None`` = unzoomed → engine-resolved full
-        domain). Returns ``None`` to gate the whole cube."""
-        trace = self._scalable_traces.get(ti.uid)
-        if trace is None or len(candidate.columns or ()) != 2:
-            return None
-        cx, cy = candidate.columns  # type: ignore[misc]
-        # The two select anchors, in (x, y) column order. select_axes is
-        # (x_anchor, y_anchor) for hist2d; axes[0] is x, axes[1] is y.
-        anchors = trace.select_axes
-        if len(anchors) < 2:
-            return None
-        anchor_x, anchor_y = anchors[0], anchors[1]
-
-        units: list[str | None] = []
-        for col in (cx, cy):
-            dtype = _dtype_for_col(schema, col)
-            if dtype is not None and dtype.is_temporal():
-                unit = temporal_unit(dtype)
-                if unit is None:
-                    return None  # ns/Time gate
-                units.append(unit)
-            else:
-                units.append(None)
-
-        dom_x = self._cube_axis_range(
-            viewports_by_figure, ti.figure_uid, anchor_x, schema=schema, column=cx
-        )
-        dom_y = self._cube_axis_range(
-            viewports_by_figure, ti.figure_uid, anchor_y, schema=schema, column=cy
-        )
-        # Per-axis None viewports are resolved to the full data domain in
-        # _resolve_cube_domains; carry a partial (x-zoom only / y-zoom only) as
-        # a domains tuple with one resolved + one None axis.
-        domains: tuple | None
-        if dom_x is None and dom_y is None:
-            domains = None
-        else:
-            domains = (dom_x, dom_y)
-        new_unit = (units[0], units[1]) if any(units) else None
-        return replace(candidate, unit=new_unit, domains=domains)
 
     @staticmethod
     def _cube_axis_range(

@@ -163,6 +163,7 @@ class BarPlot(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A box-drag over bars defines a categorical free axis on the label
         columns: the free key is the label tuple, ``columns[0]`` the primary

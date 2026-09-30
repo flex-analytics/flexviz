@@ -127,6 +127,7 @@ class PiePlot(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A slice click defines a categorical free axis on the label columns
         (OR'd multi-click = a union of category keys at slice time).

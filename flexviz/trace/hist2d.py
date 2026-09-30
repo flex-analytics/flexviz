@@ -48,7 +48,12 @@ from .base import (
     _temporal_dtype_for_col,
 )
 from .batch_fold import hist2d_fold_plan
-from .bin_grid import axis_edges, hist2d_count_expr, hist2d_reduce_expr
+from .bin_grid import (
+    axis_edges,
+    hist2d_count_expr,
+    hist2d_reduce_expr,
+    snapped_domain,
+)
 
 _DEFAULT_COLOR_SCALE = "Viridis"
 _DEFAULT_COLOR_RANGE: HeatmapColorRange = "auto"
@@ -303,19 +308,21 @@ class Histogram2D(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        *,
+        y_range: tuple[float, float] | None = None,
     ) -> FreeAxisSpec | None:
         """A box-select on a 2-D histogram defines a **box2d** free axis on its
         ``(x_col, y_col)`` pair (contract H).
 
         ``column`` is the x column (the primary ``active_source.column`` join
-        key); ``columns = (x_col, y_col)``; ``p = P₂D = 128`` per axis. The
-        per-axis ``domains`` are resolved by the **engine** (box2d domain
-        resolution is two-axis: this method's ``axis_range`` is only the
-        x-anchor viewport, so it cannot fill both), exactly as the 1-D
-        temporal block has the engine set ``unit``/``domains``. Both columns
-        must be numeric or temporal; an unsuitable dtype (when a schema is
-        available) gates to ``None`` — the box2d branch in ``_locate_free_axis``
-        validates the per-axis temporal units and resolves the two viewports.
+        key); ``columns = (x_col, y_col)``. The free axis is this trace's own
+        cell grid: ``p = (x_bins, y_bins)`` and ``domains=None`` unzoomed (the
+        engine resolves the full data domain per axis); a zoomed axis
+        (``axis_range`` for x, ``y_range`` for y) is snapped to the display
+        lattice like ``axis_edges`` (``snapped_domain``), which can add a
+        cell. Both columns must be numeric or temporal; an unsuitable dtype
+        (when a schema is available) gates to ``None``. The engine sets the
+        per-axis temporal units (``_box2d_with_units``).
         """
         x_col, y_col = self.x_col, self.y_col
         if not isinstance(x_col, str) or not isinstance(y_col, str):
@@ -327,12 +334,15 @@ class Histogram2D(FlexTrace):
             dtype = _dtype_for_col(schema, col)
             if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
                 return None
+        dom_x, nx = snapped_domain(axis_range, self.x_bins)
+        dom_y, ny = snapped_domain(y_range, self.y_bins)
         return FreeAxisSpec(
             column=x_col,
             kind="box2d",
-            p=128,
+            p=(nx, ny),
             columns=(x_col, y_col),
-            domains=None,
+            # The engine resolves each None axis to the full data domain.
+            domains=None if dom_x is None and dom_y is None else (dom_x, dom_y),
         )
 
     def get_cube_target_spec(

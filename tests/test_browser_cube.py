@@ -2970,6 +2970,52 @@ class TestCubeStoreByteBound:
         assert result["hasSmall"] is True
         assert result["bytesAfterSmall"] == result["before"] + 200
 
+    def test_index_over_budget_is_sized_not_built(self, page: Page, server_port: int):
+        """A histogram2d source on a fine grid needs a dense bin index of
+        4 x (nx x ny + 1) bytes, even for a small blob. An entry whose index
+        passes the budget is refused before that index is built."""
+        import base64
+
+        df = pl.DataFrame(
+            {"a": [0.0, 0.5, 1.0], "b": [0.0, 0.5, 1.0], "c": list("xyz")}
+        )
+        spec = CubeSpec(
+            source_name="s",
+            free=FreeAxisSpec(
+                column="a",
+                kind="box2d",
+                columns=("a", "b"),
+                p=(500, 500),
+                domains=((0.0, 1.0), (0.0, 1.0)),
+            ),
+            target_dims=(TargetDimSpec(column="c", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        )
+        blob = encode_fvcube(build_cube(df.lazy(), spec), "k")
+        url = _two_hist_dashboard_url(server_port, "_cube_browser_index", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        result = page.evaluate(
+            """(b64) => {
+                const prevBudget = fvCubeStoreSetBudget(65536);
+                const entry = fvDecodeFVCube(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+                const out = {
+                    built: 'binStart' in entry,
+                    bytes: entry.bytes,
+                    stored: fvCubeStorePut('k-index', entry),
+                };
+                fvCubeStoreSetBudget(prevBudget);
+                fvCubeStoreReset();
+                return out;
+            }""",
+            base64.b64encode(blob).decode("ascii"),
+        )
+        assert len(blob) < 1024
+        assert result["built"] is False
+        assert result["bytes"] > 4 * 500 * 500
+        assert result["stored"] is False
+
     def test_oversized_cube_degrades_gesture_cleanly(
         self, page: Page, server_port: int
     ):
@@ -5618,8 +5664,8 @@ class TestCorrTargetCube:
 # handleSelecting and so works for box2d unchanged. The tests below prove the
 # standard path (live updates + one cube_request) and the edit-drag replay.
 
+# The source hist2d's cells per axis: the box2d free axis is this grid.
 _BOX2D_NX, _BOX2D_NY = 8, 6
-_BOX2D_P = 128  # the fixed per-axis grid of a box2d free axis
 
 
 def _box2d_df() -> pl.DataFrame:
@@ -5685,7 +5731,7 @@ def _reference_box2d_hist_counts(
         free=FreeAxisSpec(
             column="a",
             kind="box2d",
-            p=_BOX2D_P,
+            p=(_BOX2D_NX, _BOX2D_NY),
             columns=("a", "b"),
             domains=((a_lo, a_hi), (b_lo, b_hi)),
         ),
@@ -5700,9 +5746,9 @@ def _reference_box2d_hist_counts(
         measure=MeasureSpec(agg="count"),
     )
     result = build_cube(df.lazy(), spec)
-    lx, hx = _committed_bins(ex[0], ex[1], (a_lo, a_hi, _BOX2D_P))
-    ly, hy = _committed_bins(ey[0], ey[1], (b_lo, b_hi, _BOX2D_P))
-    s = _BOX2D_P
+    lx, hx = _committed_bins(ex[0], ex[1], (a_lo, a_hi, _BOX2D_NX))
+    ly, hy = _committed_bins(ey[0], ey[1], (b_lo, b_hi, _BOX2D_NY))
+    s = _BOX2D_NX
     codes = []
     for by in range(ly, hy + 1):
         codes.extend(range(by * s + lx, by * s + hx + 1))
@@ -5822,8 +5868,8 @@ class TestBox2dSourceCube:
         ex = tuple(by_col["a"]["range"])
         ey = tuple(by_col["b"]["range"])
 
-        # The edges are the kernel's bin boundaries of the P=128 grid over the
-        # full domains (_reference_box2d_hist_counts checks them).
+        # The edges are the kernel's cell boundaries of the source's grid over
+        # the full domains (_reference_box2d_hist_counts checks them).
 
         expected = _reference_box2d_hist_counts(df, ex, ey)
         assert 0 < sum(expected) < df.height
@@ -6690,6 +6736,10 @@ class TestCubeGridGuards:
             const one = (p, d, hp, dom, kind = 'continuous') => fvCubeHeaderMatchesKey(
               key({c: 'a', k: 'continuous', p, d}), {free: {kind, p: hp, domain: dom}}
             );
+            const two = (p, d, hp, doms) => fvCubeHeaderMatchesKey(
+              key({c: ['a', 'b'], k: 'box2d', p, d}),
+              {free: {kind: 'box2d', cols: ['a', 'b'], p: hp, domains: doms}}
+            );
             return {
               zoomedLattice: one(16, [10, 80], 17, [8.75, 83.125]),
               zoomedOtherTrace: one(16, [10, 80], 2048, [10, 80.0000000001]),
@@ -6698,6 +6748,9 @@ class TestCubeGridGuards:
               zoomedTemporal: one(16, [1, 2], 17, [5, 6], 'temporal'),
               unzoomed: one(16, null, 16, [0, 99.9]),
               unzoomedMore: one(16, null, 17, [0, 99.9]),
+              box2dZoomedX: two([8, 6], [[10, 80], null], [9, 6], [[8.8, 88], [0, 99]]),
+              box2dOtherTrace: two([8, 6], [[10, 80], null], [2048, 6], [[10, 80], [0, 99]]),
+              box2dUnzoomedYMore: two([8, 6], [[10, 80], null], [9, 7], [[8.8, 88], [0, 99]]),
             };
         }""")
         assert got == {
@@ -6708,6 +6761,9 @@ class TestCubeGridGuards:
             "zoomedTemporal": True,
             "unzoomed": True,
             "unzoomedMore": False,
+            "box2dZoomedX": True,
+            "box2dOtherTrace": False,
+            "box2dUnzoomedYMore": False,
         }
 
     @pytest.mark.parametrize("line_first", [False, True])
@@ -6874,6 +6930,76 @@ class TestCubeGridGuards:
         assert clause["range"] == [1e7, 1e7]
         assert clause["closed"] == "both"
         assert sum(_target_y(page)) == 10
+
+
+def _box2d_zoomed_url(port: int, source_name: str, zoom: dict) -> str:
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import AxisRange, LayoutSpec, encode_spec
+
+    df = _box2d_df()
+    register_source(source_name, df, cache=True)
+    dash = Dashboard(df)
+    dash.add_figure(title="Box2dSource").add_histogram2d(
+        x="a", y="b", x_bins=_BOX2D_NX, y_bins=_BOX2D_NY
+    )
+    dash.add_figure(title="Hist").add_histogram(x="c", bins=_TGT_BINS)
+    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = "auto"
+    for axis, (lo, hi) in zoom.items():
+        spec.state.viewport[f"{spec.figures[0].uid}/{axis}"] = AxisRange(min=lo, max=hi)
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+class TestBox2dZoomedSource:
+    def test_zoomed_box2d_adopts_the_snapped_cell_grid(
+        self, page: Page, server_port: int
+    ):
+        """A zoomed hist2d source: the header grid is the viewport snapped to
+        the cell lattice (one cell more per axis here), the gesture adopts it
+        per axis, the store accepts it (local commit), and the commit edges
+        are cell boundaries of that grid."""
+        zoom = {"x": (10.3, 80.7), "y": (5.1, 70.9)}
+        url = _box2d_zoomed_url(server_port, "_cube_box2d_zoomed", zoom)
+        bodies = _capture_updates(page)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        hist_before = _target_y(page)
+        coords = _box2d_drag_coords(page)
+        n_before = len(bodies)
+
+        page.mouse.move(coords["x1"], coords["y1"])
+        page.mouse.down()
+        page.mouse.move(coords["x2"], coords["y2"], steps=8)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=hist_before,
+            timeout=10_000,
+        )
+        axes = page.evaluate(
+            "() => Object.values(_fvCubeGestures)[0].axes.map(a => [a.p, a.snapDomain])"
+        )
+        grids = []
+        for (lo_v, hi_v), n in ((zoom["x"], _BOX2D_NX), (zoom["y"], _BOX2D_NY)):
+            lo, hi, cells = snap_range(lo_v, hi_v, n)
+            assert cells == n + 1
+            grids.append((lo, hi, cells))
+        assert axes == [[g[2], [g[0], g[1]]] for g in grids]
+        page.mouse.up()
+        page.wait_for_timeout(800)
+
+        types = [b.get("event", {}).get("type") for b in bodies[n_before:]]
+        assert types == ["cube_request"], types  # stored, live, local commit
+        clauses = page.evaluate("DASHBOARD_SPEC.state.selections")[0]["predicates"][0][
+            "clauses"
+        ]
+        for clause, grid in zip(clauses, grids):
+            _committed_bins(*clause["range"], grid)
 
 
 def _short_date_df() -> pl.DataFrame:

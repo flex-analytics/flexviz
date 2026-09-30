@@ -1936,7 +1936,7 @@ class TestBox2dSourceCubeRequest:
         rectangle edges."""
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        px = py = header["free"]["p"]
+        px, py = header["free"]["p"]
         lx, hx, ex0, ex1, cx = _snap_axis(dx, x_box[0], x_box[1], px)
         ly, hy, ey0, ey1, cy = _snap_axis(dy, y_box[0], y_box[1], py)
         s = px
@@ -1978,7 +1978,7 @@ class TestBox2dSourceCubeRequest:
         assert header["free"] == {
             "kind": "box2d",
             "cols": ["a", "b"],
-            "p": 128,
+            "p": [8, 6],
             "domains": [[df["a"].min(), df["a"].max()], [df["b"].min(), df["b"].max()]],
         }
 
@@ -2029,12 +2029,84 @@ class TestBox2dSourceCubeRequest:
         body = _cube_body(client.post("/dashboard/update", json=payload))
         blob = base64.b64decode(body["cubes"][0])
         header = decode_fvcube_header(blob)
-        assert header["free"]["domains"] == [[10.0, 80.0], [5.0, 70.0]]
+        # Each zoomed axis snaps to the display lattice of its 8 / 6 cells.
+        x_lo, x_hi, nx = snap_range(10.0, 80.0, 8)
+        y_lo, y_hi, ny = snap_range(5.0, 70.0, 6)
+        assert header["free"]["domains"] == [[x_lo, x_hi], [y_lo, y_hi]]
+        assert header["free"]["p"] == [nx, ny]
         sliced, direct = self._box2d_reslice_count(
             blob, header, (20.0, 65.0), (15.0, 55.0), df
         )
         assert 0 < sum(sliced) < df.height
         assert sliced == direct
+
+    @pytest.mark.parametrize("zoomed", [False, True])
+    def test_one_cell_brush_commits_exactly_that_cell(self, zoomed):
+        """#133: the box2d free axis is the source's own cell grid, so a brush
+        inside one cell of a 200x150 hist2d commits that cell's edges and
+        filters exactly its rows. A fixed 128-bin grid is coarser than one
+        cell and never lands on a cell edge."""
+        n = 60_000
+        # Low-discrepancy points: dense, deterministic, off any bin lattice.
+        df = pl.DataFrame(
+            {
+                "a": [(i * 0.6180339887498949) % 1.0 * 100.0 for i in range(n)],
+                "b": [(i * 0.4142135623730951) % 1.0 * 100.0 for i in range(n)],
+                "c": [float(i % 7) for i in range(n)],
+            }
+        )
+        register_source(_SRC, df, cache=True)
+        get_cache().clear()
+        get_cube_cache().clear()
+        client = TestClient(app)
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="a", y="b", x_bins=200, y_bins=150
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        spec = dash.to_spec(source_name=_SRC)
+        src_fig = spec.figures[0]
+        if zoomed:
+            spec.state.viewport[f"{src_fig.uid}/x"] = AxisRange(min=10.3, max=80.7)
+            spec.state.viewport[f"{src_fig.uid}/y"] = AxisRange(min=5.1, max=70.9)
+
+        (delta,) = client.post("/dashboard/update", json=_init_payload(spec)).json()[
+            "figure_deltas"
+        ][src_fig.uid]
+        x_lo, x_step, nx = delta["updates"]["x_edges"]
+        y_lo, y_step, ny = delta["updates"]["y_edges"]
+        z = delta["updates"]["z"]
+
+        payload = _cube_payload(
+            spec, src_fig.uid, column="a", trace_uid=src_fig.traces[0].uid
+        )
+        blob = base64.b64decode(
+            _cube_body(client.post("/dashboard/update", json=payload))["cubes"][0]
+        )
+        header = decode_fvcube_header(blob)
+        free = header["free"]
+        assert free["p"] == [nx, ny]
+        assert free["domains"][0] == pytest.approx([x_lo, x_lo + nx * x_step])
+        assert free["domains"][1] == pytest.approx([y_lo, y_lo + ny * y_step])
+
+        count, kx, ky = max(
+            (v, i, j) for j, row in enumerate(z) for i, v in enumerate(row) if v
+        )
+        x_box = (x_lo + (kx + 0.25) * x_step, x_lo + (kx + 0.75) * x_step)
+        y_box = (y_lo + (ky + 0.25) * y_step, y_lo + (ky + 0.75) * y_step)
+        *_, ex0, ex1, _cx = _snap_axis(tuple(free["domains"][0]), *x_box, nx)
+        *_, ey0, ey1, _cy = _snap_axis(tuple(free["domains"][1]), *y_box, ny)
+        assert (ex0, ex1) == pytest.approx(
+            (x_lo + kx * x_step, x_lo + (kx + 1) * x_step)
+        )
+        assert (ey0, ey1) == pytest.approx(
+            (y_lo + ky * y_step, y_lo + (ky + 1) * y_step)
+        )
+        sliced, direct = self._box2d_reslice_count(blob, header, x_box, y_box, df)
+        assert sliced == direct
+        assert sum(sliced) == count
+        get_cache().clear()
+        get_cube_cache().clear()
 
     def test_passive_selection_bakes_into_build(self, client, df):
         """Contract E: a foreign committed selection bakes into the box2d
@@ -2072,7 +2144,7 @@ class TestBox2dSourceCubeRequest:
         ]
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        px = py = header["free"]["p"]
+        px, py = header["free"]["p"]
         _lx, _hx, ex0, ex1, _cx = _snap_axis(dx, 30.0, 60.0, px)
         _ly, _hy, ey0, ey1, _cy = _snap_axis(dy, 10.0, 50.0, py)
         passive_expr = pl.col("a").is_between(20.0, 70.0, closed="left")
@@ -3059,6 +3131,67 @@ class TestSourceBinGridCommit:
         free_bin = _read_u32_col(self.blob, header, "free_bin")
         count = _read_u32_col(self.blob, header, "count")
         return sum(n for fb, n in zip(free_bin, count) if lo_bin <= fb <= hi_bin)
+
+    def test_hist2d_integer_values_on_cell_edges(self):
+        # 0..100 on both axes with 20 cells: a value on every cell edge.
+        n = 101
+        df = pl.DataFrame(
+            {
+                "a": [float(i % n) for i in range(n * n)],
+                "b": [float(i // n) for i in range(n * n)],
+                "c": [float(i % 7) for i in range(n * n)],
+            }
+        )
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="a", y="b", x_bins=20, y_bins=20
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        updates, free = self._grid(df, dash.to_spec(source_name=_GRID_SRC), "a")
+        z = updates["z"]
+        (dx, dy), (px, py) = free["domains"], free["p"]
+        x_step, y_step = (dx[1] - dx[0]) / px, (dy[1] - dy[0]) / py
+        brushes = [(0, 0, 0, 0), (3, 3, 7, 9), (5, 12, 0, 19), (19, 19, 4, 19)]
+        for kx, mx, ky, my in brushes:
+            sx = snap_brush(dx[0], dx[1], px, *_covering(dx[0], x_step, kx, mx))
+            sy = snap_brush(dy[0], dy[1], py, *_covering(dy[0], y_step, ky, my))
+            assert (sx[0], sx[1], sy[0], sy[1]) == (kx, mx, ky, my)
+            want = sum(
+                z[j][i] or 0 for j in range(ky, my + 1) for i in range(kx, mx + 1)
+            )
+            clauses = [_commit_clause("a", sx), _commit_clause("b", sy)]
+            assert _committed_rows(df, clauses) == want, (kx, mx, ky, my)
+
+    def test_hist2d_date_axis_commits_whole_days(self):
+        # 365 days in 20 cells: 18.25-day cells with fractional-day edges.
+        import datetime as dt
+
+        n = 365 * 8
+        df = pl.DataFrame(
+            {
+                "d": [
+                    dt.date(2021, 1, 1) + dt.timedelta(days=i % 365) for i in range(n)
+                ],
+                "b": [float(i // 365) for i in range(n)],
+                "c": [float(i % 7) for i in range(n)],
+            }
+        )
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="d", y="b", x_bins=20, y_bins=4
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        updates, free = self._grid(df, dash.to_spec(source_name=_GRID_SRC), "d")
+        z = updates["z"]
+        (dx, dy), (px, py) = free["domains"], free["p"]
+        assert free["units"] == ["day", None]
+        step = (dx[1] - dx[0]) / px
+        sy = snap_brush(dy[0], dy[1], py, dy[0], dy[1])
+        for kx, mx in [(k, k) for k in range(px)] + [(3, px - 1)]:
+            sx = snap_brush(dx[0], dx[1], px, *_covering(dx[0], step, kx, mx))
+            want = sum(z[j][i] or 0 for j in range(py) for i in range(kx, mx + 1))
+            clauses = [_commit_clause("d", sx, "day"), _commit_clause("b", sy)]
+            assert _committed_rows(df, clauses) == want, (kx, mx)
 
     # An Int64 column rounds each committed bound inward (_typed_range_bounds).
     @pytest.mark.parametrize("dtype", [pl.Float64, pl.Int64])
