@@ -8095,6 +8095,24 @@ class TestThemeBrowser:
         ])""")
         assert labels == [["#0f172a", "#f8fafc", color] for color in _OKABE_ITO[:2]]
 
+    def test_overlay_legend_swatches_keep_full_opacity(
+        self, page: Page, server_port: int
+    ):
+        page.goto(_dashboard_url_grouped(server_port, "plotly", "line", n_figures=2))
+        _wait_for_init(page, "plotly")
+        page.evaluate("""() => window.flexvizApply({state: {
+            cross_filter_mode: 'overlay',
+            selections: [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{clauses: [{column: 'ts', range: [10, 30]}]}],
+            }],
+        }})""")
+        page.wait_for_function("() => divs[1].data.some(t => t.opacity < 1)")
+
+        swatches = page.evaluate("""() => [...divs[1].querySelectorAll('.legend .traces .layers')]
+            .map(el => getComputedStyle(el).opacity)""")
+        assert swatches == ["1", "1"]
+
     def test_map_tiles_follow_the_mode(self, page: Page, server_port: int):
         def build(dash):
             for style in (None, "white-bg"):

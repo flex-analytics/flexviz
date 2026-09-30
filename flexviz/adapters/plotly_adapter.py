@@ -428,6 +428,8 @@ class PlotlyAdapter(AbstractAdapter):
   <style>
 {theme_css()}
     body {{ margin: 0; padding: 0; box-sizing: border-box; font-family: var(--fv-font); background-color: var(--fv-bg); }}
+    /* Plotly draws a legend swatch with its trace's opacity, so an overlay's faded background layer fades the legend too. */
+    .legend .traces .layers {{ opacity: 1 !important; }}
     .maplibregl-ctrl.maplibregl-ctrl-attrib {{ background-color: var(--fv-surface-overlay); color: var(--fv-text-secondary); }}
     .maplibregl-ctrl-attrib a {{ color: inherit; }}
     :root[data-fv-mode="dark"] .maplibregl-ctrl-attrib-button {{ filter: invert(1); }}
