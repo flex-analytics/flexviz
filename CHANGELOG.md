@@ -44,6 +44,12 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
   `flexviz serve`.
 
+### Fixed
+
+- The `mount_into()` error now tells users of Flask and other WSGI apps to
+  wrap FlexViz with `a2wsgi`. The old hint, a bare `DispatcherMiddleware`,
+  failed on each request with a `TypeError`.
+
 ## [0.1.0b5] - 2026-09-27
 
 ### Added

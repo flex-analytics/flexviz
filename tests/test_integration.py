@@ -1714,7 +1714,7 @@ class TestMountInto:
     def test_mount_raises_for_non_asgi(self):
         from flexviz.server import mount_into
 
-        with pytest.raises(TypeError, match="does not support .mount"):
+        with pytest.raises(TypeError, match=r"does not support \.mount.*a2wsgi"):
             mount_into(object(), "/fv")
 
 
