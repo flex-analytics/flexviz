@@ -89,7 +89,7 @@ function fvApplyThemeToTraces(traces, figUid) {
 // without a template, so the template drops that key from its text fonts.
 // The hover label keeps its font: it has its own background.
 function fvPlotlyTemplate(ownFont) {
-  const ownKeys = Object.keys(ownFont ?? {});
+  const ownKeys = Object.entries(ownFont ?? {}).filter(([, value]) => value != null).map(([key]) => key);
   const font = f => Object.fromEntries(Object.entries(f).filter(([key]) => !ownKeys.includes(key)));
   const text = fvThemeToken('--fv-plot-text');
   const tick = fvThemeToken('--fv-plot-tick');

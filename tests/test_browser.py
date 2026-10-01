@@ -8227,7 +8227,13 @@ class TestThemeBrowser:
         assert "OpenStreetMap" in page.inner_text("#fv-plot-0 .maplibregl-ctrl-attrib")
 
     @pytest.mark.parametrize(
-        "layout", [{"font": None}, {"font": "serif"}, {"template": None}]
+        "layout",
+        [
+            {"font": None},
+            {"font": {"family": None, "size": None, "color": None}},
+            {"font": "serif"},
+            {"template": None},
+        ],
     )
     def test_an_unset_or_invalid_layout_value_keeps_the_theme(
         self, page: Page, server_port: int, layout: dict
@@ -8238,7 +8244,7 @@ class TestThemeBrowser:
             "_browser_theme_unset",
             _geo_browser_df(),
             lambda d: (
-                d.add_figure()
+                d.add_figure(title="Map")
                 .add_geo_histogram2d(lat="lat", lon="lon", lat_bins=4, lon_bins=4)
                 .update_layout(**layout)
             ),
@@ -8247,10 +8253,11 @@ class TestThemeBrowser:
         page.goto(url)
         _wait_for_init(page, "plotly")
 
-        drawn = page.evaluate(
-            "() => [divs[0]._fullLayout.paper_bgcolor, divs[0]._fullLayout.map.style]"
-        )
-        assert drawn == ["#ffffff", "open-street-map"]
+        drawn = page.evaluate("""() => {
+            const l = divs[0]._fullLayout;
+            return [l.paper_bgcolor, l.map.style, l.title.font.size];
+        }""")
+        assert drawn == ["#ffffff", "open-street-map", 14]
 
     def test_dark_mode_lifts_the_low_end_of_viridis(self, page: Page, server_port: int):
         page.emulate_media(color_scheme="dark")
