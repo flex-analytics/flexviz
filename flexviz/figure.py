@@ -139,7 +139,7 @@ class Figure:
     - A list of ``FlexTrace`` instances
     - A layout config dict (renderer hints, e.g. ``title``)
 
-    The Figure does not know about Plotly, Echarts, or any other renderer.
+    The Figure does not know about Plotly or any other renderer.
     Rendering is delegated to an adapter chosen via ``show(renderer=...)``.
     """
 
@@ -867,7 +867,7 @@ class Figure:
         Parameters
         ----------
         renderer:
-            ``"plotly"`` (default) or ``"echarts"``.
+            ``"plotly"`` (the only renderer).
         source_name:
             Name under which the figure's backend LazyFrame is registered
             with the server's data-source registry.  Defaults to the
@@ -914,13 +914,6 @@ class Figure:
         _render_dashboard(
             renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
         )
-
-
-def _registered_sources() -> list[str]:
-    """Return names of already-registered sources (avoids double-registration)."""
-    from .server import _sources
-
-    return list(_sources)
 
 
 def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:

@@ -194,7 +194,6 @@ function clearAllPlotlyCrosshairs() {
     renderHoverOverlay(figUid);
   }
 }
-window.fvClearAllCrosshairs = clearAllPlotlyCrosshairs;
 window.fvClearAllHoverVisuals = clearAllPlotlyCrosshairs;
 
 function suspendHoverForDrag() {
@@ -435,6 +434,3 @@ function handlePlotlyUnhover() {
   if (_hoverSuspendedForDrag) return;
   clearAllPlotlyCrosshairs();
 }
-
-// Legacy alias used by some test helpers
-function _fvClearAllCrosshairs() { clearAllPlotlyCrosshairs(); }

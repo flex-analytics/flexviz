@@ -73,10 +73,6 @@ a log scale. A replacing merge would erase the label.
 Every key comes from the
 [Plotly layout reference](https://plotly.com/python/reference/layout/).
 
-!!! warning "Plotly only"
-    ECharts is deprecated and reads `title`, `xlabel`, `ylabel` and legend
-    visibility only. Every other `update_layout()` key is ignored there.
-
 ### Colors
 
 Pass `color` for a single trace and `color_map` for a grouped one. See

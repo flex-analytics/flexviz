@@ -1,8 +1,7 @@
-"""Unit tests for adapter Python APIs: shared toolbar and
-ECharts ``_build_initial_option``.
+"""Unit tests for adapter Python APIs.
 
-Covers PlotlyAdapter and EChartsAdapter, plus the shared toolbar building
-blocks on AbstractAdapter.
+Covers PlotlyAdapter, plus the shared toolbar building blocks on
+AbstractAdapter.
 """
 
 from __future__ import annotations
@@ -219,28 +218,9 @@ class TestPlotlyModebarConfig:
         )
 
 
-# ---- EChartsAdapter --------------------------------------------------------
-
-
-class TestEChartsParseEvent:
-    def test_empty_returns_none(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        assert EChartsAdapter().parse_event({}) is None
-
-    def test_unknown_dict_returns_none(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        assert EChartsAdapter().parse_event({"foo": "bar"}) is None
-
-
 class TestNotebookDelivery:
-    @pytest.mark.parametrize(
-        ("renderer", "height", "iframe_height"),
-        [("plotly", 432, 432), ("echarts", 432, 512)],
-    )
     def test_notebook_iframe_loads_the_page_from_the_server(
-        self, server_port, monkeypatch, renderer, height, iframe_height
+        self, server_port, monkeypatch
     ):
         """The page runs on the server's own origin, so it needs no CORS."""
         import sys
@@ -265,14 +245,14 @@ class TestNotebookDelivery:
         dash.add_figure().add_line(x="ts", y="val")
         spec = dash.to_spec(source_name="_browser_test")
         server_url = f"http://127.0.0.1:{server_port}"
-        build_adapter(renderer).show_dashboard(
-            spec, server_url=server_url, notebook=True, height=height
+        build_adapter("plotly").show_dashboard(
+            spec, server_url=server_url, notebook=True, height=432
         )
 
         (iframe,) = shown
         assert iframe["src"].startswith(f"{server_url}/view?spec=")
-        assert iframe["src"].endswith(f"&renderer={renderer}")
-        assert iframe["height"] == iframe_height
+        assert iframe["src"].endswith("&renderer=plotly")
+        assert iframe["height"] == 432
 
 
 class TestBrowserDelivery:
@@ -298,92 +278,6 @@ class TestBrowserDelivery:
 
         assert opened == [url]
         assert waited == ([] if in_notebook else [1])
-
-
-class TestEChartsInitialOption:
-    def test_line_series(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="e1", trace_type="line", display={"name": "MyLine", "color": "#ff0000"}
-        )
-        fig_spec = FigureSpec(traces=[ts])
-        option = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert option["series"][0]["type"] == "line"
-        assert option["series"][0]["id"] == "e1"
-        assert option["series"][0]["showSymbol"] is False
-
-    def test_histogram_series(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(uid="e2", trace_type="histogram", display={"name": "MyHist"})
-        fig_spec = FigureSpec(traces=[ts])
-        option = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert option["series"][0]["type"] == "bar"
-        assert option["series"][0]["id"] == "e2"
-
-    def test_has_datazoom(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(uid="e1", trace_type="line", display={})
-        fig_spec = FigureSpec(traces=[ts])
-        option = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert "dataZoom" in option
-        assert option["dataZoom"][0]["type"] == "inside"
-
-    def test_unknown_trace_type_raises(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(uid="e1", trace_type="scatter", display={})
-        fig_spec = FigureSpec(traces=[ts])
-        with pytest.raises(ValueError, match="unsupported trace type"):
-            EChartsAdapter._build_initial_option(fig_spec, 400)
-
-    def test_box_series_type(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-box",
-            trace_type="box",
-            backend_data={"y": "val"},
-            display={"name": "MyBox", "color": "#ff6600"},
-        )
-        fig_spec = FigureSpec(uid="fig-box", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["series"][0]["type"] == "boxplot"
-        assert opt["series"][0]["id"] == "ec-box"
-        assert opt["series"][0]["itemStyle"]["color"] == "#ff6600"
-        assert opt["xAxis"]["type"] == "category"
-        assert opt["yAxis"]["type"] == "value"
-
-    def test_treemap_series_type(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-tm",
-            trace_type="treemap",
-            params={"path": ["continent", "country"], "agg": "sum"},
-            display={"name": "Pop"},
-        )
-        fig_spec = FigureSpec(uid="fig-tm", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["series"][0]["type"] == "treemap"
-        assert opt["series"][0]["id"] == "ec-tm"
-        assert opt["series"][0]["nodeClick"] is False
-        assert opt["series"][0]["roam"] is False
-        assert opt["series"][0]["breadcrumb"]["show"] is False
-        assert opt["series"][0]["label"]["show"] is True
-        assert opt["series"][0]["upperLabel"]["show"] is True
-        assert "xAxis" not in opt
-        assert "yAxis" not in opt
-
-    def test_initial_option_hides_toolbox(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(uid="e1", trace_type="line", display={})
-        fig_spec = FigureSpec(traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["toolbox"]["show"] is False
 
 
 # ---- PlotlyAdapter box trace (dashboard HTML) ------------------------------
@@ -551,68 +445,6 @@ class TestPlotlyDashboardBarTrace:
         assert obj["type"] == "bar"
         assert "offsetgroup" not in obj
         assert "alignmentgroup" not in obj
-
-
-class TestEChartsBarTrace:
-    def test_bar_series_in_initial_option(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-bar",
-            trace_type="bar",
-            backend_data={"x": "cat", "y": "val"},
-            params={"agg": "sum", "orientation": "v", "bar_mode": "group"},
-            display={"name": "Revenue", "bar_mode": "group"},
-        )
-        fig_spec = FigureSpec(uid="fig-ec", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert len(opt["series"]) == 1
-        assert opt["series"][0]["type"] == "bar"
-        assert opt["xAxis"]["type"] == "category"
-
-    def test_bar_horizontal_swaps_axes(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-bh",
-            trace_type="bar",
-            backend_data={"x": "cat", "y": "val"},
-            params={"agg": "sum", "orientation": "h", "bar_mode": "group"},
-            display={"name": "H", "bar_mode": "group"},
-        )
-        fig_spec = FigureSpec(uid="fig-ech", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["xAxis"]["type"] == "value"
-        assert opt["yAxis"]["type"] == "category"
-
-    def test_stack_bar_adds_stack_property(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-stack",
-            trace_type="bar",
-            backend_data={"x": "cat", "y": "val"},
-            params={"agg": "sum", "orientation": "v", "bar_mode": "stack"},
-            display={"name": "S", "bar_mode": "stack"},
-        )
-        fig_spec = FigureSpec(uid="fig-stack", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["series"][0].get("stack") == "bar"
-        assert "barMode" not in opt
-
-    def test_stack_bar_uses_legacy_param_fallback(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        ts = TraceSpec(
-            uid="ec-stack-legacy",
-            trace_type="bar",
-            backend_data={"x": "cat", "y": "val"},
-            params={"agg": "sum", "orientation": "v", "bar_mode": "stack"},
-            display={"name": "Legacy"},
-        )
-        fig_spec = FigureSpec(uid="fig-stack-legacy", traces=[ts])
-        opt = EChartsAdapter._build_initial_option(fig_spec, 400)
-        assert opt["series"][0].get("stack") == "bar"
 
 
 class TestFigureSelectDirection:
@@ -818,9 +650,28 @@ class TestShowKwargValidation:
         with pytest.raises(TypeError, match="draggable"):
             PlotlyAdapter().show_dashboard(DashboardSpec(), draggable=False)
 
-    def test_unknown_show_kwarg_raises_on_echarts(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-        from flexviz.spec import DashboardSpec
 
-        with pytest.raises(TypeError, match="draggable"):
-            EChartsAdapter().show_dashboard(DashboardSpec(), draggable=False)
+class TestRendererRegistry:
+    def test_plotly_supports_every_registered_trace(self):
+        """Plotly is the primary renderer, so a trace it misses fails at /view."""
+        from flexviz.adapters.registry import PLOTLY_TRACE_TYPES
+        from flexviz.trace import _REGISTRY
+
+        assert PLOTLY_TRACE_TYPES == set(_REGISTRY)
+
+    def test_unsupported_trace_type_names_the_figure(self):
+        from flexviz.adapters import validate_dashboard_renderer
+
+        trace = TraceSpec(uid="t-1", trace_type="not_in_plotly")
+        figure = FigureSpec(uid="fig-1", layout={"title": "Map"}, traces=[trace])
+        with pytest.raises(
+            ValueError,
+            match="'plotly' does not support trace type 'not_in_plotly' in figure 'Map'",
+        ):
+            validate_dashboard_renderer("plotly", DashboardSpec(figures=[figure]))
+
+    def test_renderer_name_must_match_exactly(self):
+        from flexviz.adapters import build_adapter
+
+        with pytest.raises(ValueError, match="Unknown renderer 'Plotly'"):
+            build_adapter("Plotly")

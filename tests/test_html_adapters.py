@@ -10,7 +10,6 @@ applied, so that the test suite serves as regression coverage.
 
 from __future__ import annotations
 
-import json
 from html.parser import HTMLParser
 
 import pytest
@@ -482,7 +481,7 @@ class TestPlotlyHtml:
         assert "plotly_unhover" in html
 
     def test_hover_clear_fn_exposed(self, html):
-        assert "fvClearAllCrosshairs" in html
+        assert "window.fvClearAllHoverVisuals =" in html
 
     def test_hover_state_uses_client_state(self, html):
         assert "window._hoverEnabled" not in html
@@ -688,332 +687,6 @@ class TestPlotlyLegend:
         assert "applyLegendVisibility(trace, logicalUid);" in html
 
 
-# ---------------------------------------------------------------------------
-# ECharts HTML tests
-# ---------------------------------------------------------------------------
-
-
-class TestEChartsHtml:
-    @pytest.fixture()
-    def html(self, two_fig_spec):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        return EChartsAdapter()._build_dashboard_html(
-            two_fig_spec, server_url="http://localhost:9999"
-        )
-
-    @pytest.fixture()
-    def initial_option(self, two_fig_spec):
-        """Parsed initial ECharts option dict for the first figure."""
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        return EChartsAdapter()._build_initial_option(
-            two_fig_spec.figures[0], fig_height=400
-        )
-
-    # Bug 7: applyDeltasToFig must reset dataZoom to show 100% of new data.
-    def test_apply_deltas_resets_datazoom(self, html):
-        # After setting series data for a viewport update, the chart must
-        # reset dataZoom to start:0 / end:100 so the downsampled data fills
-        # the visible window.
-        assert "start: 0" in html or '"start": 0' in html or "start:0" in html, (
-            "applyDeltasToFig must reset dataZoom start to 0 after applying new data"
-        )
-        assert "end: 100" in html or '"end": 100' in html or "end:100" in html, (
-            "applyDeltasToFig must reset dataZoom end to 100 after applying new data"
-        )
-
-    # Bug 8: Selection must use brushEnd event for complete coordinates.
-    def test_brush_uses_brushend_event(self, html):
-        assert "brushEnd" in html, (
-            "ECharts adapter must use 'brushEnd' event (fires once with complete "
-            "coordRange) instead of 'brushSelected' for cross-filter selections"
-        )
-
-    def test_brush_config_has_axis_index(self, initial_option):
-        # The brush component (not dataZoom) must link to axis indices so that
-        # brushEnd coordRange is populated with cartesian coordinates.
-        brush = initial_option.get("brush", {})
-        assert "xAxisIndex" in brush, (
-            "initial option brush config must include xAxisIndex so that "
-            "brushEnd coordRange contains x-axis data coordinates"
-        )
-
-    # Bug 9a: Per-figure Select button must be removed.
-    def test_no_per_figure_select_button(self, html):
-        assert "btn-select" not in html, (
-            "ECharts adapter must not emit per-figure Select buttons; "
-            "selection is handled by the shared panel controls"
-        )
-
-    def test_toolbox_hidden_in_initial_option(self, initial_option):
-        assert initial_option["toolbox"]["show"] is False
-
-    def test_axis_lock_renderer_hooks_present(self, html):
-        assert "fvCaptureAxisDisplayRanges" in html
-        assert "fvApplyAxisLocks" in html
-        assert "axis_lock_ranges" in html
-
-    def test_shared_panel_wrapper_present(self, html):
-        assert "<fv-panel" in html
-        assert 'data-mode="zoom"' in html
-        assert "--fv-panel-bg" in html
-        assert "data-fv-grid-editable" in html
-
-    def test_echarts_locked_axes_disable_zoom_button(self, html):
-        body = _js_function_body(html, "function updateModeIndicator(figUid)")
-        assert (
-            "const axesLocked = window.fvAreCurrentAxesLocked?.(figUid) === true;"
-            in body
-        )
-        assert "(axesLocked && mode === 'zoom')" in body
-
-    def test_panel_controls_handle_selection_modes(self, html):
-        assert "window.fvBindPanelControls?.(figUid" in html
-        assert "setFigureMode(figUid, mode)" in html
-
-    # Bug 9c: Lasso select must be absent.
-    def test_no_lasso_select(self, initial_option):
-        option_json = json.dumps(initial_option).lower()
-        assert "lasso" not in option_json, (
-            "initial option must not include lasso brush type"
-        )
-
-    # Scroll zoom fix: _applyingDeltas guard prevents datazoom feedback loop.
-    def test_applying_deltas_guard_present(self, html):
-        assert "_applyingDeltas" in html, (
-            "applyDeltasToFig must set _applyingDeltas=true before setOption "
-            "and false after, so the datazoom event is suppressed during data updates"
-        )
-
-    def test_datazoom_handler_checks_guard(self, html):
-        assert "if (_applyingDeltas) return;" in html, (
-            "datazoom handler must bail out when _applyingDeltas is true"
-        )
-
-    def test_runtime_restores_brush_areas_from_state(self, html):
-        assert "syncBrushAreasForFigure" in html
-        assert "chart.dispatchAction({ type: 'brush', areas })" in html
-        body = _js_function_body(html, "function brushAreasForFigure(figUid)")
-        assert "predicates" in body
-        assert "x_range" not in body
-        assert "y_range" not in body
-
-    def test_brush_clear_keeps_other_selections(self, html):
-        body = _js_function_body(html, "chart.on('brushEnd', function(params)")
-        cleared_branch = body.split("if (!areas || !areas.length) {", 1)[1].split(
-            "return;", 1
-        )[0]
-        assert "clearFigureSelection(figUid);" in cleared_branch
-        clear_helper = _js_function_body(html, "function clearFigureSelection(figUid)")
-        assert "type: 'selection'" in clear_helper
-        assert "fvSetSelectionState?.(remainingSelections)" in clear_helper
-        assert "figure_uid: figUid" in clear_helper
-
-    def test_brush_end_emits_predicates(self, html):
-        body = _js_function_body(html, "chart.on('brushEnd', function(params)")
-        assert "predicates" in body
-        assert "clauses" in body
-        assert "x_range" not in body
-        assert "y_range" not in body
-
-    def test_brush_end_normalizes_time_ranges_to_iso_strings(self, html):
-        assert "function normalizeEChartsRangeForAxis(chart, axisFamily, range)" in html
-        body = _js_function_body(
-            html, "function normalizeEChartsRangeForAxis(chart, axisFamily, range)"
-        )
-        assert "toISOString()" in body
-
-    def test_echarts_click_handler_present_for_categorical_traces(self, html):
-        assert "function handleEChartsClick(params, figUid)" in html
-        assert (
-            "chart.on('click', function(params) { handleEChartsClick(params, figUid); });"
-            in html
-        )
-
-    def test_echarts_click_uses_path_predicate_upsert(self, html):
-        body = _js_function_body(html, "function handleEChartsClick(params, figUid)")
-        assert "fvUpsertPathPredicate" in body
-        assert "fvReplaceFigureSelection" in body
-
-    def test_grouped_parent_not_bootstrapped_as_series(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        grouped = TraceSpec(
-            uid="grp-line",
-            trace_type="line",
-            backend_data={"x": "ts", "y": "val"},
-            params={
-                "group_by": "sensor",
-                "group_domain_key": "src::sensor",
-                "n_points": 100,
-                "downsample": "nth",
-                "add_gaps": True,
-            },
-            display={"name": "Grouped"},
-            axes=("x", "y"),
-        )
-        option = EChartsAdapter._build_initial_option(
-            FigureSpec(uid="fig-g", traces=[grouped]), 400
-        )
-        assert option["series"] == []
-
-    def test_grouped_reconciliation_uses_group_domain_key(self, html):
-        assert "group_domain_key" in html
-
-    def test_grouped_reconciliation_replaces_full_series_array(self, html):
-        assert "replaceMerge: ['series']" in html
-
-    def test_grouped_children_are_built_from_parent_spec(self, html):
-        assert "makeEChartsSeries(parentSpec" in html
-
-    def test_overlay_runtime_tracks_series_caches(self, html):
-        assert "layerDataByUid" in html
-        assert "hasBgByFigure" in html
-        assert "delta.layer || 'base'" in html
-        assert "{ base: [], bg: [], fg: [] }" in html
-
-    def test_overlay_runtime_exposes_cache_helpers(self, html):
-        assert "window.fvEnsureOverlayBackground" in html
-        assert "window.fvResetRuntimeCache" in html
-        assert "window.fvRestoreFromSpec" in html
-
-    def test_reset_calls_fv_reset_runtime_cache(self, html):
-        # fvOnReset must call fvResetRuntimeCache to clear stale fg layer data
-        # and bgYExtentByFig before posting the reset event.
-        assert "window.fvResetRuntimeCache?.()" in html, (
-            "fvOnReset must call window.fvResetRuntimeCache?.() to clear overlay cache"
-        )
-
-    def test_overlay_runtime_uses_muted_background_opacity(self, html):
-        assert "const OVERLAY_BG_OPACITY = 0.16" in html
-
-    def test_overlay_yaxis_anchoring(self, html):
-        assert "bgYExtentByFig" in html
-        assert "_updateBgYExtent" in html
-
-    def test_no_root_barmode_option(self, html):
-        assert '"barMode"' not in html
-
-    # Linked hover infrastructure
-    def test_hover_col_to_fig_axis_built(self, html):
-        assert "hoverTargetsByColumn" in html
-
-    def test_hover_source_types_defined(self, html):
-        assert "IMPLEMENTED_HOVER_MODES" in html
-
-    def test_hover_get_mode_fn(self, html):
-        assert "getHoverMode" in html
-
-    def test_hover_dispatch_visuals_fn(self, html):
-        assert "dispatchHoverVisuals" in html
-
-    def test_hover_dropdown_present(self, html):
-        assert "fv-hover-btn" in html
-        assert "fvInitHoverDropdown" in html
-
-    def test_toolbar_includes_grid_toggle_button(self, html):
-        assert "fv-btn-grid" in html
-
-    def test_hover_event_wiring(self, html):
-        assert "mouseover" in html
-        assert "mouseout" in html
-
-    def test_hover_clear_fn_exposed(self, html):
-        assert "fvClearAllCrosshairs" in html
-
-    def test_hover_state_uses_dashboard_spec(self, html):
-        assert "window._hoverEnabled" not in html
-        assert "getHoverMode(DASHBOARD_SPEC)" in html
-
-    def test_hover_axis_pointer_in_tooltip(self, initial_option):
-        tooltip = initial_option.get("tooltip", {})
-        assert tooltip.get("axisPointer", {}).get("type") == "line"
-
-    def test_hover_cell_types_defined(self, html):
-        assert "IMPLEMENTED_CELL_TRACE_TYPES" in html
-
-    def test_hover_band_rendering_fn(self, html):
-        assert "IMPLEMENTED_AXIS_BAND_TARGET_TRACE_TYPES" in html
-
-    def test_hover_corr_heatmap_affordance(self, html):
-        assert "heatmapVisualMapForTrace" in html
-
-    def test_draggable_layout_wires_grid_edit_toggle(self, two_fig_spec):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-        from flexviz.spec import LayoutSpec
-
-        spec = two_fig_spec.model_copy(deep=True)
-        spec.layout = LayoutSpec(draggable=True)
-        html = EChartsAdapter()._build_dashboard_html(
-            spec, server_url="http://localhost:9999"
-        )
-        assert "window.fvSetGridEditable" in html
-        assert "_fvGrid.enableMove" in html
-        assert "_fvGrid.enableResize" in html
-
-    def test_gridstack_uid_is_html_attribute_escaped(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        uid = 'fig" onmouseover="window.__fv_xss=1" data-x="'
-        spec = DashboardSpec(figures=[FigureSpec(uid=uid, traces=[])])
-        html = EChartsAdapter()._build_dashboard_html(spec, server_url="http://test")
-        attrs = _gridstack_item_attrs(html)
-        assert attrs[0]["gs-id"] == uid
-        assert "onmouseover" not in attrs[0]
-
-    def test_inline_json_cannot_close_script(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        payload = '</script><script id="fv-xss"></script>'
-        spec = DashboardSpec(
-            figures=[
-                FigureSpec(
-                    uid="fig1",
-                    layout={"title": payload},
-                    traces=[
-                        TraceSpec(
-                            uid="t1",
-                            trace_type="line",
-                            display={"name": payload},
-                            axes=("x", "y"),
-                        )
-                    ],
-                )
-            ]
-        )
-        html = EChartsAdapter()._build_dashboard_html(spec, server_url="http://test")
-        assert '<script id="fv-xss">' not in html
-        assert "\\u003c/script\\u003e\\u003cscript" in html
-
-    def test_layout_gap_is_sanitized_for_style_blocks(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-        from flexviz.spec import LayoutSpec
-
-        spec = DashboardSpec(
-            figures=[FigureSpec(uid="fig1", traces=[])],
-            layout=LayoutSpec(gap='8px;}</style><script id="fv-xss"></script>'),
-        )
-        html = EChartsAdapter()._build_dashboard_html(spec, server_url="http://test")
-        assert '<script id="fv-xss">' not in html
-        assert "padding: 8px;" in html
-
-    def test_toolbar_config_is_applied(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-        from flexviz.spec import LayoutSpec, ToolbarConfig
-
-        spec = DashboardSpec(
-            figures=[FigureSpec(uid="fig1", traces=[])],
-            layout=LayoutSpec(
-                toolbar=ToolbarConfig(show_share=False, show_export=False)
-            ),
-        )
-        html = EChartsAdapter()._build_dashboard_html(spec, server_url="http://test")
-        assert '<button id="fv-btn-share"' not in html
-        assert '<button id="fv-btn-export"' not in html
-        assert '<button id="fv-btn-reset"' in html
-
-
 class TestSharedThemeCss:
     def test_theme_css_does_not_close_style_block(self):
         from flexviz.adapters.runtime import theme_css
@@ -1087,37 +760,6 @@ class TestFigureMetadataPlotly:
 
     def test_plotly_legend_false(self, html):
         assert '"showlegend": false' in html
-
-
-class TestFigureMetadataECharts:
-    @pytest.fixture()
-    def initial_option(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(uid="t1", trace_type="line", axes=("x", "y"))
-        fig = FigureSpec(
-            uid="fig1",
-            layout={
-                "title": "My Title",
-                "xlabel": "Time",
-                "ylabel": "Value",
-                "showlegend": False,
-            },
-            traces=[t],
-        )
-        return EChartsAdapter._build_initial_option(fig, 400)
-
-    def test_echarts_title(self, initial_option):
-        assert initial_option["title"]["text"] == "My Title"
-
-    def test_echarts_xlabel(self, initial_option):
-        assert initial_option["xAxis"]["name"] == "Time"
-
-    def test_echarts_ylabel(self, initial_option):
-        assert initial_option["yAxis"]["name"] == "Value"
-
-    def test_echarts_legend_false(self, initial_option):
-        assert initial_option["legend"]["show"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1249,28 +891,6 @@ class TestNoClickHandlerForBarOnly:
         assert "plotly_click" in html  # present in bundle, but runtime-guarded
 
 
-class TestPieECharts:
-    @pytest.fixture()
-    def initial_option(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(uid="pie1", trace_type="pie", params={"hole": 0.4})
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-        return EChartsAdapter._build_initial_option(fig, 400)
-
-    def test_pie_series_type(self, initial_option):
-        assert initial_option["series"][0]["type"] == "pie"
-
-    def test_pie_radius(self, initial_option):
-        assert initial_option["series"][0]["radius"][0] == "40%"
-
-    def test_pie_no_xaxis(self, initial_option):
-        assert "xAxis" not in initial_option
-
-    def test_pie_tooltip_item(self, initial_option):
-        assert initial_option["tooltip"]["trigger"] == "item"
-
-
 # ---------------------------------------------------------------------------
 # Histogram2D / Heatmap adapter tests
 # ---------------------------------------------------------------------------
@@ -1382,117 +1002,6 @@ class TestHeatmapPlotly:
         assert trace["zmax"] == 1.0
 
 
-class TestHeatmapECharts:
-    @pytest.fixture()
-    def initial_option(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(
-            uid="h2d",
-            trace_type="histogram2d",
-            axes=("x", "y"),
-            display={"color_scale": "cividis", "color_range": (0.0, 5.0)},
-        )
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-        return EChartsAdapter._build_initial_option(fig, 400)
-
-    def test_heatmap_series_type(self, initial_option):
-        assert initial_option["series"][0]["type"] == "heatmap"
-
-    def test_has_visual_map(self, initial_option):
-        from flexviz.adapters.echarts_adapter import _ECHARTS_HEATMAP_COLOR_SCALES
-
-        assert "visualMap" in initial_option
-        assert (
-            initial_option["visualMap"]["inRange"]["color"]
-            == _ECHARTS_HEATMAP_COLOR_SCALES["cividis"]
-        )
-        assert initial_option["visualMap"]["min"] == 0.0
-        assert initial_option["visualMap"]["max"] == 5.0
-
-    def test_heatmap_has_axes(self, initial_option):
-        assert "xAxis" in initial_option
-        assert "yAxis" in initial_option
-
-    def test_corr_heatmap_defaults_to_signed_visual_map(self):
-        from flexviz.adapters.echarts_adapter import (
-            _ECHARTS_HEATMAP_COLOR_SCALES,
-            EChartsAdapter,
-        )
-
-        t = TraceSpec(
-            uid="corr1",
-            trace_type="corr_heatmap",
-            display={"color_scale": "rdbu", "color_range": (-1.0, 1.0)},
-        )
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-        opt = EChartsAdapter._build_initial_option(fig, 400)
-        assert (
-            opt["visualMap"]["inRange"]["color"]
-            == _ECHARTS_HEATMAP_COLOR_SCALES["rdbu"]
-        )
-        assert opt["visualMap"]["min"] == -1.0
-        assert opt["visualMap"]["max"] == 1.0
-
-    def test_heatmap_accepts_plotly_style_named_scale_aliases(self):
-        from flexviz.adapters.echarts_adapter import (
-            _ECHARTS_HEATMAP_COLOR_SCALES,
-            EChartsAdapter,
-        )
-
-        t = TraceSpec(
-            uid="h2d",
-            trace_type="histogram2d",
-            axes=("x", "y"),
-            display={"color_scale": "Greens", "color_range": "auto"},
-        )
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-        opt = EChartsAdapter._build_initial_option(fig, 400)
-        assert (
-            opt["visualMap"]["inRange"]["color"]
-            == _ECHARTS_HEATMAP_COLOR_SCALES["greens"]
-        )
-
-    def test_runtime_contains_dynamic_heatmap_extent_logic(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(
-            uid="h2d",
-            trace_type="histogram2d",
-            axes=("x", "y"),
-            display={"color_scale": "viridis", "color_range": "auto"},
-        )
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-        spec = DashboardSpec(figures=[fig])
-        html = EChartsAdapter()._build_dashboard_html(spec, server_url="http://test")
-        assert "function heatmapFiniteExtent" in html
-        assert "vMin === Infinity || vMax === -Infinity" in html
-        assert "heatmapVisualMapForTrace(ts, u)" in html
-
-    def test_unsupported_heatmap_scale_raises(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(
-            uid="h2d",
-            trace_type="histogram2d",
-            axes=("x", "y"),
-            display={"color_scale": "plotly-only-scale", "color_range": "auto"},
-        )
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-
-        with pytest.raises(ValueError, match="not supported"):
-            EChartsAdapter._build_initial_option(fig, 400)
-
-    def test_heatmap_visual_map_requires_explicit_style(self):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        t = TraceSpec(uid="h2d", trace_type="histogram2d", axes=("x", "y"))
-        fig = FigureSpec(uid="fig1", layout={}, traces=[t])
-
-        with pytest.raises(ValueError, match="must include explicit color_scale"):
-            EChartsAdapter._build_initial_option(fig, 400)
-
-
 # ---------------------------------------------------------------------------
 # Auto-derived axis labels
 # ---------------------------------------------------------------------------
@@ -1521,28 +1030,6 @@ class TestAutoLabelPlotly:
         assert '"val"' in html
 
 
-class TestAutoLabelECharts:
-    """Auto-derived xlabel/ylabel from trace column names appear in ECharts option."""
-
-    @pytest.fixture()
-    def initial_option(self):
-        import polars as pl
-
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-        from flexviz.figure import Figure
-
-        fig = Figure(pl.DataFrame({"ts": [1, 2], "val": [1.0, 2.0]}))
-        fig.add_line(x="ts", y="val")
-        spec = fig.to_spec().figure
-        return EChartsAdapter._build_initial_option(spec, 400)
-
-    def test_xlabel_appears(self, initial_option):
-        assert initial_option["xAxis"]["name"] == "ts"
-
-    def test_ylabel_appears(self, initial_option):
-        assert initial_option["yAxis"]["name"] == "val"
-
-
 # ---------------------------------------------------------------------------
 # Theme CSS token tests
 # ---------------------------------------------------------------------------
@@ -1559,23 +1046,10 @@ class TestThemeCss:
             two_fig_spec, server_url="http://localhost:9999"
         )
 
-    @pytest.fixture()
-    def echarts_html(self, two_fig_spec):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        return EChartsAdapter()._build_dashboard_html(
-            two_fig_spec, server_url="http://localhost:9999"
-        )
-
     def test_plotly_html_contains_theme_tokens(self, plotly_html):
         assert "--fv-accent" in plotly_html
         assert "--fv-bg" in plotly_html
         assert "--fv-radius" in plotly_html
-
-    def test_echarts_html_contains_theme_tokens(self, echarts_html):
-        assert "--fv-accent" in echarts_html
-        assert "--fv-bg" in echarts_html
-        assert "--fv-radius" in echarts_html
 
     def test_plotly_toolbar_css_uses_var_references(self, plotly_html):
         # Toolbar CSS must reference tokens, not hardcode hex values.
@@ -1583,57 +1057,37 @@ class TestThemeCss:
         assert "var(--fv-border)" in plotly_html
         assert "var(--fv-text)" in plotly_html
 
-    def test_echarts_toolbar_css_uses_var_references(self, echarts_html):
-        assert "var(--fv-accent)" in echarts_html
-        assert "var(--fv-border)" in echarts_html
-
 
 class TestPageHead:
     """Head content that stops the browser probing /favicon.ico."""
 
     @pytest.fixture()
-    def plotly_html(self, two_fig_spec):
+    def html(self, two_fig_spec):
         from flexviz.adapters.plotly_adapter import PlotlyAdapter
 
         return PlotlyAdapter()._build_dashboard_html(
             two_fig_spec, server_url="http://localhost:9999"
         )
 
-    @pytest.fixture()
-    def echarts_html(self, two_fig_spec):
-        from flexviz.adapters.echarts_adapter import EChartsAdapter
-
-        return EChartsAdapter()._build_dashboard_html(
-            two_fig_spec, server_url="http://localhost:9999"
-        )
-
-    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
-    def test_head_has_title_and_inline_icon(self, renderer, request):
-        html = request.getfixturevalue(renderer)
+    def test_head_has_title_and_inline_icon(self, html):
         assert "<title>FlexViz</title>" in html
         assert 'rel="icon" type="image/png" href="data:image/png;base64,' in html
 
-    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
-    def test_brand_artwork_is_substituted(self, renderer, request):
+    def test_brand_artwork_is_substituted(self, html):
         # An unsubstituted placeholder would ship a blank header wordmark.
-        html = request.getfixturevalue(renderer)
         assert "{{WORDMARK" not in html
         assert "--fv-brand-image:" in html
         assert 'aria-label="FlexViz"' in html
 
-    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
-    def test_brand_links_out_without_losing_the_dashboard(self, renderer, request):
+    def test_brand_links_out_without_losing_the_dashboard(self, html):
         # A same-tab jump would discard the dashboard's unsaved state.
-        html = request.getfixturevalue(renderer)
         assert '<a id="fv-brand" href="https://flexviz.tech/' in html
         assert 'rel="noopener noreferrer"' in html
         assert 'target="_blank"' in html
         assert 'id="fv-brand"' in html and 'role="img"' not in html
 
-    @pytest.mark.parametrize("renderer", ["plotly_html", "echarts_html"])
-    def test_brand_link_carries_campaign_tags(self, renderer, request):
+    def test_brand_link_carries_campaign_tags(self, html):
         # With no referrer, these tags are the only attribution signal.
-        html = request.getfixturevalue(renderer)
         assert "utm_source=flexviz_dashboard&amp;" in html
         # Umami buckets as Referral only on medium referral/app/link.
         assert "utm_medium=app" in html

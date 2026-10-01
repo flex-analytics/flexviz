@@ -2,7 +2,7 @@
 
 **flexviz** — renderer-agnostic, scalable, linked visualizations for large datasets.
 
-**Spec version:** `0.5` — `GeoHistogram2D` params no longer carry `bin_boundaries`.
+**Spec version:** `0.7`.
 
 ## Core Properties
 
@@ -26,8 +26,7 @@
 - **Request-wide domain resolution** — before aggregation, the engine resolves each active trace's needed column bounds (`FlexTrace.domain_cols`) with one batched `LFQueryBuilder.physical_minmax` call per scope. An unzoomed histogram takes the union of its same-figure siblings' domains so their bars stay aligned. The scopes split by `FlexTrace.domain_follows_filter`. `Histogram`, `Histogram2D` and `GeoHistogram2D` take unfiltered bounds, so their bin edges are filter-stable and the brushed subset stays comparable with the whole. A `LinePlot` x-width bucket grid (grouped or not, on both source kinds) takes the cross-filtered rows' x extent in update mode, distributing its rendering budget over the filtered domain. A zoomed grid takes the viewport and an overlay-mode grid stays unfiltered, because the background layer pins the axis. The unfiltered bounds are memoized when the source is `static` (see the caching carve-out in the Server Layer); the filtered ones are request-local and never memoized.
 
 Implemented trace types: **LinePlot**, **Histogram**, **BoxPlot**, **BarPlot**, **PiePlot**, **TreeMap**, **Histogram2D**, **GeoHistogram2D**, **CorrHeatmap**, **GeoLine**
-Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap) · **EChartsAdapter** (line, histogram, bar, pie, heatmap)
-=> EchartsAdapter is currently deprecated. Very distant future we will update this.
+Implemented renderers: **PlotlyAdapter** (line, histogram, box, bar, pie, treemap, heatmap, choroplethmap, scattermap)
 
 Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (Rust + maturin)
 
@@ -107,7 +106,6 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
 ┌────────────────────────────────────────────────────────────────┐
 │  ADAPTER LAYER  (renderer-specific)                            │
 │  PlotlyAdapter  — HTML + Plotly.js 4 CDN (line/hist/box/bar/pie/heatmap/scattermap) │
-│  EChartsAdapter — HTML + ECharts 5 CDN  (line/hist/bar/pie/heatmap) │
 │  AbstractAdapter — shared toolbar, delivery helpers            │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -530,7 +528,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan, the grouped histogram plan and the domain probe (filtered or not) are the exceptions: all stream on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
 - Viewport restriction, ungrouped lines: an ungrouped x-width line on a resident frame is sorted by contract, so its viewport is a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. The scan plan passes an `is_between` mask into `pairs_plan` instead. A resident `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines and both scan plans always mask (the filter runs frame-level, before `group_by` or the gather).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_viewports` in `engine.py`, the first step of both `process` and `build_cubes` — so neither formulation nor a cube domain ever sees a reversed pair.
-- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/plotly/traces.js`) for every line trace — init, commit, and live cube.
+- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init, commit, and live cube.
 - Range-brush selections emit a `ClauseFilter(range=...)` per axis; the predicate compiler applies typed `is_between` filters.
 
 ### Histogram
@@ -670,7 +668,6 @@ fig.add_geo_histogram2d(lat="lat", lon="lon", histfunc="mean", z="temperature")
 - Cross-filtering: Plotly geo selections are derived from the selected choropleth bin ids (`locations`, built by the client with the rectangles) and collapsed to one lon/lat bounding box, then emitted as a `SelectionPredicate` with two `ClauseFilter(range=...)` clauses on the trace's `lon` and `lat` columns.
 - Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"Viridis"`, `"auto"` and `"linear"`.
 - PlotlyAdapter renders as a `choroplethmap` trace with OpenStreetMap base tiles. A `choroplethmap` has no trace opacity, so the adapter fades an overlay background through the marker opacity of each cell (`applyChoroplethLayerOpacity`).
-- ECharts geo rendering is not yet supported.
 
 ### CorrHeatmap
 
@@ -704,13 +701,12 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="RdBu", color_range="auto")
 - `color_scale` is the name of a plotly.js built-in color scale (`_COLOR_SCALE_OPTIONS` in `trace/_hist_helpers.py`). The traces match it without regard to case, store the Plotly spelling (`"viridis"` becomes `"Viridis"`) and reject any other name, because Plotly silently draws its automatic scale for a name it does not know.
 - `color_norm` is `"linear"` or `"log"` and exists on `Histogram2D` and `GeoHistogram2D` only. `CorrHeatmap` values lie in [-1, 1], so it has no `color_norm` and its `from_trace_spec()` rejects a spec with one. A missing `color_norm` means linear. With `"log"`, a fixed `color_range` stays in data units and must be above 0. The trace check is the only guard for this: in the browser, `logTickValues` never ends for a range from 0.
 - Defaults are owned by the trace classes: `Histogram2D` and `GeoHistogram2D` materialize `"Viridis"` / `"auto"` / `"linear"`; `CorrHeatmap` materializes signed vs absolute defaults based on `absolute`.
-- Generated specs must include explicit `display.color_scale` and `display.color_range`, so adapters read them instead of re-deriving heatmap defaults. The Plotly adapter only reads these fields: the builders (`Figure.to_spec()`, `Dashboard.to_spec()`) and the server (for a decoded spec, see [Request Flows](#request-flows)) hand it specs that the traces built. A caller that passes a hand-made spec to the adapter directly skips this. The deprecated ECharts adapter still checks them.
+- Generated specs must include explicit `display.color_scale` and `display.color_range`, so adapters read them instead of re-deriving heatmap defaults. The Plotly adapter only reads these fields: the builders (`Figure.to_spec()`, `Dashboard.to_spec()`) and the server (for a decoded spec, see [Request Flows](#request-flows)) hand it specs that the traces built. A caller that passes a hand-made spec to the adapter directly skips this.
 - `from_trace_spec()` on the heatmap traces remains the single backward-compat normalization point for older specs missing those style keys.
 - A figure holds at most one heatmap-like trace (`histogram2d`, `corr_heatmap`, `geo_histogram2d`): each one is opaque and draws its own figure-wide colorbar, so a second one hides the first and duplicates the colorbar. `FigureSpec` checks this when it is built or parsed, so the builder, a decoded spec and every request get the same rule. A heatmap together with non-heatmap traces, such as a line over a `histogram2d`, stays allowed.
 - Renderer split:
   - Plotly receives `color_scale` in the Plotly spelling that the trace stored. The server rebuilds a decoded spec, so an older lowercase name still renders its scale. With a linear norm, it applies `zmin` / `zmax` only when `color_range` is fixed.
   - Plotly log norm: Plotly has no log color axis, so the client colors by `log10(z)`, pins the color range in log10 space and labels the colorbar ticks with round data values. Only the colors change: the hover shows the raw values, and a cell at or below 0, which has no log, has no color but keeps its hover and its selection. The transform (`applyLogColorNorm` in `plotly/traces.js`) runs when a trace is built from its template, so it covers every delta, from the server or the cube.
-  - ECharts maps a supported set of heatmap scale names (`Viridis`, `Cividis`, `Blues`, `Greens`, `Reds`, `RdBu`), without regard to case, to local color arrays for one per-figure `visualMap`, and ignores `color_norm`.
 
 ### Dtype-Aware Filtering
 
@@ -888,9 +884,9 @@ FlexEngine
 
 Because the engine keys its recompute on event type, `fvOnResetPanel` derives the emitted type from the resulting state: `selection` when filters remain, `deselect` when none remain, `viewport` when only the viewport changed. Every variant names the cleared keys in `viewport_keys`, so a viewport-only reset re-aggregates only this figure. The global toolbar **Reset** (`fvOnReset`) instead clears all unlocked viewports + selections and emits `init`; resets and double-click autorange never clear a locked axis's viewport key, because the lock pins the displayed range and the engine aggregates at the state range; the global **Deselect** clears selections only and **keeps zoom** (emitting `deselect`).
 
-**Linked axes (`ClientState.axis_links`):** each group lists viewport keys that always hold one range. The client keeps them equal with one writer, `fvWriteViewport` (`runtime/state.js`): a zoom, pan, double-click autorange or panel reset writes (or deletes) every key of the group. `fvCommitViewportChange` then redraws the other moved figures from state (the relayout handler ignores what `Plotly.react` emits, so the redraws post nothing) and sends one viewport event naming every written key, only when a changed axis binds a trace somewhere. The engine needs no link knowledge: the event's `viewport_keys` pick the figures, and the partition rule keeps each figure unfiltered by its own selection. A lock toggle reaches every member and pins all of them at the range the clicked figure shows (`fvLockAxisGroup`; Lock All skips an axis a group member already locked), so a locked member pins the group. When a member shows another range, the server aggregated it for that other range, so the lock also writes the group range with `fvWriteViewport`, and the toggle commits it with `fvCommitViewportChange` (Lock All sends one commit for all groups). A group whose members already show one range (each bound within 1e-9 of the span) stays display-only: a viewport at Plotly's padded autorange can change the bins, because a zoomed grid snaps to a lattice. When members differ, the clicked figure gets the group viewport too (the validator requires equal viewport values), so a heatmap there can re-bin, for example from 7 to 8 rows on integer data. An unlock writes no viewport: a group whose members showed other ranges keeps its viewport keys, and a display-only group has none. The `DashboardSpec` validator rejects a link the client cannot keep: fewer than two keys, a key in two groups, two axes of one figure, an axis other than x/y, an axis without a data column (count axes, bars, maps), an axis type other than unset, `-`, `linear` and `date` (a `category` range is in positions, and a `log` axis cannot show a range at or below 0, which a linear member can zoom to), mixed reversed and normal axes (any `reversed` autorange variant or a descending fixed range), unequal viewport values (`None` = absent), mixed locks or unequal lock ranges. Every entry point (builder, `/share`, `/view`, import, `flexvizApply`, each request) runs it. The column types need the source schema, so `check_axis_link_types` runs in the builder and, with the registered sources, in `/share`, `/view` (400) and `/dashboard/update` (422): only numeric, `Date` and `Datetime` axes link (`Time` and `Duration` render as category axes, issue #79), and a numeric column on a `date` axis is refused. All axes of a group then have one kind: numeric, or temporal with one time zone and one effective Plotly axis type (`date` reports strings, `linear` numbers). Limits: after a double-click autorange each member autoranges on its own data (in update mode a figure filtered by a selection fits its filtered rows); ECharts (deprecated) does not write linked keys.
+**Linked axes (`ClientState.axis_links`):** each group lists viewport keys that always hold one range. The client keeps them equal with one writer, `fvWriteViewport` (`runtime/state.js`): a zoom, pan, double-click autorange or panel reset writes (or deletes) every key of the group. `fvCommitViewportChange` then redraws the other moved figures from state (the relayout handler ignores what `Plotly.react` emits, so the redraws post nothing) and sends one viewport event naming every written key, only when a changed axis binds a trace somewhere. The engine needs no link knowledge: the event's `viewport_keys` pick the figures, and the partition rule keeps each figure unfiltered by its own selection. A lock toggle reaches every member and pins all of them at the range the clicked figure shows (`fvLockAxisGroup`; Lock All skips an axis a group member already locked), so a locked member pins the group. When a member shows another range, the server aggregated it for that other range, so the lock also writes the group range with `fvWriteViewport`, and the toggle commits it with `fvCommitViewportChange` (Lock All sends one commit for all groups). A group whose members already show one range (each bound within 1e-9 of the span) stays display-only: a viewport at Plotly's padded autorange can change the bins, because a zoomed grid snaps to a lattice. When members differ, the clicked figure gets the group viewport too (the validator requires equal viewport values), so a heatmap there can re-bin, for example from 7 to 8 rows on integer data. An unlock writes no viewport: a group whose members showed other ranges keeps its viewport keys, and a display-only group has none. The `DashboardSpec` validator rejects a link the client cannot keep: fewer than two keys, a key in two groups, two axes of one figure, an axis other than x/y, an axis without a data column (count axes, bars, maps), an axis type other than unset, `-`, `linear` and `date` (a `category` range is in positions, and a `log` axis cannot show a range at or below 0, which a linear member can zoom to), mixed reversed and normal axes (any `reversed` autorange variant or a descending fixed range), unequal viewport values (`None` = absent), mixed locks or unequal lock ranges. Every entry point (builder, `/share`, `/view`, import, `flexvizApply`, each request) runs it. The column types need the source schema, so `check_axis_link_types` runs in the builder and, with the registered sources, in `/share`, `/view` (400) and `/dashboard/update` (422): only numeric, `Date` and `Datetime` axes link (`Time` and `Duration` render as category axes, issue #79), and a numeric column on a `date` axis is refused. All axes of a group then have one kind: numeric, or temporal with one time zone and one effective Plotly axis type (`date` reports strings, `linear` numbers). Limits: after a double-click autorange each member autoranges on its own data (in update mode a figure filtered by a selection fits its filtered rows).
 
-**Treemap / pie multi-click:** successive clicks on the same figure append OR predicates via `fvUpsertPathPredicate` in the shared runtime (Plotly and ECharts).  Re-clicking the same node toggles that predicate off; refining along one branch (parent → child or child → parent) replaces the broader/narrower predicate instead of accumulating redundant filters.  *UX note:* this follows common additive-filter BI patterns; we should periodically reassess whether modifier keys or explicit multi-select mode would better match natural visual exploration for hierarchical charts.
+**Treemap / pie multi-click:** successive clicks on the same figure append OR predicates via `fvUpsertPathPredicate` in the shared runtime (Plotly).  Re-clicking the same node toggles that predicate off; refining along one branch (parent → child or child → parent) replaces the broader/narrower predicate instead of accumulating redundant filters.  *UX note:* this follows common additive-filter BI patterns; we should periodically reassess whether modifier keys or explicit multi-select mode would better match natural visual exploration for hierarchical charts.
 
 **Grouped architecture:** the engine no longer discovers groups or fabricates child traces. Group membership is decided in the grouped Polars query, and traces own the conversion from grouped result frames to child payloads.
 
@@ -1007,7 +1003,7 @@ The response cache covers only the **unfiltered *and* viewport-free** computatio
 - `init` is viewport-free whenever `state.viewport` is empty (the global reset clears it first);
 - `deselect` clears selections but **preserves zoom**, so a deselect issued while zoomed is viewport-dependent and bypasses the cache.
 
-In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (a Redis/disk backend swaps in through the same interface), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
+In the engine the short-circuit only fires when *every* delta-producing trace is a viewport-free cache hit; if any deliverable trace is zoomed, the request falls through to a normal recompute of all traces (the viewport-free ones are still stored for a future fully-unzoomed request). The cache is engine-hosted (injected `CacheBackend`), in-process (a Redis or disk backend can implement the same interface), and mirrored client-side as a whole-response `Map` (`runtime/cache.js`); the client cache is additionally gated on **no figure being zoomed** (a single zoomed figure disqualifies the whole-dashboard entry). Re-registering an existing source name clears the cache wholesale (its data may have changed); registering a new name leaves other sources' entries intact. The server never tracks client cache state; the set of cacheable sources is embedded into the bootstrap (`FV_CACHEABLE_SOURCES`). The same carve-out and invalidation hook cover the second, byte-bounded **cube-blob cache** (see "Cube Pre-Aggregation & Live Brushing" below) — re-registering a source clears both.
 
 A `static` source also memoizes each column's resolved unfiltered min/max (`LFQueryBuilder.physical_minmax`) on the builder for the source's lifetime, so a cached request never re-scans the data to resolve bin-edge domains. Static means a resident frame or a `cache=True` scan. A `cache=False` scan recomputes those bounds on every request that needs them, so an uncached reset always sees the current source data. Re-registering a source with raw data or a new builder replaces the builder and drops the memo. Re-registering the same builder object invalidates nothing, and the server warns.
 
@@ -1017,7 +1013,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 |--------|---------------------|---------------------------------------------------|
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
-| `GET`  | `/view`             | Render shared spec (`?renderer=plotly\|echarts`)  |
+| `GET`  | `/view`             | Render shared spec (`?renderer=plotly`)  |
 | `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's) |
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
@@ -1512,7 +1508,7 @@ AbstractAdapter (ABC)
 
 JS source lives under `adapters/js/` as small modules.  `adapters/runtime.py` concatenates them
 into the renderer bundles **at import time**, in pure Python — no Node and no build step.  The
-bundle composition (which sources go into `shared` / `plotly` / `echarts`) is declared in
+bundle composition (which sources go into `shared` / `plotly`) is declared in
 `runtime.py`; editing any file under `adapters/js/` takes effect on the next import.
 
 ```
@@ -1531,20 +1527,16 @@ adapters/js/
 │   ├── selections.js         ← selection list/predicate helpers
 │   ├── selection-summary.js  ← per-figure selection summary UI
 │   └── hover.js              ← linked-hover dispatch
-├── plotly/
-│   ├── traces.js             ← configsByFig, trace template builders
-│   ├── render.js             ← _fvRenderFigure, axis helpers, lock/capture
-│   ├── events.js             ← relayout/selected/deselect/click handlers
-│   ├── hover.js              ← Plotly crosshair helpers
-│   └── init.js               ← bindFigure, startup IIFE, fallback newPlot for undrawn figures
-└── echarts/
-    ├── series.js             ← chartsByFig, series template builders
-    ├── render.js             ← _fvRenderFigure, brush/zoom helpers
-    └── init.js               ← echarts.init calls, event wiring, window._fvResizeChart
+└── plotly/
+    ├── traces.js             ← configsByFig, trace template builders
+    ├── render.js             ← _fvRenderFigure, axis helpers, lock/capture
+    ├── events.js             ← relayout/selected/deselect/click handlers
+    ├── hover.js              ← Plotly crosshair helpers
+    └── init.js               ← bindFigure, startup IIFE, fallback newPlot for undrawn figures
 ```
 
-`runtime.py` assembles three bundles from these sources at import: `shared` (panel.js +
-runtime/*.js + toolbar.js), `plotly` (plotly/*.js), and `echarts` (echarts/*.js); `theme.css`
+`runtime.py` assembles two bundles from these sources at import: `shared` (panel.js +
+runtime/*.js + toolbar.js) and `plotly` (plotly/*.js); `theme.css`
 and `gridstack-bridge.js` are served verbatim.
 
 Each adapter's `<style>` block starts with `theme_css()` so all CSS custom properties
@@ -1553,7 +1545,7 @@ color or spacing values remain.
 
 ### Shared Runtime (`adapters/runtime.py`)
 
-Both adapters embed `shared_runtime_js()` which provides renderer-agnostic logic.
+The Plotly adapter embeds `shared_runtime_js()` which provides renderer-agnostic logic.
 `runtime.py` also exposes `theme_css()`, renderer-specific bundles, and
 `gridstack_bridge_js()` for draggable dashboards.
 
@@ -1564,17 +1556,25 @@ Shared runtime responsibilities:
 - **Layer data** — `ensureGroupColor`, `setLayerData`, `setGroupedLayerData`, `setHasBackground`. Every write carries a number from one counter (`fvNextWriteSeq`): a request's number, taken when it is sent, or a new number for a client-side write (cube live brush, runtime cache reset). Each slot (a trace layer, a figure's background flag) refuses a write older than the data it holds. An abandoned live-brush gesture puts back each slot it changed together with the slot's earlier number (`fvSaveLayerData`, `fvSaveHasBackground`), so a response to a request sent before the gesture still applies.
 - **Delta application** — `postDashboardUpdate` separates request, delta-apply, and render error handling; updates layer caches, tracks bg y-extent for axis anchoring, and renders each dirty figure with per-figure guards. Responses can arrive in any order: the newest data wins per slot, and a late response still fills the slots that newer requests did not re-aggregate. The init cache key is taken when the request is sent.
 - **Overlay restore** — `fvEnsureOverlayBackground`, `fvResetRuntimeCache`, `fvRestoreFromSpec`
-- **Linked hover** — `stripLayerSuffix` (handles new suffixes and legacy `::bg` / `::fg`), `getHoverPayload`, `_fvIsHoverEnabled`, `dispatchCrosshairs`, `planHoverVisuals` with the bin lookup `binAt`
+- **Linked hover** — `stripLayerSuffix` (strips the `__fv_layer_bg` / `__fv_layer_fg` suffixes), `getHoverPayload`, `_fvIsHoverEnabled`, `planHoverVisuals` with the bin lookup `binAt`
 
-Each adapter defines four renderer-specific hooks:
-- `_fvRenderFigure(figUid)` — re-render one figure
-- `_fvShowCrosshair(figUid, axis, value)` — draw a crosshair line
-- `_fvClearAllCrosshairs()` — clear hover guides from all figures
-- `_fvResetRendererCache()` — reset adapter-specific caches
+The shared runtime and `toolbar.js` call these renderer hooks. The adapter page defines `_fvAllFigUids`, and the renderer bundle (`plotly/*.js`) defines the others. A second renderer must define all of them.
+
+| Hook | Job |
+|---|---|
+| `_fvAllFigUids` | The UIDs of all figures on the page (`string[]`). |
+| `_fvRenderFigure(figUid)` | Re-render one figure from the layer caches. |
+| `window.__fvApplyHoverVisuals(figUid, visuals)` | Draw the linked-hover guides on one figure. |
+| `window.fvClearAllHoverVisuals()` | Clear the hover guides on all figures. |
+| `window.fvHasLockableCurrentAxis(figUid, axisFamily)` | Tell if the figure has an `x` or `y` axis that the toolbar can lock. |
+| `window.fvCaptureAxisDisplayRanges(figUid, axisFamily)` | Return the shown range of each axis in the family, in data units. |
+| `window.fvApplyAxisLocks(figUid)` | Apply the locked axis ranges to one figure. |
+| `window.fvSyncFigureModeForAxisLocks(figUid)` | Change zoom or pan to select when the axes of the figure are locked. |
+| `window.fvOnReset()`, `window.fvOnDeselect()` | Run the Reset and Deselect toolbar buttons. |
 
 ### GridStack dashboard layout
 
-When `DashboardSpec.layout.draggable=True`, both adapters render figures as GridStack items.
+When `DashboardSpec.layout.draggable=True`, the adapter renders figures as GridStack items.
 
 - `GridStack.init(...)` runs from `gridstack-bridge.js`, which adapters include only when `layout.draggable=True`; it executes before the renderer-specific bundle so each chart measures a non-zero container size.
 - Initial `layout.grid_items` is either provided by the spec or auto-generated from `Dashboard.show(rows=..., cols=...)` seed inputs (default: auto 2-column) before render.
@@ -1609,26 +1609,6 @@ When `DashboardSpec.layout.draggable=True`, both adapters render figures as Grid
   `state.group_domains[group_domain_key]`.
 - Overlay mode: switches `barmode` to `"overlay"` when fg is visible; pairs bg/fg bar layers with logical `offsetgroup` values only in that state so base stacked bars keep Plotly's default stacking behavior; pins y-axis to bg extent via `bgYExtentByFig`.
 - Linked hover: shapes tagged with `_fvHover` prefix; `renderHoverGuides` replaces shapes by tag prefix to prevent accumulation.
-
-### EChartsAdapter
-
-DEPRECATED => currently not maintained anymore.
-
-- Self-contained HTML + ECharts 5 from jsDelivr CDN.
-- One chart instance per figure; grouped parents are logical-only and are not
-  bootstrapped as renderer series.
-- Keeps per-figure base series plus `groupedChildrenByParent`; rebuilds the figure's
-  series array and applies it with `replaceMerge: ['series']`.
-- Updates via `chart.setOption(...)`.
-- Supported trace types: **line**, **histogram**, **bar**, **pie**, **heatmap** (histogram2d / corr_heatmap).
-- Events: `datazoom` → viewport · `brushEnd` → selection · empty brush → deselect.
-- `_applyingDeltas` guard prevents `datazoom` feedback loops from programmatic updates.
-- Toolbar reset override clears viewport/selections, resets runtime overlay cache, and posts an `init` event.
-- Heatmap traces consume explicit `display.color_scale` / `display.color_range`; the adapter maps supported scale names to local colors and uses one figure-level `visualMap` for heatmap-like traces.
-- Group colors are assigned from `display.color_map` first, then from
-  `state.group_domains[group_domain_key]`.
-- Overlay mode: pins y-axis to bg extent via `bgYExtentByFig`.
-- Linked hover: dispatches `updateAxisPointer` actions to linked chart instances.
 
 ---
 
@@ -1695,8 +1675,7 @@ flexviz/
 │       ├── runtime.py       ← shared_runtime_js() — renderer-agnostic JS
 │       ├── js/              ← JS and CSS sources, bundled at import
 │       │                       (see JS Build Pipeline)
-│       ├── plotly_adapter.py
-│       └── echarts_adapter.py
+│       └── plotly_adapter.py
 ├── flexviz_polars/          ← Rust/Polars plugin (build with make build-plugin)
 │   ├── README.md
 │   ├── src/
@@ -1755,12 +1734,9 @@ the backend.
 
 ## Known Issues / Technical Debt
 
-EChartsAdapter is currently deprecated. No goal to support this in the near future.
-
 | Location | Description |
 |----------|-------------|
 | `LF.py` `check_line_x` | One O(n) collect the first time a resident-frame x-width line reads an x column; the sorted flag then skips it. `assume_sorted_x=True` opts out |
-| `EChartsAdapter` | Does not support `BoxPlot` or `TreeMap`; supports line, histogram, bar, pie, and heatmap |
 | `trace/` interface | `_backend_data`, `_display`, `_params` dicts have `TypedDict` hints (`TraceDisplay`, `TraceParams`); `backend_data` values are `str | list[str]` |
 | `LinePlot`, `Histogram`, `Histogram2D`, `GeoHistogram2D`, `GeoLine` | All require `flexviz_polars` plugin; raise `ImportError` at import time without it (no pure-Python fallback). |
 | `fixed_hist`, `fixed_hist2d` | Both drop to their scalar path for any chunk that holds a null. Real data holds nulls, so a null-aware parallel path is worth having |

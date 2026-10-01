@@ -191,8 +191,7 @@ function stripLayerSuffix(uid) {
     return uid.slice(0, -RENDER_LAYER_SUFFIX.bg.length);
   if (uid.endsWith(RENDER_LAYER_SUFFIX.fg))
     return uid.slice(0, -RENDER_LAYER_SUFFIX.fg.length);
-  // Backward compatibility for existing rendered ids.
-  return uid.replace(/::(bg|fg)$/, '');
+  return uid;
 }
 function cloneObj(obj) {
   return JSON.parse(JSON.stringify(obj));

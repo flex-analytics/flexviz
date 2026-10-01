@@ -524,7 +524,7 @@ async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
     spec:
         URL-safe base64-encoded gzip-compressed JSON spec string.
     renderer:
-        ``"plotly"`` (default) or ``"echarts"``.
+        ``"plotly"`` (the only renderer).
     """
     # Page-relative base: every API endpoint is a sibling of /view, so "."
     # resolves correctly in the browser behind any reverse proxy — including
@@ -549,7 +549,7 @@ async def history_view(n: int, renderer: str | None = None) -> HTMLResponse:
     n:
         1-based entry number, as recorded by ``flexviz history add``.
     renderer:
-        ``"plotly"`` or ``"echarts"``; defaults to the renderer in the
+        ``"plotly"``; defaults to the renderer in the
         recorded URL, else ``"plotly"``.
     """
     from flexviz import history

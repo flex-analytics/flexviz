@@ -19,7 +19,7 @@ from flexviz.spec import (
 from tests.test_browser import _wait_for_init
 
 
-def _build_or_selection_dashboard_url(port: int, renderer: str = "plotly") -> str:
+def _build_or_selection_dashboard_url(port: int) -> str:
     """Two-figure dashboard: bar target (fig 0) + treemap source (fig 1)."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -53,10 +53,10 @@ def _build_or_selection_dashboard_url(port: int, renderer: str = "plotly") -> st
         layout=LayoutSpec(draggable=False),
     )
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _build_pie_or_dashboard_url(port: int, renderer: str = "plotly") -> str:
+def _build_pie_or_dashboard_url(port: int) -> str:
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
 
@@ -80,7 +80,7 @@ def _build_pie_or_dashboard_url(port: int, renderer: str = "plotly") -> str:
         layout=LayoutSpec(draggable=False),
     )
     encoded = encode_spec(spec)
-    return f"http://127.0.0.1:{port}/view?spec={encoded}&renderer={renderer}"
+    return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
 def _wait_for_selection_count(page: Page, expected: int) -> None:
@@ -107,12 +107,9 @@ class TestPathPredicateUpsertJs:
     """Exercise fvUpsertPathPredicate in the bundled page runtime."""
 
     @pytest.mark.browser
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
-    def test_upsert_toggle_append_and_refinement(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        page.goto(_build_or_selection_dashboard_url(server_port, renderer))
-        _wait_for_init(page, renderer)
+    def test_upsert_toggle_append_and_refinement(self, page: Page, server_port: int):
+        page.goto(_build_or_selection_dashboard_url(server_port))
+        _wait_for_init(page, "plotly")
 
         result = page.evaluate("""() => {
             const upsert = window.fvUpsertPathPredicate;
@@ -194,51 +191,15 @@ class TestTreemapPieOrCrossFilter:
         assert target is not None, f"Treemap node {node_id!r} not found"
         page.mouse.click(target["x"], target["y"])
 
-    def _click_echarts_treemap_node(
-        self, page: Page, fig_idx: int, node_id: str
-    ) -> None:
-        page.evaluate(
-            """(args) => {
-                const figUid = DASHBOARD_SPEC.figures[args.figIdx].uid;
-                const chart = echarts.getInstanceByDom(
-                    document.getElementById('fv-chart-' + args.figIdx)
-                );
-                const series = (chart.getOption().series || [])[0];
-                function findNode(nodes, wantedId) {
-                    for (const node of (nodes || [])) {
-                        if (node && node.id === wantedId) return node;
-                        const child = findNode(node && node.children, wantedId);
-                        if (child) return child;
-                    }
-                    return null;
-                }
-                const node = findNode(series.data || [], args.nodeId);
-                handleEChartsClick({
-                    seriesType: 'treemap',
-                    seriesId: series.id,
-                    data: node,
-                }, figUid);
-            }""",
-            {"figIdx": fig_idx, "nodeId": node_id},
+    def test_treemap_sibling_leaves_or_cross_filter(self, page: Page, server_port: int):
+        page.goto(_build_or_selection_dashboard_url(server_port))
+        _wait_for_init(page, "plotly")
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
         )
-
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
-    def test_treemap_sibling_leaves_or_cross_filter(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        page.goto(_build_or_selection_dashboard_url(server_port, renderer))
-        _wait_for_init(page, renderer)
-        if renderer == "plotly":
-            page.wait_for_function(
-                "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
-            )
-            self._click_plotly_treemap_node(page, 1, "root/solar/NL")
-            _wait_for_selection_count(page, 1)
-            self._click_plotly_treemap_node(page, 1, "root/solar/DE")
-        else:
-            self._click_echarts_treemap_node(page, 1, "root/solar/NL")
-            _wait_for_selection_count(page, 1)
-            self._click_echarts_treemap_node(page, 1, "root/solar/DE")
+        self._click_plotly_treemap_node(page, 1, "root/solar/NL")
+        _wait_for_selection_count(page, 1)
+        self._click_plotly_treemap_node(page, 1, "root/solar/DE")
 
         _wait_for_selection_count(page, 1)
         page.wait_for_timeout(800)
@@ -253,52 +214,37 @@ class TestTreemapPieOrCrossFilter:
         }
         assert countries == {"NL", "DE"}
 
-        if renderer == "plotly":
-            assert set(_plotly_bar_labels(page, 0)) == {"NL", "DE"}
+        assert set(_plotly_bar_labels(page, 0)) == {"NL", "DE"}
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
     def test_treemap_leaf_toggle_clears_cross_filter(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        page.goto(_build_or_selection_dashboard_url(server_port, renderer))
-        _wait_for_init(page, renderer)
-        if renderer == "plotly":
-            page.wait_for_function(
-                "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
-            )
-            self._click_plotly_treemap_node(page, 1, "root/solar/NL")
-            _wait_for_selection_count(page, 1)
-            page.wait_for_timeout(500)
-            assert set(_plotly_bar_labels(page, 0)) == {"NL"}
-            self._click_plotly_treemap_node(page, 1, "root/solar/NL")
-        else:
-            self._click_echarts_treemap_node(page, 1, "root/solar/NL")
-            _wait_for_selection_count(page, 1)
-            page.wait_for_timeout(500)
-            self._click_echarts_treemap_node(page, 1, "root/solar/NL")
+        page.goto(_build_or_selection_dashboard_url(server_port))
+        _wait_for_init(page, "plotly")
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
+        )
+        self._click_plotly_treemap_node(page, 1, "root/solar/NL")
+        _wait_for_selection_count(page, 1)
+        page.wait_for_timeout(500)
+        assert set(_plotly_bar_labels(page, 0)) == {"NL"}
+        self._click_plotly_treemap_node(page, 1, "root/solar/NL")
 
         _wait_for_selection_count(page, 0)
         page.wait_for_timeout(500)
-        if renderer == "plotly":
-            assert set(_plotly_bar_labels(page, 0)) >= {"NL", "BE", "DE"}
+        assert set(_plotly_bar_labels(page, 0)) >= {"NL", "BE", "DE"}
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
     def test_treemap_parent_then_leaf_replaces_predicate(
-        self, page: Page, server_port: int, renderer: str
+        self, page: Page, server_port: int
     ):
-        page.goto(_build_or_selection_dashboard_url(server_port, renderer))
-        _wait_for_init(page, renderer)
-        if renderer == "plotly":
-            page.wait_for_function(
-                "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar')"
-            )
-            self._click_plotly_treemap_node(page, 1, "root/solar", label_area=True)
-            _wait_for_selection_count(page, 1)
-            self._click_plotly_treemap_node(page, 1, "root/solar/NL")
-        else:
-            self._click_echarts_treemap_node(page, 1, "root/solar")
-            _wait_for_selection_count(page, 1)
-            self._click_echarts_treemap_node(page, 1, "root/solar/NL")
+        page.goto(_build_or_selection_dashboard_url(server_port))
+        _wait_for_init(page, "plotly")
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar')"
+        )
+        self._click_plotly_treemap_node(page, 1, "root/solar", label_area=True)
+        _wait_for_selection_count(page, 1)
+        self._click_plotly_treemap_node(page, 1, "root/solar/NL")
 
         _wait_for_selection_count(page, 1)
         preds = _selection_predicates(page)[0]["preds"]
@@ -306,77 +252,41 @@ class TestTreemapPieOrCrossFilter:
         cols = {c["column"]: c["values"][0] for c in preds[0]["clauses"]}
         assert cols == {"source": "solar", "country": "NL"}
 
-    @pytest.mark.parametrize("renderer", ["plotly", "echarts"])
-    def test_pie_sibling_slices_or_cross_filter(
-        self, page: Page, server_port: int, renderer: str
-    ):
-        page.goto(_build_pie_or_dashboard_url(server_port, renderer))
-        _wait_for_init(page, renderer)
-        if renderer == "plotly":
-            page.wait_for_function(
-                "() => document.querySelector('#fv-plot-1')?.data?.[0]?.labels?.length > 1"
+    def test_pie_sibling_slices_or_cross_filter(self, page: Page, server_port: int):
+        page.goto(_build_pie_or_dashboard_url(server_port))
+        _wait_for_init(page, "plotly")
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.labels?.length > 1"
+        )
+
+        def click_pie(label: str) -> None:
+            target = page.eval_on_selector(
+                "#fv-plot-1",
+                """(gd, pieLabel) => {
+                    const nodes = Array.from(gd.querySelectorAll('g.slice'));
+                    const node = nodes.find(n => {
+                        const d = n.__data__ || {};
+                        return (d.label || (d.data && d.data.label)) === pieLabel;
+                    });
+                    if (!node) return null;
+                    node.scrollIntoView({ block: 'center', inline: 'center' });
+                    const r = node.getBoundingClientRect();
+                    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+                }""",
+                label,
             )
+            assert target is not None
+            page.mouse.click(target["x"], target["y"])
 
-            def click_pie(label: str) -> None:
-                target = page.eval_on_selector(
-                    "#fv-plot-1",
-                    """(gd, pieLabel) => {
-                        const nodes = Array.from(gd.querySelectorAll('g.slice'));
-                        const node = nodes.find(n => {
-                            const d = n.__data__ || {};
-                            return (d.label || (d.data && d.data.label)) === pieLabel;
-                        });
-                        if (!node) return null;
-                        node.scrollIntoView({ block: 'center', inline: 'center' });
-                        const r = node.getBoundingClientRect();
-                        return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
-                    }""",
-                    label,
-                )
-                assert target is not None
-                page.mouse.click(target["x"], target["y"])
-
-            click_pie('["solar","NL"]')
-            _wait_for_selection_count(page, 1)
-            click_pie('["solar","DE"]')
-        else:
-            page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[1].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-1'));
-                const series = (chart.getOption().series || [])[0];
-                function clickLabel(label) {
-                    const item = (series.data || []).find(entry => entry && entry.name === label);
-                    handleEChartsClick({
-                        seriesType: 'pie',
-                        seriesId: series.id,
-                        name: item.name,
-                        data: item,
-                    }, figUid);
-                }
-                clickLabel('["solar","NL"]');
-            }""")
-            _wait_for_selection_count(page, 1)
-            page.evaluate("""() => {
-                const figUid = DASHBOARD_SPEC.figures[1].uid;
-                const chart = echarts.getInstanceByDom(document.getElementById('fv-chart-1'));
-                const series = (chart.getOption().series || [])[0];
-                const item = (series.data || []).find(
-                    entry => entry && entry.name === '["solar","DE"]'
-                );
-                handleEChartsClick({
-                    seriesType: 'pie',
-                    seriesId: series.id,
-                    name: item.name,
-                    data: item,
-                }, figUid);
-            }""")
+        click_pie('["solar","NL"]')
+        _wait_for_selection_count(page, 1)
+        click_pie('["solar","DE"]')
 
         _wait_for_selection_count(page, 1)
         page.wait_for_timeout(800)
         preds = _selection_predicates(page)[0]["preds"]
         assert len(preds) == 2
-        if renderer == "plotly":
-            assert set(_plotly_bar_labels(page, 0)) == {"NL", "DE"}
+        assert set(_plotly_bar_labels(page, 0)) == {"NL", "DE"}
 
 
 class TestEngineTreemapOrPredicates:

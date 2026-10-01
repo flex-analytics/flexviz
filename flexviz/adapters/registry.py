@@ -54,19 +54,6 @@ PLOTLY_TRACE_TYPES = frozenset(
     }
 )
 
-ECHARTS_TRACE_TYPES = frozenset(
-    {
-        "line",
-        "histogram",
-        "box",
-        "bar",
-        "pie",
-        "treemap",
-        "histogram2d",
-        "corr_heatmap",
-    }
-)
-
 _RENDERERS: dict[str, RendererDefinition] = {
     "plotly": RendererDefinition(
         name="plotly",
@@ -76,14 +63,6 @@ _RENDERERS: dict[str, RendererDefinition] = {
             supported_trace_types=PLOTLY_TRACE_TYPES,
         ),
     ),
-    "echarts": RendererDefinition(
-        name="echarts",
-        adapter_import_path="flexviz.adapters.echarts_adapter.EChartsAdapter",
-        capabilities=RendererCapabilities(
-            name="echarts",
-            supported_trace_types=ECHARTS_TRACE_TYPES,
-        ),
-    ),
 }
 
 
@@ -91,16 +70,12 @@ def supported_renderers() -> tuple[str, ...]:
     return tuple(_RENDERERS)
 
 
-def normalize_renderer_name(renderer: str) -> str:
-    name = str(renderer).strip().lower()
-    if name not in _RENDERERS:
+def get_renderer_definition(renderer: str) -> RendererDefinition:
+    definition = _RENDERERS.get(renderer)
+    if definition is None:
         supported = ", ".join(repr(item) for item in supported_renderers())
         raise ValueError(f"Unknown renderer {renderer!r}. Supported: {supported}.")
-    return name
-
-
-def get_renderer_definition(renderer: str) -> RendererDefinition:
-    return _RENDERERS[normalize_renderer_name(renderer)]
+    return definition
 
 
 def build_adapter(renderer: str) -> AbstractAdapter:

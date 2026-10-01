@@ -1,7 +1,7 @@
 """Shared FlexViz client-side JS runtime.
 
 This module provides the single source of truth for all renderer-agnostic
-JS logic used by both the Plotly and ECharts adapters.  The runtime
+JS logic used by the Plotly adapter.  The runtime
 handles delta application, overlay caching, grouped-child reconciliation,
 linked-hover dispatch, toolbar hooks, and state management.
 
@@ -11,13 +11,8 @@ Node and no separate build step are required — editing a file under ``js/`` is
 picked up on the next import.  The concatenated strings are cached in module
 globals; the public ``*_js()`` / ``theme_css()`` accessors just return them.
 
-Each adapter must define the following globals **before** the shared
-runtime is included:
-
-- ``_fvAllFigUids``    — ``string[]`` of all figure UIDs
-- ``_fvRenderFigure(figUid)`` — re-render one figure via the renderer
-- ``_fvClearAllCrosshairs()`` — clear hover guides from all figures
-- ``_fvShowCrosshair(figUid, axis, value)`` — draw a crosshair line
+The shared runtime calls hooks that each adapter must define. The Shared
+Runtime section of ``Architecture.md`` lists them.
 """
 
 from __future__ import annotations
@@ -50,12 +45,6 @@ _PLOTLY_SOURCES: list[str] = [
     "plotly/init.js",
 ]
 
-_ECHARTS_SOURCES: list[str] = [
-    "echarts/series.js",
-    "echarts/render.js",
-    "echarts/init.js",
-]
-
 
 def _read(rel: str) -> str:
     return (_JS_DIR / rel).read_text(encoding="utf-8")
@@ -84,7 +73,6 @@ _TOOLBAR_CSS = _read("toolbar.css")
 _GRIDSTACK_BRIDGE_JS = _read("gridstack-bridge.js")
 _SHARED_RUNTIME_JS = _concat(_SHARED_SOURCES)
 _PLOTLY_BUNDLE_JS = _concat(_PLOTLY_SOURCES)
-_ECHARTS_BUNDLE_JS = _concat(_ECHARTS_SOURCES)
 _FAVICON_B64 = _b64("favicon.png")
 _PAGE_HEAD_HTML = (
     "<title>FlexViz</title>\n"
@@ -128,11 +116,6 @@ def gridstack_bridge_js() -> str:
 def plotly_bundle_js() -> str:
     """Return the Plotly-specific JS bundle."""
     return _PLOTLY_BUNDLE_JS
-
-
-def echarts_bundle_js() -> str:
-    """Return the ECharts-specific JS bundle."""
-    return _ECHARTS_BUNDLE_JS
 
 
 def page_head_html() -> str:

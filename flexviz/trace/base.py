@@ -332,9 +332,6 @@ class FlexTrace(ABC):
     def group_domain_key(self) -> str | None:
         return self._params.get("group_domain_key")
 
-    def is_grouped_parent(self) -> bool:
-        return self.group_by_cols is not None
-
     def _to_grouped_update(self, df_grouped: pl.DataFrame) -> TraceResult:
         """Convert a grouped result frame into a parent-scoped ``TraceResult``.
 

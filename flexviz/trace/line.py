@@ -880,7 +880,7 @@ class LinePlot(FlexTrace):
 
         Gaps (null breaks across large x jumps) are a client-side display
         concern, inserted at render time by ``fvApplyLineGaps``
-        (``adapters/js/plotly/traces.js``); the server emits gapless x/y.
+        (``adapters/js/runtime/cube.js``); the server emits gapless x/y.
         """
         raw: pl.Series = df_agg[self.uid].item()
         df_line = raw.explode(empty_as_null=True).struct.unnest()

@@ -167,12 +167,6 @@ def get_cache() -> CacheBackend:
     return _cache
 
 
-def set_cache_backend(backend: CacheBackend) -> None:
-    """Swap the global cache backend (e.g. for a Redis/disk backend)."""
-    global _cache
-    _cache = backend
-
-
 def get_cube_cache() -> CacheBackend:
     """Return the process-global cube-blob cache (byte-bounded LRU).
 
@@ -182,12 +176,6 @@ def get_cube_cache() -> CacheBackend:
     clears both caches on re-registration of an existing name.
     """
     return _cube_cache
-
-
-def set_cube_cache_backend(backend: CacheBackend) -> None:
-    """Swap the global cube cache backend (e.g. for a Redis/disk backend)."""
-    global _cube_cache
-    _cube_cache = backend
 
 
 def set_source_cacheable(name: str, flag: bool) -> None:

@@ -462,7 +462,7 @@ class Dashboard:
         Parameters
         ----------
         renderer:
-            ``"plotly"`` (default) or ``"echarts"``.
+            ``"plotly"`` (the only renderer).
         source_name:
             Name under which the shared backend LazyFrame is registered
             with the server's data-source registry.  Defaults to the
