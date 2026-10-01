@@ -6,6 +6,8 @@ AbstractAdapter.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from flexviz.adapters.base import AbstractAdapter
@@ -118,7 +120,7 @@ class TestSharedToolbar:
         assert "fv-btn-import" not in html
         assert "fv-btn-reset" in html
 
-    def test_toolbar_html_all_hidden_renders_empty_toolbar(self):
+    def test_toolbar_html_all_hidden_keeps_only_the_mode_button(self):
         tc = ToolbarConfig(
             show_reset=False,
             show_deselect=False,
@@ -131,7 +133,8 @@ class TestSharedToolbar:
             show_import=False,
         )
         html = AbstractAdapter._toolbar_html(tc)
-        assert "fv-btn-" not in html
+        # The light/dark mode is a viewer preference, not a dashboard option.
+        assert re.findall(r'id="(fv-btn-[\w-]+)"', html) == ["fv-btn-mode"]
         assert "fv-header" in html
 
     def test_toolbar_config_roundtrips_via_layout_spec(self):

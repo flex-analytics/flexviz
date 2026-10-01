@@ -55,6 +55,7 @@
       border: 1px solid transparent;
       border-radius: var(--fv-radius);
       background: transparent;
+      font-family: inherit;
       font-size: var(--fv-font-size-base);
       color: var(--fv-text-secondary);
       white-space: nowrap;
@@ -325,16 +326,16 @@
       overflow: hidden;
     }
     .fv-mode-btn {
-      font-size: var(--fv-font-size-sm); font-weight: 500; padding: 3px 7px;
+      font-family: inherit; font-size: var(--fv-font-size-sm); font-weight: 500; padding: 3px 7px;
       border: none; cursor: pointer; background: transparent;
       color: var(--fv-text-muted); line-height: 1.4; letter-spacing: 0.3px;
     }
     .fv-mode-btn + .fv-mode-btn { border-left: 1px solid var(--fv-border-soft); }
-    .fv-mode-btn:hover:not(:disabled) { background: rgba(0,0,0,0.06); color: var(--fv-text-hover); }
+    .fv-mode-btn:hover:not(:disabled) { background: var(--fv-surface-hover); color: var(--fv-text-hover); }
     .fv-mode-btn.mode-active { background: var(--fv-accent-bg); color: var(--fv-accent-text); }
     .fv-mode-btn:disabled { opacity: 0.28; cursor: not-allowed; }
     .fv-mode-action-btn {
-      font-size: var(--fv-font-size-sm); font-weight: 500; padding: 3px 7px;
+      font-family: inherit; font-size: var(--fv-font-size-sm); font-weight: 500; padding: 3px 7px;
       border: 1px solid var(--fv-border-soft); border-radius: var(--fv-radius);
       cursor: pointer; background: transparent;
       color: var(--fv-text-secondary); line-height: 1.4; letter-spacing: 0.3px;

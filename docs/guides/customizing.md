@@ -182,7 +182,8 @@ dash.show(
 
 The fields are `show_reset`, `show_deselect`, `show_cfmode`, `show_hover`,
 `show_lock_all_axes`, `show_grid`, `show_share`, `show_export` and
-`show_import`. An empty button group disappears with its divider.
+`show_import`. An empty button group disappears with its divider. The
+**Mode** button always shows: see [Light and dark mode](#light-and-dark-mode).
 
 Most of these hide a button whose state you can reach another way.
 `show_grid` is different: it hides the only built-in button for changing
@@ -199,6 +200,52 @@ controls these.
 Each panel also has its own bottom bar with Zoom, Pan, CF, Reset and axis
 lock. These follow what the traces in that panel support, and they are not
 configurable today.
+
+## Light and dark mode
+
+The page has a light and a dark mode. The **Mode** button in the toolbar
+cycles **Auto**, **Light** and **Dark**. Auto follows the system setting and
+changes with it. The browser remembers a Light or Dark choice for the server
+address.
+
+The mode is a viewer preference. It is not part of the spec, so a share URL
+or an exported spec does not carry it. A switch sends no request to the
+server and keeps your zoom and selections.
+
+Both modes use the Okabe-Ito series colors, which stay apart for the common
+types of color blindness. The colors do not change with the mode, so a group
+keeps its color after a switch. In dark mode, maps darken the OpenStreetMap
+tiles, and the `"Viridis"` scale starts at a lighter blue, so sparse cells
+stay visible. Other color scales do not change.
+
+### Override the theme
+
+`update_layout()` wins over the theme in both modes:
+
+```python
+fig.update_layout(plot_bgcolor="#f5f5f5")        # a cartesian figure
+map_fig.update_layout(map={"style": "white-bg"})  # a map figure
+```
+
+A `font` from `update_layout()` reaches every text of the figure except the
+hover label. A figure that sets its own `template` in `update_layout()` does
+not get the theme. `template=None` counts as unset.
+
+The page look comes from CSS custom properties (`--fv-*`). FlexViz has no
+Python option for them. If you serve the `/view` page through your own
+proxy, add a style rule after the FlexViz styles:
+
+```css
+/* Both modes */
+:root, :root[data-fv-mode="dark"] { --fv-accent: #0d9488; }
+/* Dark mode only */
+:root[data-fv-mode="dark"] { --fv-accent: #2dd4bf; }
+```
+
+The dark block outranks a plain `:root` rule. To change a token in both
+modes, name both selectors. Keep `--fv-series` the same in both modes,
+because the spec stores each group's color as a hex value. The full token
+list is in `flexviz/adapters/js/theme.css`.
 
 ## Precedence
 

@@ -537,6 +537,7 @@ function buildTracesForFigure(figUid) {
     }
   }
   syncHeatmapOverlayColorScale(traces, figSpec, showForeground);
+  fvApplyThemeToTraces(traces, figUid);
   return traces;
 }
 

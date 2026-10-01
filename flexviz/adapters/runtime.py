@@ -39,6 +39,7 @@ _SHARED_SOURCES: list[str] = [
 
 _PLOTLY_SOURCES: list[str] = [
     "plotly/traces.js",
+    "plotly/theme.js",
     "plotly/render.js",
     "plotly/events.js",
     "plotly/hover.js",
@@ -76,7 +77,8 @@ _PLOTLY_BUNDLE_JS = _concat(_PLOTLY_SOURCES)
 _FAVICON_B64 = _b64("favicon.png")
 _PAGE_HEAD_HTML = (
     "<title>FlexViz</title>\n"
-    f'  <link rel="icon" type="image/png" href="data:image/png;base64,{_FAVICON_B64}">'
+    f'  <link rel="icon" type="image/png" href="data:image/png;base64,{_FAVICON_B64}">\n'
+    f"  <script>\n{_read('theme-mode.js')}  </script>"
 )
 
 
@@ -119,7 +121,10 @@ def plotly_bundle_js() -> str:
 
 
 def page_head_html() -> str:
-    """Return the page title and inline favicon link for a dashboard page.
+    """Return the page title, inline favicon link and mode script for a page.
+
+    The mode script sets light or dark mode on ``<html>`` before the first
+    paint, so a dark page never flashes light.
 
     An inline icon stops the browser probing ``GET /favicon.ico``, which 404s
     under ``/view`` and under a mount prefix, where the browser asks the host

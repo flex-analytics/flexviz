@@ -27,13 +27,42 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   loopback address also refuses a request whose `Host` is not `localhost`, a
   loopback IP or the bind host, which blocks DNS rebinding.
 
+### Added
+
+- A light and a dark mode. The new **Mode** button in the toolbar cycles
+  Auto, Light and Dark. Auto follows the system setting, and the browser
+  remembers a Light or Dark choice. The mode is not part of the spec or a
+  share URL, and a switch sends no request to the server.
+
 ### Changed
 
 - `flexviz` requires the `flexviz-polars` release that ships with it, because
   the line envelope kernel now bins the free axis like the display kernel.
+- A new default look for the page and the plots: system fonts, slate text,
+  an indigo accent, left-aligned titles, and theme colors for the plot
+  background, grid, axes, hover labels and active-filter strip. Before, the
+  plots used the Plotly defaults, and a dark system showed white plots in a
+  dark page. `update_layout()` options still win over the theme.
+- The default series colors are the Okabe-Ito palette (`#0072b2`, `#e69f00`,
+  `#009e73`, ...) instead of the Plotly colors, and they are the same in both
+  modes.
+- A series hover label uses the neutral theme colors with a border in the
+  series color. Before, its text on the series color had a contrast of
+  about 3:1.
+- In dark mode, maps darken the OpenStreetMap tiles, and the `"Viridis"`
+  color scale starts at `#424086` instead of `#440154`, so sparse cells stay
+  visible on a dark plot. This also applies to a `"Viridis"` that you set by
+  name. Light mode and the other scales do not change.
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
   another origin.
+
+### Fixed
+
+- Long y-axis tick labels, such as the column names of a correlation
+  heatmap, are no longer cut off: the left margin grows to fit them.
+- In overlay mode, the legend no longer fades with the background layer.
+- Toolbar and panel buttons use the page font.
 
 ### Removed
 

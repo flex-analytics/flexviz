@@ -351,7 +351,13 @@ class AbstractAdapter(ABC):
             )
             g3.append('      <button id="fv-btn-import">Import</button>')
 
-        inner = _group(g1) + _group(g2) + _group(g_grid) + _group(g3)
+        # The light/dark switch is a viewer preference, so ToolbarConfig
+        # cannot hide it. theme-mode.js wires it and sets its label.
+        g_mode = [
+            '      <button id="fv-btn-mode" title="Auto follows the system setting">Mode: Auto</button>'
+        ]
+
+        inner = _group(g1) + _group(g2) + _group(g_grid) + _group(g3) + _group(g_mode)
         return (
             '<header id="fv-header">\n'
             '  <div id="fv-header-main">\n'

@@ -620,7 +620,7 @@ class TestLiveBrushCube:
         url = _two_hist_dashboard_url(server_port, "_cube_browser_auto_rt", "auto")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -678,7 +678,7 @@ class TestLiveBrushCube:
         df = _cube_df()
         url = _two_hist_dashboard_url(server_port, "_cube_browser_auto_ref", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -746,7 +746,7 @@ class TestLiveBrushCube:
         url = _two_hist_dashboard_url(server_port, "_cube_browser_off", "off")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -803,7 +803,7 @@ class TestLiveBrushCube:
         bodies = _capture_updates(page)
         posts = _capture_posts(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # Gesture 1: populates the store via the one cube_request.
@@ -864,7 +864,7 @@ class TestLiveBrushCube:
             f"http://127.0.0.1:{server_port}/view"
             f"?spec={encode_spec(spec)}&renderer=plotly"
         )
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         x1, x2, y, _ = _drag_coords(page)
@@ -889,7 +889,7 @@ class TestLiveBrushCube:
         url = _mixed_dashboard_url(server_port, "_cube_browser_mixed")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         box_props = ["lowerfence", "q1", "median", "q3", "upperfence"]
@@ -983,7 +983,7 @@ class TestLiveBrushCube:
         url = _two_hist_dashboard_url(server_port, "_cube_browser_abandon", "auto")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -1035,7 +1035,7 @@ class TestLiveBrushCube:
         apply: the abort puts back the pre-drag data, not newer data."""
         url = _two_hist_dashboard_url(server_port, "_cube_browser_abandon_late", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.evaluate(_COUNT_SETTLED_UPDATES)
         _enter_select_mode(page)
         held = _hold_first_update(page)
@@ -1079,7 +1079,7 @@ class TestLiveBrushCube:
         errors: list[str] = []
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_unfiltered = _target_y(page)
@@ -1122,7 +1122,7 @@ class TestLiveBrushCube:
         url = _grouped_dashboard_url(server_port, "_cube_browser_grouped")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         read_children = (
@@ -1179,7 +1179,7 @@ class TestLiveBrushCube:
         url = _bar_pie_dashboard_url(server_port, "_cube_browser_barpie")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_before = _bar_xy(page, "#fv-plot-1")
@@ -1249,7 +1249,7 @@ class TestLiveBrushCube:
         url = _mean_bar_dashboard_url(server_port, "_cube_browser_meanbar")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_before = _bar_xy(page, "#fv-plot-1")
@@ -1302,7 +1302,7 @@ class TestLiveBrushCube:
         url = _median_mixed_dashboard_url(server_port, "_cube_browser_median")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_unfiltered = _target_y(page)
@@ -1383,7 +1383,7 @@ class TestLiveBrushCube:
         url = _numeric_label_dashboard_url(server_port, "_cube_browser_numlab")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_unfiltered = _target_y(page)
@@ -1450,7 +1450,7 @@ class TestLiveBrushCube:
         every bar black until the commit round-trip self-heals it)."""
         url = _grouped_color_bar_dashboard_url(server_port, "_cube_browser_gcolor")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         read_children = (
@@ -1500,7 +1500,7 @@ class TestLiveBrushCube:
         url = _int_label_dashboard_url(server_port, "_cube_browser_intlab")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_before = _bar_xy(page, "#fv-plot-1")
@@ -1565,7 +1565,7 @@ class TestLiveBrushCube:
         url = _grouped_int_color_dashboard_url(server_port, "_cube_browser_gintcol")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         read_children = (
@@ -1651,7 +1651,7 @@ class TestLiveBrushCube:
         bodies = _capture_updates(page)
         posts = _capture_posts(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # Gesture 1: a fresh draw commits a snapped box and warms the store.
@@ -2082,7 +2082,7 @@ class TestCategoricalSourceCube:
         url = _bar_source_dashboard_url(server_port, "_cube_browser_barsrc", "auto")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _hist_y(page, "#fv-plot-1")
@@ -2143,7 +2143,7 @@ class TestCategoricalSourceCube:
         bodies = _capture_updates(page)
         posts = _capture_posts(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # Gesture 1: a fresh draw over g0, g1 commits and warms the store.
@@ -2238,7 +2238,7 @@ class TestCategoricalSourceCube:
         url = _int_bar_source_dashboard_url(server_port, "_cube_browser_intbarsrc")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # The integer source bars render in NUMERIC order 0..3 at init.
@@ -2301,7 +2301,7 @@ class TestCategoricalSourceCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         assert _bar_xy(page, "#fv-plot-0")["x"] == [0, 1, 2, 3]
@@ -2382,7 +2382,7 @@ class TestCategoricalSourceCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         read_children = (
@@ -2455,7 +2455,7 @@ class TestCategoricalSourceCube:
         url = _float_bar_source_dashboard_url(server_port, "_cube_browser_floatbarsrc")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         assert [float(v) for v in _bar_xy(page, "#fv-plot-0")["x"]] == [
@@ -2531,7 +2531,7 @@ class TestCategoricalSourceCube:
         url = _pie_source_dashboard_url(server_port, "_cube_browser_pieclick")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         n_before = len(bodies)
         _click_pie_slice(page, "#fv-plot-0", "g0")
@@ -2575,7 +2575,7 @@ class TestCategoricalSourceCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         n_before = len(bodies)
         _click_pie_slice(page, "#fv-plot-0", 0)
@@ -2614,7 +2614,7 @@ class TestCategoricalSourceCube:
         url = _treemap_source_dashboard_url(server_port, "_cube_browser_treemapclick")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-0')"
             "?.data?.[0]?.ids?.includes('root/g0/h1')"
@@ -2673,7 +2673,7 @@ class TestCategoricalSourceCube:
         url = _categorical_legacy_dashboard_url(server_port, "_cube_browser_catoff")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _hist_y(page, "#fv-plot-2")
@@ -2726,7 +2726,7 @@ class TestCategoricalSourceCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         line_before = _line_xy(page, "#fv-plot-1")
@@ -2801,7 +2801,7 @@ class TestCubeSourceIdentity:
         url = _ambiguous_source_dashboard_url(server_port, "_cube_browser_ambig")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || [])"
             ".some(t => (t.ids || []).includes?.('root/g0/h1'))"
@@ -2887,7 +2887,7 @@ class TestCubeSourceIdentity:
         page.route("**/dashboard/update", handle)
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -2942,7 +2942,7 @@ class TestCubeStoreByteBound:
         still admitted afterwards and the byte counter stays exact."""
         url = _two_hist_dashboard_url(server_port, "_cube_browser_bytes", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         result = page.evaluate("""() => {
                 const prevBudget = fvCubeStoreSetBudget(1000);
@@ -2994,7 +2994,7 @@ class TestCubeStoreByteBound:
         blob = encode_fvcube(build_cube(df.lazy(), spec), "k")
         url = _two_hist_dashboard_url(server_port, "_cube_browser_index", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         result = page.evaluate(
             """(b64) => {
@@ -3027,7 +3027,7 @@ class TestCubeStoreByteBound:
         url = _two_hist_dashboard_url(server_port, "_cube_browser_bigblob", "auto")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         page.evaluate("fvCubeStoreSetBudget(64)")  # below any real cube
 
@@ -3118,7 +3118,7 @@ class TestCompositeLabelUnicodeParity:
 
         url = _two_hist_dashboard_url(server_port, "_cube_browser_jsondumps", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         cases = [("é", "x"), ("🎉", "x"), ("\x07", "x"), ("\x7f", "x"), ("a", "x")]
         for parts in cases:
@@ -3145,7 +3145,7 @@ class TestCompositeLabelUnicodeParity:
         expected_colors = [cmap[label] for label in expected_labels]
 
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_init = _bar_xy(page, "#fv-plot-1")
@@ -3209,7 +3209,7 @@ class TestNullLabelBarCube:
         which also emits the raw null (nulls sort first on both sides)."""
         url = _null_label_bar_dashboard_url(server_port, "_cube_browser_nulllabel")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_init = _bar_xy(page, "#fv-plot-1")
@@ -3248,7 +3248,7 @@ class TestNanLabelBarCube:
             pl.Series("g", [values[i % 3] for i in range(df_height)], dtype=pl.Float64),
         )
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         bar_init = _bar_xy(page, "#fv-plot-1")
@@ -3373,7 +3373,7 @@ class TestCubeLabelParity:
         screen. It must equal the server delta for the committed spec: same
         traces in the same order, same labels in the same order."""
         page.goto(_label_parity_url(server_port, kind))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         init = page.eval_on_selector("#fv-plot-1", _READ_PARITY)
 
@@ -3517,7 +3517,7 @@ class TestStalePassiveGuard:
         url = _three_hist_dashboard_url(server_port, "_cube_browser_stale")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         # --- Phase 1: brush + commit on A (zero-passive, live, skipPost) ---
         _fig_select_mode(page, 0)
@@ -3625,7 +3625,7 @@ class TestClientPassiveKeying:
         included."""
         url = _two_hist_dashboard_url(server_port, "_cube_browser_pkeyjs", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         checks = page.evaluate("""() => {
                 const sel = (uid, ...preds) =>
                   ({source_figure_uid: uid, predicates: preds});
@@ -3679,7 +3679,7 @@ class TestClientPassiveKeying:
         url = _three_hist_dashboard_url(server_port, "_cube_browser_lazy2")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         # Brush+commit A (zero-passive warm, skipPost).
         _fig_select_mode(page, 0)
@@ -3720,7 +3720,7 @@ class TestClientPassiveKeying:
         url = _three_hist_dashboard_url(server_port, "_cube_browser_desel")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         # 1. Brush+commit B — warms B-gesture zero-passive cubes (A + C).
         _fig_select_mode(page, 1)
@@ -3769,7 +3769,7 @@ class TestClientPassiveKeying:
         url = _pie_with_other_dashboard_url(server_port, "_cube_browser_piefgn")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         # Foreign selection: brush+commit on Other (fig 2, hist a).
         _fig_select_mode(page, 2)
@@ -3858,7 +3858,7 @@ class TestOverlayCube:
         url = _overlay_dashboard_url(server_port, "_cube_browser_ovl")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         unfiltered = [
@@ -3918,7 +3918,7 @@ class TestOverlayCube:
         rendering — fg gone, bg back to full opacity."""
         url = _overlay_dashboard_url(server_port, "_cube_browser_ovlabandon")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         before = _rendered_layers(page, "#fv-plot-1")
@@ -3953,7 +3953,7 @@ class TestOverlayCube:
         url = _overlay_dashboard_url(server_port, "_cube_browser_ovlmix", with_box=True)
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         unfiltered = [
@@ -4022,7 +4022,7 @@ class TestOverlayCube:
         url = _overlay_dashboard_url(server_port, "_cube_browser_ovloff", "off")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         before = _rendered_layers(page, "#fv-plot-1")
@@ -4151,7 +4151,7 @@ class TestTemporalSourceCube:
         url = _temporal_dashboard_url(server_port, "_cube_browser_tsus")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _fig_select_mode(page, 0)
 
         n0 = len(bodies)
@@ -4172,7 +4172,7 @@ class TestTemporalSourceCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _fig_select_mode(page, 0)
 
         n0 = len(bodies)
@@ -4194,7 +4194,7 @@ class TestTemporalSourceCube:
         url = _temporal_dashboard_url(server_port, "_cube_browser_tsday", kind="date")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _fig_select_mode(page, 0)
 
         n0 = len(bodies)
@@ -4279,7 +4279,7 @@ class TestZoomKeyInterplayBrowser:
         url = _zoomed_dashboard_url(server_port, "_cube_browser_zsrc", src_zoom=zoom)
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _fig_select_mode(page, 0)
 
         n0 = len(bodies)
@@ -4309,7 +4309,7 @@ class TestZoomKeyInterplayBrowser:
         url = _zoomed_dashboard_url(server_port, "_cube_browser_ztgt")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _fig_select_mode(page, 0)
 
         # Brush 1 (unzoomed): warms the unzoomed-target key.
@@ -4369,7 +4369,7 @@ class TestZoomKeyInterplayBrowser:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         # Foreign selection: brush+commit on Third (hist c).
         _fig_select_mode(page, 2)
@@ -4459,7 +4459,7 @@ class TestBoxLineSourceCube:
         url = _box_source_dashboard_url(server_port, "_cube_browser_boxsrc")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         _fig_select_mode(page, 0)
         n0 = len(bodies)
@@ -4489,7 +4489,7 @@ class TestBoxLineSourceCube:
         url = _line_source_dashboard_url(server_port, "_cube_browser_linesrc")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         _fig_select_mode(page, 0)
         n0 = len(bodies)
@@ -4798,7 +4798,7 @@ class TestLineGapsClientSide:
         exceeds 4.1 * median(1 day), so one null lands before the final point."""
         url = _temporal_line_gap_url(server_port, "_line_gap_helper")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         out = page.evaluate("""() => window.fvApplyLineGaps(
                 ['2020-01-01', '2020-01-02', '2020-01-03', '2020-09-01'],
                 [1, 2, 3, 4], true)""")
@@ -4819,7 +4819,7 @@ class TestLineGapsClientSide:
         so the committed line interpolated across the band)."""
         url = _temporal_line_gap_url(server_port, "_line_gap_tz")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         out = page.evaluate(
             """(s) => window.fvApplyLineGaps(
                 ['2020-01-01T00:00:00'+s, '2020-01-02T00:00:00'+s,
@@ -4843,7 +4843,7 @@ class TestLineGapsClientSide:
         -05:30 -- must collapse to a SINGLE physical value (the µs epoch)."""
         url = _temporal_line_gap_url(server_port, "_tz_phys_arith")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         vals = page.evaluate("""() => ({
                 z:       window.fvTemporalToPhysical('2020-01-01T00:00:00Z', 'us'),
                 naive:   window.fvTemporalToPhysical('2020-01-01T00:00:00', 'us'),
@@ -4873,7 +4873,7 @@ class TestLineGapsClientSide:
         client (fvApplyLineGaps) inserts the gap from ISO-string x."""
         url = _temporal_line_gap_url(server_port, "_line_temporal_gap")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         xy = _line_xy(page, "#fv-plot-0")
         assert len(xy["y"]) > 0
         assert None in xy["y"], "temporal init line must break across the band"
@@ -4887,7 +4887,7 @@ class TestLineGapsClientSide:
         empty date band -- regression: the tz suffix defeated the gap parser."""
         url = _temporal_line_gap_url(server_port, "_line_tz_gap", tz="UTC")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         xy = _line_xy(page, "#fv-plot-0")
         assert len(xy["y"]) > 0
         assert None in xy["y"], "tz-aware temporal init line must break across band"
@@ -4926,7 +4926,7 @@ class TestTemporalHistogramRender:
         every point counted (regression: fixed_hist panicked → no trace)."""
         url = _temporal_histogram_url(server_port, f"_temp_hist_{tz}", tz=tz)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         info = page.eval_on_selector(
             "#fv-plot-0",
             """gd => ({
@@ -4955,7 +4955,7 @@ class TestLineTargetCube:
 
         url = _temporal_line_target_dashboard_url(server_port, "_cube_tline_tgt")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # The target axis is a date axis and the server seeds it with ISO
@@ -5012,7 +5012,7 @@ class TestLineTargetCube:
             server_port, "_cube_gtline_tgt"
         )
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         assert page.evaluate("divs[1]._fullLayout.xaxis.type") == "date"
@@ -5065,7 +5065,7 @@ class TestLineTargetCube:
         url = _line_target_dashboard_url(server_port, "_cube_browser_line_live")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         line_before = _line_xy(page, "#fv-plot-1")
@@ -5121,7 +5121,7 @@ class TestLineTargetCube:
         ``base`` in update) and asserts the gap is present mid-drag."""
         url = _line_gap_dashboard_url(server_port, f"_cube_line_gap_{mode}", mode)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # Sanity: the rendered init line breaks across the empty band. The
@@ -5182,7 +5182,7 @@ class TestLineTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         x1, x2, y, _width = _drag_coords(page)
@@ -5260,7 +5260,7 @@ class TestLineTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         y_before = _target_y(page)
@@ -5286,7 +5286,7 @@ class TestLineTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         read_children = (
@@ -5473,7 +5473,7 @@ class TestCorrTargetCube:
         url = _corr_target_dashboard_url(server_port, "_cube_browser_corr_live")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_before = _corr_z(page)
@@ -5522,7 +5522,7 @@ class TestCorrTargetCube:
         url = _corr_target_dashboard_url(server_port, "_cube_browser_corr_commit")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_before = _corr_z(page)
@@ -5584,7 +5584,7 @@ class TestCorrTargetCube:
         url = _corr_mixed_dashboard_url(server_port, "_cube_browser_corr_spearman")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_corr_before = _corr_z(page, "#fv-plot-2")
@@ -5771,7 +5771,7 @@ class TestBox2dSourceCube:
         url = _box2d_dashboard_url(server_port, "_cube_box2d_live")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         hist_before = _target_y(page)  # hist(c) is #fv-plot-1
@@ -5825,7 +5825,7 @@ class TestBox2dSourceCube:
         url = _box2d_dashboard_url(server_port, "_cube_box2d_commit")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         hist_before = _target_y(page)
@@ -5885,7 +5885,7 @@ class TestBox2dSourceCube:
         bodies = _capture_updates(page)
         posts = _capture_posts(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         # Gesture 1: a fresh box-select commits + warms the store.
@@ -5975,7 +5975,7 @@ class TestBox2dSourceCube:
         url = _box2d_dashboard_url(server_port, "_cube_box2d_off", "off")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         coords = _box2d_drag_coords(page)
@@ -6108,7 +6108,7 @@ class TestHist2dTargetCube:
             cross_filter_mode="overlay",
         )
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         z = _hist2d_z(page)
         assert len(z) == _H2T_NB_Y and len(z[0]) == _H2T_NB_X
@@ -6124,7 +6124,7 @@ class TestHist2dTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         z_unfiltered = _hist2d_z(page)
         page.click("#fv-btn-cfmode")
@@ -6169,7 +6169,7 @@ class TestHist2dTargetCube:
         url = _hist2d_target_dashboard_url(server_port, "_cube_browser_h2d_live")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_before = _hist2d_z(page)
@@ -6216,7 +6216,7 @@ class TestHist2dTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_before = _hist2d_z(page)
@@ -6258,7 +6258,7 @@ class TestHist2dTargetCube:
         url = _hist2d_target_dashboard_url(server_port, "_cube_browser_h2d_commit")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         z_before = _hist2d_z(page)
@@ -6402,7 +6402,7 @@ class TestTreeMapTargetCube:
 
         url = _treemap_target_dashboard_url(server_port, "_cube_browser_tm_urlquote")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         cases = [" ", "/", "!", "*", "'", "(", ")", "~", "%", "é", "&", "=", "a b"]
         for ch in cases:
@@ -6419,7 +6419,7 @@ class TestTreeMapTargetCube:
         df = _treemap_target_df()
         url = _treemap_target_dashboard_url(server_port, "_cube_browser_tm_rollup")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         before = _treemap_data(page)
@@ -6466,7 +6466,7 @@ class TestTreeMapTargetCube:
         url = _treemap_target_dashboard_url(server_port, "_cube_browser_tm_live")
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         root_before = _treemap_data(page)["values"][0]
@@ -6539,7 +6539,7 @@ class TestTreeMapTargetCube:
         )
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
 
         before = _treemap_data(page)["values"]
@@ -6609,7 +6609,7 @@ class TestHistSourceBarGrid:
         df = _edge_df()
         url = _two_hist_dashboard_url(server_port, "_cube_bar_grid", "auto", df=df)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         source_counts = _hist_y(page, "#fv-plot-0")
 
@@ -6641,7 +6641,7 @@ class TestHistSourceBarGrid:
         df = _edge_df()
         url = _two_hist_dashboard_url(server_port, "_cube_bar_clear", "auto", df=df)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         y_unfiltered = _target_y(page)
 
@@ -6703,7 +6703,7 @@ class TestCubeGridGuards:
         else:
             url = _two_hist_dashboard_url(server_port, "_cube_empty_frame", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         before = _rendered_layers(page, "#fv-plot-1")
         lo, hi, bars = _free_grid(df)
@@ -6730,7 +6730,7 @@ class TestCubeGridGuards:
         match. A blob built for another trace's grid is rejected."""
         url = _two_hist_dashboard_url(server_port, "_cube_hdr_guard", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         got = page.evaluate("""() => {
             const key = (free) => JSON.stringify({s: 's', free});
             const one = (p, d, hp, dom, kind = 'continuous') => fvCubeHeaderMatchesKey(
@@ -6792,7 +6792,7 @@ class TestCubeGridGuards:
             f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
             "&renderer=plotly"
         )
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         hist_uid = next(
             t.uid for t in spec.figures[0].traces if t.trace_type == "histogram"
         )
@@ -6807,7 +6807,7 @@ class TestCubeGridGuards:
         """fvCubeSnap and flexviz.cube.snap_brush agree bit for bit."""
         url = _two_hist_dashboard_url(server_port, "_cube_snap_parity", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         cases = []
         for lo, hi in (
             (0.0, 100.0),
@@ -6861,7 +6861,7 @@ class TestCubeGridGuards:
 
         url = _two_hist_dashboard_url(server_port, "_cube_unit_edges", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         rng = random.Random(7)
         cases = []
         for _ in range(300):
@@ -6898,7 +6898,7 @@ class TestCubeGridGuards:
 
         url = _two_hist_dashboard_url(server_port, "_cube_far_edges", "auto")
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         lo, hi = 1.5778368e15, 2.534022144e17  # 2020-01-01, 9999-12-31 in µs
         edges = page.evaluate(
             """([lo, hi]) => {
@@ -6920,7 +6920,7 @@ class TestCubeGridGuards:
         df = pl.DataFrame({"a": [1e7] * 10, "b": [float(v) for v in range(10)]})
         url = _two_hist_dashboard_url(server_port, "_cube_constant", "auto", df=df)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         _brush_commit(page, 0, 0.48, 0.52)
         page.wait_for_timeout(300)
@@ -6963,7 +6963,7 @@ class TestBox2dZoomedSource:
         url = _box2d_zoomed_url(server_port, "_cube_box2d_zoomed", zoom)
         bodies = _capture_updates(page)
         page.goto(url)
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         _enter_select_mode(page)
         hist_before = _target_y(page)
         coords = _box2d_drag_coords(page)
@@ -7033,7 +7033,7 @@ def _short_date_page(page: Page, server_port: int):
     page.goto(
         f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}&renderer=plotly"
     )
-    _wait_for_init(page, "plotly")
+    _wait_for_init(page)
     _enter_select_mode(page)
     return df, spec
 

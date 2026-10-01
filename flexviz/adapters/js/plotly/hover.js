@@ -5,8 +5,8 @@ let _hoverSuspendedForDrag = false;
 const hoverGuidesByFig = {};
 window.__fvHoverGuidesByFig = hoverGuidesByFig;
 
-// Teal color system — matches spec CSS tokens
-const LINKED_HOVER_LINE_STYLE = { color: 'rgba(13, 148, 136, 0.85)', width: 2, dash: 'solid' };
+// The guides are DOM overlays, so the theme tokens reach them as CSS variables.
+const LINKED_HOVER_LINE_STYLE = { color: 'var(--fv-hover-color)', width: 2, dash: 'solid' };
 
 // ── Overlay DOM helpers (unchanged from previous version) ──────────────────
 
@@ -58,6 +58,7 @@ function ensureHoverOverlay(figUid) {
     });
     div.appendChild(overlay);
   }
+  if (div._fullLayout) overlay.dataset.fvMode = fvPlotSurfaceMode(div._fullLayout);
   return overlay;
 }
 
