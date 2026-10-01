@@ -19,20 +19,48 @@ app.
 These rules apply to every web framework:
 
 - Give the `Dashboard` the same data as the source: the registered frame, or a
-  lazy scan of the same file. A scan reads no rows until a query runs. A
-  `Dashboard()` without data gives figures without a source name, so each
-  update fails and the panels stay empty.
+  lazy scan of the same file.
 - Give `share_url()` the name of the registered source in `source_name`.
-- Use the same prefix in the mount and in `server_url`. If a proxy serves the
-  web app under a path, such as `/app`, put that path in front:
-  `server_url="/app/flexviz"`.
+- Use the same prefix in the mount and in `server_url`.
+- If a proxy serves the web app under a path, such as `/app`, put that path in
+  front: `server_url="/app/flexviz"`.
 - Register all sources before the server starts.
+- Do not change the data of a registered source while the server runs. To show
+  new data, restart the server.
+
+A broken rule shows only in the browser. A lazy scan reads no rows until a
+query runs, so the web app can build its `Dashboard` on a scan at no cost. A
+`Dashboard()` without data gives figures without a source name, and each update
+of these figures fails. After a change of a scanned file, the updates also
+fail. With `cache=True`, the first view of each figure can show the old data.
+See [Caching and live brushing](caching-and-live-brushing.md).
+
+## Example data
+
+The examples read `readings.parquet`, a file with a `timestamp` and a `power`
+column.
+
+To make a test file with 2 million rows, run this script one time:
+
+```python
+# make_data.py
+import numpy as np
+import polars as pl
+
+n = 2_000_000
+pl.select(
+    timestamp=pl.datetime(2026, 1, 1) + pl.duration(seconds=pl.int_range(n)),
+    power=pl.Series(np.random.default_rng(0).standard_normal(n).cumsum()),
+).write_parquet("readings.parquet")
+```
 
 ## Streamlit
 
-Streamlit 1.57 or newer can add routes to its own server with `st.App`. Use
-two files. `app.py` runs one time, when the server starts. `page.py` is the
-Streamlit script, which runs again after each widget change.
+Streamlit 1.57 or newer can add routes to its own server with `st.App`. The
+app then has two files. `app.py` runs one time, when the server starts.
+`page.py` is the Streamlit script, which runs again after each widget change.
+
+Put the source and the mount in `app.py`:
 
 ```python
 # app.py
@@ -44,6 +72,8 @@ from starlette.routing import Mount
 flexviz.register_source("readings", pl.scan_parquet("readings.parquet"), cache=True)
 app = st.App("page.py", routes=[Mount("/flexviz", app=flexviz.app)])
 ```
+
+Put the page in `page.py`:
 
 ```python
 # page.py
@@ -87,21 +117,25 @@ example, only a change of `bins` loads the dashboard again.
 
 ### Set the height
 
-`st.iframe` cannot measure the height of the dashboard, so it uses 400 px. Set
-the height yourself. A panel is 400 px by default, and the toolbar is about
-45 px. While a selection is active, a 45 px bar with the active filters shows
-at the bottom. The two stacked panels in the example thus need 890 px. See
+`st.iframe` cannot measure the height of the dashboard, so it uses 400 px. A
+panel is 400 px by default, and the toolbar is about 45 px. While a selection
+is active, a 45 px bar with the active filters shows at the bottom. The two
+stacked panels in the example thus need 890 px. See
 [Who owns width and height](embedding.md#who-owns-width-and-height).
+
+Set the height of the iframe yourself, as `height=900` does in `page.py`.
 
 ## Dash
 
-Dash 4.2 or newer can run on FastAPI. Install it with the FastAPI extra:
+Dash 4.2 or newer can run on FastAPI.
+
+Install Dash with the FastAPI extra:
 
 ```bash
 pip install "dash[fastapi]"
 ```
 
-Then mount FlexViz on `app.server`:
+Mount FlexViz on `app.server`:
 
 ```python
 # app.py
@@ -119,23 +153,28 @@ url = dashboard.share_url(server_url="/flexviz", source_name="readings", cols=1)
 app = Dash(__name__, backend="fastapi")
 mount_into(app.server, prefix="/flexviz")
 app.layout = html.Iframe(
-    src=url, style={"width": "100%", "height": "460px", "border": 0}
+    src=url,
+    title="Sensor readings dashboard",
+    style={"width": "100%", "height": "460px", "border": 0},
 )
 
 if __name__ == "__main__":
     app.run()
 ```
 
-Start it with `python app.py`. The URL is a plain string, so a Dash callback
-can return a new one to `html.Iframe.src`.
+Start the app with `python app.py`.
 
-On the default Flask backend, or before Dash 4.2, `app.server` is a Flask app.
-Apply the [Flask recipe](#flask-and-other-wsgi-apps) to it.
+The URL is a plain string, so a Dash callback can return a new one to
+`html.Iframe.src`.
+
+On the default Flask backend, or before Dash 4.2, apply the
+[Flask recipe](#flask-and-other-wsgi-apps) to `app.server`.
 
 ## Gradio
 
-Gradio mounts into a FastAPI app with `gr.mount_gradio_app`. Mount FlexViz on
-the same FastAPI app first:
+Gradio mounts into a FastAPI app with `gr.mount_gradio_app`.
+
+Mount FlexViz on the same FastAPI app, before Gradio:
 
 ```python
 # app.py
@@ -154,7 +193,8 @@ url = dashboard.share_url(server_url="/flexviz", source_name="readings", cols=1)
 
 with gr.Blocks() as demo:
     gr.HTML(
-        f'<iframe src="{url}" style="width: 100%; height: 460px; border: 0"></iframe>'
+        f'<iframe src="{url}" title="Sensor readings dashboard" '
+        'style="width: 100%; height: 460px; border: 0"></iframe>'
     )
 
 app = FastAPI()
@@ -175,20 +215,22 @@ if __name__ == "__main__":
 
 A web framework that runs on FastAPI or Starlette takes the same mount. For
 example, the `app` of NiceGUI is a FastAPI app, so
-`mount_into(app, prefix="/flexviz")` adds FlexViz to it. Show the URL in the
-iframe element of the framework.
+`mount_into(app, prefix="/flexviz")` adds FlexViz to it.
 
 ### Flask and other WSGI apps
 
 A WSGI app, such as Flask, cannot mount FlexViz directly, because FlexViz is an
-ASGI app. Install [a2wsgi](https://pypi.org/project/a2wsgi/) to wrap FlexViz:
+ASGI app. The [a2wsgi](https://pypi.org/project/a2wsgi/) package wraps FlexViz
+as a WSGI app. The example leaves out the source and the `url`, which are the
+same as in the Dash example.
+
+Install a2wsgi:
 
 ```bash
 pip install a2wsgi
 ```
 
-Then mount the wrapped app with the dispatcher of Werkzeug. The example leaves
-out the source and the `url`. Build them as in the Dash example.
+Mount the wrapped app with the dispatcher of Werkzeug:
 
 ```python
 import flexviz
@@ -205,7 +247,8 @@ app.wsgi_app = DispatcherMiddleware(
 @app.get("/")
 def index():
     return (
-        f'<iframe src="{url}" style="width: 100%; height: 460px; border: 0"></iframe>'
+        f'<iframe src="{url}" title="Sensor readings dashboard" '
+        'style="width: 100%; height: 460px; border: 0"></iframe>'
     )
 ```
 
@@ -216,26 +259,37 @@ Start the app with `flask --app app run`.
 - The Python code of the web app cannot read the zoom or the selections in the
   dashboard. The **Share** button gives a URL with the full view.
 - The server always queries the registered source. A filter on the frame of
-  the `Dashboard`, such as `lf.filter(...)`, thus has no effect. To show a
-  subset, register it as a separate source, and let a widget select the
-  `source_name`.
-- A widget can change the spec: data columns, traces, bins, or layout. To
-  filter rows while you explore, select in a FlexViz figure.
+  the `Dashboard`, such as `lf.filter(...)`, thus has no effect.
+- A subset of the data needs its own registered source. A widget can then
+  select it through `source_name`.
+- A widget can change the spec: data columns, traces, bins, or layout. A
+  selection in a FlexViz figure filters the rows of the other figures.
 - A new URL loads the dashboard again, and the view goes back to its start.
 
 ## Security
 
 The FlexViz routes have no authentication. Each user who can open the web app
-can query the registered sources through `/flexviz`. Before you deploy the web
-app, put authentication in front of it. Make sure that the authentication also
-covers the `/flexviz` routes.
+can query the registered sources through `/flexviz`. The mount also serves
+`/flexviz/h/N`, which reads the agent history file `.flexviz/history.jsonl` in
+the working folder of the server. See the
+[safety notes for agents](ai-agents.md#safety-notes).
 
-Streamlit listens on all network interfaces by default. For local use, start
-it with `streamlit run app.py --server.address 127.0.0.1`.
+Streamlit listens on all network interfaces by default. The `Host` check of
+`show()` and `flexviz serve` does not apply to a mounted app.
 
-The `Host` check of `show()` and `flexviz serve` does not apply to a mounted
-app. On a loopback address, wrap FlexViz in Starlette's `TrustedHostMiddleware`
-before you mount it:
+Before you deploy the web app:
+
+- Put authentication in front of it. Make sure that the authentication also
+  covers the `/flexviz` routes.
+- Do not run it from a folder that holds `.flexviz/history.jsonl`.
+
+For local use:
+
+- Start Streamlit with `streamlit run app.py --server.address 127.0.0.1`.
+- Wrap FlexViz in Starlette's `TrustedHostMiddleware`, as the example that
+  follows shows. Then mount `guarded` in place of `flexviz.app`, for example
+  with `app.mount("/flexviz", guarded)`. For Flask, wrap `guarded` in
+  `ASGIMiddleware`.
 
 ```python
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -243,7 +297,5 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 guarded = TrustedHostMiddleware(flexviz.app, allowed_hosts=["localhost", "127.0.0.1"])
 ```
 
-Mount `guarded` in place of `flexviz.app`, for example with
-`app.mount("/flexviz", guarded)`. For Flask, wrap `guarded` in
-`ASGIMiddleware`. FlexViz then refuses a request for another host name, which
-blocks DNS rebinding.
+The middleware refuses a request for another host name, which blocks DNS
+rebinding.
