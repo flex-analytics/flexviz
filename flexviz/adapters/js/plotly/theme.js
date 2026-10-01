@@ -12,6 +12,24 @@ function fvIsDarkMode() {
   return document.documentElement.dataset.fvMode === 'dark';
 }
 
+const _fvColorCanvas = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+
+// 'light' or 'dark': the mode of a figure's own plot background. A see-through
+// plot background shows the paper, and a see-through paper shows the page.
+function fvPlotSurfaceMode(fullLayout) {
+  for (const color of [fullLayout.plot_bgcolor, fullLayout.paper_bgcolor]) {
+    _fvColorCanvas.clearRect(0, 0, 1, 1);
+    _fvColorCanvas.fillStyle = color;
+    _fvColorCanvas.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = _fvColorCanvas.getImageData(0, 0, 1, 1).data;
+    if (a < 128) continue;
+    // Below a relative luminance of 0.18, light text has the higher contrast.
+    const linear = c => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b) < 0.18 ? 'dark' : 'light';
+  }
+  return fvIsDarkMode() ? 'dark' : 'light';
+}
+
 // The OpenStreetMap tiles of Plotly's 'open-street-map' style, darkened by
 // MapLibre raster paint. The id differs from the light style, so Plotly sets
 // the style again on a mode switch.

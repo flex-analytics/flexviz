@@ -58,6 +58,7 @@ function ensureHoverOverlay(figUid) {
     });
     div.appendChild(overlay);
   }
+  if (div._fullLayout) overlay.dataset.fvMode = fvPlotSurfaceMode(div._fullLayout);
   return overlay;
 }
 

@@ -8140,6 +8140,37 @@ class TestThemeBrowser:
         )
         assert borders == ["#123456", "#123456"]
 
+    @pytest.mark.parametrize(
+        ("scheme", "layout", "guide"),
+        [
+            ("dark", {"template": {"layout": {}}}, "rgba(27, 35, 44, 0.75)"),
+            ("dark", {"plot_bgcolor": "#ffffff"}, "rgba(27, 35, 44, 0.75)"),
+            ("light", {"plot_bgcolor": "#111111"}, "rgba(230, 237, 243, 0.7)"),
+        ],
+    )
+    def test_hover_guides_follow_the_plot_background(
+        self, page: Page, server_port: int, scheme: str, layout: dict, guide: str
+    ):
+        # A figure can set its plot background apart from the page mode.
+        df = pl.DataFrame({"x": [float(i) for i in range(20)], "y": [1.0] * 20})
+        url = _color_norm_url(
+            server_port,
+            "_browser_theme_guides",
+            df,
+            lambda d: d.add_figure().add_line(x="x", y="y").update_layout(**layout),
+        )
+        page.emulate_media(color_scheme=scheme)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        drawn = page.evaluate("""() => {
+            const uid = DASHBOARD_SPEC.figures[0].uid;
+            window.__fvApplyHoverVisuals(uid, [{type: 'x_guide', value: 10}]);
+            return getComputedStyle(document.querySelector('.fv-hover-guide'))
+                .borderLeftColor;
+        }""")
+        assert drawn == guide
+
     def test_overlay_legend_swatches_keep_full_opacity(
         self, page: Page, server_port: int
     ):

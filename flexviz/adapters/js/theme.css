@@ -6,8 +6,10 @@
 /* The outer panel shell, inner plot surface, and lower control bar intentionally */
 /* have separate tokens so demos can either keep them identical or create contrast. */
 /* The plot tokens (--fv-series, --fv-plot-*) drive the renderer's plot template. */
+/* A linked-hover overlay takes the mode of its own plot background, which a figure */
+/* with its own template or plot_bgcolor can set apart from the page mode. */
 
-:root {
+:root, .fv-hover-overlay[data-fv-mode="light"] {
   /* Accent / primary action */
   --fv-accent:               #4f46e5; /* Solid accent fill for active primary controls */
   --fv-accent-dark:          #4338ca; /* Darker accent used for pressed/hovered active controls */
@@ -120,7 +122,7 @@
   --fv-plot-select:          var(--fv-plot-text); /* Brush outline */
 }
 
-:root[data-fv-mode="dark"] {
+:root[data-fv-mode="dark"], .fv-hover-overlay[data-fv-mode="dark"] {
   /* Accent / primary action */
   --fv-accent:               #818cf8;
   --fv-accent-dark:          #6366f1;

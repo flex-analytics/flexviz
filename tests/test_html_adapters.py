@@ -1062,9 +1062,7 @@ class TestThemeCss:
         from flexviz.adapters.runtime import theme_css
 
         css = theme_css()
-        assert (
-            len(re.findall(r'^:root\[data-fv-mode="dark"\] \{', css, re.MULTILINE)) == 1
-        )
+        assert len(re.findall(r'^:root\[data-fv-mode="dark"\]', css, re.MULTILINE)) == 1
         assert "@media (prefers-color-scheme" not in css
 
     def test_series_palette_is_the_same_in_both_modes(self):
