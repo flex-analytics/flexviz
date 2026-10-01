@@ -131,7 +131,7 @@ class TestPredicateDashboard:
 
     def test_init_renders_all_six_figures(self, page: Page, server_port: int):
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         for i in range(6):
             page.wait_for_function(
                 f"() => document.querySelector('#fv-plot-{i}')?.data?.length > 0"
@@ -141,7 +141,7 @@ class TestPredicateDashboard:
         """Click leaf 'solar/NL' on treemap (fig 4) → verify line, both bars, pie, hist
         all show only solar+NL data."""
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-4')?.data?.[0]?.ids?.includes('root/solar/NL')"
         )
@@ -173,7 +173,7 @@ class TestPredicateDashboard:
 
     def test_pie_multi_label_click_filters_targets(self, page: Page, server_port: int):
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-3')?.data?.[0]?.labels?.length > 1"
         )
@@ -208,7 +208,7 @@ class TestPredicateDashboard:
     def test_bar_single_label_brush_filters_treemap(self, page: Page, server_port: int):
         # Programmatically post a categorical predicate on country=NL.
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-2')?.data || []).length > 0"
         )
@@ -238,7 +238,7 @@ class TestPredicateDashboard:
 
     def test_line_range_brush_filters_targets(self, page: Page, server_port: int):
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || []).length > 0"
         )
@@ -264,7 +264,7 @@ class TestPredicateDashboard:
         """A 2-D box-select on the line (x=ts, y=val) must yield only the x (ts)
         clause — line selection is x-only, so the y range is never emitted."""
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || []).length > 0"
         )
@@ -285,7 +285,7 @@ class TestPredicateDashboard:
         renders as a full-height band), and a y-only edit must be a no-op that
         snaps the band back rather than cropping it."""
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || []).length > 0"
         )
@@ -333,7 +333,7 @@ class TestPredicateDashboard:
 
     def test_treemap_double_click_toggles_off(self, page: Page, server_port: int):
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-4')?.data?.[0]?.ids?.includes('root/solar')"
         )
@@ -354,7 +354,7 @@ class TestPredicateDashboard:
 
     def test_repeated_select_deselect_cycle(self, page: Page, server_port: int):
         page.goto(_build_predicate_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-2')?.data || []).length > 0"
         )
@@ -424,7 +424,7 @@ class TestMixedRangeGeometry:
 
     def test_box_select_keeps_tightest_xy_predicate(self, page: Page, server_port: int):
         page.goto(_build_line_over_hist2d_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || []).length > 1"
         )
@@ -471,7 +471,7 @@ class TestSameColumnDifferentAxes:
 
     def test_box_select_keeps_both_axis_ranges(self, page: Page, server_port: int):
         page.goto(_build_same_col_two_axes_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => (document.querySelector('#fv-plot-0')?.data || []).length > 1"
         )

@@ -109,7 +109,7 @@ class TestPathPredicateUpsertJs:
     @pytest.mark.browser
     def test_upsert_toggle_append_and_refinement(self, page: Page, server_port: int):
         page.goto(_build_or_selection_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
 
         result = page.evaluate("""() => {
             const upsert = window.fvUpsertPathPredicate;
@@ -193,7 +193,7 @@ class TestTreemapPieOrCrossFilter:
 
     def test_treemap_sibling_leaves_or_cross_filter(self, page: Page, server_port: int):
         page.goto(_build_or_selection_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
         )
@@ -220,7 +220,7 @@ class TestTreemapPieOrCrossFilter:
         self, page: Page, server_port: int
     ):
         page.goto(_build_or_selection_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar/NL')"
         )
@@ -238,7 +238,7 @@ class TestTreemapPieOrCrossFilter:
         self, page: Page, server_port: int
     ):
         page.goto(_build_or_selection_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/solar')"
         )
@@ -254,7 +254,7 @@ class TestTreemapPieOrCrossFilter:
 
     def test_pie_sibling_slices_or_cross_filter(self, page: Page, server_port: int):
         page.goto(_build_pie_or_dashboard_url(server_port))
-        _wait_for_init(page, "plotly")
+        _wait_for_init(page)
         page.wait_for_function(
             "() => document.querySelector('#fv-plot-1')?.data?.[0]?.labels?.length > 1"
         )
