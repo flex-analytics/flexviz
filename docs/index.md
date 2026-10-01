@@ -192,5 +192,7 @@ and `add_geo_line`. See the [Figure API](api/figure.md) for every parameter.
   caching for static data and zero-latency brushing.
 - [Embedding](guides/embedding.md): mount FlexViz into an existing FastAPI
   app.
+- [Web apps](guides/web-apps.md): show a dashboard in a Streamlit, Dash, or
+  Gradio app.
 - [Agents](guides/ai-agents.md): drive FlexViz from a coding agent and read
   back what the human explored.

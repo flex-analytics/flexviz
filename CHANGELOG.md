@@ -20,6 +20,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Added
+
+- The Web apps guide shows a dashboard in a Streamlit, Dash, Gradio, or Flask
+  app, on the same port as the app.
+
 ### Security
 
 - The server sends no CORS headers any more, so a page of another site cannot
