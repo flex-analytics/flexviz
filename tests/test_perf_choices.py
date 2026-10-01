@@ -397,6 +397,54 @@ def test_cube_encoder_codes_columnar_not_per_row(
     )
 
 
+CUBE_GRID_ROWS = 2_000_000
+CUBE_GRID_BINS = 20
+
+
+def test_histogram_source_cube_is_binned_on_its_own_bars() -> None:
+    """Decision: a histogram source brushes on its own bars, so its cube free
+    axis has `P = bins`, not the fixed P = 2048 that box and line sources
+    keep (#133).
+
+    Evidence: `build_cube` + `encode_fvcube` on 2M rows, 20-bin source over a
+    20-bin histogram target: 18,875 cells (227 KB) at P = 2048 against 305
+    cells (4.2 KB) at P = 20. A grouped target (5 groups) went 1.18 MB to
+    21.7 KB, a 20 x 20 hist2d target 2.16 MB to 51.9 KB. The finer grid bought
+    nothing: a brush snaps to bar edges either way.
+
+    Check: the cube of a histogram source has at most bins x bins cells, at
+    least 50x fewer than the same cube at P = 2048. Cell counts, not timings.
+    """
+    from dataclasses import replace
+
+    from flexviz.trace.hist import Histogram
+
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {"a": rng.random(CUBE_GRID_ROWS), "b": rng.random(CUBE_GRID_ROWS)}
+    )
+    free = Histogram(x="a", bins=CUBE_GRID_BINS).get_cube_source_spec(None)
+    assert free is not None
+    free = replace(free, domain=(0.0, 1.0))
+    target = Histogram(x="b", bins=CUBE_GRID_BINS).get_cube_target_spec(None)
+    assert target is not None
+    dims = tuple(replace(d, domain=(0.0, 1.0)) for d in target.target_dims)
+
+    def cells(free_axis: FreeAxisSpec) -> int:
+        spec = CubeSpec(
+            source_name="s",
+            free=free_axis,
+            target_dims=dims,
+            measure=target.measure,
+        )
+        return build_cube(df.lazy(), spec).n_cells
+
+    own_grid = cells(free)
+    fixed_grid = cells(replace(free, p=2048))
+    assert own_grid <= CUBE_GRID_BINS * CUBE_GRID_BINS
+    assert own_grid * 50 <= fixed_grid, (own_grid, fixed_grid)
+
+
 def test_overlay_backgrounds_share_one_aggregate_call() -> None:
     """Decision: in overlay mode the engine runs the unfiltered background of
     every partition (each selection-owning figure is its own partition) in one

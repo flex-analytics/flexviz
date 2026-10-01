@@ -48,7 +48,7 @@ from .base import (
     _to_col_tuple,
 )
 from .batch_fold import hist1d_fold_plan
-from .bin_grid import snap_range, snapped_axis
+from .bin_grid import snapped_axis, snapped_domain
 
 # For 1-D histograms "histnorm" describes what the count-axis displays, so
 # "count" (raw bin counts) is a meaningful, natural value — not a no-op.
@@ -57,13 +57,6 @@ _HISTNORM_OPTIONS = ("count",) + _HIST2D_HISTNORM_OPTIONS[1:]
 # ---------------------------------------------------------------------------
 # Bin-edge helpers
 # ---------------------------------------------------------------------------
-
-#: Small offset added to the upper bound (``hi``) so the maximum data point
-#: always falls inside the last bin and bin edges are never degenerate. On a
-#: zoomed axis it pads the *snapped* ``hi``, so a value sitting exactly on it
-#: still lands in the last bin. Distinct from the cube's
-#: ``_FIXED_HIST_ROUND_EPS``, which pads the bin index instead of ``hi``.
-_HIST_BIN_EPSILON: float = 1e-10
 
 
 def _streaming_hist_plan(
@@ -252,6 +245,7 @@ class Histogram(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A brush on a histogram defines a 1-D free axis on its data column.
 
@@ -259,12 +253,16 @@ class Histogram(FlexTrace):
         temporal dtype (Date/Datetime/Time), else ``"continuous"`` — including
         when no schema is available. Grouped histograms are still valid
         sources: the brush is on the shared data axis, independent of the
-        grouping. ``domain`` is the viewport range verbatim (``None`` =
-        unzoomed; the engine resolves it to the full data domain).
+        grouping. The free axis is the histogram's own bar grid, so a brush
+        over bars k..m commits their edges: ``p = bins`` and ``domain=None``
+        unzoomed (the engine resolves the full data domain); zoomed, the
+        viewport snapped to the display lattice (``snapped_domain``, as for
+        the target).
         """
         dtype = _dtype_for_col(schema, self.data_col)
         kind = "temporal" if dtype is not None and dtype.is_temporal() else "continuous"
-        return FreeAxisSpec(column=self.data_col, kind=kind, p=2048, domain=axis_range)
+        domain, bins = snapped_domain(axis_range, self.bins)
+        return FreeAxisSpec(column=self.data_col, kind=kind, p=bins, domain=domain)
 
     def get_cube_target_spec(
         self,
@@ -279,10 +277,6 @@ class Histogram(FlexTrace):
         ``domain`` and ``bins``, so a cube-served bar would otherwise miss the
         server's bar. ``axis_range`` is already physical here
         (``FlexEngine._cube_axis_range``), so only the lattice rule applies.
-        The trace never adds ``_HIST_BIN_EPSILON``: the **engine**
-        epsilon-pads the upper bound uniformly when resolving domains (both
-        ``None``-resolved full domains and snapped viewports), mirroring
-        ``_histogram_bounds_exprs`` so cube bins align with display bins.
 
         A **grouped** histogram appends one categorical dim per ``group_by``
         column after the binned dim (pinned order — contract C); the client
@@ -295,12 +289,7 @@ class Histogram(FlexTrace):
         group_cols = self.group_by_cols or ()
         if group_cols and not _categorical_dims_ok(schema, group_cols):
             return None
-        bins, domain = self.bins, None
-        if axis_range is not None:
-            lo, hi, bins = snap_range(
-                float(axis_range[0]), float(axis_range[1]), self.bins
-            )
-            domain = (lo, hi)
+        domain, bins = snapped_domain(axis_range, self.bins)
         return CubeTargetSpec(
             target_dims=(
                 TargetDimSpec(
@@ -428,10 +417,14 @@ class Histogram(FlexTrace):
         and the mask restricts the rows to that same span, so an edge bin is
         complete. Snapping costs at most one extra bin, which is why the count
         comes back too.
+
+        The edges are the bounds themselves, never padded: the kernel's top
+        clamp puts a value at ``hi`` in the last bin, and the bin range stays
+        the row range the mask keeps.
         """
         if axis_range is not None:
             lo, hi, n, mask = snapped_axis(self.data_col, axis_range, self.bins, schema)
-            return lo, hi + _HIST_BIN_EPSILON, n, mask
+            return lo, hi, n, mask
 
         # The trace's own column must be a resolved key; a missing key means
         # the caller violated the unzoomed-domains contract.
@@ -448,7 +441,7 @@ class Histogram(FlexTrace):
         # f64, so the edges are floats from here on.
         lo = float(min(los)) if los else 0.0
         hi = float(max(his)) if his else 1.0
-        return lo, hi + _HIST_BIN_EPSILON, self.bins, None
+        return lo, hi, self.bins, None
 
     def _to_update(
         self,
@@ -461,8 +454,8 @@ class Histogram(FlexTrace):
 
         lo, hi, n_bins = self._bin_edges
         step = (hi - lo) / n_bins
-        # hi == lo is the kernel's degenerate span: its epsilon pad vanishes at
-        # the column's magnitude. Use 1.0 so density norms stay finite.
+        # hi == lo (a constant column) has no step. Use 1.0 so density norms
+        # stay finite.
         bin_width = step if step > 0.0 else 1.0
         centers = (pl.int_range(0, n_bins, eager=True) + 0.5) * step + lo
 

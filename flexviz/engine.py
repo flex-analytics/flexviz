@@ -31,7 +31,6 @@ from .trace.base import (
     _physical_bound_expr,
     child_uid_from_group_key,
 )
-from .trace.hist import _HIST_BIN_EPSILON
 
 # Event types whose computation is unfiltered and viewport-free. These are the
 # only events cached in Phase 1: the engine forces them to drop all
@@ -139,6 +138,24 @@ def _normalize_viewports(
         fig: _normalize_axis_ranges(vp)
         for fig, vp in (viewports_by_figure or {}).items()
     }
+
+
+def _box2d_with_units(
+    candidate: FreeAxisSpec, schema: pl.Schema | None
+) -> FreeAxisSpec | None:
+    """A box2d (hist2d) free axis with each temporal axis's physical unit from
+    the schema dtype (contract H); ``None`` gates the cube when an axis is
+    ``Datetime("ns")`` or ``Time``."""
+    units: list[str | None] = []
+    for col in candidate.columns or ():
+        dtype = _dtype_for_col(schema, col)
+        unit = None
+        if dtype is not None and dtype.is_temporal():
+            unit = temporal_unit(dtype)
+            if unit is None:
+                return None
+        units.append(unit)
+    return replace(candidate, unit=(units[0], units[1]) if any(units) else None)
 
 
 class FlexEngine:
@@ -450,6 +467,17 @@ class FlexEngine:
         # Only groups containing an actual target need resolving: a figure of
         # histograms none of which is cube-servable would otherwise pull its
         # columns through ``physical_minmax`` for nothing.
+        # The source figure groups its histograms the same way. When unzoomed,
+        # a group shares one axis viewport, so no sibling is zoomed either.
+        source_cols = self._histogram_domain_cols_by_uid(
+            (
+                (ti, self._scalable_traces[ti.uid], False)
+                for ti in trace_infos
+                if ti.figure_uid == active_source.figure_uid
+                and ti.uid in self._scalable_traces
+            ),
+            schema=schema,
+        ).get(active_source.trace_uid, ())
         free, domains = self._resolve_cube_domains(
             free_spec,
             [t for _, _, t in targets],
@@ -459,6 +487,7 @@ class FlexEngine:
                 for ti, _, _ in targets
                 for col in shared_domain_cols.get(ti.uid, ())
             },
+            source_cols=source_cols,
         )
         if free is None:
             return [], {}
@@ -535,16 +564,21 @@ class FlexEngine:
             trace = self._scalable_traces.get(ti.uid)
             if trace is None:
                 return None
-            anchor = trace.select_axes[0] if trace.select_axes else None
-            candidate = trace.get_cube_source_spec(
+            # One viewport per selectable anchor: a 2-D source (hist2d) snaps
+            # both axes to its own cell grid. A missing anchor is unzoomed.
+            columns = trace._make_selection_spec().axis_columns
+            axis_range, y_range = (
                 self._cube_axis_range(
                     viewports_by_figure,
                     ti.figure_uid,
                     anchor,
                     schema=schema,
-                    column=active_source.column,
-                ),
-                schema=schema,
+                    column=columns.get(anchor),
+                )
+                for anchor in (*trace.select_axes, None, None)[:2]
+            )
+            candidate = trace.get_cube_source_spec(
+                axis_range, schema=schema, y_range=y_range
             )
             if candidate is not None and candidate.column == active_source.column:
                 if candidate.kind == "temporal":
@@ -556,65 +590,10 @@ class FlexEngine:
                         return None
                     candidate = replace(candidate, unit=unit)
                 elif candidate.kind == "box2d":
-                    candidate = self._locate_box2d_axis(
-                        candidate, ti, viewports_by_figure, schema
-                    )
+                    candidate = _box2d_with_units(candidate, schema)
                 return candidate
             return None
         return None
-
-    def _locate_box2d_axis(
-        self,
-        candidate: FreeAxisSpec,
-        ti: TraceInfo,
-        viewports_by_figure: dict[str, dict[str, Any]],
-        schema: pl.Schema | None,
-    ) -> FreeAxisSpec | None:
-        """Resolve a box2d (hist2d) free axis's per-axis units and viewports
-        (contract H). ``active_source.column`` is the x column (validated in
-        ``_locate_free_axis``); the trace's two select anchors map to its two
-        columns. Each temporal axis takes its physical unit from the schema
-        dtype (Datetime("ns")/Time gate to no cube); each axis's viewport range
-        is resolved independently (``None`` = unzoomed → engine-resolved full
-        domain). Returns ``None`` to gate the whole cube."""
-        trace = self._scalable_traces.get(ti.uid)
-        if trace is None or len(candidate.columns or ()) != 2:
-            return None
-        cx, cy = candidate.columns  # type: ignore[misc]
-        # The two select anchors, in (x, y) column order. select_axes is
-        # (x_anchor, y_anchor) for hist2d; axes[0] is x, axes[1] is y.
-        anchors = trace.select_axes
-        if len(anchors) < 2:
-            return None
-        anchor_x, anchor_y = anchors[0], anchors[1]
-
-        units: list[str | None] = []
-        for col in (cx, cy):
-            dtype = _dtype_for_col(schema, col)
-            if dtype is not None and dtype.is_temporal():
-                unit = temporal_unit(dtype)
-                if unit is None:
-                    return None  # ns/Time gate
-                units.append(unit)
-            else:
-                units.append(None)
-
-        dom_x = self._cube_axis_range(
-            viewports_by_figure, ti.figure_uid, anchor_x, schema=schema, column=cx
-        )
-        dom_y = self._cube_axis_range(
-            viewports_by_figure, ti.figure_uid, anchor_y, schema=schema, column=cy
-        )
-        # Per-axis None viewports are resolved to the full data domain in
-        # _resolve_cube_domains; carry a partial (x-zoom only / y-zoom only) as
-        # a domains tuple with one resolved + one None axis.
-        domains: tuple | None
-        if dom_x is None and dom_y is None:
-            domains = None
-        else:
-            domains = (dom_x, dom_y)
-        new_unit = (units[0], units[1]) if any(units) else None
-        return replace(candidate, unit=new_unit, domains=domains)
 
     @staticmethod
     def _cube_axis_range(
@@ -663,14 +642,18 @@ class FlexEngine:
         target_specs: list[CubeTargetSpec],
         schema: pl.Schema | None,
         extra_cols: set[str] | None = None,
+        source_cols: tuple[str, ...] = (),
     ) -> tuple[FreeAxisSpec | None, dict[str, tuple[float, float]]]:
         """Resolve ``domain=None`` (= full data domain) to concrete floats.
+
+        ``source_cols`` is the sibling group of a histogram source. Its bars
+        span the union of the group's domains (``_histogram_bounds_exprs``), so
+        an unzoomed free axis spans that union too.
 
         One batched min/max ``select`` over the **unfiltered** LazyFrame covers
         the free axis and every unresolved binned target column (the same
         unfiltered-domain rule the aggregation path uses; the builder itself is
-        never mutated). The free axis gets the min/max verbatim — the binned-dim
-        epsilon is applied later, uniformly, in ``_resolved_target_dims``.
+        never mutated).
 
         A **categorical** free axis (bar/pie/treemap source) is not binned and
         takes no domain: free-domain resolution is skipped entirely (``domain``
@@ -717,17 +700,20 @@ class FlexEngine:
         # free axis, box2d axes, and binned target dims, so a single per-column
         # (min, max) serves all three roles.
         needed: list[str] = []
+        free_cols = [free_spec.column, *source_cols]
         if resolve_free:
-            needed.append(free_spec.column)
+            needed += free_cols
         needed += [col for _, col in box2d_axes]
         needed += unresolved_cols
         minmax = self._backend_lf.physical_minmax(needed, schema) if needed else {}
 
         free = free_spec
         if resolve_free:
-            lo, hi = minmax[free_spec.column]
-            if lo is None or hi is None:  # empty / all-null free column
+            if None in minmax[free_spec.column]:  # empty / all-null free column
                 return None, {}
+            # Like the display, an all-null sibling does not widen the union.
+            bounds = [minmax[c] for c in free_cols if None not in minmax[c]]
+            lo, hi = min(b[0] for b in bounds), max(b[1] for b in bounds)
             free = replace(free, domain=(float(lo), float(hi)))
 
         if is_box2d:
@@ -754,15 +740,8 @@ class FlexEngine:
         domains: dict[str, tuple[float, float]],
         schema: pl.Schema | None = None,
     ) -> tuple | None:
-        """Resolve binned target dims and epsilon-pad their upper bounds.
+        """Resolve binned target dims to the display's bin domain.
 
-        ``_HIST_BIN_EPSILON`` is added to every ``hist1d``-variant binned dim's
-        resolved-or-zoomed domain. This mirrors ``_histogram_bounds_exprs``,
-        which pads in both the unzoomed and zoomed cases, so cube bins align
-        with display bins. A ``hist2d``-variant dim (contract K) gets no pad:
-        the ``fixed_hist2d`` kernel and ``_fixed_hist_bin_expr`` both fold a
-        value at ``hi`` into the top bin through the top clamp. A pad here
-        would shift bins and break bit-equality with the server delta.
         Returns ``None`` when a dim's domain cannot be resolved (an all-null
         column). That target is not served.
 
@@ -784,8 +763,7 @@ class FlexEngine:
                 unit = temporal_unit(dtype)
                 if unit is None:
                     return None  # ns/Time gate
-            pad = 0.0 if d.bin_variant == "hist2d" else _HIST_BIN_EPSILON
-            dims.append(replace(d, domain=(domain[0], domain[1] + pad), unit=unit))
+            dims.append(replace(d, domain=(domain[0], domain[1]), unit=unit))
         return tuple(dims)
 
     def _active_selections(

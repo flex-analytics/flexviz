@@ -43,6 +43,21 @@ def snap_range(lo: float, hi: float, n: int) -> tuple[float, float, int]:
     return k0 * width, k1 * width, k1 - k0
 
 
+def snapped_domain(
+    range_: tuple[float, float] | None, n: int
+) -> tuple[tuple[float, float] | None, int]:
+    """A cube axis on a binned trace's display grid: its domain and bin count.
+
+    Unzoomed (``None``), the domain stays ``None`` for the engine to resolve to
+    the full data domain. Zoomed, it is the physical viewport snapped with
+    ``snap_range``, so the cube bins land on the displayed bins.
+    """
+    if range_ is None:
+        return None, n
+    lo, hi, n = snap_range(float(range_[0]), float(range_[1]), n)
+    return (lo, hi), n
+
+
 def snapped_axis(
     col: str, range_: tuple, n: int, schema: pl.Schema | None
 ) -> tuple[float, float, int, pl.Expr]:

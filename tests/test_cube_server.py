@@ -19,18 +19,19 @@ from fastapi.testclient import TestClient
 
 import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 from flexviz.cache import get_cache, get_cube_cache
-from flexviz.cube import decode_cube_bundle, decode_fvcube_header
+from flexviz.cube import decode_cube_bundle, decode_fvcube_header, snap_brush
 from flexviz.dashboard import Dashboard
 from flexviz.server import app, register_source
 from flexviz.spec import AxisRange
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON
 
 pytestmark = pytest.mark.integration
 
 _SRC = "_cube_src"
 _CAT_SRC = "_cube_cat_src"
 _P = 2048
+# Bars of every histogram source below: the free axis is that bar grid.
+_SRC_BINS = 16
 
 
 def _cube_body(resp) -> dict:
@@ -214,22 +215,20 @@ def _direct_hist(
     return raw.explode(empty_as_null=True).struct.unnest()["count"].to_list()
 
 
-def _snap(domain: tuple[float, float], a: float, b: float):
-    """Shared P=2048 snap arithmetic (plan doc, copied verbatim)."""
-    lo, hi = domain
-    s = hi - lo
+def _snap(free: dict, a: float, b: float):
+    """``snap_brush`` over a free block ``{"domain", "p"}`` for a brush that
+    ends below the top bin: ``(lo_bin, hi_bin, edge_lo, edge_hi)`` of a
+    ``closed="left"`` commit."""
+    lo, hi = free["domain"]
+    lo_bin, hi_bin, edge_lo, edge_hi, closed = snap_brush(lo, hi, free["p"], a, b)
+    assert closed == "left"
+    return lo_bin, hi_bin, edge_lo, edge_hi
 
-    def _bin(v: float) -> int:
-        return math.floor((v - lo) / s * _P)
 
-    def _edge(bin_idx: int) -> float:
-        return lo + bin_idx * s / _P
-
-    lo_bin = max(0, min(_P, _bin(a)))
-    hi_bin = max(0, min(_P, _bin(b)))
-    if hi_bin < lo_bin:
-        lo_bin, hi_bin = hi_bin, lo_bin
-    return lo_bin, hi_bin, _edge(lo_bin), _edge(hi_bin + 1)
+def _hist_free(lo: float, hi: float) -> dict:
+    """An unzoomed histogram source's free block: its bars over the
+    full data domain."""
+    return {"domain": [lo, hi], "p": _SRC_BINS}
 
 
 # ---------------------------------------------------------------------------
@@ -265,18 +264,14 @@ class TestDashboardCubeRequest:
         # target domain = full data domain of "b" + epsilon.
         a_lo, a_hi = df["a"].min(), df["a"].max()
         b_lo, b_hi = df["b"].min(), df["b"].max()
-        assert header["free"] == {
-            "kind": "continuous",
-            "p": _P,
-            "domain": [a_lo, a_hi],
-        }
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
         (dim,) = header["target_dims"]
         assert dim["name"] == "b"
         assert dim["bins"] == 12
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
 
         # Slice the blob over a snapped brush.
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 12.3, 61.7)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 12.3, 61.7)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -301,7 +296,7 @@ class TestDashboardCubeRequest:
                 pl.col("b")
                 .flexviz.fixed_hist(
                     pl.lit(float(b_lo)),
-                    pl.lit(float(b_hi) + _HIST_BIN_EPSILON),
+                    pl.lit(float(b_hi)),
                     n_bins=dim["bins"],
                 )
                 .implode()
@@ -452,9 +447,24 @@ class TestDashboardCubeRequest:
         assert body["cubes"] == []
         assert body["trace_cubes"] == {}
 
+    def test_hist_source_cube_has_at_most_one_cell_per_bar_and_target_bin(
+        self, client, df
+    ):
+        """The free axis is the source's bars, so the cube holds at most one
+        cell per (bar, target bin) instead of per (2048-bin, target bin)."""
+        spec = _two_hist_dashboard(df)
+        resp = client.post(
+            "/dashboard/update", json=_cube_payload(spec, spec.figures[0].uid)
+        )
+        blob = base64.b64decode(_cube_body(resp)["cubes"][0])
+        header = decode_fvcube_header(blob)
+        (dim,) = header["target_dims"]
+        n_cells = len(_read_u32_col(blob, header, "free_bin"))
+        assert 0 < n_cells <= header["free"]["p"] * dim["bins"] == _SRC_BINS * 12
+
     def test_zoomed_viewports_resolve_cube_domains(self, client, df):
-        """Source viewport → free domain verbatim (no epsilon); target viewport
-        → the SNAPPED display grid + uniform _HIST_BIN_EPSILON."""
+        """Source and target viewport → each histogram's SNAPPED display
+        grid."""
         spec = _two_hist_dashboard(df)
         src_fig_uid = spec.figures[0].uid
         tgt_fig_uid = spec.figures[1].uid
@@ -465,11 +475,13 @@ class TestDashboardCubeRequest:
         resp = client.post("/dashboard/update", json=_cube_payload(spec, src_fig_uid))
         blob = base64.b64decode(_cube_body(resp)["cubes"][0])
         header = decode_fvcube_header(blob)
-        assert header["free"]["domain"] == [10.0, 80.0]
+        lo, hi, n = snap_range(10.0, 80.0, _SRC_BINS)
+        assert header["free"]["domain"] == [lo, hi]
+        assert header["free"]["p"] == n
         (dim,) = header["target_dims"]
         lo, hi, n = snap_range(5.0, 60.0, tgt_bins)
         assert n == tgt_bins + 1
-        assert dim["domain"] == [lo, hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [lo, hi]
         assert dim["bins"] == n
 
     def test_reversed_viewports_resolve_like_ascending_ones(self, client, df):
@@ -505,6 +517,57 @@ class TestDashboardCubeRequest:
         )
         blob = body["cubes"][body["trace_cubes"][tgt_fig.traces[0].uid]]
         assert _cube_centers(blob) == pytest.approx(display, abs=1e-9)
+
+    def test_zoomed_hist_target_keeps_the_display_rows(self, client):
+        """A zoomed hist1d target's cube keeps the rows its display bars
+        count: a row just above the snapped top edge is in neither."""
+        df = pl.DataFrame(
+            {
+                "a": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                "b": [20.0, 50.0, 99.0, 100.0, 100.0 + 5e-11, 110.0],
+            }
+        )
+        register_source(_SRC, df, cache=True)
+        dash = Dashboard(df)
+        dash.add_figure().add_histogram(x="a", bins=16)
+        dash.add_figure().add_histogram(x="b", bins=20)
+        spec = dash.to_spec(source_name=_SRC)
+        src_fig, tgt_fig = spec.figures
+        spec.state.viewport[f"{tgt_fig.uid}/x"] = AxisRange(min=0.0, max=100.0)
+
+        deltas = client.post("/dashboard/update", json=_init_payload(spec)).json()
+        display_rows = sum(deltas["figure_deltas"][tgt_fig.uid][0]["updates"]["y"])
+        body = _cube_body(
+            client.post("/dashboard/update", json=_cube_payload(spec, src_fig.uid))
+        )
+        blob = base64.b64decode(
+            body["cubes"][body["trace_cubes"][tgt_fig.traces[0].uid]]
+        )
+        cube_rows = sum(_read_u32_col(blob, decode_fvcube_header(blob), "count"))
+        assert display_rows == cube_rows == 4
+
+    def test_sibling_hist_source_bins_on_its_display_grid(self, client, df):
+        """A histogram source draws its bars over the union with its sibling
+        histograms, so its free axis must span that union too: a brush snaps
+        to the bars the user sees."""
+        wide = df.with_columns(w=pl.col("a") * 2 - 50)
+        register_source(_SRC, wide, cache=True)
+        dash = Dashboard(wide)
+        src = dash.add_figure(title="Source").add_histogram(x="a", bins=16)
+        src.add_histogram(x="w", bins=16)
+        dash.add_figure(title="Target").add_histogram(x="b", bins=12)
+        spec = dash.to_spec(source_name=_SRC)
+        src_fig = spec.figures[0]
+
+        deltas = client.post("/dashboard/update", json=_init_payload(spec)).json()
+        lo, step, n = deltas["figure_deltas"][src_fig.uid][0]["updates"]["x_edges"]
+        assert lo < wide["a"].min()
+        body = _cube_body(
+            client.post("/dashboard/update", json=_cube_payload(spec, src_fig.uid))
+        )
+        free = decode_fvcube_header(base64.b64decode(body["cubes"][0]))["free"]
+        assert free["p"] == n
+        assert free["domain"] == pytest.approx([lo, lo + n * step])
 
     def test_sibling_hist_targets_share_the_display_bin_domain(self, client, df):
         """Two histograms on one figure bin over their *union* min/max in the
@@ -821,7 +884,7 @@ class TestCategoricalSourceCubeRequest:
         (dim,) = header["target_dims"]
         assert dim["name"] == "b"
         assert dim["bins"] == 12
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
 
         # Reslice over the codes for {("alpha",), ("gamma",)}.
         cats = [tuple(t) for t in header["free"]["categories"]]
@@ -928,15 +991,11 @@ class TestCategoricalSourceCubeRequest:
         blob = base64.b64decode(body["cubes"][body["trace_cubes"][tgt_uid]])
         header = decode_fvcube_header(blob)
         a_lo, a_hi = cat_df["a"].min(), cat_df["a"].max()
-        assert header["free"] == {
-            "kind": "continuous",
-            "p": _P,
-            "domain": [a_lo, a_hi],
-        }
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
         assert header["measure"] == {"agg": "sum", "value_col": "b"}
         (dim,) = header["target_dims"]
 
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 12.3, 61.7)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 12.3, 61.7)
         free_bin = _read_u32_col(blob, header, "free_bin")
         sub_code = _read_u32_col(blob, header, "sub")
         sums = _read_f64_col(blob, header, "sum")
@@ -1014,7 +1073,7 @@ class TestCategoricalSourceCubeRequest:
                 "name": "b",
                 "kind": "binned",
                 "bins": 8,
-                "domain": [b_lo, b_hi + _HIST_BIN_EPSILON],
+                "domain": [b_lo, b_hi],
             },
             {"name": "sub", "kind": "categorical", "categories": ["s1", "s2", "s3"]},
         ]
@@ -1273,7 +1332,7 @@ class TestPassiveBaking:
 
         passive_expr = pl.col("cat").is_in(["alpha", "beta"])
         a_lo, a_hi = cat_df["a"].min(), cat_df["a"].max()
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.7, 68.3)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(_hist_free(a_lo, a_hi), 21.7, 68.3)
         active_expr = pl.col("a").is_between(edge_lo, edge_hi, closed="left")
 
         # --- count parity on the hist target ---
@@ -1283,7 +1342,7 @@ class TestPassiveBaking:
         # domain (+ epsilon) even though the passive filter shrinks the data.
         (dim,) = hist_header["target_dims"]
         b_lo, b_hi = cat_df["b"].min(), cat_df["b"].max()
-        assert dim["domain"] == [b_lo, b_hi + _HIST_BIN_EPSILON]
+        assert dim["domain"] == [b_lo, b_hi]
         free_bin = _read_u32_col(hist_blob, hist_header, "free_bin")
         tgt_bin = _read_u32_col(hist_blob, hist_header, "__bin__b")
         count = _read_u32_col(hist_blob, hist_header, "count")
@@ -1296,7 +1355,7 @@ class TestPassiveBaking:
             passive_expr & active_expr,
             "b",
             b_lo,
-            b_hi + _HIST_BIN_EPSILON,
+            b_hi,
             dim["bins"],
         )
         assert 0 < sum(sliced) < cat_df.height
@@ -1528,10 +1587,14 @@ class TestTemporalCubeSource:
         resp = client.post("/dashboard/update", json=_cube_payload(spec, src_uid, "t"))
         header = decode_fvcube_header(base64.b64decode(_cube_body(resp)["cubes"][0]))
         epoch = dt.datetime(1970, 1, 1)
-        assert header["free"]["domain"] == [
+        # The parsed physical range, snapped to the source's bar lattice.
+        lo, hi, n = snap_range(
             (lo_dt - epoch) / dt.timedelta(microseconds=1),
             (hi_dt - epoch) / dt.timedelta(microseconds=1),
-        ]
+            _SRC_BINS,
+        )
+        assert header["free"]["domain"] == [lo, hi]
+        assert header["free"]["p"] == n
 
 
 # ---------------------------------------------------------------------------
@@ -1552,12 +1615,13 @@ class TestZoomKeyInterplay:
         resp = client.post("/dashboard/update", json=_cube_payload(spec, src_uid))
         blob = base64.b64decode(_cube_body(resp)["cubes"][0])
         header = decode_fvcube_header(blob)
-        assert header["free"]["domain"] == [10.0, 80.0]
+        # The viewport snapped to the source's bar lattice.
+        lo, hi, n = snap_range(10.0, 80.0, _SRC_BINS)
+        assert header["free"]["domain"] == [lo, hi]
+        assert header["free"]["p"] == n == _SRC_BINS + 1
         (dim,) = header["target_dims"]
 
-        # Snap a brush on the ZOOMED grid (finer than the full-domain grid).
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((10.0, 80.0), 23.4, 57.8)
-        assert (80.0 - 10.0) / _P < (df["a"].max() - df["a"].min()) / _P
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 23.4, 57.8)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1603,10 +1667,11 @@ class TestZoomKeyInterplay:
         assert tgt_uid in body["trace_cubes"]
         blob = base64.b64decode(body["cubes"][body["trace_cubes"][tgt_uid]])
         header = decode_fvcube_header(blob)
-        assert header["free"]["domain"] == [10.0, 80.0]
+        lo, hi, _n = snap_range(10.0, 80.0, _SRC_BINS)
+        assert header["free"]["domain"] == [lo, hi]
         (dim,) = header["target_dims"]
 
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((10.0, 80.0), 23.4, 57.8)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 23.4, 57.8)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1645,7 +1710,10 @@ class TestZoomKeyInterplay:
         assert calls["n"] == 1
         assert _cube_body(r1)["cubes"] == _cube_body(r2)["cubes"]
         header = decode_fvcube_header(base64.b64decode(_cube_body(r1)["cubes"][0]))
-        assert header["free"]["domain"] == [df["a"].min(), df["a"].max()]
+        assert (
+            header["free"]["domain"]
+            == _hist_free(df["a"].min(), df["a"].max())["domain"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1681,8 +1749,7 @@ class TestBoxLineRangeSources:
     def _slice_and_reference(self, df, blob, header, brush_lo, brush_hi):
         """Snapped cube slice vs the legacy snapped closed='left' recompute."""
         (dim,) = header["target_dims"]
-        domain = tuple(header["free"]["domain"])
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap(domain, brush_lo, brush_hi)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], brush_lo, brush_hi)
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__b")
         count = _read_u32_col(blob, header, "count")
@@ -1712,7 +1779,10 @@ class TestBoxLineRangeSources:
         header = decode_fvcube_header(blob)
         assert header["free"]["kind"] == "continuous"
         assert header["free"]["p"] == _P
-        assert header["free"]["domain"] == [df["a"].min(), df["a"].max()]
+        assert header["free"]["domain"] == [
+            df["a"].min(),
+            df["a"].max(),
+        ]
 
         sliced, direct = self._slice_and_reference(df, blob, header, 12.3, 61.7)
         assert 0 < sum(sliced) < df.height
@@ -1757,7 +1827,10 @@ class TestBoxLineRangeSources:
         header = decode_fvcube_header(blob)
         assert header["free"]["kind"] == "continuous"
         assert header["free"]["p"] == _P
-        assert header["free"]["domain"] == [df["a"].min(), df["a"].max()]
+        assert header["free"]["domain"] == [
+            df["a"].min(),
+            df["a"].max(),
+        ]
 
         sliced, direct = self._slice_and_reference(df, blob, header, 12.3, 61.7)
         assert 0 < sum(sliced) < df.height
@@ -1842,10 +1915,6 @@ class TestBoxLineRangeSources:
 # ---------------------------------------------------------------------------
 
 
-_BOX2D_P = 128
-_BOX2D_S = _BOX2D_P + 1
-
-
 def _hist2d_source_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     """A hist2d(x=a, y=b) source figure; a hist(c) count target."""
     dash = Dashboard(df)
@@ -1856,17 +1925,8 @@ def _hist2d_source_dashboard(df: pl.DataFrame, *, title_suffix: str = ""):
     return dash.to_spec(source_name=_SRC)
 
 
-def _snap_axis(domain: tuple[float, float], a: float, b: float, p: int = _BOX2D_P):
-    lo, hi = domain
-    s = (hi - lo) or 1.0
-
-    def _bin(v: float) -> int:
-        return max(0, min(p, math.floor((v - lo) / s * p)))
-
-    lo_b, hi_b = _bin(a), _bin(b)
-    if hi_b < lo_b:
-        lo_b, hi_b = hi_b, lo_b
-    return lo_b, hi_b, lo + lo_b * s / p, lo + (hi_b + 1) * s / p
+def _snap_axis(domain: tuple[float, float], a: float, b: float, p: int):
+    return snap_brush(domain[0], domain[1], p, a, b)
 
 
 class TestBox2dSourceCubeRequest:
@@ -1876,9 +1936,10 @@ class TestBox2dSourceCubeRequest:
         rectangle edges."""
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        lx, hx, ex0, ex1 = _snap_axis(dx, x_box[0], x_box[1])
-        ly, hy, ey0, ey1 = _snap_axis(dy, y_box[0], y_box[1])
-        s = header["free"]["p"] + 1
+        px, py = header["free"]["p"]
+        lx, hx, ex0, ex1, cx = _snap_axis(dx, x_box[0], x_box[1], px)
+        ly, hy, ey0, ey1, cy = _snap_axis(dy, y_box[0], y_box[1], py)
+        s = px
         free_bin = _read_u32_col(blob, header, "free_bin")
         tgt_bin = _read_u32_col(blob, header, "__bin__c")
         count = _read_u32_col(blob, header, "count")
@@ -1894,8 +1955,8 @@ class TestBox2dSourceCubeRequest:
                 sliced[tb] += n
         direct = _direct_hist(
             df,
-            pl.col("a").is_between(ex0, ex1, closed="left")
-            & pl.col("b").is_between(ey0, ey1, closed="left"),
+            pl.col("a").is_between(ex0, ex1, closed=cx)
+            & pl.col("b").is_between(ey0, ey1, closed=cy),
             "c",
             dim["domain"][0],
             dim["domain"][1],
@@ -1917,7 +1978,7 @@ class TestBox2dSourceCubeRequest:
         assert header["free"] == {
             "kind": "box2d",
             "cols": ["a", "b"],
-            "p": 128,
+            "p": [8, 6],
             "domains": [[df["a"].min(), df["a"].max()], [df["b"].min(), df["b"].max()]],
         }
 
@@ -1968,12 +2029,84 @@ class TestBox2dSourceCubeRequest:
         body = _cube_body(client.post("/dashboard/update", json=payload))
         blob = base64.b64decode(body["cubes"][0])
         header = decode_fvcube_header(blob)
-        assert header["free"]["domains"] == [[10.0, 80.0], [5.0, 70.0]]
+        # Each zoomed axis snaps to the display lattice of its 8 / 6 cells.
+        x_lo, x_hi, nx = snap_range(10.0, 80.0, 8)
+        y_lo, y_hi, ny = snap_range(5.0, 70.0, 6)
+        assert header["free"]["domains"] == [[x_lo, x_hi], [y_lo, y_hi]]
+        assert header["free"]["p"] == [nx, ny]
         sliced, direct = self._box2d_reslice_count(
             blob, header, (20.0, 65.0), (15.0, 55.0), df
         )
         assert 0 < sum(sliced) < df.height
         assert sliced == direct
+
+    @pytest.mark.parametrize("zoomed", [False, True])
+    def test_one_cell_brush_commits_exactly_that_cell(self, zoomed):
+        """#133: the box2d free axis is the source's own cell grid, so a brush
+        inside one cell of a 200x150 hist2d commits that cell's edges and
+        filters exactly its rows. A fixed 128-bin grid is coarser than one
+        cell and never lands on a cell edge."""
+        n = 60_000
+        # Low-discrepancy points: dense, deterministic, off any bin lattice.
+        df = pl.DataFrame(
+            {
+                "a": [(i * 0.6180339887498949) % 1.0 * 100.0 for i in range(n)],
+                "b": [(i * 0.4142135623730951) % 1.0 * 100.0 for i in range(n)],
+                "c": [float(i % 7) for i in range(n)],
+            }
+        )
+        register_source(_SRC, df, cache=True)
+        get_cache().clear()
+        get_cube_cache().clear()
+        client = TestClient(app)
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="a", y="b", x_bins=200, y_bins=150
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        spec = dash.to_spec(source_name=_SRC)
+        src_fig = spec.figures[0]
+        if zoomed:
+            spec.state.viewport[f"{src_fig.uid}/x"] = AxisRange(min=10.3, max=80.7)
+            spec.state.viewport[f"{src_fig.uid}/y"] = AxisRange(min=5.1, max=70.9)
+
+        (delta,) = client.post("/dashboard/update", json=_init_payload(spec)).json()[
+            "figure_deltas"
+        ][src_fig.uid]
+        x_lo, x_step, nx = delta["updates"]["x_edges"]
+        y_lo, y_step, ny = delta["updates"]["y_edges"]
+        z = delta["updates"]["z"]
+
+        payload = _cube_payload(
+            spec, src_fig.uid, column="a", trace_uid=src_fig.traces[0].uid
+        )
+        blob = base64.b64decode(
+            _cube_body(client.post("/dashboard/update", json=payload))["cubes"][0]
+        )
+        header = decode_fvcube_header(blob)
+        free = header["free"]
+        assert free["p"] == [nx, ny]
+        assert free["domains"][0] == pytest.approx([x_lo, x_lo + nx * x_step])
+        assert free["domains"][1] == pytest.approx([y_lo, y_lo + ny * y_step])
+
+        count, kx, ky = max(
+            (v, i, j) for j, row in enumerate(z) for i, v in enumerate(row) if v
+        )
+        x_box = (x_lo + (kx + 0.25) * x_step, x_lo + (kx + 0.75) * x_step)
+        y_box = (y_lo + (ky + 0.25) * y_step, y_lo + (ky + 0.75) * y_step)
+        *_, ex0, ex1, _cx = _snap_axis(tuple(free["domains"][0]), *x_box, nx)
+        *_, ey0, ey1, _cy = _snap_axis(tuple(free["domains"][1]), *y_box, ny)
+        assert (ex0, ex1) == pytest.approx(
+            (x_lo + kx * x_step, x_lo + (kx + 1) * x_step)
+        )
+        assert (ey0, ey1) == pytest.approx(
+            (y_lo + ky * y_step, y_lo + (ky + 1) * y_step)
+        )
+        sliced, direct = self._box2d_reslice_count(blob, header, x_box, y_box, df)
+        assert sliced == direct
+        assert sum(sliced) == count
+        get_cache().clear()
+        get_cube_cache().clear()
 
     def test_passive_selection_bakes_into_build(self, client, df):
         """Contract E: a foreign committed selection bakes into the box2d
@@ -2011,8 +2144,9 @@ class TestBox2dSourceCubeRequest:
         ]
         dx = tuple(header["free"]["domains"][0])
         dy = tuple(header["free"]["domains"][1])
-        _lx, _hx, ex0, ex1 = _snap_axis(dx, 30.0, 60.0)
-        _ly, _hy, ey0, ey1 = _snap_axis(dy, 10.0, 50.0)
+        px, py = header["free"]["p"]
+        _lx, _hx, ex0, ex1, _cx = _snap_axis(dx, 30.0, 60.0, px)
+        _ly, _hy, ey0, ey1, _cy = _snap_axis(dy, 10.0, 50.0, py)
         passive_expr = pl.col("a").is_between(20.0, 70.0, closed="left")
         sliced, _ = self._box2d_reslice_count(
             blob, header, (30.0, 60.0), (10.0, 50.0), df
@@ -2109,7 +2243,7 @@ class TestCorrTargetCubeRequest:
         assert header["measure"]["pairs"] == [[0, 1], [0, 2], [1, 2]]
         assert set(header["measure"]["means"]) == {"p", "q", "rr"}
         a_lo, a_hi = corr_df["a"].min(), corr_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_blob_reslice_matches_legacy_recompute(self, corr_client, corr_df):
         """The client-equivalent reslice (cube ``corr_matrix``) over a snapped
@@ -2136,7 +2270,7 @@ class TestCorrTargetCubeRequest:
                 base64.b64decode(body["cubes"][body["trace_cubes"][corr_uid]])
             )
             a_lo, a_hi = header["free"]["domain"]
-            _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
+            _lo_bin, _hi_bin, edge_lo, edge_hi = _snap(header["free"], 21.4, 73.6)
 
             # Client-equivalent: rebuild over the same (unfiltered) domain and
             # finalize the snapped slice through corr_matrix (== cube.js).
@@ -2144,7 +2278,9 @@ class TestCorrTargetCubeRequest:
                 corr_df.lazy(),
                 CubeSpec(
                     source_name=_CORR_SRC,
-                    free=FreeAxisSpec(column="a", p=_P, domain=(a_lo, a_hi)),
+                    free=FreeAxisSpec(
+                        column="a", p=header["free"]["p"], domain=(a_lo, a_hi)
+                    ),
                     target_dims=(),
                     measure=MeasureSpec(agg="corr", columns=tuple(cols)),
                 ),
@@ -2244,8 +2380,9 @@ class TestCorrTargetCubeRequest:
         )
         # Free domain stays the UNFILTERED full ``a`` domain.
         a_lo, a_hi = corr_df["a"].min(), corr_df["a"].max()
-        assert header["free"]["domain"] == [a_lo, a_hi]
-        _lo_bin, _hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 18.0, 82.0)
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
+        _lo_bin, _hi_bin, edge_lo, edge_hi = _snap(header["free"], 18.0, 82.0)
+        a_hi = header["free"]["domain"][1]
 
         passive_expr = pl.col("rr").is_between(0.0, 15.0)
         active_expr = pl.col("a").is_between(edge_lo, edge_hi, closed="left")
@@ -2256,7 +2393,7 @@ class TestCorrTargetCubeRequest:
             corr_df.lazy().filter(passive_expr),
             CubeSpec(
                 source_name=_CORR_SRC,
-                free=FreeAxisSpec(column="a", p=_P, domain=(a_lo, a_hi)),
+                free=FreeAxisSpec(column="a", p=_SRC_BINS, domain=(a_lo, a_hi)),
                 target_dims=(),
                 measure=MeasureSpec(agg="corr", columns=("p", "q", "rr")),
             ),
@@ -2380,7 +2517,7 @@ class TestHist2dTargetCubeRequest:
         assert header["target_dims"][0]["domain"] == [x_lo, x_hi]
         assert header["target_dims"][1]["domain"] == [y_lo, y_hi]
         a_lo, a_hi = hist2d_df["a"].min(), hist2d_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_serves_hist2d_cube_mean_header(self, hist2d_client, hist2d_df):
         spec = _hist2d_dashboard(hist2d_df, histfunc="mean", z="z")
@@ -2430,8 +2567,7 @@ class TestHist2dTargetCubeRequest:
         body = _cube_body(resp)
         blob = base64.b64decode(body["cubes"][body["trace_cubes"][tgt_uid]])
         header = decode_fvcube_header(blob)
-        a_lo, a_hi = header["free"]["domain"]
-        lo_bin, hi_bin, edge_lo, edge_hi = _snap((a_lo, a_hi), 21.4, 73.6)
+        lo_bin, hi_bin, edge_lo, edge_hi = _snap(header["free"], 21.4, 73.6)
 
         free_bin = _read_u32_col(blob, header, "free_bin")
         bin_x = _read_u32_col(blob, header, "__bin__x")
@@ -2601,7 +2737,7 @@ class TestTreeMapTargetCubeRequest:
         assert header["measure"]["agg"] == "sum"
         assert header["measure"]["value_col"] == "val"
         a_lo, a_hi = treemap_df["a"].min(), treemap_df["a"].max()
-        assert header["free"] == {"kind": "continuous", "p": _P, "domain": [a_lo, a_hi]}
+        assert header["free"] == {"kind": "continuous", **_hist_free(a_lo, a_hi)}
 
     def test_second_identical_request_hits_cache(
         self, treemap_client, treemap_df, monkeypatch
@@ -2919,3 +3055,189 @@ class TestCategoricalLineCorrTargets:
         )
         assert resp.status_code == 200, resp.text
         assert line_uid in _cube_body(resp)["trace_cubes"]
+
+
+# ---------------------------------------------------------------------------
+# A binned source brushes its own bins (#133)
+# ---------------------------------------------------------------------------
+
+_GRID_SRC = "_cube_grid_src"
+
+
+def _commit_clause(column: str, snap: tuple, unit: str | None = None):
+    """Mirror of the client commit (``_fvCubeCommitEdges``): one clause from a
+    ``snap_brush`` result. A Date edge keeps its time of day as a µs string;
+    the server rounds it to whole days."""
+    import datetime as dt
+
+    from flexviz.spec import ClauseFilter
+
+    _lo_bin, _hi_bin, lo, hi, closed = snap
+    if unit == "day":
+
+        def _us(v: float) -> str:
+            us = math.ceil(v * 86_400_000 * 1000)
+            stamp = dt.datetime(1970, 1, 1) + dt.timedelta(microseconds=us)
+            return stamp.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        lo, hi = _us(lo), _us(hi)
+    return ClauseFilter(column=column, range=(lo, hi), closed=closed)
+
+
+def _committed_rows(df: pl.DataFrame, clauses: list) -> int:
+    from flexviz.predicates import predicates_to_expr
+    from flexviz.spec import SelectionPredicate
+
+    pred = SelectionPredicate(clauses=clauses)
+    return df.filter(predicates_to_expr([pred], df.schema)).height
+
+
+def _covering(lo: float, step: float, k: int, m: int) -> tuple[float, float]:
+    """A brush over the centers of bins k..m and no other center."""
+    return lo + (k + 0.25) * step, lo + (m + 0.75) * step
+
+
+class TestSourceBinGridCommit:
+    """A brush over bins k..m of a binned source commits exactly the rows the
+    source draws in those bins, including values that sit on a bin edge."""
+
+    def _grid(self, df: pl.DataFrame, spec, column: str, viewport=None):
+        """(source updates of the init delta, cube header free block)."""
+        register_source(_GRID_SRC, df, cache=True)
+        get_cache().clear()
+        get_cube_cache().clear()
+        client = TestClient(app)
+        src_fig = spec.figures[0]
+        for axis, rng in (viewport or {}).items():
+            spec.state.viewport[f"{src_fig.uid}/{axis}"] = AxisRange(
+                min=rng[0], max=rng[1]
+            )
+        (delta,) = client.post("/dashboard/update", json=_init_payload(spec)).json()[
+            "figure_deltas"
+        ][src_fig.uid]
+        payload = _cube_payload(
+            spec, src_fig.uid, column=column, trace_uid=src_fig.traces[0].uid
+        )
+        blob = base64.b64decode(
+            _cube_body(client.post("/dashboard/update", json=payload))["cubes"][0]
+        )
+        get_cache().clear()
+        get_cube_cache().clear()
+        self.blob = blob
+        return delta["updates"], decode_fvcube_header(blob)["free"]
+
+    def _sliced_rows(self, lo_bin: int, hi_bin: int) -> int:
+        """Rows the cube slices over free bins lo_bin..hi_bin (1-D source)."""
+        header = decode_fvcube_header(self.blob)
+        free_bin = _read_u32_col(self.blob, header, "free_bin")
+        count = _read_u32_col(self.blob, header, "count")
+        return sum(n for fb, n in zip(free_bin, count) if lo_bin <= fb <= hi_bin)
+
+    def test_hist2d_integer_values_on_cell_edges(self):
+        # 0..100 on both axes with 20 cells: a value on every cell edge.
+        n = 101
+        df = pl.DataFrame(
+            {
+                "a": [float(i % n) for i in range(n * n)],
+                "b": [float(i // n) for i in range(n * n)],
+                "c": [float(i % 7) for i in range(n * n)],
+            }
+        )
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="a", y="b", x_bins=20, y_bins=20
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        updates, free = self._grid(df, dash.to_spec(source_name=_GRID_SRC), "a")
+        z = updates["z"]
+        (dx, dy), (px, py) = free["domains"], free["p"]
+        x_step, y_step = (dx[1] - dx[0]) / px, (dy[1] - dy[0]) / py
+        brushes = [(0, 0, 0, 0), (3, 3, 7, 9), (5, 12, 0, 19), (19, 19, 4, 19)]
+        for kx, mx, ky, my in brushes:
+            sx = snap_brush(dx[0], dx[1], px, *_covering(dx[0], x_step, kx, mx))
+            sy = snap_brush(dy[0], dy[1], py, *_covering(dy[0], y_step, ky, my))
+            assert (sx[0], sx[1], sy[0], sy[1]) == (kx, mx, ky, my)
+            want = sum(
+                z[j][i] or 0 for j in range(ky, my + 1) for i in range(kx, mx + 1)
+            )
+            clauses = [_commit_clause("a", sx), _commit_clause("b", sy)]
+            assert _committed_rows(df, clauses) == want, (kx, mx, ky, my)
+
+    def test_hist2d_date_axis_commits_whole_days(self):
+        # 365 days in 20 cells: 18.25-day cells with fractional-day edges.
+        import datetime as dt
+
+        n = 365 * 8
+        df = pl.DataFrame(
+            {
+                "d": [
+                    dt.date(2021, 1, 1) + dt.timedelta(days=i % 365) for i in range(n)
+                ],
+                "b": [float(i // 365) for i in range(n)],
+                "c": [float(i % 7) for i in range(n)],
+            }
+        )
+        dash = Dashboard(df)
+        dash.add_figure(title="Cells").add_histogram2d(
+            x="d", y="b", x_bins=20, y_bins=4
+        )
+        dash.add_figure(title="Hist").add_histogram(x="c", bins=7)
+        updates, free = self._grid(df, dash.to_spec(source_name=_GRID_SRC), "d")
+        z = updates["z"]
+        (dx, dy), (px, py) = free["domains"], free["p"]
+        assert free["units"] == ["day", None]
+        step = (dx[1] - dx[0]) / px
+        sy = snap_brush(dy[0], dy[1], py, dy[0], dy[1])
+        for kx, mx in [(k, k) for k in range(px)] + [(3, px - 1)]:
+            sx = snap_brush(dx[0], dx[1], px, *_covering(dx[0], step, kx, mx))
+            want = sum(z[j][i] or 0 for j in range(py) for i in range(kx, mx + 1))
+            clauses = [_commit_clause("d", sx, "day"), _commit_clause("b", sy)]
+            assert _committed_rows(df, clauses) == want, (kx, mx)
+
+    # An Int64 column rounds each committed bound inward (_typed_range_bounds).
+    @pytest.mark.parametrize("dtype", [pl.Float64, pl.Int64])
+    @pytest.mark.parametrize("viewport", [None, {"x": (10.3, 80.7)}])
+    def test_hist_bars_k_to_m_commit_their_rows(self, viewport, dtype):
+        # Integer values 0..332 in 20 bars: float rounding puts the raw edge
+        # lo + k*step of bar 15 a hair above 249, so a commit on the raw edge
+        # would drop 249 from its bar.
+        n = 333 * 3
+        df = pl.DataFrame(
+            {
+                "a": pl.Series([i % 333 for i in range(n)], dtype=dtype),
+                "b": [float(i % 13) for i in range(n)],
+            }
+        )
+        dash = Dashboard(df)
+        dash.add_figure(title="Bars").add_histogram(x="a", bins=20)
+        dash.add_figure(title="Target").add_histogram(x="b", bins=6)
+        spec = dash.to_spec(source_name=_GRID_SRC)
+        updates, free = self._grid(df, spec, "a", viewport)
+        lo_e, step_e, n_bars = updates["x_edges"]
+        lo, hi = free["domain"]
+        assert free["p"] == n_bars
+        assert (lo, (hi - lo) / n_bars) == pytest.approx((lo_e, step_e), rel=1e-12)
+        counts, centers = updates["y"], updates["x"]
+        for k, m in [(k, k) for k in range(n_bars)] + [(2, 9), (4, n_bars - 1)]:
+            a, b = _covering(lo, step_e, k, m)
+            snap = snap_brush(lo, hi, n_bars, a, b)
+            assert snap[:2] == (k, m)
+            # Plotly highlights the bars whose center is inside the brush.
+            highlighted = [i for i, c in enumerate(centers) if a <= c <= b]
+            assert highlighted == list(range(k, m + 1))
+            want = sum(counts[k : m + 1])
+            assert _committed_rows(df, [_commit_clause("a", snap)]) == want, (k, m)
+            assert self._sliced_rows(k, m) == want, (k, m)
+
+    def test_hist_brush_covering_no_bar_center_is_empty(self):
+        df = pl.DataFrame({"a": [float(i % 101) for i in range(505)]})
+        dash = Dashboard(df)
+        dash.add_figure(title="Bars").add_histogram(x="a", bins=20)
+        dash.add_figure(title="Target").add_histogram(x="a", bins=6)
+        _updates, free = self._grid(df, dash.to_spec(source_name=_GRID_SRC), "a")
+        lo, hi = free["domain"]
+        step = (hi - lo) / free["p"]
+        lo_bin, hi_bin, *_ = snap_brush(
+            lo, hi, free["p"], lo + 3.1 * step, lo + 3.4 * step
+        )
+        assert hi_bin < lo_bin

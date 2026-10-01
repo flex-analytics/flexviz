@@ -507,6 +507,7 @@ class LinePlot(FlexTrace):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        **_: Any,
     ) -> FreeAxisSpec | None:
         """A brush on a line defines a 1-D free axis on its **x** column.
 
@@ -553,8 +554,7 @@ class LinePlot(FlexTrace):
 
         ``n_buckets = max(1, n_points // 2)`` matches the legacy minmax bucket
         count (two extrema points per bucket). ``domain`` is ``axis_range``
-        verbatim (``None`` when unzoomed); the engine epsilon-pads it
-        uniformly when resolving binned domains.
+        verbatim (``None`` when unzoomed).
 
         Caveat (no size guard): a grouped line runs the envelope kernel once
         per series, so the cube payload multiplies by the group cardinality —

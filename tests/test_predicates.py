@@ -26,6 +26,22 @@ class TestPredicatesToExpr:
         expr = predicates_to_expr([], df.schema)
         assert df.filter(expr).height == df.height
 
+    def test_float32_whole_number_bound_from_json_rounds(self):
+        # The browser sends a whole-number edge as a JSON integer. Above 2**24
+        # a Float32 column cannot hold every integer, so that bound must round
+        # without moving a value across it too.
+        from flexviz.predicates import predicates_to_expr
+
+        df = pl.DataFrame(
+            {"a": pl.Series([16777216.0 + 2 * i for i in range(5)], dtype=pl.Float32)}
+        )
+        pred = SelectionPredicate.model_validate_json(
+            '{"clauses": [{"column": "a", "range": [16777217, 16777219],'
+            ' "closed": "left"}]}'
+        )
+        got = df.filter(predicates_to_expr([pred], df.schema))["a"].to_list()
+        assert got == [16777218.0]
+
     def test_single_categorical_clause(self, df: pl.DataFrame):
         from flexviz.predicates import predicates_to_expr
 
@@ -311,6 +327,54 @@ class TestIntegerClosedRounding:
         df = pl.DataFrame({"i": [0, 1, 2, 3, 4]})
         expr = _range_filter_expr("i", (0.5, 3.5), df.schema)
         assert df.filter(expr)["i"].to_list() == [1, 2, 3]
+
+
+class TestTemporalBoundRounding:
+    """A temporal bound finer than its column rounds to a whole unit without
+    moving a value across it: a closed bound toward the interior of the range,
+    an open bound away from it, as for an integer column."""
+
+    @staticmethod
+    def _select(df: pl.DataFrame, rng: list, closed: str) -> list:
+        from flexviz.predicates import predicates_to_expr
+
+        pred = SelectionPredicate.model_validate(
+            {"clauses": [{"column": "t", "range": rng, "closed": closed}]}
+        )
+        return df.filter(predicates_to_expr([pred], df.schema))["t"].to_list()
+
+    @pytest.mark.parametrize(
+        "rng,closed,days",
+        [
+            # Jan 1 is at 00:00, before a bound at 13:00.
+            (["2020-01-01 13:00:00", "2020-01-05 07:00:00"], "both", [2, 3, 4, 5]),
+            (
+                ["2020-01-01 22:30:00.000000", "2020-01-04 07:30:00.000000"],
+                "left",
+                [2, 3, 4],
+            ),
+            (["2020-01-02", "2020-01-04"], "both", [2, 3, 4]),
+            (["2020-01-02", "2020-01-04"], "left", [2, 3]),
+            # Epoch-ms bounds at noon on Jan 1 and Jan 3.
+            ([1577880000000, 1578052800000], "both", [2, 3]),
+        ],
+    )
+    def test_date_column(self, rng, closed, days):
+        import datetime as dt
+
+        df = pl.DataFrame({"t": [dt.date(2020, 1, d) for d in range(1, 7)]})
+        assert self._select(df, rng, closed) == [dt.date(2020, 1, d) for d in days]
+
+    def test_millisecond_column(self):
+        import datetime as dt
+
+        base = dt.datetime(2020, 1, 1)
+        stamps = [base + dt.timedelta(milliseconds=i) for i in range(4)]
+        df = pl.DataFrame({"t": pl.Series(stamps, dtype=pl.Datetime("ms"))})
+        got = self._select(
+            df, ["2020-01-01 00:00:00.000500", "2020-01-01 00:00:00.002500"], "left"
+        )
+        assert got == stamps[1:3]
 
 
 class TestBooleanCoercion:

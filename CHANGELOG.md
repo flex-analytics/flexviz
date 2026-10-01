@@ -29,6 +29,8 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ### Changed
 
+- `flexviz` requires the `flexviz-polars` release that ships with it, because
+  the line envelope kernel now bins the free axis like the display kernel.
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
   another origin. For the deprecated ECharts renderer, `height` now sets only
@@ -38,6 +40,30 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 - `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
   `flexviz serve`.
+
+### Fixed
+
+- A brush on a histogram or a histogram2d snaps to the edges of its bars or
+  cells. The bars that Plotly highlights now hold exactly the rows that the
+  other figures keep, also for a value on a bar edge and on a `Date` axis. A
+  brush that covers no bar or cell center clears the selection. Before, the
+  brush snapped to a fixed grid of 2048 steps (128 per axis for a
+  histogram2d), so the other figures also kept part of the rows of the edge
+  bars or cells. The live-brush data of such a source now grows with its bars
+  or cells instead of the fixed grid: with the default 20 bars or 20 × 20
+  cells it is about 40 to 50 times smaller. A histogram2d finer than
+  128 × 128 cells makes it larger than before.
+- A histogram or a histogram2d on a `Date` column draws each bar at its bin
+  center, and its hover shows the time of day of that center. Before, the
+  center was rounded to a whole day, so a bar could sit up to half a day off
+  its bin, and bars narrower than a day stacked on one day.
+- A selection or a zoom on a `Float32` column keeps exactly the values inside
+  its range. Before, each bound was rounded to the nearest `Float32`, which
+  could move a value next to the bound to the other side.
+- A selection on a `Date` or `Datetime("ms")` column keeps exactly the values
+  inside its range. Before, a bound with a time of day (or a fraction of a
+  millisecond) was cut to the day (or millisecond), so a brush that started at
+  13:00 still kept that day.
 
 ## [0.1.0b5] - 2026-09-27
 

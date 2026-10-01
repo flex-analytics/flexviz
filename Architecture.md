@@ -554,7 +554,7 @@ fig.add_histogram(x="value", bins=20, histnorm="count")
   date axis, like the line trace) and emits the bin-edge triple in epoch-ms.
   Mirrors the cube's `_typed_temporal_lit(...).to_physical()` idiom and
   `temporal_unit` (contract G).
-- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The 1-D trace then pads `hi` by `_HIST_BIN_EPSILON`, so it bins on `[lo, hi + 1e-10]` and a value on the upper bound lands in the last bin. The 2-D path passes the raw bounds instead: the kernel's top clamp folds a value on the upper bound into the last bin.
+- Bin edges: unzoomed they span the engine-resolved unfiltered domain (see the sibling-domain bullet below), so a cross-filter cannot move them. Zoomed they span the viewport **snapped outward to the lattice of width `(hi - lo) / n`**, which costs at most one extra bin. A pan keeps the span, so the lattice stays fixed and every bar keeps its place instead of sliding under the data. The viewport filter uses the snapped range, so an edge bin is complete. A degenerate span is left alone, and unzoomed domain edges are never snapped. `snap_range` / `snapped_axis` in `trace/bin_grid.py` are the one place a viewport is snapped, shared with the 2-D traces. The kernel gets the raw bounds: its top clamp folds a value on the upper bound into the last bin. So the bin range is the row range the viewport mask keeps, and a cube built on the same bounds keeps the same rows.
 - A zoomed grid can hold one bin more than configured, so `_to_update` reads the grid the trace stored in `get_aggregation_spec` (`Histogram._bin_edges`) and the cube target dim carries the snapped `(domain, bins)`, not the configured `bins`. The 1-D plans emit `count` only and the kernel's `breakpoint` field is never read, so the grid travels beside the result rather than in it (issue #37). The client derives bar centers from those two, so cube-served bars land on the server's bars.
 - Multiple active histogram traces on the same figure, axes, data axis, and
   coordinate unit share one no-viewport min/max domain before calling
@@ -646,7 +646,7 @@ fig.add_histogram2d(x="x", y="y", histfunc="sum", z="weight", histnorm="percent"
 - `median` and `n_unique` are intentionally not supported for cartesian `Histogram2D` in this fast-path stage; they can be added back as separate reducers if needed.
 - The resident viewport path prefilters x/y/z inside the kernel expression. The scan fold applies the viewport filter to the frame instead, so the scan itself rejects the rows. A later viewport-aware kernel can fuse range rejection into the Rust loop.
 - `histnorm` controls post-aggregation normalization: `None` (no normalization, default), `"percent"`, `"probability"`, `"density"`, `"probability density"`.
-- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, so the 1-D `_HIST_BIN_EPSILON` has no counterpart here.
+- Bin edges: each axis resolves on its own through `axis_edges` in `trace/bin_grid.py`, because the client sends only the axes a zoom moved, so a zoom on x alone re-bins x and leaves y on its full domain. Unzoomed, an axis spans the engine-resolved unfiltered domain of its column (`domain_cols`). Zoomed, it spans the viewport snapped outward to the same fixed lattice the 1-D trace uses, and the mask filters on the snapped rectangle so an edge cell is complete. Both cases pass the raw bounds to the kernel, whose top clamp folds a value at `hi` into the last bin, as in the 1-D trace.
 - The zoomed grid can hold one more bin per axis than configured, so the trace stores the grid it actually binned on and `_to_update` unpacks `z_flat` with that, not with `x_bins`/`y_bins`. Cube target dims keep the configured bins: a cube hist2d target is full-data only, so it never sees a snapped grid.
 - Empty bins are emitted as `None`; empty viewports / all-null inputs produce an all-null grid so renderers show gaps instead of zero-count cells.
 - Public style API: `color_scale`, `color_range` and `color_norm`; defaults are `"Viridis"`, `"auto"` and `"linear"`.
@@ -725,6 +725,8 @@ _range_filter_expr(col, lo, hi, schema) → pl.Expr  # is_between with typed lit
 
 All traces call these for consistent datetime, integer, and float casting in `is_between` expressions.
 
+`_typed_range_bounds` rounds an integer or `Float32` bound so that no value of the column crosses it: a closed bound toward the interior of the range, an open bound away from it. A selection predicate applies the same rule to a temporal bound that is finer than its column (`_temporal_bound_toward`, for `Date` and `Datetime("ms")`), so a brush from 13:00 does not keep that day. A viewport mask still truncates a temporal bound: rounding there would change which points a line keeps at the edge of a zoom.
+
 ---
 
 ## Plugin Layer
@@ -773,9 +775,12 @@ FlexvizExprNamespace  — registered as pl.Expr.flexviz via @pl.api.register_exp
 └── fixed_line_envelope2d(y_expr, free_expr, x_lo, x_hi, free_lo, free_hi, n_buckets, p) → pl.Expr
       One-pass exact argmin/argmax-by-y envelope per (x bucket, free bin) cell.
       Returns Struct{bucket, free_bin, y_min, x_at_ymin, y_max, x_at_ymax} with
-      one row per non-empty cell, sorted by (free_bin, bucket). Bin arithmetic is
-      the cube's natural floor on both axes, no epsilon and no clip; ties keep the
-      first row in scan order. Used by `cube.py` to build the `line_env` measure.
+      one row per non-empty cell, sorted by (free_bin, bucket). The x bucket is a
+      natural floor, no epsilon and no clip, so the domain max has a degenerate
+      top bucket; the free bin is the display kernel's rule (round epsilon,
+      clamp to p - 1). Rows outside either domain are dropped. Ties keep the
+      first row in scan order. Used by `cube.py` to build the `line_env` measure
+      from the raw free value.
 
 flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Expr
       Bucket pass that keeps the pairing: one row per non-empty bucket, in bucket
@@ -1076,16 +1081,21 @@ dataset size — and adds drag-time updates that flexviz previously did not have
 implemented.
 
 A cube is one target trace's grouping × the brushed (free) axis, holding decomposable partial
-measures. A **range** free axis (hist / box / line source) is binned to a **fixed resolution
-P = 2048** over the source figure's viewport domain; a **box2d** free axis (a 2-D box-select on a
-hist2d source) is two range axes binned at **P₂D = 128** each and packed into one composite
-`free_bin`; a **categorical** free axis (bar/pie/treemap source) is the exact tuple of
-label/path column values — no binning, no domain, dictionary-encoded in sorted order. Fixed P —
-rather than Mosaic's pixel resolution — makes the cube width-independent,
-content-addressable, and shareable across sessions; shipping the whole cube to the browser
-(rather than slicing it server-side per frame) makes every drag step a local computation. Rows
-with an out-of-domain or null free/target value are **filtered, not clipped** during the build;
-a range value exactly at the domain max lands in the degenerate top bin `P`.
+measures. A **binned** source brushes its own grid: a **range** free axis on a histogram
+source is its bars (`P = bins` over the display grid's domain, `bins + 1` when a zoom snaps to the
+bar lattice), and a **box2d** free axis (a 2-D box-select on a hist2d source) is its cells — two
+range axes of `(nx, ny)` cells over the display grid's domains, packed into one composite
+`free_bin`. So a snapped brush edge is a bar or cell edge, and the commit, the redrawn box, the
+cube slice and Plotly's highlight cover the same bins. Box and line sources have no bins and keep
+a **fixed resolution P = 2048** over the viewport domain. A **categorical** free axis
+(bar/pie/treemap source) is the exact tuple of label/path column values — no binning, no domain,
+dictionary-encoded in sorted order. A resolution fixed by the spec — rather than Mosaic's pixel
+resolution — makes the cube width-independent, content-addressable, and shareable across
+sessions; shipping the whole cube to the browser (rather than slicing it server-side per frame)
+makes every drag step a local computation. Rows with an out-of-domain or null free/target value
+are **filtered, not clipped** during the build. A range free axis bins like the display kernel
+(`_fixed_hist_bin_expr`: round-epsilon, top clamp), so a value on a bin edge lands in the bin the
+source draws it in and the domain max lands in the top bin `P-1`.
 
 #### Measures (partial algebra)
 
@@ -1167,8 +1177,22 @@ range **or categorical (bar)** selection geometry:
    e.g. a numeric label dtype the client cannot see), so one incapable target never pins the
    gesture to mouseup-only. A failed/timed-out request degrades the gesture to mouseup-only.
 2. **Each further `plotly_selecting`** (rAF-throttled, superseded frames dropped) re-slices
-   locally. A range source snaps the in-progress range outward to the P-grid
-   (`lo_bin = floor((a-lo)/span·P)` clamped to `[0, P]`); a categorical source matches the
+   locally. A range source selects each bin whose center, as the display draws it, the brush covers, ends included
+   (`fvCubeSnap` / `snap_brush`) — Plotly's highlight rule for bars. A frame whose brush covers no center shows the targets'
+   pre-gesture state (in overlay mode without the live fg presentation), and its commit clears
+   the figure's selection. A box2d source does the same
+   per axis. The grid (`p`, domain, unit) is adopted from the decoded header only: the server resolves
+   the unzoomed domain and a binned trace snaps a zoomed axis to its lattice, so the viewport alone
+   does not give it (a commit before the first header lands stays unsnapped). Before a blob is stored,
+   `fvCubeHeaderMatchesKey` checks each range axis against the key: unzoomed, the header keeps the
+   key's `p`; zoomed, it has `p` or `p + 1` bins and (numeric axes) a domain that covers the
+   viewport. When a histogram and a non-binned trace share the brushed column in one figure, the
+   histogram is the source (`_fvCubeSourceConstraint`). The commit writes the **kernel's bin boundaries**, not
+   `lo + k·step`: the first edge is `lo`, an inner edge the first double the kernel puts in bin
+   `k`, found by bisecting the doubles around the float `lo + (k − 1e-9)·step` along the kernel's own rule (a bounded search: near a zero crossing billions of doubles share one value of `v − lo`), and
+   a brush reaching the top bin ends at the domain top with `closed="both"`, otherwise
+   `closed="left"`. So a committed range keeps exactly the values the display counts in its bars. The redrawn selection box sits on the same bin
+   edges, so Plotly's highlight stays on the committed bins. A categorical source matches the
    covered labels to category codes (deduped per frame on the sorted label set). The slice
    accumulates partials per composite target key over CSR row ranges and finalizes per the
    measure table; per-trace delta synthesis mirrors the Python `_to_update`/`_to_grouped_update`
@@ -1284,17 +1308,21 @@ flips the renderer into the ghost+fg presentation before any selection exists
 **Temporal sources.** Temporal free axes (and temporal binned target dims) carry a physical
 `unit` in the FVCube header — `us`/`ms` for `Datetime`, `day` for `Date`, derived from the
 schema dtype by the engine; `Datetime("ns")` and `Time` gate to no cube (the string round-trip
-is µs-precision). `unit:"day"` switches to an **integer-day snap grid** (`day_grid`: width
-`w = max(1, ceil(span/2048))` whole days, `P' = ceil(span/w)` bins, header carries `w`/`p_eff`)
-so `YYYY-MM-DD` edges round-trip bit-exactly; `us`/`ms` keep P=2048. Client side: temporal
+is µs-precision). Every unit uses the same grid as a numeric axis; edges may fall between two
+days. Client side: temporal
 viewports key as self-consistent epoch-ms tokens (never sent to the server — the server parses
 the original date strings via the schema dtype in `_cube_axis_range`); the snap grid is adopted
 from the decoded header; drag ranges convert through `fvTemporalToPhysical` (manual UTC parse,
-never bare `Date.parse`); commits emit snapped `closed="left"` **string** ranges rendered by
-`fvPhysicalToTemporal` — the edge is ceil-ed to an integral count of the unit, which preserves
-integer membership of the half-open range and makes the string parse back exactly through
-`_typed_range_bounds`. The `plotly_selected` echo guard converts both sides to physical before
-its half-bin comparison.
+never bare `Date.parse`); commits emit snapped **string** ranges rendered by
+`fvPhysicalToTemporal`, which ceils (`_fvCubeCommitEdges`). On a ms or µs axis an edge is a
+whole unit: the ceil of an exact edge is the first unit the kernel puts in its bin, and a closed
+upper edge (the top bin) rounds down to the last unit. On a Date axis an edge keeps its time of
+day (a µs string), because a whole-day edge can pass the center of a bar narrower than two days;
+the server rounds each Date bound of a selection to whole days without moving a day across it
+(`_temporal_bound_toward`). So an integer row stays in the bar the display counts it in. The
+stored selection box sits on the committed edges, so a restore, which rebuilds the box from the
+predicate, draws the same box. The `plotly_selected` echo guard converts both sides to physical
+before its half-bin comparison (half the source step).
 
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
 column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. Most
@@ -1325,10 +1353,10 @@ them.
 
   | trace type | cube source? | cube target? | notes |
   |---|---:|---:|---|
-  | `histogram` | yes | yes | Source is a 1-D range axis at `P=2048`. Target is a binned count; grouped histograms add categorical group dims. |
+  | `histogram` | yes | yes | Source is a 1-D range axis on its own bar grid (`P = bins`, or `bins + 1` zoomed). Target is a binned count; grouped histograms add categorical group dims. |
   | `box` | yes | no | Source is a 1-D range over the box data axis. Box is not a target because quantiles are not decomposable. |
   | `line` | yes | yes, limited | Source is an x-only range at `P=2048`. Target requires `downsample="minmax"` and numeric `y`; the target is a live-only `line_env`, and commit always POSTs. |
-  | `histogram2d` | yes | yes, limited | Source is a `box2d` free axis at `128 x 128`. Target is full-data-only 2-D binned count/reduce; zoomed target axes fall back to the normal POST path. |
+  | `histogram2d` | yes | yes, limited | Source is a `box2d` free axis on its own `x_bins x y_bins` cell grid. Target is full-data-only 2-D binned count/reduce; zoomed target axes fall back to the normal POST path. |
   | `bar` | yes | yes | Source is categorical labels. Target dims are label columns plus optional string `group_by`; supports `count`/`sum`/`mean`/`min`/`max`. |
   | `pie` | yes | yes | Source is categorical labels. Target is equivalent to an ungrouped bar with the same labels and measure. |
   | `treemap` | yes | yes | Source is the categorical full `path`. Target stores leaf path cells, and the client rolls them up into the hierarchy. |
@@ -1341,10 +1369,10 @@ them.
 
   | trace | free axis |
   |---|---|
-  | hist | 1-D range, P=2048 over the viewport (or server-resolved full) domain; continuous + temporal (`us`/`ms`/`day` physical units — see “Temporal sources” below; `Datetime("ns")`/`Time` gate to no cube) |
+  | hist | 1-D range on the bar grid: `p = bins` and `domain=None` unzoomed (the engine resolves the full domain, unioned with the source's sibling histograms like its bars), the viewport snapped with `snap_range` zoomed (`bins` or `bins + 1`); continuous + temporal (`us`/`ms`/`day` physical units — see “Temporal sources” below; `Datetime("ns")`/`Time` gate to no cube) |
   | box | 1-D range over the `data_col` (same shape/gates as hist) |
   | line | 1-D range over the **x** column only (line selection is x-only — see below); P=2048; source geometry independent of `downsample` |
-  | hist2d | **box2d**: two range axes (x, y) at P₂D=128 each, packed into one composite `free_bin` (`bin_y·(P₂D+1) + bin_x`); per-axis domains resolved by the engine; a rectangle brush slices a 2-D sub-grid |
+  | hist2d | **box2d**: two range axes (x, y) on the source's cell grid, `p = (nx, ny)`, packed into one composite `free_bin` (`bin_y·nx + bin_x`); the trace emits `(x_bins, y_bins)` and snaps a zoomed axis (the engine passes one viewport per select anchor) with `snap_range`, the same lattice as the display grid (which can add a cell); the engine resolves an unzoomed axis to the full data domain; a rectangle brush slices a 2-D sub-grid |
   | bar / pie | categorical over the ordered label columns (`axis_range` ignored — label geometry is viewport-independent) |
   | treemap | categorical over the full `path` |
 
@@ -1352,13 +1380,13 @@ them.
 
   | trace | target dims | measure |
   |---|---|---|
-  | hist (ungrouped) | (binned data col) — display bin edges, `domain_hi + _HIST_BIN_EPSILON`, so a slice reproduces the Rust `fixed_hist` membership bit-exactly; zoomed: snapped `(domain, bins)`, see the Histogram section | count |
+  | hist (ungrouped) | (binned data col) — display bin edges, so a slice reproduces the Rust `fixed_hist` membership bit-exactly; zoomed: snapped `(domain, bins)`, see the Histogram section | count |
   | hist (grouped) | (binned data col, *group cols as categorical) — same snap, `get_cube_target_spec` snaps before the grouped branch | count |
   | bar | (*label cols, *group cols — all categorical) | `count`/`sum`/`mean`/`min`/`max` over `values` |
   | pie | (*label cols as categorical) | same |
   | line | (binned x col @ `n_points/2` buckets, *group cols as categorical) — **minmax-only** | `line_env` over `y` |
   | corr_heatmap | `()` — no grouping dims; the matrix cells are the explicit `columns` pairs; `columns` must be passed explicitly for cube support | `corr` (Pearson only) |
-  | hist2d | (binned x col, binned y col) — both `bin_variant="hist2d"` (only skips the domain pad; the bin expression is shared with hist1d), **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
+  | hist2d | (binned x col, binned y col) — the bin expression is shared with hist1d, **bit-equal to the `fixed_hist2d` kernel**; **full-data only** (declines when either axis is zoomed) | count, or `histfunc` over `z` |
   | treemap | (*path cols as categorical) — the **leaf** level; the client finalizes leaf cells then **sums** them up every path level (parents = Σ of child finalized values, mirroring `_to_grouped_update`) | `count`/`sum`/`mean`/`min`/`max` over `values` |
 
   bar ≡ pie descriptor sharing falls out of content-key dedup: same labels + same measure ⇒ one
@@ -1376,9 +1404,9 @@ them.
   cube. **The line envelope caveat:** the cube ships the *minmax-bucket* envelope so the drag is
   live every frame, but a line target's commit **always POSTs** (`postRequired`) so the committed
   delta replaces the approximate envelope — keeping commit ≡ share/restore bit-exact. Both are
-  x-width envelopes, but their bucket edges can differ: the cube pads its upper bound by
-  `_HIST_BIN_EPSILON` and divides true, while `bucket_grid` rounds an integer viewport bound
-  inward and keeps a whole bucket width on integer and temporal x. Issue #24 tracks it.
+  x-width envelopes, but their bucket edges can differ: the cube divides true, while
+  `bucket_grid` rounds an integer viewport bound inward and keeps a whole bucket width on
+  integer and temporal x. Issue #24 tracks it.
 - **Dtype/name gates** (descriptor methods return `None`; a schema is required for categorical
   capability): every categorical dim column must be `String`/`Categorical`/`Enum`, with one
   exception — a **bar/pie label** column may also be **integer- or float-typed**, on **both** the

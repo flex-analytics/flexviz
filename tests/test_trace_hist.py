@@ -12,7 +12,7 @@ from flexviz.LF import LFQueryBuilder
 from flexviz.spec import TraceSpec
 from flexviz.trace import batch_fold as batch_fold_mod
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON, Histogram, _streaming_hist_plan
+from flexviz.trace.hist import Histogram, _streaming_hist_plan
 
 # ---- helpers ---------------------------------------------------------------
 
@@ -240,7 +240,7 @@ class TestHistogramBinAlignment:
         centers = list(trace._to_update(df_agg).updates["x"])
         lo, hi, n = snap_range(100.0, 400.0, bins)
         assert n == bins + 1
-        step = (hi - lo + _HIST_BIN_EPSILON) / n
+        step = (hi - lo) / n
         expected = [lo + (i + 0.5) * step for i in range(n)]
         assert len(centers) == n
         for got, want in zip(centers, expected):
@@ -375,9 +375,7 @@ class TestHistogramViewportSnap:
         ref = (
             inside.select(
                 pl.col("val")
-                .flexviz.fixed_hist(
-                    pl.lit(lo), pl.lit(hi + _HIST_BIN_EPSILON), n_bins=n
-                )
+                .flexviz.fixed_hist(pl.lit(lo), pl.lit(hi), n_bins=n)
                 .implode()
                 .alias("u")
             )["u"]
@@ -615,6 +613,18 @@ class TestHistogramTemporal:
         assert len(update["x"]) == 10
         assert sum(update["y"]) == 50
 
+    def test_date_bars_sit_on_their_bin_centers(self):
+        # Plotly draws and highlights a bar at its x. Seven days in 16 bins
+        # gives centers between whole days: a day-rounded x moves the bar.
+        import datetime as dt
+
+        days = [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(7)]
+        df = pl.DataFrame({"t": pl.Series("t", days, dtype=pl.Date)})
+        update = _aggregate_hist(df, bins=16, x="t")
+        lo, step, n = update["x_edges"]
+        want = [lo + (k + 0.5) * step for k in range(n)]
+        assert update["x"].dt.epoch("ms").to_list() == pytest.approx(want, abs=1)
+
     def test_centers_are_temporal_for_date_axis(self):
         # Centers must be a temporal Series (not raw epoch ints) so the renderer
         # auto-detects a date axis, consistent with the line trace.
@@ -751,7 +761,7 @@ class TestHistogramBinEdges:
         assert n == 5, "the triple carries the bin count"
         assert step > 0
         assert lo == pytest.approx(0.0)
-        assert lo + n * step == pytest.approx(19.0 + _HIST_BIN_EPSILON)
+        assert lo + n * step == pytest.approx(19.0)
         assert "y_edges" not in updates
 
     def test_histogram_horizontal_has_y_edges(self):
@@ -767,7 +777,7 @@ class TestHistogramBinEdges:
         assert "x_edges" not in updates
         lo, step, n = updates["y_edges"]
         assert n == 4
-        assert lo + n * step == pytest.approx(15.0 + _HIST_BIN_EPSILON)
+        assert lo + n * step == pytest.approx(15.0)
 
     def test_bin_edges_reproduce_the_bin_centers(self):
         """``lo + (i + 0.5) * step`` is exactly the emitted center of bin i."""
@@ -855,14 +865,16 @@ class TestCubeDescriptors:
         assert isinstance(spec, FreeAxisSpec)
         assert spec.column == "val"
         assert spec.kind == "continuous"
-        assert spec.p == 2048
+        assert spec.p == 10
         assert spec.domain is None
 
-    def test_source_spec_zoomed_domain_is_axis_range(self):
+    def test_source_spec_zoomed_is_the_snapped_bar_grid(self):
         trace = Histogram(x="val", bins=10)
-        spec = trace.get_cube_source_spec((10.0, 50.0))
+        spec = trace.get_cube_source_spec((10.0, 51.0))
         assert spec is not None
-        assert tuple(spec.domain) == (10.0, 50.0)
+        # The display lattice of width 4.1: [8.2, 53.3] holds 11 bars.
+        lo, hi, n = snap_range(10.0, 51.0, 10)
+        assert (tuple(spec.domain), spec.p) == ((lo, hi), n) == ((8.2, 53.3), 11)
 
     def test_source_spec_temporal_kind_from_schema(self):
         schema = pl.Schema({"ts": pl.Datetime("us")})
@@ -921,9 +933,9 @@ class TestCubeDescriptors:
         assert spec is not None
         assert spec.target_dims[0].domain is None
 
-    def test_target_domain_is_the_snapped_range_no_epsilon(self):
-        # The ENGINE adds _HIST_BIN_EPSILON when resolving domains; the trace
-        # emits the snapped viewport, the display grid, and nothing else.
+    def test_target_domain_is_the_snapped_range(self):
+        # The trace emits the snapped viewport, the display grid, and nothing
+        # else.
         trace = Histogram(x="val", bins=10)
         spec = trace.get_cube_target_spec((100.0, 400.0))
         assert spec is not None
@@ -939,8 +951,7 @@ class TestCubeDescriptors:
         spec = trace.get_cube_target_spec(axis_range)
         lo, hi, n_bins, _ = trace._histogram_bounds_exprs(axis_range, None)
         dim = spec.target_dims[0]
-        # The engine pads the cube dim's hi exactly like the display path.
-        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert tuple(dim.domain) == (lo, hi)
         assert dim.bins == n_bins
 
     @pytest.mark.parametrize(
@@ -964,7 +975,7 @@ class TestCubeDescriptors:
         )
         dim = trace.get_cube_target_spec(cube_range, schema=schema).target_dims[0]
         lo, hi, n_bins, _ = trace._histogram_bounds_exprs(viewport, None, schema)
-        assert (dim.domain[0], dim.domain[1] + _HIST_BIN_EPSILON) == (lo, hi)
+        assert tuple(dim.domain) == (lo, hi)
         assert dim.bins == n_bins
 
     def test_grouped_hist_target_dims_binned_then_groups(self):
@@ -1097,8 +1108,8 @@ class TestHistogramScanPlanEquivalence:
                 None,
                 "count",
             ),
-            # A constant column is the narrowest span the trace can build: the
-            # engine pads hi by _HIST_BIN_EPSILON, so the span never inverts.
+            # A constant column has hi == lo: the kernel and the plan both put
+            # every row in bin 0.
             ("constant", pl.Series("v", [3.0] * 8), 8, None, "count"),
             ("viewport", pl.Series("v", _VALUES), 8, (2.0, 6.0), "count"),
             ("all_below_lo", pl.Series("v", [-5.0, -3.0]), 8, (0.0, 8.0), "count"),

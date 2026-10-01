@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 
 import polars as pl
 import pytest
@@ -83,12 +84,13 @@ from flexviz.cube import (
     FreeAxisSpec,
     MeasureSpec,
     TargetDimSpec,
+    _fixed_hist_bin_expr,
     build_cube,
     encode_cube_bundle,
     encode_fvcube,
+    snap_brush,
 )
 from flexviz.trace.bin_grid import snap_range
-from flexviz.trace.hist import _HIST_BIN_EPSILON
 from tests.test_browser import (
     _COUNT_SETTLED_UPDATES,
     _hold_first_update,
@@ -99,6 +101,7 @@ from tests.test_browser import (
 
 pytestmark = pytest.mark.browser
 
+# Box and line sources brush a fixed fine grid; a histogram source its bars.
 _P = 2048
 _SRC_BINS = 16
 _TGT_BINS = 12
@@ -488,33 +491,62 @@ def _committed_edges(page: Page, column: str) -> tuple[float, float]:
     return clause["range"][0], clause["range"][1]
 
 
+def _free_grid(
+    df: pl.DataFrame, col: str = "a", bins: int = _SRC_BINS
+) -> tuple[float, float, int]:
+    """An unzoomed source's free axis ``(lo, hi, p)``: *bins* over the
+    full data domain (a histogram's bars, or ``_P`` for box and line)."""
+    lo, hi = float(df[col].min()), float(df[col].max())
+    return lo, hi, bins
+
+
+def _committed_bins(
+    edge_lo: float, edge_hi: float, grid: tuple[float, float, int]
+) -> tuple[int, int]:
+    """The bins a commit covers. Its edges must be the kernel's boundaries of
+    those bins, bit-equal to ``snap_brush``."""
+    lo, hi, p = grid
+    lo_bin, hi_bin, e_lo, e_hi, _closed = snap_brush(lo, hi, p, edge_lo, edge_hi)
+    assert 0 <= lo_bin <= hi_bin < p
+    assert (edge_lo, edge_hi) == (e_lo, e_hi)
+    return lo_bin, hi_bin
+
+
+def _bins_commit_edges(
+    bins: list[int], grid: tuple[float, float, int]
+) -> tuple[float, float]:
+    """The committed edges of a gesture's snapped bins (its ``lastBins``)."""
+    lo, hi, p = grid
+    step = (hi - lo) / p
+    brush = (lo + (bins[0] + 0.25) * step, lo + (bins[1] + 0.75) * step)
+    return snap_brush(lo, hi, p, *brush)[2:4]
+
+
 def _reference_slice_counts(
-    df: pl.DataFrame, edge_lo: float, edge_hi: float, free_col: str = "a"
+    df: pl.DataFrame,
+    edge_lo: float,
+    edge_hi: float,
+    free_col: str = "a",
+    bins: int = _SRC_BINS,
 ) -> list[float]:
     """Python reference for the target hist: ``flexviz.cube`` build + slice
     over the snapped bins recovered from committed ``closed="left"`` edges
     (the §8.2 parity property — identical to the legacy server recompute)."""
-    a_lo, a_hi = df[free_col].min(), df[free_col].max()
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
-    # Committed edges must lie exactly on the P-grid over the full domain.
-    assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-    assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+    grid = _free_grid(df, free_col, bins)
+    lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = df["b"].min(), df["b"].max()
     spec = CubeSpec(
         source_name="_reference",
         free=FreeAxisSpec(
-            column=free_col, kind="continuous", p=_P, domain=(a_lo, a_hi)
+            column=free_col, kind="continuous", p=grid[2], domain=grid[:2]
         ),
         target_dims=(
             TargetDimSpec(
                 column="b",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                domain=(b_lo, b_hi),
             ),
         ),
         measure=MeasureSpec(agg="count"),
@@ -537,24 +569,19 @@ def _reference_grouped_slice_counts(
     """Per-group variant of ``_reference_slice_counts``: a grouped cube
     (binned ``b`` × categorical *group_col*) built + sliced over the snapped
     bins recovered from committed ``closed="left"`` edges."""
-    a_lo, a_hi = df["a"].min(), df["a"].max()
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
-    assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-    assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+    grid = _free_grid(df)
+    lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = df["b"].min(), df["b"].max()
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=grid[2], domain=grid[:2]),
         target_dims=(
             TargetDimSpec(
                 column="b",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                domain=(b_lo, b_hi),
             ),
             TargetDimSpec(column=group_col, kind="categorical"),
         ),
@@ -673,36 +700,29 @@ class TestLiveBrushCube:
         page.mouse.up()
         page.wait_for_timeout(800)
 
-        # Committed predicate: snapped to the P-grid, closed="left".
+        # Committed predicate: the kernel boundaries of the brushed bars.
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         assert len(sels) == 1
         clause = sels[0]["predicates"][0]["clauses"][0]
         assert clause["column"] == "a"
         assert clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
-
-        # Shared arithmetic (plan doc): bin(v) = floor((v-lo)/s*P),
-        # edge(b) = lo + b*s/P; committed range = [edge(lo_bin), edge(hi_bin+1)).
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        span = a_hi - a_lo
-        lo_bin = round((edge_lo - a_lo) / span * _P)
-        hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-        assert 0 <= lo_bin <= hi_bin <= _P
-        # The committed edges must lie exactly on the P-grid.
-        assert edge_lo == pytest.approx(a_lo + lo_bin * span / _P, abs=1e-9)
-        assert edge_hi == pytest.approx(a_lo + (hi_bin + 1) * span / _P, abs=1e-9)
+        grid = _free_grid(df)
+        lo_bin, hi_bin = _committed_bins(edge_lo, edge_hi, grid)
 
         # Python reference: flexviz.cube build + slice over the same bins.
         b_lo, b_hi = df["b"].min(), df["b"].max()
         spec = CubeSpec(
             source_name="_cube_browser_auto_ref",
-            free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+            free=FreeAxisSpec(
+                column="a", kind="continuous", p=grid[2], domain=grid[:2]
+            ),
             target_dims=(
                 TargetDimSpec(
                     column="b",
                     kind="binned",
                     bins=_TGT_BINS,
-                    domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                    domain=(b_lo, b_hi),
                 ),
             ),
             measure=MeasureSpec(agg="count"),
@@ -762,12 +782,10 @@ class TestLiveBrushCube:
         lo, hi = clause["range"]
         # Unsnapped: an arbitrary pixel-derived range almost surely misses the
         # exact P-grid (probability ~0 of both edges landing on it).
-        df = _cube_df()
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        span = a_hi - a_lo
+        a_lo, a_hi, bars = _free_grid(_cube_df())
 
         def _on_grid(v: float) -> bool:
-            scaled = (v - a_lo) / span * _P
+            scaled = (v - a_lo) / (a_hi - a_lo) * bars
             return math.isclose(scaled, round(scaled), abs_tol=1e-6)
 
         assert not (_on_grid(lo) and _on_grid(hi)), (
@@ -1945,7 +1963,7 @@ def _reference_categorical_hist_counts(
             pl.col("b")
             .flexviz.fixed_hist(
                 pl.lit(float(b_lo)),
-                pl.lit(float(b_hi + _HIST_BIN_EPSILON)),
+                pl.lit(float(b_hi)),
                 n_bins=_TGT_BINS,
             )
             .implode()
@@ -2829,7 +2847,7 @@ class TestCubeSourceIdentity:
         self, page: Page, server_port: int
     ):
         """A cube_request answered with a blob whose free header does not
-        match the gesture's descriptor (here p=1024 instead of 2048) must be
+        match the gesture's descriptor (here p=1024 instead of 16 bars) must be
         refused: nothing stored, no live updates, and the now-mixed commit
         POSTs one legacy selection that self-heals the target."""
         df = _cube_df()
@@ -2847,7 +2865,7 @@ class TestCubeSourceIdentity:
                     column="b",
                     kind="binned",
                     bins=_TGT_BINS,
-                    domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+                    domain=(b_lo, b_hi),
                 ),
             ),
             measure=MeasureSpec(agg="count"),
@@ -2951,6 +2969,52 @@ class TestCubeStoreByteBound:
         assert result["admitted"] is True
         assert result["hasSmall"] is True
         assert result["bytesAfterSmall"] == result["before"] + 200
+
+    def test_index_over_budget_is_sized_not_built(self, page: Page, server_port: int):
+        """A histogram2d source on a fine grid needs a dense bin index of
+        4 x (nx x ny + 1) bytes, even for a small blob. An entry whose index
+        passes the budget is refused before that index is built."""
+        import base64
+
+        df = pl.DataFrame(
+            {"a": [0.0, 0.5, 1.0], "b": [0.0, 0.5, 1.0], "c": list("xyz")}
+        )
+        spec = CubeSpec(
+            source_name="s",
+            free=FreeAxisSpec(
+                column="a",
+                kind="box2d",
+                columns=("a", "b"),
+                p=(500, 500),
+                domains=((0.0, 1.0), (0.0, 1.0)),
+            ),
+            target_dims=(TargetDimSpec(column="c", kind="categorical"),),
+            measure=MeasureSpec(agg="count"),
+        )
+        blob = encode_fvcube(build_cube(df.lazy(), spec), "k")
+        url = _two_hist_dashboard_url(server_port, "_cube_browser_index", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+
+        result = page.evaluate(
+            """(b64) => {
+                const prevBudget = fvCubeStoreSetBudget(65536);
+                const entry = fvDecodeFVCube(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+                const out = {
+                    built: 'binStart' in entry,
+                    bytes: entry.bytes,
+                    stored: fvCubeStorePut('k-index', entry),
+                };
+                fvCubeStoreSetBudget(prevBudget);
+                fvCubeStoreReset();
+                return out;
+            }""",
+            base64.b64encode(blob).decode("ascii"),
+        )
+        assert len(blob) < 1024
+        assert result["built"] is False
+        assert result["bytes"] > 4 * 500 * 500
+        assert result["stored"] is False
 
     def test_oversized_cube_degrades_gesture_cleanly(
         self, page: Page, server_port: int
@@ -3396,7 +3460,7 @@ def _hist_counts_ref(
             pl.col(col)
             .flexviz.fixed_hist(
                 pl.lit(float(lo)),
-                pl.lit(float(hi) + _HIST_BIN_EPSILON),
+                pl.lit(float(hi)),
                 n_bins=bins,
             )
             .implode()
@@ -4123,9 +4187,9 @@ class TestTemporalSourceCube:
         assert lo >= dt.datetime(2020, 1, 5)
         assert hi <= dt.datetime(2020, 1, 25)
 
-    def test_date_source_commits_integer_day_edges(self, page: Page, server_port: int):
-        """A Date-typed source brush commits YYYY-MM-DD edges (the
-        integer-day snap grid) with full parity."""
+    def test_date_source_commits_bar_edges(self, page: Page, server_port: int):
+        """A Date-typed source brush commits the kernel's bar boundaries as µs
+        strings, which the server rounds to whole days, with full parity."""
         df = _temporal_browser_df("date")
         url = _temporal_dashboard_url(server_port, "_cube_browser_tsday", kind="date")
         bodies = _capture_updates(page)
@@ -4138,9 +4202,9 @@ class TestTemporalSourceCube:
         types = [b["event"]["type"] for b in bodies[n0:]]
         assert types == ["cube_request"], types
         clause = _assert_temporal_commit_and_parity(page, df)
-        # Integer-day edges: plain dates, no time component.
+        # Bar edges keep their time of day: YYYY-MM-DD HH:MM:SS.ffffff.
         for v in clause["range"]:
-            assert len(v) == 10, v  # YYYY-MM-DD
+            assert len(v) == 26, v
 
 
 # ---------------------------------------------------------------------------
@@ -4193,9 +4257,7 @@ def _hist_counts_ref_domain(
         .filter(filter_expr & pl.col(col).is_between(lo, hi))
         .select(
             pl.col(col)
-            .flexviz.fixed_hist(
-                pl.lit(float(lo)), pl.lit(float(hi) + _HIST_BIN_EPSILON), n_bins=bins
-            )
+            .flexviz.fixed_hist(pl.lit(float(lo)), pl.lit(float(hi)), n_bins=bins)
             .implode()
             .alias("h")
         )
@@ -4209,9 +4271,9 @@ class TestZoomKeyInterplayBrowser:
     def test_zoomed_source_brush_snaps_to_viewport_grid(
         self, page: Page, server_port: int
     ):
-        """(a): a brush on a pre-zoomed source snaps to the VIEWPORT grid
-        (finer bins): one cube_request, live updates, local commit, edges on
-        the zoomed P-grid, full parity."""
+        """(a): a brush on a pre-zoomed source snaps to the viewport's bar
+        lattice: one cube_request, live updates, local commit, edges on the
+        zoomed bar grid, full parity."""
         df = _cube_df()
         zoom = (10.0, 80.0)
         url = _zoomed_dashboard_url(server_port, "_cube_browser_zsrc", src_zoom=zoom)
@@ -4226,13 +4288,9 @@ class TestZoomKeyInterplayBrowser:
         assert types == ["cube_request"], types
 
         edge_lo, edge_hi = _committed_edges(page, "a")
-        span = zoom[1] - zoom[0]
-        # Edges lie exactly on the zoomed P-grid.
-        lo_bin = round((edge_lo - zoom[0]) / span * _P)
-        hi_bin = round((edge_hi - zoom[0]) / span * _P)
-        assert edge_lo == pytest.approx(zoom[0] + lo_bin * span / _P, abs=1e-9)
-        assert edge_hi == pytest.approx(zoom[0] + hi_bin * span / _P, abs=1e-9)
-        assert zoom[0] <= edge_lo < edge_hi <= zoom[1] + span / _P
+        # Edges are bar boundaries of the viewport snapped to the bar lattice.
+        lo, hi, n = snap_range(zoom[0], zoom[1], _SRC_BINS)
+        _committed_bins(edge_lo, edge_hi, (lo, hi, n))
 
         sels = page.evaluate("DASHBOARD_SPEC.state.selections")
         expr = _selection_expr(df, sels[0])
@@ -4334,7 +4392,9 @@ class TestZoomKeyInterplayBrowser:
         clause = by_fig[fig_uids[0]]["predicates"][0]["clauses"][0]
         assert clause["column"] == "a" and clause.get("closed") == "left"
         edge_lo, edge_hi = clause["range"]
-        assert 10.0 <= edge_lo < edge_hi <= 80.0 + (80.0 - 10.0) / _P
+        # The commit stays inside the snapped bar grid, never past its top.
+        lo, hi, _n = snap_range(10.0, 80.0, _SRC_BINS)
+        assert lo <= edge_lo < edge_hi <= hi
         expected = _hist_counts_ref(df, expr_src & expr_third, "b", _TGT_BINS)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
@@ -4414,7 +4474,7 @@ class TestBoxLineSourceCube:
 
         # Committed client-side: one snapped closed="left" clause on "a".
         edge_lo, edge_hi = _committed_edges(page, "a")
-        expected = _reference_slice_counts(df, edge_lo, edge_hi, free_col="a")
+        expected = _reference_slice_counts(df, edge_lo, edge_hi, "a", bins=_P)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
 
@@ -4454,7 +4514,7 @@ class TestBoxLineSourceCube:
         ), "line commit must not carry a y-column clause"
 
         edge_lo, edge_hi = clause["range"]
-        expected = _reference_slice_counts(df, edge_lo, edge_hi, free_col="t")
+        expected = _reference_slice_counts(df, edge_lo, edge_hi, "t", bins=_P)
         assert 0 < sum(expected) < df.height
         _wait_for_hist_equals(page, "#fv-plot-1", expected)
 
@@ -4522,11 +4582,8 @@ def _reference_line_envelope(
     ``line_env`` build + ``slice_agg`` over the snapped bins recovered from the
     committed ``closed="left"`` edges, then expanded into the same
     ``{x, y}`` two-points-per-bucket shape the client emits."""
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-    span = a_hi - a_lo
-    lo_bin = round((edge_lo - a_lo) / span * _P)
-    hi_bin = round((edge_hi - a_lo) / span * _P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _P
+    grid = _free_grid(df)
+    _committed_bins(edge_lo, edge_hi, grid)
 
     b_lo, b_hi = float(df["b"].min()), float(df["b"].max())
     target_dims = [
@@ -4534,7 +4591,7 @@ def _reference_line_envelope(
             column="b",
             kind="binned",
             bins=_LINE_BUCKETS,
-            domain=(b_lo, b_hi + _HIST_BIN_EPSILON),
+            domain=(b_lo, b_hi),
         )
     ]
     build_df = df
@@ -4542,14 +4599,12 @@ def _reference_line_envelope(
         target_dims.append(TargetDimSpec(column="cat", kind="categorical"))
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=grid[2], domain=grid[:2]),
         target_dims=tuple(target_dims),
         measure=MeasureSpec(agg="line_env", value_col="a"),
     )
     result = build_cube(build_df.lazy(), spec)
-    sliced = result.slice_agg(
-        a_lo + lo_bin * span / _P, a_lo + (hi_bin + 1) * span / _P
-    )
+    sliced = result.slice_agg(edge_lo, edge_hi)
     if group_value is not None:
         sliced = sliced.filter(pl.col("cat") == group_value)
     sliced = sliced.sort("__bin__b")
@@ -5046,10 +5101,7 @@ class TestLineTargetCube:
                 return g && g.lastBins ? g.lastBins : null;
             }""")
         assert snap is not None, "expected an active live gesture mid-drag"
-        a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-        span = a_hi - a_lo
-        edge_lo = a_lo + snap[0] * span / _P
-        edge_hi = a_lo + (snap[1] + 1) * span / _P
+        edge_lo, edge_hi = _bins_commit_edges(snap, _free_grid(df))
         expected = _reference_line_envelope(df, edge_lo, edge_hi)
         assert len(expected["x"]) > 0
         _assert_xy_close(live_xy, expected)
@@ -5277,10 +5329,7 @@ class TestLineTargetCube:
                 return g && g.lastBins ? g.lastBins : null;
             }""")
         assert snap is not None
-        a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-        span = a_hi - a_lo
-        edge_lo = a_lo + snap[0] * span / _P
-        edge_hi = a_lo + (snap[1] + 1) * span / _P
+        edge_lo, edge_hi = _bins_commit_edges(snap, _free_grid(df))
 
         by_name = {t["name"]: t for t in children_mid}
         for gv in ("A", "B"):
@@ -5371,10 +5420,10 @@ def _reference_corr_matrix(
     """Python reference for the LIVE corr matrix: a ``flexviz.cube`` corr build
     + ``corr_matrix`` finalize over the committed ``closed="left"`` brush edges
     (== the client ``corrDeltaFromEntry`` path)."""
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
+    lo, hi, bars = _free_grid(df)
     spec = CubeSpec(
         source_name="_reference",
-        free=FreeAxisSpec(column="a", kind="continuous", p=_P, domain=(a_lo, a_hi)),
+        free=FreeAxisSpec(column="a", kind="continuous", p=bars, domain=(lo, hi)),
         target_dims=(),
         measure=MeasureSpec(agg="corr", columns=tuple(columns)),
     )
@@ -5411,9 +5460,7 @@ def _snap_edges_from_gesture(page: Page, df: pl.DataFrame) -> tuple[float, float
             return g && g.lastBins ? g.lastBins : null;
         }""")
     assert snap is not None, "expected an active live gesture mid-drag"
-    a_lo, a_hi = float(df["a"].min()), float(df["a"].max())
-    span = a_hi - a_lo
-    return a_lo + snap[0] * span / _P, a_lo + (snap[1] + 1) * span / _P
+    return _bins_commit_edges(snap, _free_grid(df))
 
 
 class TestCorrTargetCube:
@@ -5617,7 +5664,8 @@ class TestCorrTargetCube:
 # handleSelecting and so works for box2d unchanged. The tests below prove the
 # standard path (live updates + one cube_request) and the edit-drag replay.
 
-_BOX2D_P = 128
+# The source hist2d's cells per axis: the box2d free axis is this grid.
+_BOX2D_NX, _BOX2D_NY = 8, 6
 
 
 def _box2d_df() -> pl.DataFrame:
@@ -5646,7 +5694,7 @@ def _box2d_dashboard_url(port: int, source_name: str, live_brush: str = "auto") 
 
     dash = Dashboard(df)
     dash.add_figure(title="Box2dSource").add_histogram2d(
-        x="a", y="b", x_bins=8, y_bins=6
+        x="a", y="b", x_bins=_BOX2D_NX, y_bins=_BOX2D_NY
     )
     dash.add_figure(title="Hist").add_histogram(x="c", bins=_TGT_BINS)
     dash.add_figure(title="Bar").add_bar(labels="g")
@@ -5669,17 +5717,6 @@ def _box2d_drag_coords(page: Page) -> dict:
     }
 
 
-def _edges_to_bins(lo: float, hi: float, dlo: float, dhi: float) -> tuple[int, int]:
-    """Recover the [lo_bin, hi_bin] inclusive bin range from snapped closed-left
-    edges over a P=128 grid (the committed edges are edge(lo_bin) and
-    edge(hi_bin+1) — do NOT re-snap them, which would add one bin)."""
-    span = dhi - dlo
-    lo_bin = round((lo - dlo) / span * _BOX2D_P)
-    hi_bin = round((hi - dlo) / span * _BOX2D_P) - 1
-    assert 0 <= lo_bin <= hi_bin <= _BOX2D_P
-    return lo_bin, hi_bin
-
-
 def _reference_box2d_hist_counts(
     df: pl.DataFrame, ex: tuple[float, float], ey: tuple[float, float]
 ) -> list[float]:
@@ -5694,7 +5731,7 @@ def _reference_box2d_hist_counts(
         free=FreeAxisSpec(
             column="a",
             kind="box2d",
-            p=_BOX2D_P,
+            p=(_BOX2D_NX, _BOX2D_NY),
             columns=("a", "b"),
             domains=((a_lo, a_hi), (b_lo, b_hi)),
         ),
@@ -5703,15 +5740,15 @@ def _reference_box2d_hist_counts(
                 column="c",
                 kind="binned",
                 bins=_TGT_BINS,
-                domain=(c_lo, c_hi + _HIST_BIN_EPSILON),
+                domain=(c_lo, c_hi),
             ),
         ),
         measure=MeasureSpec(agg="count"),
     )
     result = build_cube(df.lazy(), spec)
-    lx, hx = _edges_to_bins(ex[0], ex[1], a_lo, a_hi)
-    ly, hy = _edges_to_bins(ey[0], ey[1], b_lo, b_hi)
-    s = _BOX2D_P + 1
+    lx, hx = _committed_bins(ex[0], ex[1], (a_lo, a_hi, _BOX2D_NX))
+    ly, hy = _committed_bins(ey[0], ey[1], (b_lo, b_hi, _BOX2D_NY))
+    s = _BOX2D_NX
     codes = []
     for by in range(ly, hy + 1):
         codes.extend(range(by * s + lx, by * s + hx + 1))
@@ -5831,15 +5868,8 @@ class TestBox2dSourceCube:
         ex = tuple(by_col["a"]["range"])
         ey = tuple(by_col["b"]["range"])
 
-        # The edges lie on the per-axis P=128 grid over the full domains.
-        a_lo, a_hi = df["a"].min(), df["a"].max()
-        b_lo, b_hi = df["b"].min(), df["b"].max()
-        for (lo, hi), (dlo, dhi) in ((ex, (a_lo, a_hi)), (ey, (b_lo, b_hi))):
-            span = dhi - dlo
-            klo = round((lo - dlo) / span * _BOX2D_P)
-            khi = round((hi - dlo) / span * _BOX2D_P)
-            assert lo == pytest.approx(dlo + klo * span / _BOX2D_P, abs=1e-9)
-            assert hi == pytest.approx(dlo + khi * span / _BOX2D_P, abs=1e-9)
+        # The edges are the kernel's cell boundaries of the source's grid over
+        # the full domains (_reference_box2d_hist_counts checks them).
 
         expected = _reference_box2d_hist_counts(df, ex, ey)
         assert 0 < sum(expected) < df.height
@@ -6544,3 +6574,571 @@ class TestTreeMapTargetCube:
         assert len(committed["values"]) == len(ref["values"])
         for got, want in zip(committed["values"], ref["values"]):
             assert got == pytest.approx(want, rel=1e-9, abs=1e-9), (got, want)
+
+
+# ---------------------------------------------------------------------------
+# A histogram source brushes its own bars (#133)
+# ---------------------------------------------------------------------------
+
+
+def _edge_df() -> pl.DataFrame:
+    """Integer ``a`` in 0..100: with 16 bars, 25, 50 and 75 sit on bar
+    edges."""
+    n = 101 * 7
+    return pl.DataFrame(
+        {
+            "a": [float(i % 101) for i in range(n)],
+            "b": [float(i % 13) for i in range(n)],
+        }
+    )
+
+
+def _bar_fracs(page: Page, lo: float, step: float, k: int, m: int):
+    """Plot-width fractions of a brush over the centers of bars k..m only.
+    *lo* and *step* are in the axis's linear units (epoch ms on a date axis)."""
+    r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis._rl")
+    a, b = lo + (k + 0.25) * step, lo + (m + 0.75) * step
+    return (a - r0) / (r1 - r0), (b - r0) / (r1 - r0)
+
+
+class TestHistSourceBarGrid:
+    def test_brush_over_bars_commits_their_rows(self, page: Page, server_port: int):
+        """A brush over bars k..m commits exactly their kernel boundaries; the
+        bars Plotly highlights are the bars whose rows the commit filters,
+        including the integer values that sit on a bar edge."""
+        df = _edge_df()
+        url = _two_hist_dashboard_url(server_port, "_cube_bar_grid", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        source_counts = _hist_y(page, "#fv-plot-0")
+
+        grid = _free_grid(df)
+        lo, hi, bars = grid
+        step = (hi - lo) / bars
+        k, m = 4, 11  # bars 4 and 8 start on the edge values 25 and 50
+        f_lo, f_hi = _bar_fracs(page, lo, step, k, m)
+        _brush_commit(page, 0, f_lo, f_hi, live_fig_idx=1)
+
+        edge_lo, edge_hi = _committed_edges(page, "a")
+        assert _committed_bins(edge_lo, edge_hi, grid) == (k, m)
+        highlighted = page.eval_on_selector(
+            "#fv-plot-0",
+            "gd => gd.data.map(t => t.selectedpoints ? Array.from(t.selectedpoints) : null)"
+            ".filter(Boolean)",
+        )
+        assert list(range(k, m + 1)) in highlighted, highlighted
+
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        expr = _selection_expr(df, sels[0])
+        assert df.filter(expr).height == sum(source_counts[k : m + 1])
+        expected = _hist_counts_ref(df, expr, "b", _TGT_BINS)
+        _wait_for_hist_equals(page, "#fv-plot-1", expected)
+
+    def test_brush_covering_no_bar_center_clears(self, page: Page, server_port: int):
+        """A brush inside one bar that misses its center selects nothing: the
+        commit clears the figure's selection and the target shows all rows."""
+        df = _edge_df()
+        url = _two_hist_dashboard_url(server_port, "_cube_bar_clear", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        y_unfiltered = _target_y(page)
+
+        lo, hi, bars = _free_grid(df)
+        step = (hi - lo) / bars
+        f_lo, f_hi = _bar_fracs(page, lo, step, 2, 9)
+        _brush_commit(page, 0, f_lo, f_hi, live_fig_idx=1)
+        assert len(page.evaluate("DASHBOARD_SPEC.state.selections")) == 1
+
+        r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis.range")
+        # Outside the committed box: a drag inside it would move that box.
+        a, b = lo + 13.1 * step, lo + 13.4 * step
+        _brush_commit(page, 0, (a - r0) / (r1 - r0), (b - r0) / (r1 - r0))
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+        _wait_for_hist_equals(page, "#fv-plot-1", y_unfiltered)
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: empty frames, header guard, source choice, snap parity
+# ---------------------------------------------------------------------------
+
+
+def _x_px(page: Page, fig_idx: int, value: float) -> float:
+    """Page x of a data value on figure *fig_idx*'s x axis."""
+    box = page.locator(f"#fv-plot-{fig_idx} .nsewdrag").bounding_box()
+    r0, r1 = page.eval_on_selector(
+        f"#fv-plot-{fig_idx}", "gd => gd._fullLayout.xaxis.range"
+    )
+    return box["x"] + box["width"] * (value - r0) / (r1 - r0)
+
+
+def _wait_for_layers(page: Page, sel: str, layers: list[dict], equal: bool) -> None:
+    """Wait until the rendered layers (``_rendered_layers``) of *sel* equal
+    *layers*, or differ from them when *equal* is False."""
+    page.wait_for_function(
+        """([sel, want, equal]) => {
+            const gd = document.querySelector(sel);
+            const got = (gd.data || []).map(t => ({
+                uid: t.uid, opacity: t.opacity, y: Array.from(t.y || []),
+            }));
+            return (JSON.stringify(got) === JSON.stringify(want)) === equal;
+        }""",
+        arg=[sel, layers, equal],
+        timeout=10_000,
+    )
+
+
+class TestCubeGridGuards:
+    @pytest.mark.parametrize("overlay", [False, True])
+    def test_empty_snap_mid_drag_shows_pre_gesture_state(
+        self, page: Page, server_port: int, overlay: bool
+    ):
+        """A frame whose brush covers no bar center shows the targets as they
+        were before the gesture, not an empty slice. In overlay mode that is
+        the unfiltered layer at full opacity, not the dimmed ghost."""
+        df = _cube_df()
+        if overlay:
+            url = _overlay_dashboard_url(server_port, "_cube_empty_frame_ovl")
+        else:
+            url = _two_hist_dashboard_url(server_port, "_cube_empty_frame", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        before = _rendered_layers(page, "#fv-plot-1")
+        lo, hi, bars = _free_grid(df)
+        step = (hi - lo) / bars
+        box = page.locator("#fv-plot-0 .nsewdrag").bounding_box()
+        y = box["y"] + box["height"] * 0.5
+
+        page.mouse.move(_x_px(page, 0, lo + 3.1 * step), y)
+        page.mouse.down()
+        page.mouse.move(_x_px(page, 0, lo + 8.5 * step), y, steps=8)
+        _wait_for_layers(page, "#fv-plot-1", before, equal=False)
+        # Back inside bar 3, short of its center: no bar is covered.
+        page.mouse.move(_x_px(page, 0, lo + 3.4 * step), y, steps=8)
+        _wait_for_layers(page, "#fv-plot-1", before, equal=True)
+        page.mouse.up()
+        page.wait_for_timeout(500)
+        assert page.evaluate("DASHBOARD_SPEC.state.selections") == []
+
+    def test_header_guard_rejects_another_traces_grid(
+        self, page: Page, server_port: int
+    ):
+        """A zoomed key accepts only a header with the key's bin count or one
+        more, over a domain that covers the viewport; unzoomed, the count must
+        match. A blob built for another trace's grid is rejected."""
+        url = _two_hist_dashboard_url(server_port, "_cube_hdr_guard", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        got = page.evaluate("""() => {
+            const key = (free) => JSON.stringify({s: 's', free});
+            const one = (p, d, hp, dom, kind = 'continuous') => fvCubeHeaderMatchesKey(
+              key({c: 'a', k: 'continuous', p, d}), {free: {kind, p: hp, domain: dom}}
+            );
+            const two = (p, d, hp, doms) => fvCubeHeaderMatchesKey(
+              key({c: ['a', 'b'], k: 'box2d', p, d}),
+              {free: {kind: 'box2d', cols: ['a', 'b'], p: hp, domains: doms}}
+            );
+            return {
+              zoomedLattice: one(16, [10, 80], 17, [8.75, 83.125]),
+              zoomedOtherTrace: one(16, [10, 80], 2048, [10, 80.0000000001]),
+              zoomedTwoMore: one(16, [10, 80], 18, [8.75, 83.125]),
+              zoomedNotCovering: one(16, [10, 80], 17, [12, 83]),
+              zoomedTemporal: one(16, [1, 2], 17, [5, 6], 'temporal'),
+              unzoomed: one(16, null, 16, [0, 99.9]),
+              unzoomedMore: one(16, null, 17, [0, 99.9]),
+              box2dZoomedX: two([8, 6], [[10, 80], null], [9, 6], [[8.8, 88], [0, 99]]),
+              box2dOtherTrace: two([8, 6], [[10, 80], null], [2048, 6], [[10, 80], [0, 99]]),
+              box2dUnzoomedYMore: two([8, 6], [[10, 80], null], [9, 7], [[8.8, 88], [0, 99]]),
+            };
+        }""")
+        assert got == {
+            "zoomedLattice": True,
+            "zoomedOtherTrace": False,
+            "zoomedTwoMore": False,
+            "zoomedNotCovering": False,
+            "zoomedTemporal": True,
+            "unzoomed": True,
+            "unzoomedMore": False,
+            "box2dZoomedX": True,
+            "box2dOtherTrace": False,
+            "box2dUnzoomedYMore": False,
+        }
+
+    @pytest.mark.parametrize("line_first", [False, True])
+    def test_histogram_is_the_source_over_a_line_on_its_column(
+        self, page: Page, server_port: int, line_first: bool
+    ):
+        """A histogram and a line brushed on the same column: the histogram's
+        bars set the grid, whichever trace comes later."""
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import LayoutSpec, encode_spec
+
+        df = _cube_df().sort("a")
+        register_source("_cube_hist_over_line", df, cache=True)
+        dash = Dashboard(df)
+        fig = dash.add_figure(title="Source")
+        if line_first:
+            fig.add_line(x="a", y="b").add_histogram(x="a", bins=_SRC_BINS)
+        else:
+            fig.add_histogram(x="a", bins=_SRC_BINS).add_line(x="a", y="b")
+        dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
+        spec = dash.to_spec(
+            source_name="_cube_hist_over_line", layout=LayoutSpec(draggable=False)
+        )
+        page.goto(
+            f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}"
+            "&renderer=plotly"
+        )
+        _wait_for_init(page, "plotly")
+        hist_uid = next(
+            t.uid for t in spec.figures[0].traces if t.trace_type == "histogram"
+        )
+        got = page.evaluate(
+            "(fig) => { const c = _fvCubeSourceConstraint(fig); "
+            "return [c.uid, _fvCubeSourceP(c.uid)]; }",
+            spec.figures[0].uid,
+        )
+        assert got == [hist_uid, _SRC_BINS]
+
+    def test_js_snap_matches_python_snap_brush(self, page: Page, server_port: int):
+        """fvCubeSnap and flexviz.cube.snap_brush agree bit for bit."""
+        url = _two_hist_dashboard_url(server_port, "_cube_snap_parity", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        cases = []
+        for lo, hi in (
+            (0.0, 100.0),
+            (-50.0, -10.25),
+            (0.0, 1.0),
+            (-1.0, 1.0),  # an edge next to zero
+            (1.6e15, 1.6e15 + 8.64e10),
+            # Past 2**53 a float skips whole µs.
+            (1.04e16, 1.04e16 + 1000.0),
+            (1.5778368e15, 2.534022144e17),
+        ):
+            for p in (1, 20, 2048):
+                step = (hi - lo) / p
+                for a, b in (
+                    (lo - 3 * step, hi + 3 * step),
+                    (lo + 0.5 * step, lo + 2.5 * step),
+                    (lo + 2.5 * step, lo + 0.5 * step),
+                    (lo + 0.25 * step, lo + 0.45 * step),
+                    (lo + (p - 0.5) * step, hi),
+                    (lo + 0.3 * step, lo + 0.3 * step),
+                ):
+                    cases.append([lo, hi, p, a, b])
+        # A zero span: a brush over lo covers every bar, one beside it none.
+        cases += [
+            [1e7, 1e7, 20, 1e7 - 0.01, 1e7 + 0.01],
+            [1e7, 1e7, 20, 1e7 + 0.1, 1e7 + 0.3],
+        ]
+        js = page.evaluate(
+            """(cases) => cases.map(([lo, hi, p, a, b]) => {
+                const s = fvCubeSnap([lo, hi], p, a, b);
+                return [s.loBin, s.hiBin, s.edgeLo, s.edgeHi, s.closed];
+            })""",
+            cases,
+        )
+        # A whole-valued double comes back as a Python int; float() restores it.
+        js = [
+            [lo_bin, hi_bin, float(e_lo), float(e_hi), c]
+            for lo_bin, hi_bin, e_lo, e_hi, c in js
+        ]
+        py = [list(snap_brush(*c)) for c in cases]
+        assert js == py
+
+    def test_temporal_commit_edges_are_the_kernel_bin_starts(
+        self, page: Page, server_port: int
+    ):
+        """A committed µs edge is the first whole µs the kernel puts in its
+        bin, so a restored selection keeps the rows the brush showed. The ceil
+        of lo + (k - eps) * step alone rounds to 0.25 µs near today's epochs
+        and lands about one edge in ten one µs low."""
+        from datetime import datetime, timedelta
+
+        url = _two_hist_dashboard_url(server_port, "_cube_unit_edges", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        rng = random.Random(7)
+        cases = []
+        for _ in range(300):
+            # A zoomed domain starts on a lattice point, rarely a whole µs.
+            lo = 1.7e15 + rng.randrange(10**11) + rng.choice((0.0, 0.25, 0.5))
+            hi = lo + rng.randrange(10**6, 10**13)
+            p = rng.choice((20, 37, 2048))
+            cases.append([lo, hi, p, rng.randrange(1, p - 1)])
+        edges = page.evaluate(
+            """(cases) => cases.map(([lo, hi, p, k]) => {
+                const step = (hi - lo) / p;
+                const a = lo + (k + 0.25) * step, b = lo + (k + 0.75) * step;
+                return _fvCubeCommitEdges(fvCubeSnap([lo, hi], p, a, b), 'us');
+            })""",
+            cases,
+        )
+        epoch = datetime(1970, 1, 1)
+        for (lo, hi, p, k), strs in zip(cases, edges):
+            e_lo, e_hi = (
+                (datetime.fromisoformat(s) - epoch) // timedelta(microseconds=1)
+                for s in strs
+            )
+            probe = pl.Series([e_lo - 1, e_lo, e_hi - 1, e_hi], dtype=pl.Float64)
+            bins = pl.select(_fixed_hist_bin_expr(pl.lit(probe), lo, hi, p, "b"))
+            assert bins.to_series().to_list() == [k - 1, k, k, k + 1], (lo, hi, p, k)
+
+    def test_commit_edges_past_exact_float_integers_return(
+        self, page: Page, server_port: int
+    ):
+        """Past 2**53 µs (the year 2255) a float skips whole µs. A 9999-12-31
+        sentinel puts even the first bar's upper edge there: the commit of a
+        brush over that bar must return, on the first µs of each bin."""
+        from datetime import datetime, timedelta
+
+        url = _two_hist_dashboard_url(server_port, "_cube_far_edges", "auto")
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        lo, hi = 1.5778368e15, 2.534022144e17  # 2020-01-01, 9999-12-31 in µs
+        edges = page.evaluate(
+            """([lo, hi]) => {
+                const snap = fvCubeSnap([lo, hi], 20, lo, lo + 0.7 * (hi - lo) / 20);
+                return _fvCubeCommitEdges(snap, 'us');
+            }""",
+            [lo, hi],
+        )
+        _, _, _, e_hi, _ = snap_brush(lo, hi, 20, lo, lo + 0.7 * (hi - lo) / 20)
+        assert edges[0] == "2020-01-01 00:00:00.000000"
+        want = datetime(1970, 1, 1) + timedelta(microseconds=math.ceil(e_hi))
+        assert edges[1] == want.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    def test_constant_column_brush_selects_every_row(
+        self, page: Page, server_port: int
+    ):
+        """A constant column draws every bar on its one value. A narrow brush
+        over it highlights them all, so the commit must keep every row."""
+        df = pl.DataFrame({"a": [1e7] * 10, "b": [float(v) for v in range(10)]})
+        url = _two_hist_dashboard_url(server_port, "_cube_constant", "auto", df=df)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        _brush_commit(page, 0, 0.48, 0.52)
+        page.wait_for_timeout(300)
+        selections = page.evaluate("DASHBOARD_SPEC.state.selections")
+        assert len(selections) == 1
+        (clause,) = selections[0]["predicates"][0]["clauses"]
+        assert clause["range"] == [1e7, 1e7]
+        assert clause["closed"] == "both"
+        assert sum(_target_y(page)) == 10
+
+
+def _box2d_zoomed_url(port: int, source_name: str, zoom: dict) -> str:
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import AxisRange, LayoutSpec, encode_spec
+
+    df = _box2d_df()
+    register_source(source_name, df, cache=True)
+    dash = Dashboard(df)
+    dash.add_figure(title="Box2dSource").add_histogram2d(
+        x="a", y="b", x_bins=_BOX2D_NX, y_bins=_BOX2D_NY
+    )
+    dash.add_figure(title="Hist").add_histogram(x="c", bins=_TGT_BINS)
+    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = "auto"
+    for axis, (lo, hi) in zoom.items():
+        spec.state.viewport[f"{spec.figures[0].uid}/{axis}"] = AxisRange(min=lo, max=hi)
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+class TestBox2dZoomedSource:
+    def test_zoomed_box2d_adopts_the_snapped_cell_grid(
+        self, page: Page, server_port: int
+    ):
+        """A zoomed hist2d source: the header grid is the viewport snapped to
+        the cell lattice (one cell more per axis here), the gesture adopts it
+        per axis, the store accepts it (local commit), and the commit edges
+        are cell boundaries of that grid."""
+        zoom = {"x": (10.3, 80.7), "y": (5.1, 70.9)}
+        url = _box2d_zoomed_url(server_port, "_cube_box2d_zoomed", zoom)
+        bodies = _capture_updates(page)
+        page.goto(url)
+        _wait_for_init(page, "plotly")
+        _enter_select_mode(page)
+        hist_before = _target_y(page)
+        coords = _box2d_drag_coords(page)
+        n_before = len(bodies)
+
+        page.mouse.move(coords["x1"], coords["y1"])
+        page.mouse.down()
+        page.mouse.move(coords["x2"], coords["y2"], steps=8)
+        page.wait_for_function(
+            """(yBefore) => {
+                const gd = document.querySelector('#fv-plot-1');
+                const ys = Array.from((gd.data && gd.data[0] && gd.data[0].y) || []);
+                return ys.length > 0 && JSON.stringify(ys) !== JSON.stringify(yBefore);
+            }""",
+            arg=hist_before,
+            timeout=10_000,
+        )
+        axes = page.evaluate(
+            "() => Object.values(_fvCubeGestures)[0].axes.map(a => [a.p, a.snapDomain])"
+        )
+        grids = []
+        for (lo_v, hi_v), n in ((zoom["x"], _BOX2D_NX), (zoom["y"], _BOX2D_NY)):
+            lo, hi, cells = snap_range(lo_v, hi_v, n)
+            assert cells == n + 1
+            grids.append((lo, hi, cells))
+        assert axes == [[g[2], [g[0], g[1]]] for g in grids]
+        page.mouse.up()
+        page.wait_for_timeout(800)
+
+        types = [b.get("event", {}).get("type") for b in bodies[n_before:]]
+        assert types == ["cube_request"], types  # stored, live, local commit
+        clauses = page.evaluate("DASHBOARD_SPEC.state.selections")[0]["predicates"][0][
+            "clauses"
+        ]
+        for clause, grid in zip(clauses, grids):
+            _committed_bins(*clause["range"], grid)
+
+
+def _short_date_df() -> pl.DataFrame:
+    """Seven days in 16 bars: bars 0.375 day wide, edges between the days."""
+    import datetime as dt
+
+    n = 7 * 40
+    return pl.DataFrame(
+        {
+            "t": [dt.date(2020, 1, 1) + dt.timedelta(days=i % 7) for i in range(n)],
+            "b": [float(i % 13) for i in range(n)],
+        }
+    )
+
+
+def _short_date_page(page: Page, server_port: int):
+    """Open a Date source hist(t) over ``_short_date_df`` + target hist(b)."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    df = _short_date_df()
+    register_source("_cube_short_date", df, cache=True)
+    dash = Dashboard(df)
+    dash.add_figure(title="Days").add_histogram(x="t", bins=_SRC_BINS)
+    dash.add_figure(title="Target").add_histogram(x="b", bins=_TGT_BINS)
+    spec = dash.to_spec(
+        source_name="_cube_short_date", layout=LayoutSpec(draggable=False)
+    )
+    spec.client_state.live_brush = "auto"
+    page.goto(
+        f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}&renderer=plotly"
+    )
+    _wait_for_init(page, "plotly")
+    _enter_select_mode(page)
+    return df, spec
+
+
+class TestDateHistSource:
+    # Bar 2 holds day 1 in its upper half and bar 11 holds no day, so a
+    # whole-day box would drop bar 2's center and take bar 11's.
+    @pytest.mark.parametrize("k,m", [(2, 10), (2, _SRC_BINS - 1)])
+    def test_box_on_bar_edges_highlights_the_committed_bars(
+        self, page: Page, server_port: int, k: int, m: int
+    ):
+        """On bars narrower than a day, a brush over bars k..m commits the bar
+        edges, which the server rounds to the whole days that hold exactly
+        their rows. The box sits on the same edges, also when a restore
+        rebuilds it from the predicate, so Plotly highlights bars k..m. A brush
+        up to the top bar commits closed="both" up to the last day. The echo
+        guard tolerates half a bar."""
+        df, spec = _short_date_page(page, server_port)
+        counts = _hist_y(page, "#fv-plot-0")
+        day_ms = 86_400_000
+        lo, hi, bars = _free_grid(df.with_columns(pl.col("t").to_physical()), "t")
+        step = (hi - lo) / bars
+        _brush_commit(
+            page, 0, *_bar_fracs(page, lo * day_ms, step * day_ms, k, m), live_fig_idx=1
+        )
+
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        clause = sels[0]["predicates"][0]["clauses"][0]
+        top = m == bars - 1
+        assert clause["closed"] == ("both" if top else "left")
+        if top:
+            assert clause["range"][1] == "2020-01-07 00:00:00.000000"
+        assert df.filter(_selection_expr(df, sels[0])).height == sum(counts[k : m + 1])
+        # /share keeps only the model fields, so a restore rebuilds the box
+        # from the predicate: it must land on the same bar edges.
+        live, rebuilt = page.evaluate(
+            """(fig) => {
+                const sel = fvFigureSelection(fig, DASHBOARD_SPEC.state.selections);
+                const shared = { ...sel };
+                delete shared._plotly_selection_box;
+                const kept = DASHBOARD_SPEC.state.selections;
+                DASHBOARD_SPEC.state.selections = [shared];
+                const [box] = selectionBoxesForFigure(fig);
+                DASHBOARD_SPEC.state.selections = kept;
+                const b = sel._plotly_selection_box;
+                return [[b.x0, b.x1], [box.x0, box.x1]];
+            }""",
+            spec.figures[0].uid,
+        )
+        assert rebuilt == live
+        (highlighted,) = page.eval_on_selector(
+            "#fv-plot-0",
+            "gd => gd.data.map(t => t.selectedpoints ? Array.from(t.selectedpoints) : null)"
+            ".filter(Boolean)",
+        )
+        # A bar without rows has no height, so only the others show a highlight.
+        assert [i for i in highlighted if counts[i]] == [
+            i for i in range(k, m + 1) if counts[i]
+        ]
+
+        echo = page.evaluate(
+            """([fig, step]) => {
+                const sel = fvFigureSelection(fig, DASHBOARD_SPEC.state.selections);
+                const box = sel._plotly_selection_box;
+                const d = v => fvTemporalToPhysical(v, 'day');
+                const at = shift => _fvCubeEchoOfStoredSelection(
+                  fig, {x: [d(box.x0) + shift * step, d(box.x1)], y: [0, 1]}
+                );
+                return [at(0.4), at(0.6)];
+            }""",
+            [spec.figures[0].uid, step],
+        )
+        assert echo == [True, False]
+
+    # In bar units, bar 8 (day 3) is centered at 8.5, and the midnight that
+    # starts day 3 sits at 8.0, where day-rounded centers drew bars 7 and 8.
+    # The first brush covers bar 8's center but not that midnight, the second
+    # the midnight but no center. Each margin is at least 0.2 bar.
+    @pytest.mark.parametrize("a,b,bar_rows", [(8.2, 9.2, True), (7.7, 8.3, False)])
+    def test_brush_highlights_the_rows_it_commits(
+        self, page: Page, server_port: int, a: float, b: float, bar_rows: bool
+    ):
+        """Plotly highlights a bar whose drawn center is inside the brush. The
+        bar must be drawn at its bin center, not the whole day, or the brush
+        highlights one bar and commits another."""
+        df, _spec = _short_date_page(page, server_port)
+        counts = _hist_y(page, "#fv-plot-0")
+        lo, hi, bars = _free_grid(df.with_columns(pl.col("t").to_physical()), "t")
+        day_ms = 86_400_000
+        step = (hi - lo) / bars * day_ms
+        r0, r1 = page.eval_on_selector("#fv-plot-0", "gd => gd._fullLayout.xaxis._rl")
+        f_lo, f_hi = ((lo * day_ms + f * step - r0) / (r1 - r0) for f in (a, b))
+        x1, x2, y = _fig_drag_coords(page, 0, f_lo, f_hi)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move(x2, y, steps=8)
+        page.wait_for_timeout(500)
+        highlighted = page.eval_on_selector(
+            "#fv-plot-0", "gd => Array.from(gd.data[0].selectedpoints || [])"
+        )
+        page.mouse.up()
+        page.wait_for_timeout(500)
+
+        rows = counts[8] if bar_rows else 0
+        assert sum(counts[i] for i in highlighted) == rows
+        sels = page.evaluate("DASHBOARD_SPEC.state.selections")
+        committed = df.filter(_selection_expr(df, sels[0])).height if sels else 0
+        assert committed == rows

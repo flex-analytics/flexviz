@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, get_args
 from uuid import uuid4
 
+import numpy as np
 import polars as pl
 
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
@@ -164,8 +165,8 @@ class FlexTrace(ABC):
         """The anchor ids this trace emits selection clauses on.
 
         Computed (not cached) from ``_default_select_axes()``; the cube engine
-        (``FlexEngine._locate_free_axis`` / ``_locate_box2d_axis``) reads it to
-        map a brushed source trace onto its free-axis column(s)."""
+        (``FlexEngine._locate_free_axis``) reads it to map a brushed source
+        trace onto its free-axis column(s)."""
         return self._default_select_axes()
 
     def _make_selection_spec(self) -> TraceSelectionSpec:
@@ -206,11 +207,15 @@ class FlexTrace(ABC):
         self,
         axis_range: tuple[float, float] | None,
         schema: pl.Schema | None = None,
+        *,
+        y_range: tuple[float, float] | None = None,
     ) -> FreeAxisSpec | None:
         """The free axis a brush on this trace defines, or None (not a cube source).
 
-        axis_range — the source figure's viewport on this trace's selectable axis
-        (None = unzoomed; domain resolution happens in the engine).
+        axis_range — the source figure's viewport on this trace's first
+        selectable axis, y_range on its second (a 2-D source); None = unzoomed
+        (the engine resolves the full data domain). A binned trace snaps a
+        viewport to its own bin lattice here, so it owns its grid.
         """
         return None
 
@@ -675,6 +680,27 @@ def _typed_temporal_lit(value: Any, dtype: pl.DataType | None) -> pl.Expr:
     return pl.lit(value, dtype=dtype)
 
 
+def _temporal_bound_toward(value: Any, dtype: pl.DataType, up: bool) -> pl.Expr:
+    """A range bound as a whole unit of a ``Date`` or ``Datetime("ms")``
+    column, rounded so no value of the column crosses it: ``up`` to the first
+    unit at or after the bound, else the last unit at or before it.
+
+    ``_typed_temporal_lit`` truncates a finer bound, so a bound at 13:00 would
+    keep that day's value at 00:00. A bound carries at most microseconds, so a
+    finer column takes it as it is.
+    """
+    if dtype == pl.Date:
+        unit_us = 86_400_000_000
+    elif isinstance(dtype, pl.Datetime) and dtype.time_unit == "ms":
+        unit_us = 1_000
+    else:
+        return _typed_temporal_lit(value, dtype)
+    tz = getattr(dtype, "time_zone", None)
+    us = _typed_temporal_lit(value, pl.Datetime("us", tz)).to_physical()
+    units = -(-us // unit_us) if up else us // unit_us
+    return units.cast(pl.Int32 if dtype == pl.Date else pl.Int64).cast(dtype)
+
+
 # ---------------------------------------------------------------------------
 # Temporal ↔ physical helpers for the numeric histogram kernels.
 #
@@ -717,8 +743,15 @@ def _physical_to_temporal_series(
     values: Sequence[float] | pl.Series, dtype: pl.DataType, name: str = ""
 ) -> pl.Series:
     """Cast physical bin centers (floats in ``dtype``'s physical unit) back to
-    the temporal ``dtype`` (rounded to the nearest physical unit)."""
+    the temporal ``dtype`` (rounded to the nearest physical unit).
+
+    A ``Date`` center is rarely a whole day, so it becomes a ``Datetime("ms")``
+    instead: Plotly draws and highlights a bar at its center, and a
+    day-rounded center puts the bar up to half a day off its bin."""
     s = values if isinstance(values, pl.Series) else pl.Series(name, list(values))
+    if dtype == pl.Date:
+        ms = s * _phys_epoch_ms_factor(dtype)
+        return ms.round().cast(pl.Int64).cast(pl.Datetime("ms"))
     return s.round().cast(pl.Int64).cast(dtype)
 
 
@@ -766,9 +799,29 @@ def _typed_range_bounds(
             pl.lit(lo).cast(dtype, strict=False),
             pl.lit(hi).cast(dtype, strict=False),
         )
+    if dtype == pl.Float32:
+        # Round like an integer bound, so no Float32 value crosses it: a
+        # closed bound toward the interior, an open bound away from it. The
+        # nearest Float32 can land on the far side of a value next to the bound.
+        # A whole number arrives from JSON as an int; above 2**24 it rounds too.
+        lo_closed = closed in ("both", "left")
+        hi_closed = closed in ("both", "right")
+        if isinstance(lo, (int, float)):
+            lo = _float32_toward(lo, up=lo_closed)
+        if isinstance(hi, (int, float)):
+            hi = _float32_toward(hi, up=not hi_closed)
     # Cast to match column dtype (e.g. f32) to avoid implicit column upcast
     # to f64 (measured ~5x slower at 5M rows).
     return (pl.lit(lo).cast(dtype, strict=False), pl.lit(hi).cast(dtype, strict=False))
+
+
+def _float32_toward(x: float, up: bool) -> float:
+    """The nearest Float32 at or above ``x`` (``up``), or at or below it."""
+    # float(): NumPy would compare a Float32 with x cast to Float32 (NEP 50).
+    f = np.float32(x)
+    if (float(f) < x) if up else (float(f) > x):
+        f = np.nextafter(f, np.float32(np.inf if up else -np.inf))
+    return float(f)
 
 
 def _range_filter_expr(
