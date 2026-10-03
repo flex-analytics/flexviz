@@ -61,6 +61,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
   another origin.
+- A draggable dashboard loads
+  [Gridstack 14.0.0](https://github.com/gridstack/gridstack.js/blob/master/doc/CHANGES.md)
+  instead of 12.6.0. The page looks the same. On a touchscreen, you now press
+  and hold a panel for about 300 ms before you can drag it. Mouse and trackpad
+  drags do not change.
 
 ### Fixed
 

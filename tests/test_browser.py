@@ -6166,7 +6166,7 @@ def _chart_bounding_boxes(page: Page) -> list[dict]:
 def _drag_grid_item_right(page: Page, sel: str) -> None:
     """Drag a grid item right by its own width (and slightly down) to relocate it.
 
-    The default dashboard layout is two side-by-side columns in a ``float:false``
+    The default dashboard layout is two side-by-side columns in a ``mode: 'top'``
     grid, so a straight-down drag just compacts back to its original row and the
     position never changes. Dragging onto the neighbouring column forces a real
     swap, which is what exercises the Gridstack→spec bridge.
@@ -6284,7 +6284,7 @@ class TestDraggableGridBrowser:
 
         # Default layout is two side-by-side columns; drag the first item onto the
         # second to force a column swap (a straight-down drag would just compact
-        # back to its row in a float:false grid).
+        # back to its row in a mode: 'top' grid).
         first_uid = grid_items[0]["fig_uid"]
         orig_pos = (grid_items[0]["x"], grid_items[0]["y"])
         _drag_grid_item_right(page, f'.grid-stack-item[gs-id="{first_uid}"]')
