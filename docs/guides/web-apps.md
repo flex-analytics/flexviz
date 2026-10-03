@@ -287,15 +287,23 @@ For local use:
 
 - Start Streamlit with `streamlit run app.py --server.address 127.0.0.1`.
 - Wrap FlexViz in Starlette's `TrustedHostMiddleware`, as the example that
-  follows shows. Then mount `guarded` in place of `flexviz.app`, for example
-  with `app.mount("/flexviz", guarded)`. For Flask, wrap `guarded` in
-  `ASGIMiddleware`.
+  follows shows.
 
 ```python
+import flexviz
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 guarded = TrustedHostMiddleware(flexviz.app, allowed_hosts=["localhost", "127.0.0.1"])
 ```
+
+Mount `guarded` in place of `flexviz.app`:
+
+| Web framework | Mount                                                      |
+| ------------- | ---------------------------------------------------------- |
+| Streamlit     | `Mount("/flexviz", app=guarded)` in the routes of `st.App` |
+| Dash          | `app.server.mount("/flexviz", guarded)`                    |
+| Gradio        | `app.mount("/flexviz", guarded)`, before Gradio            |
+| Flask         | `ASGIMiddleware(guarded)` in the `DispatcherMiddleware`    |
 
 The middleware refuses a request for another host name, which blocks DNS
 rebinding.
