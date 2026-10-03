@@ -20,6 +20,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 
 ## [Unreleased]
 
+### Added
+
+- The Web apps guide shows a dashboard in a Streamlit, Dash, Gradio, or Flask
+  app, on the same port as the app.
+
 ### Security
 
 - The server sends no CORS headers any more, so a page of another site cannot
@@ -98,6 +103,12 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
   inside its range. Before, a bound with a time of day (or a fraction of a
   millisecond) was cut to the day (or millisecond), so a brush that started at
   13:00 still kept that day.
+
+### Fixed
+
+- The `mount_into()` error now tells users of Flask and other WSGI apps to
+  wrap FlexViz with `a2wsgi`. The old hint, a bare `DispatcherMiddleware`,
+  failed on each request with a `TypeError`.
 
 ## [0.1.0b5] - 2026-09-27
 

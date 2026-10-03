@@ -736,9 +736,9 @@ async def dashboard_update(
 def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
     """Mount the flexviz FastAPI app on *host_app* under *prefix*.
 
-    Works with FastAPI / Starlette (``host_app.mount``).  For Flask/WSGI
-    hosts, use ``werkzeug.middleware.dispatcher.DispatcherMiddleware``
-    instead.
+    Works with FastAPI / Starlette (``host_app.mount``).  A Flask/WSGI host
+    cannot call an ASGI app: wrap ``app`` in ``a2wsgi.ASGIMiddleware`` and
+    mount that with ``werkzeug.middleware.dispatcher.DispatcherMiddleware``.
 
     The mounted app carries its own ``GZipMiddleware(minimum_size=1024)``
     (cube cross-filter design §8.1 — the wire-size mitigation), so all
@@ -758,8 +758,9 @@ def mount_into(host_app: Any, prefix: str = "/flexviz") -> None:
     else:
         raise TypeError(
             f"host_app of type {type(host_app).__name__!r} does not support "
-            ".mount(). Use werkzeug.middleware.dispatcher.DispatcherMiddleware "
-            "for Flask/WSGI hosts."
+            ".mount(). For Flask/WSGI hosts, wrap flexviz.app in "
+            "a2wsgi.ASGIMiddleware and mount that with "
+            "werkzeug.middleware.dispatcher.DispatcherMiddleware."
         )
 
 

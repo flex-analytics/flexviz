@@ -43,8 +43,10 @@ mount_into(app, prefix="/flexviz")
 The FlexViz endpoints (`/dashboard/update`, `/share`, `/view`,
 `/sources`) then live under the prefix. The mounted app brings its own gzip
 middleware, so responses are compressed regardless of the host app's setup.
-For Flask or other WSGI hosts, use
-`werkzeug.middleware.dispatcher.DispatcherMiddleware` instead.
+A WSGI app, such as Flask, cannot mount FlexViz directly, because FlexViz is an
+ASGI app. Wrap FlexViz with `a2wsgi`, as
+[Web apps](web-apps.md#flask-and-other-wsgi-apps) shows. The same guide mounts
+FlexViz into Streamlit, Dash, and Gradio.
 
 ## Serving a dashboard from a URL
 
