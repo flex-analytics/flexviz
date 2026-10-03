@@ -9,7 +9,7 @@
     column: 12,
     cellHeight: typeof _FV_CELL_HEIGHT !== 'undefined' ? _FV_CELL_HEIGHT : 80,
     animate: true,
-    float: false,
+    mode: 'top',
     cancel: '.fv-panel-bar, .fv-panel-bar *',
   });
   if (!DASHBOARD_SPEC.layout) DASHBOARD_SPEC.layout = {};
