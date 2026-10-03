@@ -22,5 +22,10 @@ updates:
         # so their bumps arrive as their own PR rather than buried in a batch
         # with serde and rayon.
         exclude-patterns: ["polars*", "pyo3-polars"]
+    ignore:
+      # 0.29.3 crashes the plugin on import on macOS: pyo3 locks a mutex whose
+      # first lock allocates, and PolarsAllocator calls back into pyo3.
+      - dependency-name: pyo3
+        versions: ["0.29.3"]
 
   # No pip/uv ecosystem: uv owns uv.lock and the PRs would be noise.
