@@ -400,7 +400,7 @@ class AbstractAdapter(ABC):
         """Return the GridStack CDN ``<link>`` tag plus minimal override CSS."""
         return (
             '<link rel="stylesheet"'
-            ' href="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack.min.css">\n'
+            ' href="https://cdn.jsdelivr.net/npm/gridstack@14.0.0/dist/gridstack.min.css">\n'
             "<style>\n"
             "  .grid-stack-item-content { overflow: hidden; }\n"
             "  .grid-stack-item-content > div { width: 100%; height: 100%; }\n"
@@ -411,7 +411,7 @@ class AbstractAdapter(ABC):
     def _gridstack_script_tag() -> str:
         """Return the GridStack CDN ``<script>`` tag."""
         return (
-            '<script src="https://cdn.jsdelivr.net/npm/gridstack@12.6.0/dist/gridstack-all.js">'
+            '<script src="https://cdn.jsdelivr.net/npm/gridstack@14.0.0/dist/gridstack-all.js">'
             "</script>"
         )
 
