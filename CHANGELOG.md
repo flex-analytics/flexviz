@@ -61,6 +61,9 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - A notebook `show()` displays the server's own `/view` page in its iframe,
   like the browser path, instead of a `data:` page that called the server from
   another origin.
+- `flexviz report` pages load marked 18.0.14 and DOMPurify 3.4.16 instead of
+  18.0.13 and 3.4.15. The new marked fixes markdown parsing bugs, for example
+  in numeric character references and GFM protocol autolinks.
 
 ### Fixed
 
