@@ -162,8 +162,9 @@ def _check_axis_types(spec: DashboardSpec) -> None:
     The spec validator cannot see the data types. A source that is not
     registered is skipped. Raises ``ValueError``.
     """
-    names = {fig.source for fig in spec.figures} & _sources.keys()
-    check_axis_types(spec, {name: _sources[name].schema for name in names})
+    check_axis_types(
+        spec, lambda name: _sources[name].schema if name in _sources else None
+    )
 
 
 def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSpec:

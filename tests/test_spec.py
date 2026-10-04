@@ -1653,7 +1653,9 @@ class TestDashboardLayoutPrecedence:
 
 class TestNumericColumnOnDateAxis:
     @staticmethod
-    def _dashboard(col: str, axis_type: str | None) -> Dashboard:
+    def _dashboard(
+        col: str, axis_type: str | None, template_type: str | None = None
+    ) -> Dashboard:
         import datetime as dt
 
         df = pl.DataFrame(
@@ -1667,6 +1669,8 @@ class TestNumericColumnOnDateAxis:
         fig = dash.add_figure().add_line(x=col, y="y")
         if axis_type:
             fig.update_layout(xaxis={"type": axis_type})
+        if template_type:
+            fig.update_layout(template={"layout": {"xaxis": {"type": template_type}}})
         return dash
 
     def test_builder_rejects_it_and_names_the_fix(self):
@@ -1679,3 +1683,10 @@ class TestNumericColumnOnDateAxis:
     )
     def test_other_combinations_still_build(self, col, axis_type):
         self._dashboard(col, axis_type).to_spec()
+
+    def test_a_date_axis_from_the_template_is_rejected_too(self):
+        with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
+            self._dashboard("n", None, template_type="date").to_spec()
+
+    def test_the_figure_axis_type_overrides_the_template(self):
+        self._dashboard("n", "linear", template_type="date").to_spec()
