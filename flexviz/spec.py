@@ -678,7 +678,12 @@ def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
     axis = figure.layout.get(key)
     return {
         **(base if isinstance(base, dict) else {}),
-        **(axis if isinstance(axis, dict) else {}),
+        # None is unset, as in Plotly, so it does not hide the template's value.
+        **(
+            {k: v for k, v in axis.items() if v is not None}
+            if isinstance(axis, dict)
+            else {}
+        ),
     }
 
 

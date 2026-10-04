@@ -1690,3 +1690,9 @@ class TestNumericColumnOnDateAxis:
 
     def test_the_figure_axis_type_overrides_the_template(self):
         self._dashboard("n", "linear", template_type="date").to_spec()
+
+    def test_a_none_figure_axis_type_leaves_the_template_type_in_force(self):
+        dash = self._dashboard("n", None, template_type="date")
+        dash._figures[0].update_layout(xaxis={"type": None})
+        with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
+            dash.to_spec()
