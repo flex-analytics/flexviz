@@ -2459,6 +2459,45 @@ class TestOverlayBrowser:
             if "z" in geo_kwargs:
                 assert min(layer["raw"]) <= 0 < max(layer["raw"])
 
+    def test_overlay_heatmap_background_follows_zoom(
+        self, page: Page, server_port: int
+    ):
+        """A zoom re-bins the filtered layer, so the faded layer needs the same grid."""
+        page.goto(_dashboard_url_hist2d_overlay(server_port))
+        _wait_for_init(page)
+        page.click("#fv-btn-cfmode")
+        page.evaluate("""() => {
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'ts', range: [100, 300] }] }],
+            }];
+            return postDashboardUpdate({ type: 'selection', force_update: true });
+        }""")
+        page.wait_for_function(
+            "() => document.querySelectorAll('.js-plotly-plot')[1].data.length === 2",
+            timeout=10_000,
+        )
+        page.evaluate(
+            "() => Plotly.relayout(divs[1], {'xaxis.range': [5, 10], 'yaxis.range': [5, 10]})"
+        )
+        page.wait_for_function(
+            """() => {
+                const gd = document.querySelectorAll('.js-plotly-plot')[1];
+                const fg = gd.data.find(t => t.uid.endsWith('__fv_layer_fg'));
+                return fg && Math.max(...fg.x) <= 11;
+            }""",
+            timeout=10_000,
+        )
+        grids = page.evaluate("""() => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const grid = t => ({ x: t.x, y: t.y });
+            return {
+                bg: grid(gd.data.find(t => t.uid.endsWith('__fv_layer_bg'))),
+                fg: grid(gd.data.find(t => t.uid.endsWith('__fv_layer_fg'))),
+            };
+        }""")
+        assert grids["bg"] == grids["fg"]
+
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int
     ):

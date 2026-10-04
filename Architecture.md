@@ -863,8 +863,10 @@ FlexEngine
          partition with its own filters. Other partitions filter agg specs
          per layer via overlay_style
          (with an active selection, traces with "filtered_only" reuse their
-         cached unfiltered layer instead of recomputing bg; init/deselect
-         still emit that sole unfiltered layer for every trace) and execute
+         cached unfiltered layer instead of recomputing bg, unless the event
+         moved one of their `recompute_axes`: the cached layer then has the
+         old grid; init/deselect still emit that sole unfiltered layer for
+         every trace) and execute
          only the layers required by the event (`selection` → fg, plus bg when
          a trace's viewport key changed; `init`/`deselect` → bg; `viewport` →
          bg or bg+fg depending on active selections)
