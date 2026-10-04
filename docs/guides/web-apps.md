@@ -271,7 +271,7 @@ Start the app with `flask --app app run`.
 The FlexViz routes have no authentication. Each user who can open the web app
 can query the registered sources through `/flexviz`. The mount does not serve
 `/h/N`, the agent route that reads the history file `.flexviz/history.jsonl`.
-Only `flexviz serve` and `show()` serve it.
+Only `run_server()` serves it, and `flexviz serve` and `show()` use that.
 
 Streamlit listens on all network interfaces by default. The `Host` check of
 `show()` and `flexviz serve` does not apply to a mounted app.

@@ -236,6 +236,13 @@ def test_run_server_counts_as_a_serve_call(build_dir):
     assert not graded["loopback"].passed
 
 
+def test_loopback_accepts_any_loopback_address(build_dir):
+    workdir, truths = build_dir
+    other = _trace(_bash(1, "python -c \"run_server('127.0.0.2', 8077)\""))
+    graded = _graded(["loopback"], other, workdir, truths)
+    assert graded["loopback"].passed
+
+
 def test_no_url_leak_catches_a_url_in_a_message(build_dir):
     workdir, truths = build_dir
     leaky = _trace(_msg(1, f"Here it is: {LEAK_URL}"))

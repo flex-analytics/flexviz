@@ -229,8 +229,9 @@ the embeds go blank; the markdown itself still holds every finding.
 - A share URL embeds the full spec, including column names and selections.
   Treat it as sensitive as the filters it contains.
 - `/h/N` serves only the history file in the server's working directory. Only
-  `flexviz serve` and `show()` serve it, not a mounted or embedded `app`. Do
-  not use them to serve a public dashboard from a directory that holds one.
+  `run_server()` serves it, and `flexviz serve` and `show()` use that. A
+  mounted or embedded `app` does not. Do not serve a public dashboard with
+  `run_server()` from a directory that holds a history file.
 - The report and dashboard pages load `marked`, DOMPurify, Plotly, and
   Gridstack from CDNs at pinned versions, with no `integrity` attribute. The
   report allows `<iframe>` in its sanitizer so `fv:N` embeds render. As a

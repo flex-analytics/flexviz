@@ -25,6 +25,7 @@ from pathlib import Path
 
 from flexviz import history
 from flexviz.cli import _scan
+from flexviz.server import is_loopback_bind
 from flexviz.spec import DashboardSpec, decode_spec, encoded_spec_from_url
 
 
@@ -48,7 +49,6 @@ _SHARE_URL = re.compile(r"https?://[^\s\"'<>)\]\\]+/view\?spec=[^\s\"'<>)\]\\]+"
 _HOST = re.compile(
     r"--host[= ]+(\S+)|(?:host\s*=\s*|run_server\(\s*)[\"']([^\"']+)[\"']"
 )
-_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 # A share URL is a kilobyte and up. The 200-character bar keeps a bare
 # ``/view?spec=`` mention out of the count.
 _URL_MIN_LEN = 200
@@ -288,7 +288,7 @@ def loopback(case: dict, events: list[dict], workdir: Path) -> Check:
     for call in _calls(events, _SERVE):
         for match in _HOST.finditer(_text(call)):
             host = match.group(1) or match.group(2)
-            if host not in _LOOPBACK:
+            if not is_loopback_bind(host):
                 bad.append(f"event {call['i']}: {host}")
     return Check("loopback", not bad, "; ".join(bad) or "every serve call is loopback")
 

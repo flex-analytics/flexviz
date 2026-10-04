@@ -1643,7 +1643,7 @@ predict are `conftest.py` (shared fixtures), `test_integration.py`,
 flexviz/
 ├── flexviz/
 │   ├── __init__.py          ← public API: Figure, Dashboard, app,
-│   │                           register_source, mount_into
+│   │                           register_source, mount_into, run_server
 │   ├── __main__.py          ← `python -m flexviz` entry; calls cli.main
 │   ├── cli.py               ← serve / schema / decode / skill install /
 │   │                           history / report
@@ -1661,7 +1661,7 @@ flexviz/
 │   ├── cache.py             ← CacheBackend, delta cache + cube-blob cache
 │   ├── LF.py                ← LFQueryBuilder, AggregationSpec,
 │   │                           GroupedAggregationSpec
-│   ├── server.py            ← FastAPI app, register_source, mount_into
+│   ├── server.py            ← FastAPI app, register_source, mount_into, run_server
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard
 │   ├── history.py           ← numbers share URLs in .flexviz/history.jsonl
