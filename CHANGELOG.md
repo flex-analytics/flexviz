@@ -64,6 +64,11 @@ independently. `flexviz` pins a compatible `flexviz-polars` range.
 - `flexviz report` pages load marked 18.0.14 and DOMPurify 3.4.16 instead of
   18.0.13 and 3.4.15. The new marked fixes markdown parsing bugs, for example
   in numeric character references and GFM protocol autolinks.
+- A draggable dashboard loads
+  [Gridstack 14.0.0](https://github.com/gridstack/gridstack.js/blob/master/doc/CHANGES.md)
+  instead of 12.6.0. The page looks the same. On a touchscreen, you now press
+  and hold a panel for about 300 ms before you can drag it. Mouse and trackpad
+  drags do not change.
 
 ### Fixed
 
