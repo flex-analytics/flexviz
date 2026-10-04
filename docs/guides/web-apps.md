@@ -18,8 +18,6 @@ app.
 
 These rules apply to every web framework:
 
-- Give the `Dashboard` the same data as the source: the registered frame, or a
-  lazy scan of the same file.
 - Give `share_url()` the name of the registered source in `source_name`.
 - Use the same prefix in the mount and in `server_url`.
 - If a proxy serves the web app under a path, such as `/app`, put that path in
@@ -28,12 +26,13 @@ These rules apply to every web framework:
 - Do not change the data of a registered source while the server runs. To show
   new data, restart the server.
 
-A broken rule shows only in the browser. A lazy scan reads no rows until a
-query runs, so the web app can build its `Dashboard` on a scan at no cost. A
-`Dashboard()` without data gives figures without a source name, and each update
-of these figures fails. After a change of a scanned file, the updates also
-fail. With `cache=True`, the first view of each figure can show the old data.
-See [Caching and live brushing](caching-and-live-brushing.md).
+A broken rule shows only in the browser. The `Dashboard` does not need the
+data: `Dashboard()` works, because `share_url()` puts `source_name` in each
+figure. If the `Dashboard` has data, FlexViz reads its schema only to check
+linked axes. A lazy scan reads no rows until a query runs, so the web app can
+build its `Dashboard` on a scan at no cost. After a change of a scanned file,
+the updates fail. With `cache=True`, the first view of each figure can show the
+old data. See [Caching and live brushing](caching-and-live-brushing.md).
 
 ## Example data
 

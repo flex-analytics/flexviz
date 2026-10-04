@@ -27,6 +27,7 @@ from flexviz.spec import (
     VisualizationSpec,
     decode_spec,
     encode_spec,
+    encoded_spec_from_url,
     parse_spec,
 )
 
@@ -109,6 +110,29 @@ class TestPostDashboardUpdate:
         for deltas in body["figure_deltas"].values():
             assert len(deltas) > 0
             assert "trace_index" not in deltas[0]
+
+    def test_dashboard_without_data_names_the_source_it_is_given(
+        self, client: TestClient
+    ):
+        """A dashboard built without data still points at a server source."""
+        dash = Dashboard()
+        dash.add_figure().add_line(x="ts", y="val", n_points=100)
+        shared = decode_spec(
+            encoded_spec_from_url(dash.share_url(source_name=_SRC)),
+        )
+        assert [f.source for f in dash.to_spec(source_name=_SRC).figures] == [_SRC]
+        assert [f.source for f in shared.figures] == [_SRC]
+
+        resp = client.post(
+            "/dashboard/update",
+            json={
+                "spec": shared.model_dump(),
+                "event": {"type": "init", "force_update": True},
+            },
+        )
+        assert resp.status_code == 200
+        (deltas,) = resp.json()["figure_deltas"].values()
+        assert len(deltas) > 0
 
     def test_other_spec_version_is_refused(
         self, client: TestClient, integ_df: pl.DataFrame
