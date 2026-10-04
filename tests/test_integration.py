@@ -1202,11 +1202,19 @@ class TestHistoryView:
     agent loop starts serves it, never the mountable ``app``."""
 
     @pytest.fixture
-    def client(self, integ_df: pl.DataFrame) -> TestClient:
-        from flexviz.server import _agent_app
+    def client(
+        self, integ_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
+    ) -> TestClient:
+        """The app ``run_server`` serves, as a client on a loopback Host."""
+        import uvicorn
+
+        from flexviz.server import run_server
 
         register_source(_SRC, integ_df)
-        return TestClient(_agent_app())
+        served = {}
+        monkeypatch.setattr(uvicorn, "run", lambda asgi, **kw: served.update(app=asgi))
+        run_server("127.0.0.1", 8000)
+        return TestClient(served["app"], base_url="http://127.0.0.1:8000")
 
     def _record_entry(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -1228,20 +1236,12 @@ class TestHistoryView:
         assert TestClient(app).get("/h/1").status_code == 404
 
     def test_run_server_serves_h_route_and_the_app_routes(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+        self, client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
     ):
-        import uvicorn
-
-        from flexviz.server import run_server
-
         self._record_entry(tmp_path, monkeypatch)
-        served = {}
-        monkeypatch.setattr(uvicorn, "run", lambda asgi, **kw: served.update(app=asgi))
-        run_server("127.0.0.1", 8000)
-        served_client = TestClient(served["app"], base_url="http://127.0.0.1:8000")
-        assert served_client.get("/h/1").status_code == 200
-        assert served_client.get("/sources").status_code == 200
-        assert "/dashboard/update" in served_client.get("/openapi.json").json()["paths"]
+        assert client.get("/h/1").status_code == 200
+        assert client.get("/sources").status_code == 200
+        assert "/dashboard/update" in client.get("/openapi.json").json()["paths"]
         # The route lives on the served app only: the shared app stays clean.
         assert TestClient(app).get("/h/1").status_code == 404
 
