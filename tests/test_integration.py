@@ -2775,6 +2775,58 @@ class TestAxisLinkValidation:
         assert resp.status_code == 400
         assert "mix naive time on a date axis and numeric" in resp.text
 
+    @staticmethod
+    def _numeric_on_date_axis() -> DashboardSpec:
+        """The builder sees a Datetime column; the registered source holds a
+        Float64 one, as for an imported spec."""
+        import datetime as dt
+
+        built = pl.DataFrame(
+            {"n": [dt.datetime(2024, 1, i) for i in (1, 2, 3)], "v": [1.0] * 3}
+        )
+        dash = Dashboard(built)
+        dash.add_figure().add_line(x="n", y="v").update_layout(xaxis={"type": "date"})
+        register_source(
+            "_integ_numeric_date_axis",
+            pl.DataFrame({"n": [1.0, 2.0, 3.0], "v": [1.0] * 3}),
+        )
+        return dash.to_spec(source_name="_integ_numeric_date_axis")
+
+    def test_update_rejects_a_numeric_column_on_a_date_axis(self, client: TestClient):
+        """A zoom sends date strings the column cannot compare: 422, not 500."""
+        spec = self._numeric_on_date_axis()
+        uid = spec.figures[0].uid
+        payload = spec.model_dump(mode="json")
+        payload["state"]["viewport"] = {
+            f"{uid}/x": {"min": "2024-01-01 00:00:00", "max": "2024-01-02 00:00:00"}
+        }
+        resp = client.post(
+            "/dashboard/update",
+            json={
+                "spec": payload,
+                "event": {"type": "viewport", "viewport_keys": [f"{uid}/x"]},
+            },
+        )
+        assert resp.status_code == 422
+        assert "cast the column to Datetime" in resp.text
+
+    def test_share_and_view_reject_a_numeric_column_on_a_date_axis(
+        self, client: TestClient
+    ):
+        spec = self._numeric_on_date_axis()
+        resp = client.post(
+            "/share",
+            json={
+                "spec": spec.model_dump(mode="json"),
+                "server_url": "http://127.0.0.1:1",
+            },
+        )
+        assert resp.status_code == 400
+        assert "cast the column to Datetime" in resp.text
+        resp = client.get("/view", params={"spec": encode_spec(spec)})
+        assert resp.status_code == 400
+        assert "cast the column to Datetime" in resp.text
+
     def test_share_rejects_a_single_figure_key_of_another_figure(
         self, client: TestClient, integ_df: pl.DataFrame
     ):

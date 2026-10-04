@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 from pydantic import ValidationError
 
+from flexviz.dashboard import Dashboard
 from flexviz.events import GroupedChildDelta, TraceDelta
 from flexviz.figure import Figure
 from flexviz.spec import (
@@ -1645,3 +1646,36 @@ class TestDashboardLayoutPrecedence:
             layout=layout,
         )
         assert layout.grid_items is None
+
+
+# ---- axis type vs column type ----------------------------------------------
+
+
+class TestNumericColumnOnDateAxis:
+    @staticmethod
+    def _dashboard(col: str, axis_type: str | None) -> Dashboard:
+        import datetime as dt
+
+        df = pl.DataFrame(
+            {
+                "n": [1.0, 2.0, 3.0],
+                "at": [dt.datetime(2024, 1, d) for d in (1, 2, 3)],
+                "y": [1.0, 2.0, 3.0],
+            }
+        )
+        dash = Dashboard(df)
+        fig = dash.add_figure().add_line(x=col, y="y")
+        if axis_type:
+            fig.update_layout(xaxis={"type": axis_type})
+        return dash
+
+    def test_builder_rejects_it_and_names_the_fix(self):
+        with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
+            self._dashboard("n", "date").to_spec()
+
+    @pytest.mark.parametrize(
+        ("col", "axis_type"),
+        [("at", "date"), ("at", None), ("n", None), ("n", "linear")],
+    )
+    def test_other_combinations_still_build(self, col, axis_type):
+        self._dashboard(col, axis_type).to_spec()

@@ -603,7 +603,7 @@ class DashboardSpec(BaseModel):
         Every spec entry point (builder, share URL, import, each request) runs
         this, so a hand-built or patched spec gets the same rules as
         ``Dashboard.link_axes``. The rules that need the data schema are in
-        ``check_axis_link_types``.
+        ``check_axis_types``.
         """
         figures = {fig.uid: fig for fig in self.figures}
         viewport = self.state.viewport
@@ -688,17 +688,19 @@ def _axis_reversed(axis: dict[str, Any]) -> bool:
     return False
 
 
-def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
-    """Check linked axes against the data types, which the spec cannot see.
+def check_axis_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
+    """Check axes against the data types, which the spec cannot see.
 
     ``schemas`` maps each figure source name to its Polars schema; a source
     without one is skipped. The builder and the server both run this. Raises
     ``ValueError``.
 
-    Only numeric, ``Date`` and ``Datetime`` columns can be linked: ``Time`` and
-    ``Duration`` render as category axes, whose ranges are positions. A numeric
-    column on a ``date`` axis is refused: its zoom sends dates the column
-    cannot compare. The axes of a group must then agree on three things, as the
+    A numeric column on a ``date`` axis is refused on every axis: its zoom
+    sends dates the column cannot compare. Cast the column to ``Datetime``.
+
+    Of the linked axes, only numeric, ``Date`` and ``Datetime`` columns can be
+    linked: ``Time`` and ``Duration`` render as category axes, whose ranges are
+    positions. The axes of a group must then agree on three things, as the
     client copies one range to all of them:
 
     - numeric or temporal, because a range of one does not parse as the other;
@@ -708,6 +710,20 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
       ``linear`` one numbers.
     """
     import polars as pl
+
+    for figure in spec.figures:
+        schema = schemas.get(figure.source) or {}
+        for axis_id, cols in figure_axis_columns(figure).items():
+            if _layout_axis(figure, axis_id).get("type") != "date":
+                continue
+            for col in sorted(cols):
+                dtype = schema.get(col)
+                if dtype is not None and dtype.is_numeric():
+                    raise ValueError(
+                        f"axis '{figure.uid}/{axis_id}' shows {col!r} of type "
+                        f"{dtype} on a date axis; cast the column to Datetime "
+                        "or use a linear axis"
+                    )
 
     figures = {fig.uid: fig for fig in spec.figures}
     for group in spec.client_state.axis_links:
@@ -721,7 +737,7 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
                 dtype = schema.get(col)
                 if dtype is None:
                     continue
-                if dtype.is_numeric() and axis_type != "date":
+                if dtype.is_numeric():
                     kinds.add("numeric on a linear axis")
                 elif isinstance(dtype, (pl.Date, pl.Datetime)):
                     zone = getattr(dtype, "time_zone", None) or "naive"
@@ -731,8 +747,7 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
                     raise ValueError(
                         f"linked axis {key!r} shows {col!r} of type {dtype} on a "
                         f"{axis_type or 'default'} axis; only numeric, Date and "
-                        "Datetime columns can be linked, and a numeric one not "
-                        "on a date axis"
+                        "Datetime columns can be linked"
                     )
         if len(kinds) > 1:
             raise ValueError(f"linked axes {group} mix {' and '.join(sorted(kinds))}")

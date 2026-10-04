@@ -48,7 +48,8 @@ from .spec import (
     InteractionState,
     LayoutSpec,
     _auto_grid_items,
-    check_axis_link_types,
+    _layout_axis,
+    check_axis_types,
     encode_spec,
     figure_axis_columns,
 )
@@ -300,9 +301,17 @@ class Dashboard:
                 # LayoutSpec, which would leak into the next dashboard reusing it.
                 layout=(layout or LayoutSpec()).model_copy(deep=True),
             )
-            # The schema is only needed for links: a spec build touches no data.
-            if spec.client_state.axis_links and self._backend_lf is not None:
-                check_axis_link_types(spec, {source_name: self._backend_lf.schema})
+            # The schema is only needed for links and date axes: a spec build
+            # touches no data.
+            has_date_axis = any(
+                _layout_axis(fig, axis_id).get("type") == "date"
+                for fig in figure_specs
+                for axis_id in figure_axis_columns(fig)
+            )
+            if (
+                spec.client_state.axis_links or has_date_axis
+            ) and self._backend_lf is not None:
+                check_axis_types(spec, {source_name: self._backend_lf.schema})
         except ValidationError as exc:
             messages = [e["msg"].removeprefix("Value error, ") for e in exc.errors()]
             raise ValueError(_name_figures("; ".join(messages), figure_specs)) from None
