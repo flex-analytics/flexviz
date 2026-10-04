@@ -182,19 +182,16 @@ def _serve(workdir: Path) -> int:
     import threading
     import time
 
-    import uvicorn
-
     from flexviz.cli import _register_files
-    from flexviz.server import app
+    from flexviz.server import run_server
 
     _register_files([str(p) for p in _data_files(workdir)], cache=False)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    )
-    threading.Thread(target=server.run, daemon=True).start()
+    threading.Thread(
+        target=run_server, args=("127.0.0.1", port, "error"), daemon=True
+    ).start()
     deadline = time.time() + 10
     while time.time() < deadline:
         try:

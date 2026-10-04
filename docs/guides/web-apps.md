@@ -269,10 +269,9 @@ Start the app with `flask --app app run`.
 ## Security
 
 The FlexViz routes have no authentication. Each user who can open the web app
-can query the registered sources through `/flexviz`. The mount also serves
-`/flexviz/h/N`, which reads the agent history file `.flexviz/history.jsonl` in
-the working folder of the server. See the
-[safety notes for agents](ai-agents.md#safety-notes).
+can query the registered sources through `/flexviz`. The mount does not serve
+`/h/N`, the agent route that reads the history file `.flexviz/history.jsonl`.
+Only `flexviz serve` and `show()` serve it.
 
 Streamlit listens on all network interfaces by default. The `Host` check of
 `show()` and `flexviz serve` does not apply to a mounted app.
@@ -281,7 +280,6 @@ Before you deploy the web app:
 
 - Put authentication in front of it. Make sure that the authentication also
   covers the `/flexviz` routes.
-- Do not run it from a folder that holds `.flexviz/history.jsonl`.
 
 For local use:
 
