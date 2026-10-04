@@ -270,7 +270,7 @@ class Dashboard:
     # -> also the case in figure.py
     def to_spec(
         self,
-        source_name: str = "data",
+        source_name: str | None = "data",
         layout: LayoutSpec | None = None,
     ) -> DashboardSpec:
         """Serialise all figures to a ``DashboardSpec``.

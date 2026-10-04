@@ -131,8 +131,10 @@ class TestPostDashboardUpdate:
             },
         )
         assert resp.status_code == 200
-        (deltas,) = resp.json()["figure_deltas"].values()
-        assert len(deltas) > 0
+        ((delta,),) = resp.json()["figure_deltas"].values()
+        xs, ys = delta["updates"]["x"], delta["updates"]["y"]
+        assert xs and len(xs) == len(ys)
+        assert ys == [float(x) for x in xs]
 
     def test_other_spec_version_is_refused(
         self, client: TestClient, integ_df: pl.DataFrame
