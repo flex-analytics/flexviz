@@ -1226,9 +1226,9 @@ class FlexEngine:
 
         Every trace needs the sole unfiltered layer used by init/deselect.
         While a filtered foreground is shown, ``filtered_only`` traces reuse
-        that cached unfiltered data instead of recomputing a duplicate
-        background, unless the event moved their viewport: the cached one
-        then has the old grid.
+        the cached unfiltered data. If the event changes one of their
+        ``recompute_axes``, that cache holds the old grid. The engine then
+        sends a fresh background.
         """
         if not foreground_shown:
             return specs
