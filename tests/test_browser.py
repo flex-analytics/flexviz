@@ -1834,7 +1834,7 @@ class TestPlotlyBrowser:
                 const trace = tracesByFig[idx][0];
                 const points = locations.map(loc => ({
                   location: loc,
-                  data: { uid: trace.uid },
+                  curveNumber: 0,
                 }));
                 handleSelected({points}, geoUid);
             }""",
@@ -2497,6 +2497,71 @@ class TestOverlayBrowser:
             };
         }""")
         assert grids["bg"] == grids["fg"]
+
+    def test_overlay_map_box_select_after_zoom_reads_filtered_cells(
+        self, page: Page, server_port: int
+    ):
+        """A box select reads each cell from the layer it was picked in, even
+        while the faded layer still holds the grid from before the zoom."""
+        page.goto(_dashboard_url_geo_overlay(server_port))
+        _wait_for_init(page)
+        page.click("#fv-btn-cfmode")
+        page.evaluate("""() => {
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'ts', range: [0, 400] }] }],
+            }];
+            return postDashboardUpdate({ type: 'selection', force_update: true });
+        }""")
+        layer_geojson = """layer => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const t = gd.data.find(t => t.uid.endsWith('__fv_layer_' + layer));
+            return t && t.geojson;
+        }"""
+        page.wait_for_function(f"() => ({layer_geojson})('fg')", timeout=10_000)
+        coarse = page.evaluate(f"() => ({layer_geojson})('bg')")
+        page.evaluate("""() => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            handleRelayout({'map._derived': {coordinates: [
+                [3, 3], [13, 3], [13, 13], [3, 13],
+            ]}}, figUid);
+        }""")
+        # The zoom re-bins the filtered layer onto a finer grid.
+        page.wait_for_function(
+            f"""() => {{
+                const g = ({layer_geojson})('fg');
+                const ring = g.features[0].geometry.coordinates[0];
+                return Math.abs(ring[1][0] - ring[0][0]) < 4;
+            }}""",
+            timeout=10_000,
+        )
+        result = page.evaluate(
+            """coarse => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const bgIdx = gd.data.findIndex(t => t.uid.endsWith('__fv_layer_bg'));
+            const fgIdx = gd.data.findIndex(t => t.uid.endsWith('__fv_layer_fg'));
+            gd.data[bgIdx].geojson = coarse;
+            const fg = gd.data[fgIdx];
+            const ring = id => fg.geojson.features.find(f => f.id === id)
+                .geometry.coordinates[0];
+            const picked = fg.locations.slice(0, 3);
+            const bounds = { lon: [Infinity, -Infinity], lat: [Infinity, -Infinity] };
+            for (const id of picked) {
+                for (const [lon, lat] of ring(id)) {
+                    bounds.lon = [Math.min(bounds.lon[0], lon), Math.max(bounds.lon[1], lon)];
+                    bounds.lat = [Math.min(bounds.lat[0], lat), Math.max(bounds.lat[1], lat)];
+                }
+            }
+            const points = picked.map(id => ({
+                curveNumber: fgIdx, data: fg, fullData: gd._fullData[fgIdx], location: id,
+            }));
+            const [pred] = geoSelectionFromPoints({ points }, figUid);
+            return { bounds, ranges: pred.clauses.map(c => c.range) };
+        }""",
+            coarse,
+        )
+        assert result["ranges"] == [result["bounds"]["lon"], result["bounds"]["lat"]]
 
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int
