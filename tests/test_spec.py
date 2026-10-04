@@ -1654,7 +1654,7 @@ class TestDashboardLayoutPrecedence:
 class TestNumericColumnOnDateAxis:
     @staticmethod
     def _dashboard(
-        col: str, axis_type: str | None, template_type: str | None = None
+        col: str, xaxis: dict | None = None, template_type: str | None = None
     ) -> Dashboard:
         import datetime as dt
 
@@ -1667,32 +1667,36 @@ class TestNumericColumnOnDateAxis:
         )
         dash = Dashboard(df)
         fig = dash.add_figure().add_line(x=col, y="y")
-        if axis_type:
-            fig.update_layout(xaxis={"type": axis_type})
+        if xaxis is not None:
+            fig.update_layout(xaxis=xaxis)
         if template_type:
             fig.update_layout(template={"layout": {"xaxis": {"type": template_type}}})
         return dash
 
     def test_builder_rejects_it_and_names_the_fix(self):
         with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
-            self._dashboard("n", "date").to_spec()
+            self._dashboard("n", {"type": "date"}).to_spec()
 
     @pytest.mark.parametrize(
-        ("col", "axis_type"),
-        [("at", "date"), ("at", None), ("n", None), ("n", "linear")],
+        ("col", "xaxis"),
+        [
+            ("at", {"type": "date"}),
+            ("at", None),
+            ("n", None),
+            ("n", {"type": "linear"}),
+        ],
     )
-    def test_other_combinations_still_build(self, col, axis_type):
-        self._dashboard(col, axis_type).to_spec()
+    def test_other_combinations_still_build(self, col, xaxis):
+        self._dashboard(col, xaxis).to_spec()
 
     def test_a_date_axis_from_the_template_is_rejected_too(self):
         with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
-            self._dashboard("n", None, template_type="date").to_spec()
+            self._dashboard("n", template_type="date").to_spec()
 
     def test_the_figure_axis_type_overrides_the_template(self):
-        self._dashboard("n", "linear", template_type="date").to_spec()
+        self._dashboard("n", {"type": "linear"}, template_type="date").to_spec()
 
     def test_a_none_figure_axis_type_leaves_the_template_type_in_force(self):
-        dash = self._dashboard("n", None, template_type="date")
-        dash._figures[0].update_layout(xaxis={"type": None})
+        dash = self._dashboard("n", {"type": None}, template_type="date")
         with pytest.raises(ValueError, match=r"'n' of type Float64.*cast.*Datetime"):
             dash.to_spec()
