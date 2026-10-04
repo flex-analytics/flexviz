@@ -2144,6 +2144,44 @@ class TestLineEnvelope:
         got = cube.frame.sort(["free_bin", "g", "__bin__x"]).select(want.columns)
         assert got.equals(want)
 
+    @pytest.mark.parametrize("grouped", [False, True])
+    def test_zoomed_domain_edges_match_hand_filtered_rows(self, grouped):
+        """A zoomed free domain keeps exactly the rows with ``lo <= f <= hi``:
+        the domain edges and the floats just outside them, NaN, inf and null."""
+        lo, hi = 20.0, 40.0
+        below, above = math.nextafter(lo, -math.inf), math.nextafter(hi, math.inf)
+        edge = [lo, hi, below, above, 0.0, 100.0, 30.0]
+        free = [float((i * 37) % 100) for i in range(600)] + edge * 4
+        free += [float("nan"), float("inf"), float("-inf"), None]
+        n = len(free)
+        df = pl.DataFrame(
+            {
+                "x": [float((i * 13) % 101) for i in range(n)],
+                "y": [((i * 311) % n) * 0.5 for i in range(n)],
+                "free": free,
+                "g": [("a", "b")[i % 2] for i in range(n)],
+            }
+        )
+        extra = (TargetDimSpec(column="g", kind="categorical"),) if grouped else ()
+        spec = _line_spec(free_domain=(lo, hi), extra_dims=extra)
+        cube = build_cube(df.lazy(), spec)
+
+        keep = [v is not None and lo <= v <= hi for v in free]
+        assert 0 < sum(keep) < n
+        kept = build_cube(df.filter(pl.Series(keep)).lazy(), spec)
+        assert encode_fvcube(cube, cube_id="t") == encode_fvcube(kept, cube_id="t")
+        # The row exactly at the domain max is kept, in the top free bin.
+        assert cube.frame["free_bin"].max() == 63
+
+        if not grouped:
+            want = _ref_to_frame(
+                _line_env_reference(
+                    df["x"], df["y"], df["free"], 0.0, 100.0, lo, hi, 32, 64
+                )
+            ).select("__bin__x", "free_bin", "y_min", "x_at_ymin", "y_max", "x_at_ymax")
+            got = cube.frame.sort(["free_bin", "__bin__x"]).select(want.columns)
+            assert got.equals(want)
+
     def test_temporal_x_bins_physical_and_header_carries_unit(self):
         n = 500
         base = datetime(2022, 1, 1)

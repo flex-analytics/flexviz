@@ -857,6 +857,9 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     per partition. Temporal x and free columns run on their physical Float64
     representation (contract G). The kernel returns exact f64; the f32/u16
     quantization happens at encode time only (``_line_env_quantized_buffers``).
+
+    A range free axis filters the free value to its domain before the collect,
+    like the other range builders, so a zoomed domain collects only its rows.
     """
     import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
@@ -949,14 +952,19 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             "domain=None (full data domain) before building"
         )
     f_lo, f_hi = free.domain
-    # The kernel bins the free axis with the display kernel's rule and filters
-    # out-of-domain rows itself, so it takes the raw value.
-    df = ldf.select(
-        *[pl.col(c) for c in cat_cols],
-        _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
-        pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
-        _free_value_expr(free).cast(pl.Float64).alias("__f"),
-    ).collect(engine="streaming")
+    # The kernel bins the free axis with the display kernel's rule, so it takes
+    # the raw value. The filter has the kernel's own closed bounds, so it only
+    # keeps rows outside a zoomed domain from being collected.
+    df = (
+        ldf.select(
+            *[pl.col(c) for c in cat_cols],
+            _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
+            pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
+            _free_value_expr(free).cast(pl.Float64).alias("__f"),
+        )
+        .filter(pl.col("__f").is_between(float(f_lo), float(f_hi)))
+        .collect(engine="streaming")
+    )
 
     def _envelope(part: pl.DataFrame) -> pl.DataFrame:
         return (

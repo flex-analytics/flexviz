@@ -90,9 +90,17 @@ def test_build_cubes(benchmark, frame: pl.DataFrame) -> None:
     assert cubes and trace_cubes == {hist.uid: 0}
 
 
-def test_build_line_cubes(benchmark, frame: pl.DataFrame) -> None:
+@pytest.mark.parametrize(
+    "viewports",
+    [{}, {"fig_a": {"x": [-0.5, 0.5]}}],
+    ids=["unzoomed", "zoomed"],
+)
+def test_build_line_cubes(
+    benchmark, frame: pl.DataFrame, viewports: dict[str, dict[str, list[float]]]
+) -> None:
     """Histogram source (a range free axis), line target: the envelope cube,
-    wrapper and kernel together."""
+    wrapper and kernel together. The zoomed source collects only the rows
+    inside its free domain."""
     hist = Histogram(x="z", bins=50)
     line = TRACES["line-minmax"]()
     engine = FlexEngine(
@@ -105,5 +113,5 @@ def test_build_line_cubes(benchmark, frame: pl.DataFrame) -> None:
         TraceInfo(line.uid, line._axes, line.trace_type, figure_uid="fig_b"),
     ]
     active = ActiveSource(figure_uid="fig_a", column="z", trace_uid=hist.uid)
-    cubes, trace_cubes = benchmark(engine.build_cubes, infos, {}, [], active)
+    cubes, trace_cubes = benchmark(engine.build_cubes, infos, viewports, [], active)
     assert cubes and trace_cubes == {line.uid: 0}

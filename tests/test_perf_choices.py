@@ -313,6 +313,68 @@ def test_envelope_kernel_scans_chunks_directly() -> None:
     )
 
 
+ZOOM_ROWS = 2_000_000
+
+
+def test_zoomed_envelope_build_collects_only_the_free_domain() -> None:
+    """Decision: `_build_line_env_cube` filters the free value to its domain
+    before the collect, instead of collecting every row and letting
+    `fixed_line_envelope2d` drop the ones outside.
+
+    Evidence: release plugin, 4 threads, 8M rows, 2048 free bins, 500 x
+    buckets, medians of 41 alternating runs. A free domain over 25 % of the
+    data built in 23.3 ms with the filter before the collect against 33.2 ms
+    without it (0.70x) on correlated data, and 76.4 ms against 165.8 ms
+    (0.46x) on uniform data. A domain over all the data showed no difference
+    beyond noise (1.04x and 1.00x), so the filter is unconditional like the
+    other range builders.
+
+    Check: the single collect of a 25 % domain returns only the rows inside the
+    domain (the exact count, domain edges included), not the whole frame. The
+    row count is exact, so it needs no timing and no quiet machine.
+    """
+    import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
+
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "x": rng.uniform(0.0, 1000.0, ZOOM_ROWS),
+            "y": rng.standard_normal(ZOOM_ROWS),
+            "free": rng.uniform(0.0, 1000.0, ZOOM_ROWS),
+        }
+    )
+    lo, hi = 375.0, 625.0
+    inside = int(df["free"].is_between(lo, hi).sum())
+    assert 0.2 * ZOOM_ROWS < inside < 0.3 * ZOOM_ROWS
+    spec = CubeSpec(
+        source_name="s",
+        free=FreeAxisSpec(column="free", p=64, domain=(lo, hi)),
+        target_dims=(
+            TargetDimSpec(column="x", kind="binned", bins=64, domain=(0.0, 1000.0)),
+        ),
+        measure=MeasureSpec(agg="line_env", value_col="y"),
+    )
+
+    heights: list[int] = []
+    original_collect = pl.LazyFrame.collect
+
+    def tracked_collect(self, *args, **kwargs):
+        out = original_collect(self, *args, **kwargs)
+        heights.append(out.height)
+        return out
+
+    pl.LazyFrame.collect = tracked_collect
+    try:
+        build_cube(df.lazy(), spec)
+    finally:
+        pl.LazyFrame.collect = original_collect
+
+    assert heights == [inside], (
+        f"the build collected {heights} rows, expected only the {inside} rows "
+        f"inside the free domain"
+    )
+
+
 # ~1M cells over 50k distinct labels: a realistic large bar/treemap cube, and
 # the shape where the per-row dict lookup cost is visible without the test
 # taking seconds. The frame must come from `build_cube`: a hand-gathered
