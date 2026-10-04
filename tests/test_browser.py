@@ -321,8 +321,13 @@ def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
     return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
-    """Two-figure dashboard: line source + geo_histogram2d target for overlay CF tests."""
+def _dashboard_url_geo_overlay(
+    port: int, *, target_line: bool = False, **geo_kwargs
+) -> str:
+    """Two-figure dashboard: line source + geo_histogram2d target for overlay CF tests.
+
+    ``target_line`` adds a third figure, a line filtered by the map.
+    """
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import encode_spec
@@ -344,6 +349,8 @@ def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
     dash.add_figure(title="Map").add_geo_histogram2d(
         lat="lat", lon="lon", lat_bins=5, lon_bins=5, **geo_kwargs
     )
+    if target_line:
+        dash.add_figure(title="Target").add_line(x="ts", y="val", n_points=200)
     spec = dash.to_spec(source_name="_browser_geo_overlay")
 
     encoded = encode_spec(spec)
@@ -2501,9 +2508,9 @@ class TestOverlayBrowser:
     def test_overlay_map_box_select_after_zoom_reads_filtered_cells(
         self, page: Page, server_port: int
     ):
-        """A box select reads each cell from the layer it was picked in, even
-        while the faded layer still holds the grid from before the zoom."""
-        page.goto(_dashboard_url_geo_overlay(server_port))
+        """A box select commits the box of the cells picked in the filtered layer,
+        even while the faded layer still holds the grid from before the zoom."""
+        page.goto(_dashboard_url_geo_overlay(server_port, target_line=True))
         _wait_for_init(page)
         page.click("#fv-btn-cfmode")
         page.evaluate("""() => {
@@ -2535,7 +2542,7 @@ class TestOverlayBrowser:
             }}""",
             timeout=10_000,
         )
-        result = page.evaluate(
+        bounds = page.evaluate(
             """coarse => {
             const figUid = DASHBOARD_SPEC.figures[1].uid;
             const gd = document.querySelectorAll('.js-plotly-plot')[1];
@@ -2556,12 +2563,45 @@ class TestOverlayBrowser:
             const points = picked.map(id => ({
                 curveNumber: fgIdx, data: fg, fullData: gd._fullData[fgIdx], location: id,
             }));
-            const [pred] = geoSelectionFromPoints({ points }, figUid);
-            return { bounds, ranges: pred.clauses.map(c => c.range) };
+            handleSelected({ points }, figUid);
+            return bounds;
         }""",
             coarse,
         )
-        assert result["ranges"] == [result["bounds"]["lon"], result["bounds"]["lat"]]
+        # The committed selection is the box of the picked filtered cells.
+        committed = page.evaluate("""() => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            const sel = DASHBOARD_SPEC.state.selections.find(
+                s => s.source_figure_uid === figUid);
+            return sel && Object.fromEntries(
+                sel.predicates[0].clauses.map(c => [c.column, c.range]));
+        }""")
+        assert committed == {"lon": bounds["lon"], "lat": bounds["lat"]}
+
+        # The linked line shows exactly the rows inside that box and the ts range.
+        lon_lo, lon_hi = bounds["lon"]
+        lat_lo, lat_hi = bounds["lat"]
+        expected = [
+            i
+            for i in range(500)
+            if i <= 400
+            and lon_lo <= (i * 7) % 25 <= lon_hi
+            and lat_lo <= i % 25 <= lat_hi
+        ]
+        assert 0 < len(expected) < 200
+        page.wait_for_function(
+            """n => {
+                const ts = DASHBOARD_SPEC.figures[2].traces[0];
+                const fg = ensureLayerData(ts.uid).fg;
+                return fg && fg.x && fg.x.length === n;
+            }""",
+            arg=len(expected),
+            timeout=10_000,
+        )
+        line_x = page.evaluate(
+            "() => ensureLayerData(DASHBOARD_SPEC.figures[2].traces[0].uid).fg.x"
+        )
+        assert sorted(line_x) == expected
 
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int
