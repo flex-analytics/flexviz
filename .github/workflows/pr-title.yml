@@ -1,0 +1,27 @@
+name: PR title
+
+# The PR title is the changelog entry: scripts/changelog.py groups the merged
+# PRs by their Conventional Commit type at release time. `edited` reruns the
+# check when only the title changes.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The title goes through env, never into the script text: it is
+      # untrusted input.
+      - name: Title is a Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|perf|docs|refactor|test|build|ci|chore|revert|style)(\([^)]+\))?!?: .+'
+          if ! [[ "$TITLE" =~ $pattern ]]; then
+            echo "::error::The PR title is not a Conventional Commit, for example 'fix(cube): keep labels in order'."
+            exit 1
+          fi

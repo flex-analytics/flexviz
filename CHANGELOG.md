@@ -1,7 +1,8 @@
 # Changelog
 
 All notable changes to FlexViz are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each release section
+starts as a list of the merged pull request titles and is then edited by hand.
 
 ## Compatibility policy
 
@@ -17,106 +18,6 @@ documented in the release notes below instead.
 
 `flexviz` and `flexviz-polars` are released together but versioned
 independently. `flexviz` pins a compatible `flexviz-polars` range.
-
-## [Unreleased]
-
-### Added
-
-- The Web apps guide shows a dashboard in a Streamlit, Dash, Gradio, or Flask
-  app, on the same port as the app.
-
-### Security
-
-- The server sends no CORS headers any more, so a page of another site cannot
-  read its answers. A server that `show()` or `flexviz serve` binds to a
-  loopback address also refuses a request whose `Host` is not `localhost`, a
-  loopback IP or the bind host, which blocks DNS rebinding.
-
-### Added
-
-- A light and a dark mode. The new **Mode** button in the toolbar cycles
-  Auto, Light and Dark. Auto follows the system setting, and the browser
-  remembers a Light or Dark choice. The mode is not part of the spec or a
-  share URL, and a switch sends no request to the server.
-
-### Changed
-
-- `flexviz` requires the `flexviz-polars` release that ships with it, because
-  the line envelope kernel now bins the free axis like the display kernel.
-- A new default look for the page and the plots: system fonts, slate text,
-  an indigo accent, left-aligned titles, and theme colors for the plot
-  background, grid, axes, hover labels and active-filter strip. Before, the
-  plots used the Plotly defaults, and a dark system showed white plots in a
-  dark page. `update_layout()` options still win over the theme.
-- The default series colors are the Okabe-Ito palette (`#0072b2`, `#e69f00`,
-  `#009e73`, ...) instead of the Plotly colors, and they are the same in both
-  modes.
-- A series hover label uses the neutral theme colors with a border in the
-  series color. Before, its text on the series color had a contrast of
-  about 3:1.
-- In dark mode, maps darken the OpenStreetMap tiles, and the `"Viridis"`
-  color scale starts at `#424086` instead of `#440154`, so sparse cells stay
-  visible on a dark plot. This also applies to a `"Viridis"` that you set by
-  name. Light mode and the other scales do not change.
-- A notebook `show()` displays the server's own `/view` page in its iframe,
-  like the browser path, instead of a `data:` page that called the server from
-  another origin.
-- `flexviz report` pages load marked 18.0.14 and DOMPurify 3.4.16 instead of
-  18.0.13 and 3.4.15. The new marked fixes markdown parsing bugs, for example
-  in numeric character references and GFM protocol autolinks.
-- A draggable dashboard loads
-  [Gridstack 14.0.0](https://github.com/gridstack/gridstack.js/blob/master/doc/CHANGES.md)
-  instead of 12.6.0. The page looks the same. On a touchscreen, you now press
-  and hold a panel for about 300 ms before you can drag it. Mouse and trackpad
-  drags do not change.
-
-### Fixed
-
-- Long y-axis tick labels, such as the column names of a correlation
-  heatmap, are no longer cut off: the left margin grows to fit them.
-- In overlay mode, the legend no longer fades with the background layer.
-- Toolbar and panel buttons use the page font.
-
-### Removed
-
-- `flexviz.server.show_server`. Use `Figure.show()`, `Dashboard.show()` or
-  `flexviz serve`.
-- The deprecated ECharts renderer. `renderer="echarts"` now raises a
-  `ValueError`. A share URL or `flexviz history` entry with
-  `renderer=echarts` returns HTTP 400 at `/view` and `/h/{n}`. The renderer
-  name must now be exactly `"plotly"`, so `renderer="Plotly"` also raises.
-- `flexviz.cache.set_cache_backend` and `flexviz.cache.set_cube_cache_backend`,
-  which replaced the server-side delta cache and cube cache.
-
-### Fixed
-
-- A brush on a histogram or a histogram2d snaps to the edges of its bars or
-  cells. The bars that Plotly highlights now hold exactly the rows that the
-  other figures keep, also for a value on a bar edge and on a `Date` axis. A
-  brush that covers no bar or cell center clears the selection. Before, the
-  brush snapped to a fixed grid of 2048 steps (128 per axis for a
-  histogram2d), so the other figures also kept part of the rows of the edge
-  bars or cells. The live-brush data of such a source now grows with its bars
-  or cells instead of the fixed grid: with the default 20 bars or 20 × 20
-  cells it is about 40 to 50 times smaller. A histogram2d finer than
-  128 × 128 cells makes it larger than before.
-- A histogram or a histogram2d on a `Date` column draws each bar at its bin
-  center, and its hover shows the time of day of that center. Before, the
-  center was rounded to a whole day, so a bar could sit up to half a day off
-  its bin, and bars narrower than a day stacked on one day.
-- A selection or a zoom on a `Float32` column keeps exactly the values inside
-  its range. Before, each bound was rounded to the nearest `Float32`, which
-  could move a value next to the bound to the other side.
-- A selection on a `Date` or `Datetime("ms")` column keeps exactly the values
-  inside its range. Before, a bound with a time of day (or a fraction of a
-  millisecond) was cut to the day (or millisecond), so a brush that started at
-  13:00 still kept that day.
-
-### Fixed
-
-- The `mount_into()` error now tells users of Flask and other WSGI apps to
-  wrap FlexViz with `a2wsgi`. The old hint, a bare `DispatcherMiddleware`,
-  failed on each request with a `TypeError`.
 
 ## [0.1.0b5] - 2026-09-27
 
