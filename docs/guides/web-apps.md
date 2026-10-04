@@ -29,9 +29,9 @@ These rules apply to every web framework:
 A broken rule shows only in the browser. The `Dashboard` does not need the
 data: `Dashboard()` works, because `share_url()` puts `source_name` in each
 figure. If the `Dashboard` has data, FlexViz reads its schema only to check
-linked axes. With linked axes, the data of the `Dashboard` must have the same
-column types as the registered source. Give it no data, or a lazy scan of the
-same file. A lazy scan reads no rows until a query runs, so the web app can
+linked axes. With linked axes, the builder checks the links against the data of
+the `Dashboard`, and the server checks them against the registered source. So
+give the `Dashboard` no data, or a lazy scan of the same file. A lazy scan reads no rows until a query runs, so the web app can
 build its `Dashboard` on a scan at no cost. After a change of a scanned file,
 the updates fail. With `cache=True`, the first view of each figure can show the
 old data. See [Caching and live brushing](caching-and-live-brushing.md).
