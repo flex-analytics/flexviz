@@ -200,6 +200,28 @@ class TestTreeMapHierarchy:
         assert "root" in ids
         assert "root/X" in ids
 
+    def test_null_and_string_none_get_distinct_ids(self):
+        df = pl.DataFrame(
+            {
+                "g": [None, "None", "null", "a", None],
+                "h": ["x", "x", "x", None, "None"],
+            }
+        )
+        result = _aggregate_treemap(df, path=["g", "h"])
+        ids = result.updates["ids"]
+        assert len(ids) == len(set(ids))
+        # Every parent id is a node id, so the hierarchy stays connected.
+        assert set(result.updates["parents"]) - {""} <= set(ids)
+        by_id = dict(zip(ids, result.updates["values"]))
+        labels = dict(zip(ids, result.updates["labels"]))
+        assert labels["root/!null"] == "null"
+        assert labels["root/None"] == "None"
+        assert by_id["root/!null"] == 2
+        assert by_id["root/None"] == 1
+        assert by_id["root/!null/x"] == 1
+        assert by_id["root/!null/None"] == 1
+        assert by_id["root/a/!null"] == 1
+
     def test_group_results_is_none(self, continent_df):
         result = _aggregate_treemap(
             continent_df, path=["continent", "country"], values="population"

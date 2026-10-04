@@ -216,6 +216,37 @@ class TestTreemapPieOrCrossFilter:
 
         assert set(_plotly_bar_labels(page, 0)) == {"NL", "DE"}
 
+    def test_treemap_null_node_is_not_selectable(self, page: Page, server_port: int):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+
+        df = pl.DataFrame(
+            {
+                "source": [None] * 10 + ["None"] * 10 + ["solar"] * 10,
+                "val": [1.0] * 30,
+            }
+        )
+        register_source("_null_node_dashboard", df)
+        dash = Dashboard(df)
+        dash.add_figure(title="bar").add_bar(labels="source", values="val")
+        dash.add_figure(title="treemap").add_treemap(path=["source"], values="val")
+        spec = dash.to_spec(
+            source_name="_null_node_dashboard", layout=LayoutSpec(draggable=False)
+        )
+        page.goto(f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}")
+        _wait_for_init(page)
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.includes('root/!null')"
+        )
+        self._click_plotly_treemap_node(page, 1, "root/!null")
+        page.wait_for_timeout(500)
+        assert _selection_predicates(page) == []
+
+        self._click_plotly_treemap_node(page, 1, "root/None")
+        _wait_for_selection_count(page, 1)
+        preds = _selection_predicates(page)[0]["preds"]
+        assert [c["values"] for c in preds[0]["clauses"]] == [["None"]]
+
     def test_treemap_leaf_toggle_clears_cross_filter(
         self, page: Page, server_port: int
     ):

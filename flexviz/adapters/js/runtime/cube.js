@@ -1292,7 +1292,8 @@ function fvUrlQuote(s) {
 // never re-finalized at parent levels). Nodes within a level are sorted by their
 // prefix code tuple (the header's order, like the server's sort over the path
 // columns). ids/parents are url-quoted per part; the label is the part as the
-// server's str() gives it (a null part is "None"). color_map
+// server gives it (a null part is "null", id segment "!null", which fvUrlQuote
+// never emits because it escapes "!"). color_map
 // → marker.colors (PLURAL, like pie) over the FULL labels array (root="" too).
 function treemapDeltaFromEntry(traceSpec, entry, binRanges) {
   const cells = fvCubeSliceCells(entry, binRanges);
@@ -1313,19 +1314,17 @@ function treemapDeltaFromEntry(traceSpec, entry, binRanges) {
       const key = codes.join(',');
       let node = agg.get(key);
       if (!node) {
-        // The server labels a node str(value): a null path part is "None".
-        const parts = cell.dims.slice(0, level + 1).map(p => (p === null ? 'None' : p));
-        node = { codes, parts, value: 0 };
+        node = { codes, parts: cell.dims.slice(0, level + 1), value: 0 };
         agg.set(key, node);
       }
       node.value += cell.value;
     }
     const nodes = Array.from(agg.values()).sort((a, b) => _fvCompareCodes(a.codes, b.codes));
     for (const node of nodes) {
-      const encoded = node.parts.map(fvUrlQuote);
+      const encoded = node.parts.map(p => (p === null ? '!null' : fvUrlQuote(p)));
       ids.push('root/' + encoded.join('/'));
       parents.push(level === 0 ? 'root' : 'root/' + encoded.slice(0, -1).join('/'));
-      labels.push(node.parts[level]);
+      labels.push(node.parts[level] === null ? 'null' : node.parts[level]);
       values.push(node.value);
     }
   }
