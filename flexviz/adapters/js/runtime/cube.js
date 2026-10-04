@@ -1321,7 +1321,7 @@ function treemapDeltaFromEntry(traceSpec, entry, binRanges) {
     }
     const nodes = Array.from(agg.values()).sort((a, b) => _fvCompareCodes(a.codes, b.codes));
     for (const node of nodes) {
-      const encoded = node.parts.map(p => (p === null ? '!null' : fvUrlQuote(p)));
+      const encoded = node.parts.map(p => (p === null ? FV_NULL_NODE_ID : fvUrlQuote(p)));
       ids.push('root/' + encoded.join('/'));
       parents.push(level === 0 ? 'root' : 'root/' + encoded.slice(0, -1).join('/'));
       labels.push(node.parts[level] === null ? 'null' : node.parts[level]);

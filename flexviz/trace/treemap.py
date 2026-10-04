@@ -176,16 +176,14 @@ class TreeMap(FlexTrace):
             level_df = df.group_by(level_cols).agg(pl.col(uid).sum()).sort(level_cols)
             for row in level_df.iter_rows(named=True):
                 raw = [row[col] for col in level_cols]
-                parts = ["null" if v is None else str(v) for v in raw]
                 # "!" is always percent-escaped, so no string produces "!null".
                 encoded = [
-                    "!null" if v is None else _url_quote(p, safe="")
-                    for v, p in zip(raw, parts)
+                    "!null" if v is None else _url_quote(str(v), safe="") for v in raw
                 ]
                 node_id = "root/" + "/".join(encoded)
                 parent_id = "root" if level == 0 else "root/" + "/".join(encoded[:-1])
                 ids.append(node_id)
-                labels.append(parts[-1])
+                labels.append("null" if raw[-1] is None else str(raw[-1]))
                 parents.append(parent_id)
                 values.append(row[uid])
 

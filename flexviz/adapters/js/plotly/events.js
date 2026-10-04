@@ -55,7 +55,7 @@ function handleClick(eventData, figUid) {
     const sep = sel.path_separator || '/';
     const segments = (pt.id || '').split(sep).slice(1);
     // A predicate cannot select null, so a null node (or a child of one) is not selectable.
-    if (segments.includes('!null')) return false;
+    if (segments.includes(FV_NULL_NODE_ID)) return false;
     const parts = segments.map(v => decodeURIComponent(v));
     if (!parts.length) {
       const hasSelection = (DASHBOARD_SPEC.state.selections || []).some(

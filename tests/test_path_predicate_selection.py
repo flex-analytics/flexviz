@@ -247,6 +247,68 @@ class TestTreemapPieOrCrossFilter:
         preds = _selection_predicates(page)[0]["preds"]
         assert [c["values"] for c in preds[0]["clauses"]] == [["None"]]
 
+    @staticmethod
+    def _slice_opacity(page: Page, node_id: str) -> str:
+        return page.eval_on_selector(
+            "#fv-plot-1",
+            """(gd, nodeId) => {
+                const node = Array.from(gd.querySelectorAll('g.slice')).find(n => {
+                    const d = n.__data__ || {};
+                    return d.id === nodeId || (d.data && d.data.id === nodeId);
+                });
+                return node.style.opacity;
+            }""",
+            node_id,
+        )
+
+    def _open_treemap_dashboard(
+        self, page: Page, port: int, name: str, df: pl.DataFrame, path: list[str]
+    ) -> None:
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+
+        register_source(name, df)
+        dash = Dashboard(df)
+        dash.add_figure(title="bar").add_bar(labels=path[0], values="val")
+        dash.add_figure(title="treemap").add_treemap(path=path, values="val")
+        spec = dash.to_spec(source_name=name, layout=LayoutSpec(draggable=False))
+        page.goto(f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}")
+        _wait_for_init(page)
+        page.wait_for_function(
+            "() => document.querySelector('#fv-plot-1')?.data?.[0]?.ids?.length > 1"
+        )
+
+    def test_treemap_string_bang_null_does_not_select_null_node(
+        self, page: Page, server_port: int
+    ):
+        df = pl.DataFrame({"g": [None] * 10 + ["!null"] * 10 + ["x"] * 10, "val": 1.0})
+        self._open_treemap_dashboard(page, server_port, "_bang_null_dash", df, ["g"])
+        self._click_plotly_treemap_node(page, 1, "root/%21null")
+        _wait_for_selection_count(page, 1)
+        page.wait_for_timeout(500)
+        assert self._slice_opacity(page, "root/%21null") == "1"
+        assert self._slice_opacity(page, "root/!null") == "0.28"
+        assert set(_plotly_bar_labels(page, 0)) == {"!null"}
+
+    def test_treemap_parent_selection_highlights_null_child(
+        self, page: Page, server_port: int
+    ):
+        df = pl.DataFrame(
+            {
+                "g": ["a"] * 20 + ["b"] * 20,
+                "h": ([None] * 5 + ["x"] * 5) * 4,
+                "val": 1.0,
+            }
+        )
+        self._open_treemap_dashboard(
+            page, server_port, "_null_child_dash", df, ["g", "h"]
+        )
+        self._click_plotly_treemap_node(page, 1, "root/a", label_area=True)
+        _wait_for_selection_count(page, 1)
+        page.wait_for_timeout(500)
+        assert self._slice_opacity(page, "root/a/!null") == "1"
+        assert self._slice_opacity(page, "root/b/!null") == "0.28"
+
     def test_treemap_leaf_toggle_clears_cross_filter(
         self, page: Page, server_port: int
     ):
