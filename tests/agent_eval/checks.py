@@ -37,7 +37,7 @@ class Check:
 
 # --- patterns ---------------------------------------------------------------
 
-_SERVE = r"flexviz\s+serve|uvicorn"
+_SERVE = r"flexviz\s+serve|uvicorn|run_server\("
 _SCHEMA = r"flexviz\s+schema|collect_schema|\.schema\b"
 _SOURCES = r"/sources"
 _APPLY = r"flexvizApply"
@@ -45,7 +45,9 @@ _REBUILD = r"Dashboard\(|share_url\("
 # A call input arrives as JSON, so a quote around a URL comes through escaped:
 # the backslash in the class keeps it out of the match.
 _SHARE_URL = re.compile(r"https?://[^\s\"'<>)\]\\]+/view\?spec=[^\s\"'<>)\]\\]+")
-_HOST = re.compile(r"--host[= ]+(\S+)|host\s*=\s*[\"']([^\"']+)[\"']")
+_HOST = re.compile(
+    r"--host[= ]+(\S+)|(?:host\s*=\s*|run_server\(\s*)[\"']([^\"']+)[\"']"
+)
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 # A share URL is a kilobyte and up. The 200-character bar keeps a bare
 # ``/view?spec=`` mention out of the count.

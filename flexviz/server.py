@@ -828,7 +828,8 @@ def _agent_app() -> FastAPI:
     ``show()`` runs the server in the user's process, where a later
     ``mount_into`` must still get the stateless routes only.
     """
-    agent = FastAPI(title="flexviz", version="0.1", lifespan=_lifespan)
+    # No docs routes of its own: /openapi.json and /docs fall through to app.
+    agent = FastAPI(lifespan=_lifespan, openapi_url=None, docs_url=None, redoc_url=None)
     agent.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
     agent.add_api_route("/h/{n}", history_view, response_class=HTMLResponse)
     agent.mount("/", app)

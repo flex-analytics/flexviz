@@ -1241,6 +1241,7 @@ class TestHistoryView:
         served_client = TestClient(served["app"], base_url="http://127.0.0.1:8000")
         assert served_client.get("/h/1").status_code == 200
         assert served_client.get("/sources").status_code == 200
+        assert "/dashboard/update" in served_client.get("/openapi.json").json()["paths"]
         # The route lives on the served app only: the shared app stays clean.
         assert TestClient(app).get("/h/1").status_code == 404
 
@@ -1829,6 +1830,7 @@ class TestPublicAPI:
         assert hasattr(flexviz, "app")
         assert hasattr(flexviz, "register_source")
         assert hasattr(flexviz, "mount_into")
+        assert hasattr(flexviz, "run_server")
 
     def test_register_source_via_init(self, client: TestClient, integ_df: pl.DataFrame):
         import flexviz

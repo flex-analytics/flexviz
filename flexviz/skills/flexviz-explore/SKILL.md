@@ -76,7 +76,7 @@ cases register the source yourself and build step 3 on that same LazyFrame:
 
 ```python
 import polars as pl
-from flexviz.server import register_source, run_server
+from flexviz import register_source, run_server
 
 lf = pl.scan_parquet("data.parquet").with_columns(pl.col("timestamp").str.to_datetime())
 register_source("data", lf, cache=True)   # call this before run_server
