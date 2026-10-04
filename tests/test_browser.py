@@ -601,6 +601,25 @@ def _grouped_child_count(page: Page) -> int:
     )
 
 
+def _relayout_when_idle(page: Page, fig_index: int, relayout: dict) -> None:
+    """Deliver a relayout event once no render of the figure runs.
+
+    The handler ignores events from its own renders, and a response can start
+    another render right after the first one ends. Check and call share one
+    tick, so the event cannot land between two renders.
+    """
+    page.evaluate(
+        """async ([i, relayout]) => {
+            const figUid = DASHBOARD_SPEC.figures[i].uid;
+            while (_fvIsProgrammatic(figUid)) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            handleRelayout(relayout, figUid);
+        }""",
+        [fig_index, relayout],
+    )
+
+
 def _trace_layer(trace_id: str | None) -> str | None:
     if not trace_id:
         return None
@@ -2484,8 +2503,15 @@ class TestOverlayBrowser:
             "() => document.querySelectorAll('.js-plotly-plot')[1].data.length === 2",
             timeout=10_000,
         )
-        page.evaluate(
-            "() => Plotly.relayout(divs[1], {'xaxis.range': [5, 10], 'yaxis.range': [5, 10]})"
+        _relayout_when_idle(
+            page,
+            1,
+            {
+                "xaxis.range[0]": 5,
+                "xaxis.range[1]": 10,
+                "yaxis.range[0]": 5,
+                "yaxis.range[1]": 10,
+            },
         )
         page.wait_for_function(
             """() => {
@@ -2527,12 +2553,11 @@ class TestOverlayBrowser:
         }"""
         page.wait_for_function(f"() => ({layer_geojson})('fg')", timeout=10_000)
         coarse = page.evaluate(f"() => ({layer_geojson})('bg')")
-        page.evaluate("""() => {
-            const figUid = DASHBOARD_SPEC.figures[1].uid;
-            handleRelayout({'map._derived': {coordinates: [
-                [3, 3], [13, 3], [13, 13], [3, 13],
-            ]}}, figUid);
-        }""")
+        _relayout_when_idle(
+            page,
+            1,
+            {"map._derived": {"coordinates": [[3, 3], [13, 3], [13, 13], [3, 13]]}},
+        )
         # The zoom re-bins the filtered layer onto a finer grid.
         page.wait_for_function(
             f"""() => {{
