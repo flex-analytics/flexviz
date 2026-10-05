@@ -623,6 +623,7 @@ fig.add_treemap(path=["country", "source"], values="generation_mw", color_map={.
 - `agg` ∈ `{"sum", "mean", "min", "max"}` — only meaningful when `values` is given; defaults to `"sum"`.
 - Aggregation uses `GroupedAggregationSpec` with `group_cols = tuple(path)` and `sort_cols = tuple(path)`.
 - `_to_grouped_update` builds a hierarchical node tree: a root node plus one node per distinct combination of path values. Returns `{"labels": [...], "parents": [...], "ids": [...], "values": [...]}` for Plotly treemap rendering.
+- A null path value is a node labeled `"null"` with the id segment `"!null"`; ids escape `!`, so it never collides with the string `"None"` or `"null"`. A click on a null node (or a child of one) selects nothing.
 - Path-click emits one `SelectionPredicate` whose clauses are `[ClauseFilter(column=path[i], values=[part_i]), ...]` from the leaf node up to the clicked depth — every parent column on the chosen branch is constrained, so cross-filtering follows the path naturally.
 - `color_map` stored in `display["color_map"]`; applied to `marker.colors` array mapping label strings to CSS colors.
 
@@ -1435,7 +1436,9 @@ them.
   numeric labels. A **null dim value is its own category**
   and ships as JSON `null` — the client then labels it exactly like the legacy server delta,
   which also emits the raw null, keys a null group as `"null"`, like `_group_value_key`, and
-  labels a null treemap node `"None"`, like the server's `str()`. A **non-finite float dim
+  labels a null treemap node `"null"` with the id segment `"!null"`, like the server (no string
+  gives that segment, because ids escape `!`). A null node cannot be clicked, as a predicate
+  cannot select null. A **non-finite float dim
   category** (NaN, infinity) keeps its own code and ships as JSON `null` too, like the delta
   path: the header must be strict JSON, which has no `NaN` or `Infinity`. The labels and the
   order both match the delta: the client sorts cells, grouped children and treemap nodes by

@@ -112,6 +112,8 @@ const bgYExtentByFig = Object.fromEntries(
   DASHBOARD_SPEC.figures.map(f => [f.uid, null])
 );
 const OVERLAY_BG_OPACITY = 0.16;
+// Treemap id segment of a null path value; fvUrlQuote never emits "!".
+const FV_NULL_NODE_ID = '!null';
 window.__fvLayerDataByUid = layerDataByUid;
 window.__fvGroupedDataByParent = groupedDataByParent;
 window.__fvHasBgByFigure = hasBgByFigure;

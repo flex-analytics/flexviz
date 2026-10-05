@@ -269,12 +269,14 @@ function _nodeSatisfiesPredicate(figSpec, parentTrace, node, predicate) {
       || (data.data && data.data.id)
       || (data.data && data.data.data && data.data.data.id);
     if (!id || !id.startsWith('root/')) return false;
-    const idParts = id.split('/').slice(1).map(v => decodeURIComponent(String(v)));
+    const segments = id.split('/').slice(1);
     return (predicate.clauses || []).every(c => {
       const idx = path.indexOf(c.column);
       if (idx < 0) return true;
-      if (idx >= idParts.length) return false;
-      return (c.values || []).map(String).includes(idParts[idx]);
+      if (idx >= segments.length) return false;
+      // A predicate cannot select null, and decoding would equate it with a "!null" string.
+      if (segments[idx] === FV_NULL_NODE_ID) return false;
+      return (c.values || []).map(String).includes(decodeURIComponent(segments[idx]));
     });
   }
   return false;

@@ -3307,6 +3307,13 @@ def _label_parity_df(kind: str) -> pl.DataFrame:
     if kind in ("grouped_bar_null_group", "treemap_null_label"):
         k = [(None, "P", "Q")[i % 3] for i in range(n)]
         df = df.with_columns(pl.Series("k", k, dtype=pl.Utf8))
+    if kind == "treemap_null_label":
+        # The string "None" sits next to the null at both levels.
+        g = ["b" if a[i] < 35 else (None, "None")[i % 2] for i in range(n)]
+        k = [(None, "None", "P", "Q")[i % 4] for i in range(n)]
+        df = df.with_columns(
+            pl.Series("g", g, dtype=pl.Utf8), pl.Series("k", k, dtype=pl.Utf8)
+        )
     if kind == "grouped_bar_null_group_part":
         k = ["Z" if a[i] < 35 else (None, "A")[i % 2] for i in range(n)]
         df = df.with_columns(pl.Series("k", k, dtype=pl.Utf8), pl.lit("x").alias("k2"))
@@ -3415,6 +3422,10 @@ class TestCubeLabelParity:
                 if k in d["updates"]:
                     want = [_json_value(v) for v in d["updates"][k]]
                     assert got[d["uid"]][k] == want, (d["uid"], k)
+        if kind == "treemap_null_label":
+            ids = got[expected_uids[0]]["ids"]
+            assert len(ids) == len(set(ids))
+            assert "root/!null" in ids and "root/None" in ids
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,10 @@ function handleClick(eventData, figUid) {
     clauses = _categoricalClausesFromLabel(pt.label, sel.label_columns);
   } else if (sel.kind === 'path') {
     const sep = sel.path_separator || '/';
-    const parts = ((pt.id || '').split(sep).slice(1)).map(v => decodeURIComponent(v));
+    const segments = (pt.id || '').split(sep).slice(1);
+    // A predicate cannot select null, so a null node (or a child of one) is not selectable.
+    if (segments.includes(FV_NULL_NODE_ID)) return false;
+    const parts = segments.map(v => decodeURIComponent(v));
     if (!parts.length) {
       const hasSelection = (DASHBOARD_SPEC.state.selections || []).some(
         s => s.source_figure_uid === figUid
