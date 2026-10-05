@@ -1224,7 +1224,52 @@ class TestDecodedSpecValidation:
 class TestHistoryView:
     """/h/N re-renders a `flexviz history` entry so an agent can hand a
     browser tool a short, stable page URL instead of a several-kilobyte
-    share URL that gets echoed back in every snapshot."""
+    share URL that gets echoed back in every snapshot. Only the server the
+    agent loop starts serves it, never the mountable ``app``."""
+
+    @pytest.fixture
+    def client(
+        self, integ_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
+    ) -> TestClient:
+        """The app ``run_server`` serves, as a client on a loopback Host."""
+        import uvicorn
+
+        from flexviz.server import run_server
+
+        register_source(_SRC, integ_df)
+        served = {}
+        monkeypatch.setattr(uvicorn, "run", lambda asgi, **kw: served.update(app=asgi))
+        run_server("127.0.0.1", 8000)
+        return TestClient(served["app"], base_url="http://127.0.0.1:8000")
+
+    def _record_entry(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        from flexviz import history
+
+        history.add(f"http://testserver/view?spec={encode_spec(VisualizationSpec())}")
+
+    def test_app_and_mounted_app_do_not_serve_h_route(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from fastapi import FastAPI as _FastAPI
+
+        from flexviz.server import mount_into
+
+        self._record_entry(tmp_path, monkeypatch)
+        host = _FastAPI()
+        mount_into(host, prefix="/fv")
+        assert TestClient(host).get("/fv/h/1").status_code == 404
+        assert TestClient(app).get("/h/1").status_code == 404
+
+    def test_run_server_serves_h_route_and_the_app_routes(
+        self, client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._record_entry(tmp_path, monkeypatch)
+        assert client.get("/h/1").status_code == 200
+        assert client.get("/sources").status_code == 200
+        assert "/dashboard/update" in client.get("/openapi.json").json()["paths"]
+        # The route lives on the served app only: the shared app stays clean.
+        assert TestClient(app).get("/h/1").status_code == 404
 
     def test_h_route_renders_same_page_as_view(
         self, client: TestClient, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1811,6 +1856,7 @@ class TestPublicAPI:
         assert hasattr(flexviz, "app")
         assert hasattr(flexviz, "register_source")
         assert hasattr(flexviz, "mount_into")
+        assert hasattr(flexviz, "run_server")
 
     def test_register_source_via_init(self, client: TestClient, integ_df: pl.DataFrame):
         import flexviz

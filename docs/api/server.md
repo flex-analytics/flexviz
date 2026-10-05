@@ -6,3 +6,5 @@ The FastAPI application itself is importable as `flexviz.app`; see
 ::: flexviz.register_source
 
 ::: flexviz.mount_into
+
+::: flexviz.run_server

@@ -212,6 +212,37 @@ def test_sources_polled_fails_when_the_poll_fails(build_dir):
     assert not graded["sources_polled"].passed
 
 
+def test_run_server_counts_as_a_serve_call(build_dir):
+    workdir, truths = build_dir
+    recipe = _trace(
+        _bash(
+            1,
+            'python -c "from flexviz import run_server; '
+            "run_server('127.0.0.1', 8077)\" &",
+            "a",
+        ),
+        _result(1, "", cid="a"),
+        _bash(1, f"curl -s {SERVER}/sources", "b"),
+        _result(1, '["data"]', cid="b"),
+    )
+    graded = _graded(
+        ["no_server", "sources_polled", "loopback"], recipe, workdir, truths
+    )
+    assert not graded["no_server"].passed
+    assert graded["sources_polled"].passed
+    assert graded["loopback"].passed
+    public = _trace(_bash(1, "python -c \"run_server('0.0.0.0', 8077)\""))
+    graded = _graded(["loopback"], public, workdir, truths)
+    assert not graded["loopback"].passed
+
+
+def test_loopback_accepts_any_loopback_address(build_dir):
+    workdir, truths = build_dir
+    other = _trace(_bash(1, "python -c \"run_server('127.0.0.2', 8077)\""))
+    graded = _graded(["loopback"], other, workdir, truths)
+    assert graded["loopback"].passed
+
+
 def test_no_url_leak_catches_a_url_in_a_message(build_dir):
     workdir, truths = build_dir
     leaky = _trace(_msg(1, f"Here it is: {LEAK_URL}"))

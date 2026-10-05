@@ -25,6 +25,7 @@ from pathlib import Path
 
 from flexviz import history
 from flexviz.cli import _scan
+from flexviz.server import is_loopback_bind
 from flexviz.spec import DashboardSpec, decode_spec, encoded_spec_from_url
 
 
@@ -37,7 +38,7 @@ class Check:
 
 # --- patterns ---------------------------------------------------------------
 
-_SERVE = r"flexviz\s+serve|uvicorn"
+_SERVE = r"flexviz\s+serve|uvicorn|run_server\("
 _SCHEMA = r"flexviz\s+schema|collect_schema|\.schema\b"
 _SOURCES = r"/sources"
 _APPLY = r"flexvizApply"
@@ -45,8 +46,9 @@ _REBUILD = r"Dashboard\(|share_url\("
 # A call input arrives as JSON, so a quote around a URL comes through escaped:
 # the backslash in the class keeps it out of the match.
 _SHARE_URL = re.compile(r"https?://[^\s\"'<>)\]\\]+/view\?spec=[^\s\"'<>)\]\\]+")
-_HOST = re.compile(r"--host[= ]+(\S+)|host\s*=\s*[\"']([^\"']+)[\"']")
-_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+_HOST = re.compile(
+    r"--host[= ]+(\S+)|(?:host\s*=\s*|run_server\(\s*)[\"']([^\"']+)[\"']"
+)
 # A share URL is a kilobyte and up. The 200-character bar keeps a bare
 # ``/view?spec=`` mention out of the count.
 _URL_MIN_LEN = 200
@@ -182,19 +184,16 @@ def _serve(workdir: Path) -> int:
     import threading
     import time
 
-    import uvicorn
-
     from flexviz.cli import _register_files
-    from flexviz.server import app
+    from flexviz.server import run_server
 
     _register_files([str(p) for p in _data_files(workdir)], cache=False)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    )
-    threading.Thread(target=server.run, daemon=True).start()
+    threading.Thread(
+        target=run_server, args=("127.0.0.1", port, "error"), daemon=True
+    ).start()
     deadline = time.time() + 10
     while time.time() < deadline:
         try:
@@ -289,7 +288,7 @@ def loopback(case: dict, events: list[dict], workdir: Path) -> Check:
     for call in _calls(events, _SERVE):
         for match in _HOST.finditer(_text(call)):
             host = match.group(1) or match.group(2)
-            if host not in _LOOPBACK:
+            if not is_loopback_bind(host):
                 bad.append(f"event {call['i']}: {host}")
     return Check("loopback", not bad, "; ".join(bad) or "every serve call is loopback")
 

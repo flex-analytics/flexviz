@@ -75,12 +75,12 @@ a ratio) opens fine and then fails every update with a 500 and
 cases register the source yourself and build step 3 on that same LazyFrame:
 
 ```python
-import polars as pl, uvicorn
-from flexviz.server import app, register_source
+import polars as pl
+from flexviz import register_source, run_server
 
 lf = pl.scan_parquet("data.parquet").with_columns(pl.col("timestamp").str.to_datetime())
-register_source("data", lf, cache=True)   # call this before uvicorn.run
-uvicorn.run(app, host="127.0.0.1", port=8077)
+register_source("data", lf, cache=True)   # call this before run_server
+run_server("127.0.0.1", 8077)
 ```
 
 ### 3. Build the dashboard and record it

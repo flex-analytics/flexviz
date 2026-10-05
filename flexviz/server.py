@@ -18,7 +18,7 @@ once at startup (or before ``uvicorn.run``) and are read-only thereafter.
     │    → {figure_uid: List[TraceDelta]}                 │  ← only changed data
     │  POST /share                                        │
     │  GET  /view                                         │
-    │  GET  /h/{n}                                        │  ← reads .flexviz/history.jsonl in cwd
+    │  GET  /h/{n}   (run_server only, not ``app``)       │  ← reads .flexviz/history.jsonl in cwd
     │  GET  /sources                                      │  ← introspection / health
     │  GET  /cache/stats                                  │
     └─────────────────────────────────────────────────────┘
@@ -36,8 +36,9 @@ Register data sources, then start the server::
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
-``flexviz serve`` and ``show()`` start it through ``run_server``, which on a
-loopback bind also refuses a foreign ``Host`` header.
+``flexviz serve`` and ``show()`` start it through ``run_server``, which also
+serves ``/h/{n}`` and on a loopback bind refuses a foreign ``Host`` header.
+``app`` alone, mounted or run directly, has no ``/h/{n}``.
 
 The server sends no CORS headers: in a browser, only pages it serves itself
 (``/view``, ``/h/{n}``) call it, from their own origin, so another site's page
@@ -533,7 +534,6 @@ async def view(spec: str, renderer: str = "plotly") -> HTMLResponse:
     return _render_spec_html(spec, renderer, server_url=".")
 
 
-@app.get("/h/{n}", response_class=HTMLResponse)
 async def history_view(n: int, renderer: str | None = None) -> HTMLResponse:
     """Render history entry ``n`` at a short, stable page URL.
 
@@ -541,8 +541,8 @@ async def history_view(n: int, renderer: str | None = None) -> HTMLResponse:
     ``/h/N`` instead of the several-kilobyte share URL it stands for. The
     route reads the history file in the server's working directory for this
     request and stores nothing, so it exposes whatever share URLs that one
-    file holds: do not serve a public dashboard from a directory that has
-    one.
+    file holds. Only ``run_server`` serves it, not ``app``, so a mounted or
+    embedded ``app`` never reads the history file.
 
     Parameters
     ----------
@@ -821,8 +821,23 @@ def _loopback_host_only(asgi_app: Any, bind_host: str) -> Any:
     return guarded
 
 
+def _agent_app() -> FastAPI:
+    """``app`` plus ``/h/{n}``, the route only the agent loop needs.
+
+    A separate app, so that adding the route never changes ``app`` itself:
+    ``show()`` runs the server in the user's process, where a later
+    ``mount_into`` must still get the stateless routes only.
+    """
+    # No docs routes of its own: /openapi.json and /docs fall through to app.
+    agent = FastAPI(lifespan=_lifespan, openapi_url=None, docs_url=None, redoc_url=None)
+    agent.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
+    agent.add_api_route("/h/{n}", history_view, response_class=HTMLResponse)
+    agent.mount("/", app)
+    return agent
+
+
 def run_server(host: str, port: int, log_level: str = "warning") -> None:
-    """Serve ``app`` with uvicorn until the process stops.
+    """Serve ``app`` and ``/h/{n}`` with uvicorn until the process stops.
 
     ``flexviz serve`` and ``show()`` start the server here. A loopback bind
     serves only loopback ``Host`` names. Another bind is a deliberate network
@@ -830,5 +845,6 @@ def run_server(host: str, port: int, log_level: str = "warning") -> None:
     """
     import uvicorn
 
-    served = _loopback_host_only(app, host) if is_loopback_bind(host) else app
+    agent = _agent_app()
+    served = _loopback_host_only(agent, host) if is_loopback_bind(host) else agent
     uvicorn.run(served, host=host, port=port, log_level=log_level)

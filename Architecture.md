@@ -75,7 +75,7 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
 │  POST /share             — encode spec → shareable URL         │
 │  GET  /view              — render shared spec as HTML          │
 │  GET  /sources           — health / introspection              │
-│  GET  /h/{n}             — render flexviz history entry n      │
+│  GET  /h/{n}             — history entry n (run_server only)   │
 │  GET  /cache/stats       — cache hits/misses/entries           │
 │  _sources: name → LFQueryBuilder  (registered once at show())  │
 └─────────────────────┬──────────────────────────────────────────┘
@@ -989,7 +989,7 @@ _sources: Dict[str, LFQueryBuilder]
 
 Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.
 
-`GET /h/{n}` also reads no server state: it re-reads an agent-owned history file from the working directory on every request and stores nothing, see the agent-loop section above.
+`GET /h/{n}` also reads no server state (and `app` does not serve it, see Origin): it re-reads an agent-owned history file from the working directory on every request and stores nothing, see the agent-loop section above.
 
 ### Caching carve-out to the stateless invariant
 
@@ -1015,7 +1015,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `POST` | `/dashboard/update` | Dashboard interaction; returns per-figure deltas  |
 | `POST` | `/share`            | Encode spec → shareable URL                       |
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly`)  |
-| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's) |
+| `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's). Served by `run_server` only |
 | `GET`  | `/sources`          | List registered source names (health check)       |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
@@ -1023,7 +1023,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 
 In a browser, only the pages the server renders itself (`/view`, `/h/{n}`) call its routes, and they call them page-relative, so from the server's own origin. The server sends no CORS headers, so a page of another site cannot read its answers. This is a browser rule: any HTTP client that reaches the port, such as the Python `show()` posting to `/share`, the CLI or an agent, can still read them. The notebook and the browser both show that page: `show()` posts the spec to `/share` and opens the returned URL, in the browser or in a notebook iframe.
 
-`run_server(host, port)` (`server.py`) is how `show()` and `flexviz serve` start uvicorn. A bind is loopback when every address it resolves to is loopback (`is_loopback_bind`), so `127.1` and `127.0.0.2` count too. On a loopback bind it serves only the `Host` names `localhost`, a loopback IP literal, and the bind host itself. That stops DNS rebinding, which points another site's name at 127.0.0.1 so its page becomes same-origin; a literal IP cannot be rebound. A non-loopback bind is a deliberate network exposure whose host names are not known, so it serves every `Host`. An app you serve yourself, or mount with `mount_into`, gets neither check: its deployment decides.
+`run_server(host, port)` (`server.py`) is how `show()` and `flexviz serve` start uvicorn. It serves `_agent_app()`: a separate app that adds `GET /h/{n}` and delegates every other path to `app`. `/h/{n}` reads the history file in the working directory, so `app` itself does not register it: a mounted or embedded `app` (`mount_into`, Streamlit, Dash, Gradio, `uvicorn.run(app)`) never serves it, and `show()` starting a server in the user's process cannot change that. `/h/{n}` sits at the root of the served app, so its page-relative API base is `..`. A bind is loopback when every address it resolves to is loopback (`is_loopback_bind`), so `127.1` and `127.0.0.2` count too. On a loopback bind it serves only the `Host` names `localhost`, a loopback IP literal, and the bind host itself. That stops DNS rebinding, which points another site's name at 127.0.0.1 so its page becomes same-origin; a literal IP cannot be rebound. A non-loopback bind is a deliberate network exposure whose host names are not known, so it serves every `Host`. An app you serve yourself, or mount with `mount_into`, gets neither check: its deployment decides.
 
 ### Request Flows
 
@@ -1643,7 +1643,7 @@ predict are `conftest.py` (shared fixtures), `test_integration.py`,
 flexviz/
 ├── flexviz/
 │   ├── __init__.py          ← public API: Figure, Dashboard, app,
-│   │                           register_source, mount_into
+│   │                           register_source, mount_into, run_server
 │   ├── __main__.py          ← `python -m flexviz` entry; calls cli.main
 │   ├── cli.py               ← serve / schema / decode / skill install /
 │   │                           history / report
@@ -1661,7 +1661,7 @@ flexviz/
 │   ├── cache.py             ← CacheBackend, delta cache + cube-blob cache
 │   ├── LF.py                ← LFQueryBuilder, AggregationSpec,
 │   │                           GroupedAggregationSpec
-│   ├── server.py            ← FastAPI app, register_source, mount_into
+│   ├── server.py            ← FastAPI app, register_source, mount_into, run_server
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard
 │   ├── history.py           ← numbers share URLs in .flexviz/history.jsonl
