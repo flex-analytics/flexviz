@@ -438,6 +438,34 @@ class TestEngineViewportKeys:
         )
         assert [(d.uid, d.layer) for d in deltas] == [(hist2d.uid, "bg")]
 
+    def test_overlay_zoom_resends_background_of_zoomed_filtered_only_trace(self):
+        """A zoom re-bins the heatmap, so its background must follow. A
+        filtered_only figure the zoom did not touch keeps its cached one."""
+        zoomed = Histogram2D(x="ts", y="val", x_bins=8, y_bins=8)
+        other = Histogram2D(x="ts", y="val", x_bins=8, y_bins=8)
+        engine, infos = self._engine({"z": [zoomed], "o": [other]})
+        event = InteractionEvent(
+            type="viewport", viewport_keys=["z/x"], force_update=True
+        )
+        deltas = engine.process(
+            event,
+            infos,
+            {"z": {"x": (10, 90)}},
+            selections=[_ts_range_selection("s", 20, 60)],
+            cross_filter_mode="overlay",
+        )
+        assert sorted((d.uid, d.layer) for d in deltas) == sorted(
+            [(zoomed.uid, "bg"), (zoomed.uid, "fg"), (other.uid, "fg")]
+        )
+        bg = next(d for d in deltas if d.uid == zoomed.uid and d.layer == "bg")
+        unfiltered = engine.process(
+            InteractionEvent(type="viewport", viewport_keys=["z/x"]),
+            infos,
+            {"z": {"x": (10, 90)}},
+            cross_filter_mode="overlay",
+        )
+        assert bg.updates == unfiltered[0].updates
+
     @pytest.mark.parametrize("state", [{}, {"x": None}], ids=["absent", "none"])
     def test_listed_key_without_a_range_is_the_full_range(self, state):
         line = LinePlot(x="ts", y="val", n_points=50)

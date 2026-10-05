@@ -1220,20 +1220,23 @@ class FlexEngine:
         self,
         specs: list[AggregationSpec | GroupedAggregationSpec],
         foreground_shown: bool,
+        rebinned_uids: set[str],
     ) -> list[AggregationSpec | GroupedAggregationSpec]:
         """Filter background specs based on per-trace overlay policy.
 
         Every trace needs the sole unfiltered layer used by init/deselect.
         While a filtered foreground is shown, ``filtered_only`` traces reuse
-        that cached unfiltered data instead of recomputing a duplicate
-        background.
+        the cached unfiltered data. If the event changes one of their
+        ``recompute_axes``, that cache holds the old grid. The engine then
+        sends a fresh background.
         """
         if not foreground_shown:
             return specs
         return [
             s
             for s in specs
-            if getattr(
+            if s.uid in rebinned_uids
+            or getattr(
                 self._scalable_traces.get(s.uid, None),
                 "overlay_style",
                 "full",
@@ -1267,7 +1270,14 @@ class FlexEngine:
                 foreground_shown = partition.owner is None and bool(
                     partition.filter_exprs
                 )
-                bg_specs += self._background_specs(specs, foreground_shown)
+                rebinned_uids = {
+                    item.info.uid
+                    for item in partition.items
+                    if self._viewport_changed(item.info, changed_axes)
+                }
+                bg_specs += self._background_specs(
+                    specs, foreground_shown, rebinned_uids
+                )
                 bg_items += partition.items
             if "fg" in layers and partition.filter_exprs:
                 fg_jobs.append((partition, specs))

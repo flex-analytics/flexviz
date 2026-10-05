@@ -321,8 +321,13 @@ def _dashboard_url_hist2d_overlay(port: int, **hist2d_kwargs) -> str:
     return f"http://127.0.0.1:{port}/view?spec={encoded}"
 
 
-def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
-    """Two-figure dashboard: line source + geo_histogram2d target for overlay CF tests."""
+def _dashboard_url_geo_overlay(
+    port: int, *, target_line: bool = False, **geo_kwargs
+) -> str:
+    """Two-figure dashboard: line source + geo_histogram2d target for overlay CF tests.
+
+    ``target_line`` adds a third figure, a line filtered by the map.
+    """
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import encode_spec
@@ -344,6 +349,8 @@ def _dashboard_url_geo_overlay(port: int, **geo_kwargs) -> str:
     dash.add_figure(title="Map").add_geo_histogram2d(
         lat="lat", lon="lon", lat_bins=5, lon_bins=5, **geo_kwargs
     )
+    if target_line:
+        dash.add_figure(title="Target").add_line(x="ts", y="val", n_points=200)
     spec = dash.to_spec(source_name="_browser_geo_overlay")
 
     encoded = encode_spec(spec)
@@ -591,6 +598,25 @@ def _wait_for_chart(page: Page) -> None:
 def _grouped_child_count(page: Page) -> int:
     return page.evaluate(
         """() => document.querySelector('.js-plotly-plot').data.length"""
+    )
+
+
+def _relayout_when_idle(page: Page, fig_index: int, relayout: dict) -> None:
+    """Deliver a relayout event once no render of the figure runs.
+
+    The handler ignores events from its own renders, and a response can start
+    another render right after the first one ends. Check and call share one
+    tick, so the event cannot land between two renders.
+    """
+    page.evaluate(
+        """async ([i, relayout]) => {
+            const figUid = DASHBOARD_SPEC.figures[i].uid;
+            while (_fvIsProgrammatic(figUid)) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            handleRelayout(relayout, figUid);
+        }""",
+        [fig_index, relayout],
     )
 
 
@@ -1834,7 +1860,7 @@ class TestPlotlyBrowser:
                 const trace = tracesByFig[idx][0];
                 const points = locations.map(loc => ({
                   location: loc,
-                  data: { uid: trace.uid },
+                  curveNumber: 0,
                 }));
                 handleSelected({points}, geoUid);
             }""",
@@ -2458,6 +2484,149 @@ class TestOverlayBrowser:
             assert cells == pytest.approx(expected)
             if "z" in geo_kwargs:
                 assert min(layer["raw"]) <= 0 < max(layer["raw"])
+
+    def test_overlay_heatmap_background_follows_zoom(
+        self, page: Page, server_port: int
+    ):
+        """A zoom re-bins the filtered layer, so the faded layer needs the same grid."""
+        page.goto(_dashboard_url_hist2d_overlay(server_port))
+        _wait_for_init(page)
+        page.click("#fv-btn-cfmode")
+        page.evaluate("""() => {
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'ts', range: [100, 300] }] }],
+            }];
+            return postDashboardUpdate({ type: 'selection', force_update: true });
+        }""")
+        page.wait_for_function(
+            "() => document.querySelectorAll('.js-plotly-plot')[1].data.length === 2",
+            timeout=10_000,
+        )
+        _relayout_when_idle(
+            page,
+            1,
+            {
+                "xaxis.range[0]": 5,
+                "xaxis.range[1]": 10,
+                "yaxis.range[0]": 5,
+                "yaxis.range[1]": 10,
+            },
+        )
+        page.wait_for_function(
+            """() => {
+                const gd = document.querySelectorAll('.js-plotly-plot')[1];
+                const fg = gd.data.find(t => t.uid.endsWith('__fv_layer_fg'));
+                return fg && Math.max(...fg.x) <= 11;
+            }""",
+            timeout=10_000,
+        )
+        grids = page.evaluate("""() => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const grid = t => ({ x: t.x, y: t.y });
+            return {
+                bg: grid(gd.data.find(t => t.uid.endsWith('__fv_layer_bg'))),
+                fg: grid(gd.data.find(t => t.uid.endsWith('__fv_layer_fg'))),
+            };
+        }""")
+        assert grids["bg"] == grids["fg"]
+
+    def test_overlay_map_box_select_after_zoom_reads_filtered_cells(
+        self, page: Page, server_port: int
+    ):
+        """A box select commits the box of the cells picked in the filtered layer,
+        even while the faded layer still holds the grid from before the zoom."""
+        page.goto(_dashboard_url_geo_overlay(server_port, target_line=True))
+        _wait_for_init(page)
+        page.click("#fv-btn-cfmode")
+        page.evaluate("""() => {
+            DASHBOARD_SPEC.state.selections = [{
+                source_figure_uid: DASHBOARD_SPEC.figures[0].uid,
+                predicates: [{ clauses: [{ column: 'ts', range: [0, 400] }] }],
+            }];
+            return postDashboardUpdate({ type: 'selection', force_update: true });
+        }""")
+        layer_geojson = """layer => {
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const t = gd.data.find(t => t.uid.endsWith('__fv_layer_' + layer));
+            return t && t.geojson;
+        }"""
+        page.wait_for_function(f"() => ({layer_geojson})('fg')", timeout=10_000)
+        coarse = page.evaluate(f"() => ({layer_geojson})('bg')")
+        _relayout_when_idle(
+            page,
+            1,
+            {"map._derived": {"coordinates": [[3, 3], [13, 3], [13, 13], [3, 13]]}},
+        )
+        # The zoom re-bins the filtered layer onto a finer grid.
+        page.wait_for_function(
+            f"""() => {{
+                const g = ({layer_geojson})('fg');
+                const ring = g.features[0].geometry.coordinates[0];
+                return Math.abs(ring[1][0] - ring[0][0]) < 4;
+            }}""",
+            timeout=10_000,
+        )
+        bounds = page.evaluate(
+            """coarse => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            const gd = document.querySelectorAll('.js-plotly-plot')[1];
+            const bgIdx = gd.data.findIndex(t => t.uid.endsWith('__fv_layer_bg'));
+            const fgIdx = gd.data.findIndex(t => t.uid.endsWith('__fv_layer_fg'));
+            gd.data[bgIdx].geojson = coarse;
+            const fg = gd.data[fgIdx];
+            const ring = id => fg.geojson.features.find(f => f.id === id)
+                .geometry.coordinates[0];
+            const picked = fg.locations.slice(0, 3);
+            const bounds = { lon: [Infinity, -Infinity], lat: [Infinity, -Infinity] };
+            for (const id of picked) {
+                for (const [lon, lat] of ring(id)) {
+                    bounds.lon = [Math.min(bounds.lon[0], lon), Math.max(bounds.lon[1], lon)];
+                    bounds.lat = [Math.min(bounds.lat[0], lat), Math.max(bounds.lat[1], lat)];
+                }
+            }
+            const points = picked.map(id => ({
+                curveNumber: fgIdx, data: fg, fullData: gd._fullData[fgIdx], location: id,
+            }));
+            handleSelected({ points }, figUid);
+            return bounds;
+        }""",
+            coarse,
+        )
+        # The committed selection is the box of the picked filtered cells.
+        committed = page.evaluate("""() => {
+            const figUid = DASHBOARD_SPEC.figures[1].uid;
+            const sel = DASHBOARD_SPEC.state.selections.find(
+                s => s.source_figure_uid === figUid);
+            return sel && Object.fromEntries(
+                sel.predicates[0].clauses.map(c => [c.column, c.range]));
+        }""")
+        assert committed == {"lon": bounds["lon"], "lat": bounds["lat"]}
+
+        # The linked line shows exactly the rows inside that box and the ts range.
+        lon_lo, lon_hi = bounds["lon"]
+        lat_lo, lat_hi = bounds["lat"]
+        expected = [
+            i
+            for i in range(500)
+            if i <= 400
+            and lon_lo <= (i * 7) % 25 <= lon_hi
+            and lat_lo <= i % 25 <= lat_hi
+        ]
+        assert 0 < len(expected) < 200
+        page.wait_for_function(
+            """n => {
+                const ts = DASHBOARD_SPEC.figures[2].traces[0];
+                const fg = ensureLayerData(ts.uid).fg;
+                return fg && fg.x && fg.x.length === n;
+            }""",
+            arg=len(expected),
+            timeout=10_000,
+        )
+        line_x = page.evaluate(
+            "() => ensureLayerData(DASHBOARD_SPEC.figures[2].traces[0].uid).fg.x"
+        )
+        assert sorted(line_x) == expected
 
     def test_overlay_reuses_same_color_and_mutes_background(
         self, page: Page, server_port: int

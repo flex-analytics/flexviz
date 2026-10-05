@@ -123,15 +123,9 @@ function geoSelectionFromPoints(eventData, figUid) {
   let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
 
   for (const point of points) {
-    const logicalUid = stripLayerSuffix(
-      (point && point.data && point.data.uid)
-      || (point && point.fullData && point.fullData.uid)
-      || ''
-    );
-    if (!logicalUid) continue;
-    const renderedTrace = renderedTraces.find(trace =>
-      stripLayerSuffix((trace && trace.uid) || '') === logicalUid
-    );
+    // Overlay draws a bg and a fg layer under one logical uid and the two can
+    // hold different grids, so read the cell from the layer it was picked in.
+    const renderedTrace = renderedTraces[point && point.curveNumber];
     if (!renderedTrace) continue;
     const location = (point && point.location) ?? (point && point.id);
     if (location == null) continue;
