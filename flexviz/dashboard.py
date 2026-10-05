@@ -270,7 +270,7 @@ class Dashboard:
     # -> also the case in figure.py
     def to_spec(
         self,
-        source_name: str = "data",
+        source_name: str | None = "data",
         layout: LayoutSpec | None = None,
     ) -> DashboardSpec:
         """Serialise all figures to a ``DashboardSpec``.
@@ -279,7 +279,8 @@ class Dashboard:
         ----------
         source_name:
             Data source name as registered with ``register_source()`` on the
-            server.  All figures reference this same source name.
+            server.  All figures reference this same source name, with or
+            without data in the dashboard.
         layout:
             Optional ``LayoutSpec`` override.
 
@@ -287,8 +288,7 @@ class Dashboard:
         -------
         DashboardSpec
         """
-        src = source_name if self._backend_lf is not None else None
-        figure_specs = [fig.to_spec(source=src).figure for fig in self._figures]
+        figure_specs = [fig.to_spec(source=source_name).figure for fig in self._figures]
         try:
             spec = DashboardSpec(
                 figures=figure_specs,
@@ -302,7 +302,7 @@ class Dashboard:
             )
             # The schema is only needed for links: a spec build touches no data.
             if spec.client_state.axis_links and self._backend_lf is not None:
-                check_axis_link_types(spec, {src: self._backend_lf.schema})
+                check_axis_link_types(spec, {source_name: self._backend_lf.schema})
         except ValidationError as exc:
             messages = [e["msg"].removeprefix("Value error, ") for e in exc.errors()]
             raise ValueError(_name_figures("; ".join(messages), figure_specs)) from None
