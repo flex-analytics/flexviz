@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json as _json
+from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypeAlias, TypedDict
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -603,7 +604,7 @@ class DashboardSpec(BaseModel):
         Every spec entry point (builder, share URL, import, each request) runs
         this, so a hand-built or patched spec gets the same rules as
         ``Dashboard.link_axes``. The rules that need the data schema are in
-        ``check_axis_link_types``.
+        ``check_axis_types``.
         """
         figures = {fig.uid: fig for fig in self.figures}
         viewport = self.state.viewport
@@ -669,8 +670,21 @@ _LINKABLE_AXIS_TYPES = (None, "-", "linear", "date")
 
 
 def _layout_axis(figure: FigureSpec, axis_id: str) -> dict[str, Any]:
-    axis = figure.layout.get(f"{axis_id}axis")
-    return axis if isinstance(axis, dict) else {}
+    """The axis settings Plotly applies: the figure's own over its template's."""
+    key = f"{axis_id}axis"
+    template = figure.layout.get("template")
+    template_layout = template.get("layout") if isinstance(template, dict) else None
+    base = template_layout.get(key) if isinstance(template_layout, dict) else None
+    axis = figure.layout.get(key)
+    return {
+        **(base if isinstance(base, dict) else {}),
+        # None is unset, as in Plotly, so it does not hide the template's value.
+        **(
+            {k: v for k, v in axis.items() if v is not None}
+            if isinstance(axis, dict)
+            else {}
+        ),
+    }
 
 
 def _axis_reversed(axis: dict[str, Any]) -> bool:
@@ -688,18 +702,23 @@ def _axis_reversed(axis: dict[str, Any]) -> bool:
     return False
 
 
-def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -> None:
-    """Check linked axes against the data types, which the spec cannot see.
+def check_axis_types(
+    spec: DashboardSpec, schema_of: Callable[[str | None], Any]
+) -> None:
+    """Check axes against the data types, which the spec cannot see.
 
-    ``schemas`` maps each figure source name to its Polars schema; a source
-    without one is skipped. The builder and the server both run this. Raises
-    ``ValueError``.
+    ``schema_of`` gives the Polars schema of a figure source, or ``None`` when
+    it is not known (that figure is skipped). It is called only for a ``date``
+    axis or a linked axis, so a spec without either reads no schema. The
+    builder and the server both run this. Raises ``ValueError``.
+
+    A numeric column on a ``date`` axis is refused on every axis: its zoom
+    sends dates the column cannot compare. Cast the column to ``Datetime``.
 
     Only numeric, ``Date`` and ``Datetime`` columns can be linked: ``Time`` and
-    ``Duration`` render as category axes, whose ranges are positions. A numeric
-    column on a ``date`` axis is refused: its zoom sends dates the column
-    cannot compare. The axes of a group must then agree on three things, as the
-    client copies one range to all of them:
+    ``Duration`` render as category axes, whose ranges are positions. The axes
+    of a group must then agree on three things, as the client copies one range
+    to all of them:
 
     - numeric or temporal, because a range of one does not parse as the other;
     - the time zone (``Date`` and a naive ``Datetime`` have none), because the
@@ -709,19 +728,32 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
     """
     import polars as pl
 
+    def dtypes(figure: FigureSpec, axis_id: str) -> list[tuple[str, Any]]:
+        schema = schema_of(figure.source) or {}
+        cols = sorted(figure_axis_columns(figure)[axis_id])
+        return [(col, schema[col]) for col in cols if col in schema]
+
+    for figure in spec.figures:
+        for axis_id in figure_axis_columns(figure):
+            if _layout_axis(figure, axis_id).get("type") != "date":
+                continue
+            for col, dtype in dtypes(figure, axis_id):
+                if dtype.is_numeric():
+                    raise ValueError(
+                        f"axis '{figure.uid}/{axis_id}' shows {col!r} of type "
+                        f"{dtype} on a date axis; cast the column to Datetime "
+                        "or use a linear axis"
+                    )
+
     figures = {fig.uid: fig for fig in spec.figures}
     for group in spec.client_state.axis_links:
         kinds: set[str] = set()
         for key in group:
             fig_uid, _, axis_id = key.partition("/")
             figure = figures[fig_uid]
-            schema = schemas.get(figure.source) or {}
             axis_type = _layout_axis(figure, axis_id).get("type")
-            for col in figure_axis_columns(figure)[axis_id]:
-                dtype = schema.get(col)
-                if dtype is None:
-                    continue
-                if dtype.is_numeric() and axis_type != "date":
+            for col, dtype in dtypes(figure, axis_id):
+                if dtype.is_numeric():
                     kinds.add("numeric on a linear axis")
                 elif isinstance(dtype, (pl.Date, pl.Datetime)):
                     zone = getattr(dtype, "time_zone", None) or "naive"
@@ -731,8 +763,7 @@ def check_axis_link_types(spec: DashboardSpec, schemas: dict[str | None, Any]) -
                     raise ValueError(
                         f"linked axis {key!r} shows {col!r} of type {dtype} on a "
                         f"{axis_type or 'default'} axis; only numeric, Date and "
-                        "Datetime columns can be linked, and a numeric one not "
-                        "on a date axis"
+                        "Datetime columns can be linked"
                     )
         if len(kinds) > 1:
             raise ValueError(f"linked axes {group} mix {' and '.join(sorted(kinds))}")

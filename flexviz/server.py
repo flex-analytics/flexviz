@@ -78,7 +78,7 @@ from flexviz.spec import (
     FigureSpec,
     InteractionState,
     VisualizationSpec,
-    check_axis_link_types,
+    check_axis_types,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,15 +156,15 @@ def get_source(name: str) -> LFQueryBuilder:
         raise KeyError(f"Unknown source {name!r}. Registered: {list(_sources)}")
 
 
-def _check_link_types(spec: DashboardSpec) -> None:
-    """Check linked axes against the registered source schemas.
+def _check_axis_types(spec: DashboardSpec) -> None:
+    """Check the axes against the registered source schemas.
 
     The spec validator cannot see the data types. A source that is not
     registered is skipped. Raises ``ValueError``.
     """
-    if spec.client_state.axis_links:
-        names = {fig.source for fig in spec.figures} & _sources.keys()
-        check_axis_link_types(spec, {name: _sources[name].schema for name in names})
+    check_axis_types(
+        spec, lambda name: _sources[name].schema if name in _sources else None
+    )
 
 
 def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSpec:
@@ -180,7 +180,7 @@ def _validated_dashboard(spec: VisualizationSpec | DashboardSpec) -> DashboardSp
 
     if isinstance(spec, VisualizationSpec):
         spec = DashboardSpec(figures=[spec.figure], state=spec.state)
-    _check_link_types(spec)
+    _check_axis_types(spec)
     figures = []
     for fig in spec.figures:
         # The same domain source as Figure.to_spec(), for a spec without a
@@ -622,7 +622,7 @@ async def dashboard_update(
                     raise HTTPException(status_code=404, detail=str(exc))
 
     try:
-        _check_link_types(req.spec)
+        _check_axis_types(req.spec)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

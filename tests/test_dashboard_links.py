@@ -299,7 +299,7 @@ class TestRoundTrip:
 
 
 def test_a_spec_without_links_reads_no_schema(tmp_path, monkeypatch):
-    """Building a spec touches no data; only links need the column types."""
+    """Building a spec touches no data; only links and date axes need types."""
     path = tmp_path / "s.parquet"
     pl.DataFrame({"ts": [1, 2, 3], "v": [1.0, 2.0, 3.0]}).write_parquet(path)
     calls = []
