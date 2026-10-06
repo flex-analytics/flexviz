@@ -857,6 +857,11 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
     per partition. Temporal x and free columns run on their physical Float64
     representation (contract G). The kernel returns exact f64; the f32/u16
     quantization happens at encode time only (``_line_env_quantized_buffers``).
+
+    x, and a range free value, are filtered to their domains before the
+    collect, like the other builders, so a zoomed target or source collects
+    only its rows. The filters use the kernel's own closed bounds, so the cube
+    is unchanged.
     """
     import flexviz_polars  # noqa: F401 — registers pl.Expr.flexviz namespace
 
@@ -871,6 +876,9 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
         )
     cat_cols = [d.column for d in spec.target_dims if d.kind == "categorical"]
     x_lo, x_hi = bucket.domain
+    # On the cast values, after the select: pushed into a Parquet scan as a
+    # typed predicate, the filter made an unzoomed temporal scan 1.5x slower.
+    x_in_domain = pl.col("__x").is_between(float(x_lo), float(x_hi))
 
     if free.kind == "categorical":
         if not free.columns:
@@ -887,6 +895,7 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
                 pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
                 pl.lit(0.0).alias("__f"),
             )
+            .filter(x_in_domain)
             .collect(engine="streaming")
         )
 
@@ -949,14 +958,18 @@ def _build_line_env_cube(ldf: pl.LazyFrame, spec: CubeSpec) -> CubeResult:
             "domain=None (full data domain) before building"
         )
     f_lo, f_hi = free.domain
-    # The kernel bins the free axis with the display kernel's rule and filters
-    # out-of-domain rows itself, so it takes the raw value.
-    df = ldf.select(
-        *[pl.col(c) for c in cat_cols],
-        _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
-        pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
-        _free_value_expr(free).cast(pl.Float64).alias("__f"),
-    ).collect(engine="streaming")
+    # The kernel bins the free axis with the display kernel's rule, so it takes
+    # the raw value.
+    df = (
+        ldf.select(
+            *[pl.col(c) for c in cat_cols],
+            _target_dim_value_expr(bucket).cast(pl.Float64).alias("__x"),
+            pl.col(spec.measure.value_col).cast(pl.Float64).alias("__y"),
+            _free_value_expr(free).cast(pl.Float64).alias("__f"),
+        )
+        .filter(pl.col("__f").is_between(float(f_lo), float(f_hi)), x_in_domain)
+        .collect(engine="streaming")
+    )
 
     def _envelope(part: pl.DataFrame) -> pl.DataFrame:
         return (

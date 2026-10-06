@@ -1122,6 +1122,8 @@ require a range (continuous/temporal) **or categorical** free axis (`cube_target
 cell-count wall), exactly like the `box`/`median` targets above. A categorical source partitions
 the build by the free category (`__free__` columns) and runs the `fixed_line_envelope2d` kernel with
 a degenerate 1-bin free axis (line_env) or `group_by(__free__cols)` (corr).
+A `line_env` build filters x, and a range free value, to their domains before the collect, like the
+other builders, so a zoomed target or source collects only the rows inside its domain.
 `corr` is **pearson-only** (spearman is rank-based, not decomposable) and needs ≥2 explicit numeric
 columns. The `line_env` measure is the only one shipped in a **packed f32/u16** layout (not f64):
 it is an approximate live-drag envelope, so its commit always POSTs (see "the line envelope
