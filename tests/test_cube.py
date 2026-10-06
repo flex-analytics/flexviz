@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import struct
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -2181,6 +2182,49 @@ class TestLineEnvelope:
             ).select("__bin__x", "free_bin", "y_min", "x_at_ymin", "y_max", "x_at_ymax")
             got = cube.frame.sort(["free_bin", "__bin__x"]).select(want.columns)
             assert got.equals(want)
+
+    @pytest.mark.parametrize(
+        "free_kind, grouped",
+        [("range", False), ("range", True), ("categorical", False)],
+    )
+    def test_zoomed_x_domain_edges_match_hand_filtered_rows(self, free_kind, grouped):
+        """A zoomed x domain keeps exactly the rows with ``lo <= x <= hi``:
+        the domain edges and the floats just outside them, NaN, inf and null."""
+        lo, hi = 20.0, 40.0
+        below, above = math.nextafter(lo, -math.inf), math.nextafter(hi, math.inf)
+        edge = [lo, hi, below, above, 0.0, 100.0, 30.0]
+        x = [float((i * 13) % 101) for i in range(600)] + edge * 4
+        x += [float("nan"), float("inf"), float("-inf"), None]
+        n = len(x)
+        df = pl.DataFrame(
+            {
+                "x": x,
+                "y": [((i * 311) % n) * 0.5 for i in range(n)],
+                "free": [float((i * 37) % 100) for i in range(n)],
+                "g": [("a", "b")[i % 2] for i in range(n)],
+            }
+        )
+        extra = (TargetDimSpec(column="g", kind="categorical"),) if grouped else ()
+        spec = _line_spec(x_domain=(lo, hi), extra_dims=extra)
+        if free_kind == "categorical":
+            spec = replace(spec, free=_free_cat("g"))
+        cube = build_cube(df.lazy(), spec)
+
+        keep = [v is not None and lo <= v <= hi for v in x]
+        assert 0 < sum(keep) < n
+        kept = build_cube(df.filter(pl.Series(keep)).lazy(), spec)
+        assert encode_fvcube(cube, cube_id="t") == encode_fvcube(kept, cube_id="t")
+
+        if free_kind == "range" and not grouped:
+            want = _ref_to_frame(
+                _line_env_reference(
+                    df["x"], df["y"], df["free"], lo, hi, 0.0, 100.0, 32, 64
+                )
+            ).select("__bin__x", "free_bin", "y_min", "x_at_ymin", "y_max", "x_at_ymax")
+            got = cube.frame.sort(["free_bin", "__bin__x"]).select(want.columns)
+            assert got.equals(want)
+            # The row exactly at the domain max is kept, in the top x bucket.
+            assert got["__bin__x"].max() == 32
 
     def test_temporal_x_bins_physical_and_header_carries_unit(self):
         n = 500

@@ -316,18 +316,27 @@ def test_envelope_kernel_scans_chunks_directly() -> None:
 ZOOM_ROWS = 2_000_000
 
 
-def test_zoomed_envelope_build_collects_only_the_free_domain() -> None:
-    """Decision: `_build_line_env_cube` filters the free value to its domain
-    before the collect, instead of collecting every row and letting
-    `fixed_line_envelope2d` drop the ones outside.
+@pytest.mark.parametrize("zoomed", ["free", "x"])
+def test_zoomed_envelope_build_collects_only_the_domain_rows(zoomed: str) -> None:
+    """Decision: `_build_line_env_cube` filters x and the free value to their
+    domains before the collect, instead of collecting every row and letting
+    `fixed_line_envelope2d` drop the ones outside. The filter runs on the cast
+    values after the select.
 
-    Evidence: release plugin, 4 threads, 8M rows, 2048 free bins, 500 x
-    buckets, medians of 41 alternating runs. A free domain over 25 % of the
-    data built in 23.3 ms with the filter before the collect against 33.2 ms
-    without it (0.70x) on correlated data, and 76.4 ms against 165.8 ms
-    (0.46x) on uniform data. A domain over all the data showed no difference
-    beyond noise (1.04x and 1.00x), so the filter is unconditional like the
-    other range builders.
+    Evidence: release plugin, 4 threads. Free domain, 8M rows, 2048 free bins,
+    500 x buckets, medians of 41 alternating runs: a free domain over 25 % of
+    the data built in 23.3 ms with the filter before the collect against
+    33.2 ms without it (0.70x) on correlated data, and 76.4 ms against
+    165.8 ms (0.46x) on uniform data, and a free domain over all the data
+    cost 0 to 3 %. x domain, 20M rows, medians of 3 alternating processes of
+    9 builds: a line target zoomed to 25 % of x built in 61.9 ms against
+    74.3 ms (0.83x) with a peak of 98 MB against 229 MB on a resident frame,
+    and in 178 ms against 189 ms with a peak of 186 MB against 548 MB on a
+    Parquet scan. An x domain over all the data cost 4 to 5 % on a resident
+    frame and 0 to 5 % on a scan, with no extra memory. Both filters are
+    unconditional, like the other builders. Pushed into a Parquet scan as a
+    typed predicate instead, the free filter made a 25 % temporal domain
+    1.65x faster but an unzoomed one 1.48x slower.
 
     Check: the single collect of a 25 % domain returns only the rows inside the
     domain (the exact count, domain edges included), not the whole frame. The
@@ -343,14 +352,15 @@ def test_zoomed_envelope_build_collects_only_the_free_domain() -> None:
             "free": rng.uniform(0.0, 1000.0, ZOOM_ROWS),
         }
     )
-    lo, hi = 375.0, 625.0
-    inside = int(df["free"].is_between(lo, hi).sum())
+    full, zoom = (0.0, 1000.0), (375.0, 625.0)
+    free_domain, x_domain = (zoom, full) if zoomed == "free" else (full, zoom)
+    inside = int(df[zoomed].is_between(*zoom).sum())
     assert 0.2 * ZOOM_ROWS < inside < 0.3 * ZOOM_ROWS
     spec = CubeSpec(
         source_name="s",
-        free=FreeAxisSpec(column="free", p=64, domain=(lo, hi)),
+        free=FreeAxisSpec(column="free", p=64, domain=free_domain),
         target_dims=(
-            TargetDimSpec(column="x", kind="binned", bins=64, domain=(0.0, 1000.0)),
+            TargetDimSpec(column="x", kind="binned", bins=64, domain=x_domain),
         ),
         measure=MeasureSpec(agg="line_env", value_col="y"),
     )
@@ -371,7 +381,7 @@ def test_zoomed_envelope_build_collects_only_the_free_domain() -> None:
 
     assert heights == [inside], (
         f"the build collected {heights} rows, expected only the {inside} rows "
-        f"inside the free domain"
+        f"inside the {zoomed} domain"
     )
 
 

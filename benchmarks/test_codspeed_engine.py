@@ -92,15 +92,15 @@ def test_build_cubes(benchmark, frame: pl.DataFrame) -> None:
 
 @pytest.mark.parametrize(
     "viewports",
-    [{}, {"fig_a": {"x": [-0.5, 0.5]}}],
-    ids=["unzoomed", "zoomed"],
+    [{}, {"fig_a": {"x": [-0.5, 0.5]}}, {"fig_b": {"x": [375_000, 625_000]}}],
+    ids=["unzoomed", "zoomed", "target-zoomed"],
 )
 def test_build_line_cubes(
     benchmark, frame: pl.DataFrame, viewports: dict[str, dict[str, list[float]]]
 ) -> None:
     """Histogram source (a range free axis), line target: the envelope cube,
-    wrapper and kernel together. The zoomed source collects only the rows
-    inside its free domain."""
+    wrapper and kernel together. A zoomed source or target collects only the
+    rows inside its domain."""
     hist = Histogram(x="z", bins=50)
     line = TRACES["line-minmax"]()
     engine = FlexEngine(
