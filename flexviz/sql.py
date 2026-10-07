@@ -73,6 +73,33 @@ _PG_OIDS: dict[int, pl.DataType] = {
 }
 
 
+_CH_SIMPLE: dict[str, pl.DataType] = {
+    **{f"Int{b}": getattr(pl, f"Int{b}")() for b in (8, 16, 32, 64)},
+    **{f"UInt{b}": getattr(pl, f"UInt{b}")() for b in (8, 16, 32, 64)},
+    "Float32": pl.Float32(),
+    "Float64": pl.Float64(),
+    "Bool": pl.Boolean(),
+    "String": pl.String(),
+    "Date": pl.Date(),
+    "Date32": pl.Date(),
+}
+
+
+def _clickhouse_dtype(name: str) -> pl.DataType:
+    """The Polars dtype of a ClickHouse type name, as its DB-API rows load."""
+    for wrapper in ("Nullable(", "LowCardinality("):
+        while name.startswith(wrapper):
+            name = name[len(wrapper) : -1]
+    if name in _CH_SIMPLE:
+        return _CH_SIMPLE[name]
+    if name.startswith("DateTime64("):
+        precision = int(name[len("DateTime64(") :].split(",")[0].strip(" )"))
+        return pl.Datetime("ms" if precision <= 3 else "us" if precision <= 6 else "ns")
+    if name.startswith("DateTime"):
+        return pl.Datetime("us")
+    return pl.String()
+
+
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
@@ -117,7 +144,8 @@ def _connector(connection: Any) -> tuple[Callable[[], Any], str | None]:
     # One DuckDB database: each thread reads through its own cursor.
     if type(connection).__module__.lstrip("_").startswith("duckdb"):
         return connection.cursor, "duckdb"
-    if callable(connection):
+    # A connection object can be callable too (sqlite3): it has a cursor.
+    if callable(connection) and not hasattr(connection, "cursor"):
         return connection, None
     raise TypeError(
         "connection must be a URI, a SQLAlchemy Engine, a DuckDB connection, or a "
@@ -143,6 +171,8 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
 
     Arrow where the driver has it, so an empty result keeps its column types.
     """
+    # A SQLAlchemy pool hands out a proxy; Polars mistakes it for an engine.
+    conn = getattr(conn, "dbapi_connection", conn)
     module = type(conn).__module__.split(".", 1)[0].lstrip("_")
     if module == "duckdb":
         return conn.execute(sql).pl()
@@ -166,10 +196,6 @@ def _close(conn: Any) -> None:
 # ---------------------------------------------------------------------------
 # Expressions
 # ---------------------------------------------------------------------------
-
-
-def col(name: str) -> exp.Column:
-    return exp.column(name, quoted=True)
 
 
 def _alias(e: exp.Expression, name: str) -> exp.Alias:
@@ -217,6 +243,9 @@ class SQLFrame:
     def dialect(self) -> str:
         return self.source.dialect
 
+    def col(self, name: str) -> exp.Column:
+        return self.source.col(name)
+
     def collect(self, select: exp.Select) -> pl.DataFrame:
         """Run ``select`` over the filtered rows, as a Polars frame."""
         if self.where:
@@ -228,7 +257,7 @@ class SQLFrame:
     def phys(self, name: str, dtype: pl.DataType | None) -> exp.Expression:
         """A column in its Polars physical units: epoch units for a temporal
         column, the raw column otherwise. Grids are arithmetic on these."""
-        c = col(name)
+        c = self.col(name)
         if dtype is None or not dtype.is_temporal():
             return c
         d = self.dialect
@@ -245,28 +274,33 @@ class SQLFrame:
         if d == "clickhouse":
             fn = {"ms": "Milli", "us": "Micro", "ns": "Nano"}[unit]
             return exp.func(f"toUnixTimestamp64{fn}", c)
-        # Postgres: EXTRACT(EPOCH) is numeric since PG 14, so the scaled value
-        # is exact before the cast.
+        # Postgres keeps microseconds. date_part returns a double, so the
+        # scaled value is within 0.5 of the exact count and rounds back to it
+        # (equal to the numeric EXTRACT on all 100M benchmark rows, 2x faster).
         scale = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
-        epoch = exp.Extract(this=exp.var("EPOCH"), expression=c)
-        return exp.cast(
-            exp.Mul(this=epoch, expression=_num(scale)), exp.DataType.Type.BIGINT
+        epoch = exp.Anonymous(
+            this="date_part", expressions=[exp.Literal.string("epoch"), c]
         )
+        return exp.cast(
+            exp.Round(this=exp.Mul(this=epoch, expression=_num(scale))),
+            exp.DataType.Type.BIGINT,
+        )
+
+    def nan(self, name: str) -> exp.Expression:
+        """The column is NaN."""
+        c = self.col(name)
+        if self.dialect == "postgres":
+            # In Postgres NaN equals NaN and sorts above every number.
+            return exp.EQ(this=c, expression=self.lit(float("nan")))
+        return exp.func("isNaN" if self.dialect == "clickhouse" else "isnan", c)
 
     def usable(self, name: str, dtype: pl.DataType | None) -> exp.Expression:
         """Not null, and not NaN for a float: the rows a bin or a bucket takes."""
-        c = col(name)
-        cond: exp.Expression = exp.Not(this=exp.Is(this=c, expression=exp.Null()))
+        cond: exp.Expression = exp.Not(
+            this=exp.Is(this=self.col(name), expression=exp.Null())
+        )
         if dtype is not None and dtype.is_float():
-            d = self.dialect
-            if d == "postgres":
-                # In Postgres NaN equals NaN and sorts above every number.
-                nan = exp.NEQ(this=c, expression=self.lit(float("nan"), dtype))
-            elif d == "clickhouse":
-                nan = exp.Not(this=exp.func("isNaN", c))
-            else:
-                nan = exp.Not(this=exp.func("isnan", c))
-            cond = exp.and_(cond, nan)
+            cond = exp.and_(cond, exp.Not(this=self.nan(name)))
         return cond
 
     def int_div(self, a: exp.Expression, b: int) -> exp.Expression:
@@ -290,6 +324,8 @@ class SQLFrame:
             if math.isnan(value):
                 return exp.cast(exp.Literal.string("NaN"), exp.DataType.Type.DOUBLE)
             return _num(value)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return _num(value)
         if isinstance(value, (dt.datetime, dt.date, bool, str, int)):
             return exp.convert(value)
         return exp.convert(value)
@@ -300,7 +336,7 @@ class SQLFrame:
         """``lo <= c <= hi`` (per ``closed``) on the raw column, so an index on
         it can serve the filter. Bounds are literals typed for the column."""
         dtype = self.source.schema.get(name)
-        c = col(name)
+        c = self.col(name)
         lower = exp.GTE if closed in ("both", "left") else exp.GT
         upper = exp.LTE if closed in ("both", "right") else exp.LT
         return exp.and_(
@@ -318,7 +354,7 @@ class SQLFrame:
         return self.range_cond(name, *_eval(bounds))
 
     def extreme_by(
-        self, x: exp.Expression, y: exp.Expression, kind: str
+        self, x: exp.Expression, y: exp.Expression, kind: str, *, exact: bool = False
     ) -> tuple[exp.Expression, exp.Expression]:
         """``(x at the y extremum, the y extremum)`` as two aggregates.
 
@@ -329,6 +365,24 @@ class SQLFrame:
         ``array_agg ORDER BY``, ``DISTINCT ON`` and window functions.
         """
         agg = exp.Min if kind == "min" else exp.Max
+        if self.dialect == "postgres" and exact:
+            # A double holds an integer exactly only up to 2**53, so an x that
+            # can pass it (a 64-bit integer, nanoseconds) keeps its own type.
+            # Sorting each bucket is slower than the array minimum.
+            desc = kind == "max"
+            ordered = exp.ArrayAgg(
+                this=exp.Order(
+                    this=x,
+                    expressions=[
+                        exp.Ordered(this=y, desc=desc),
+                        exp.Ordered(this=x.copy(), desc=desc),
+                    ],
+                )
+            )
+            first = exp.Bracket(
+                this=exp.Paren(this=ordered), expressions=[exp.Literal.number(0)]
+            )
+            return first, agg(this=y.copy())
         if self.dialect == "postgres":
             dbl = exp.DataType.Type.DOUBLE
             arr = exp.Paren(
@@ -403,7 +457,7 @@ class SQLSource:
         if name is None:
             # Open one connection now: it names its driver, and the first query
             # reuses it.
-            conn = self._connect()
+            conn = self._open()
             name = _dialect_of(conn)
             self._idle.put(conn)
         name = _DIALECT_ALIASES.get(name, name) if name else None
@@ -438,15 +492,38 @@ class SQLSource:
         # The query is the user's own SQL: it goes in as written, never re-rendered.
         return f'WITH "{_SRC}" AS ({self._query}) {body}'
 
+    def _open(self) -> Any:
+        """A new connection in autocommit mode.
+
+        DB-API starts a transaction with the first query. On Postgres an idle
+        pooled connection would then sit "idle in transaction" and hold its
+        table lock for as long as the server runs, which blocks a DROP or
+        TRUNCATE (a nightly reload) and holds back vacuum.
+        """
+        conn = self._connect()
+        raw = getattr(conn, "dbapi_connection", conn)
+        try:
+            if hasattr(raw, "adbc_connection"):
+                raw.adbc_connection.set_autocommit(True)
+            elif hasattr(raw, "autocommit"):
+                raw.autocommit = True
+        except Exception:
+            pass
+        return conn
+
     def _run(self, select: exp.Select) -> pl.DataFrame:
         sql = self._sql(select)
         with self._slots:
             try:
                 conn = self._idle.get_nowait()
             except queue.Empty:
-                conn = self._connect()
+                conn = self._open()
             try:
                 df = _fetch(conn, sql)
+                raw = getattr(conn, "dbapi_connection", conn)
+                if getattr(raw, "autocommit", True) is False:
+                    # The driver kept its transaction: end it before idling.
+                    raw.rollback()
             except BaseException:
                 # A failed connection can be broken; the next query opens a new one.
                 _close(conn)
@@ -461,20 +538,41 @@ class SQLSource:
         if all(dtype != pl.Null for dtype in df.schema.values()):
             return df.schema
         # A driver that returns rows has nothing to infer from in an empty
-        # result. Postgres drivers report each column's type OID instead.
+        # result. It still describes each column: Postgres drivers by type
+        # OID, ClickHouse by type name.
         with self._slots:
-            conn = self._connect()
+            conn = self._open()
             try:
                 cur = conn.cursor()
                 cur.execute(self._sql(select))
                 desc = cur.description
             finally:
                 _close(conn)
-        if self.dialect != "postgres":
+        if self.dialect == "postgres":
+            types = {d[0]: _PG_OIDS.get(int(d[1]), pl.String()) for d in desc}
+        elif self.dialect == "clickhouse":
+            types = {d[0]: _clickhouse_dtype(str(d[1])) for d in desc}
+        else:
             raise TypeError(
                 "The driver returned no column types. Use an Arrow driver (ADBC)."
             )
-        return pl.Schema({d[0]: _PG_OIDS.get(int(d[1]), pl.String()) for d in desc})
+        return pl.Schema(types)
+
+    def col(self, name: str) -> exp.Column:
+        """A quoted column of this source.
+
+        Column names come from the spec, which the browser sends, so only a
+        column of the schema reaches the SQL; every other identifier is a
+        FlexViz constant. ClickHouse reads a backslash in a quoted identifier
+        as an escape, so such a name cannot be quoted there.
+        """
+        if name not in self.schema:
+            raise ValueError(f"column {name!r} is not in the source")
+        if self.dialect == "clickhouse" and "\\" in name:
+            raise ValueError(
+                f"column {name!r} has a backslash, which ClickHouse cannot quote"
+            )
+        return exp.column(name, quoted=True)
 
     # -- the source surface the engine uses ----------------------------------
 
@@ -501,7 +599,7 @@ class SQLSource:
     def _clause(
         self, frame: SQLFrame, clause: ClauseFilter, schema: pl.Schema | None
     ) -> exp.Expression:
-        c = col(clause.column)
+        c = self.col(clause.column)
         if clause.values is not None:
             typed = _values_to_typed_series(clause.column, clause.values, schema)
             typed = typed.drop_nulls()
@@ -545,7 +643,7 @@ class SQLSource:
             aggs = []
             for i, c in enumerate(missing):
                 dtype = sch.get(c)
-                v: exp.Expression = col(c)
+                v: exp.Expression = self.col(c)
                 if dtype is not None and dtype.is_float():
                     v = exp.case().when(frame.usable(c, dtype), v)
                 aggs += [
@@ -659,21 +757,22 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
-    x_phys = frame.phys(x_col, x_dtype)
-    y = col(y_col)
-    lo_x, lo_y = frame.extreme_by(
-        x_phys if frame.dialect == "postgres" else col(x_col), y, "min"
+    # The Postgres array form needs x as a double, exact only below 2**53.
+    exact = x_dtype in (pl.Int64, pl.UInt64) or (
+        isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
     )
-    hi_x, hi_y = frame.extreme_by(
-        x_phys.copy() if frame.dialect == "postgres" else col(x_col), y.copy(), "max"
-    )
+    array_form = frame.dialect == "postgres" and not exact
+    x_arg = frame.phys(x_col, x_dtype) if array_form else frame.col(x_col)
+    y = frame.col(y_col)
+    lo_x, lo_y = frame.extreme_by(x_arg, y, "min", exact=exact)
+    hi_x, hi_y = frame.extreme_by(x_arg.copy(), y.copy(), "max", exact=exact)
     names = {
         "lo_x": f"{_ALIAS_PREFIX}lo_{x_col}",
         "lo_y": f"{_ALIAS_PREFIX}lo_{y_col}",
         "hi_x": f"{_ALIAS_PREFIX}hi_{x_col}",
         "hi_y": f"{_ALIAS_PREFIX}hi_{y_col}",
     }
-    groups = [col(g) for g in (group_cols or ())]
+    groups = [frame.col(g) for g in (group_cols or ())]
     select = (
         exp.select(
             *groups,
@@ -693,7 +792,7 @@ def bucket_extrema(
         dtypes[g] = sch[g]
     for k in ("lo_y", "hi_y"):
         dtypes[names[k]] = y_dtype
-    if frame.dialect == "postgres" and x_dtype is not None and not x_dtype.is_float():
+    if array_form and x_dtype is not None and not x_dtype.is_float():
         # The array form returns the physical x as a double: integral again first.
         df = df.with_columns(
             pl.col(names["lo_x"], names["hi_x"]).round().cast(pl.Int64)
@@ -741,7 +840,7 @@ def hist_counts(
     conds = [frame.usable(col_name, dtype)]
     if zoomed:
         conds.append(frame.phys_range_cond(col_name, lo, hi))
-    groups = [col(g) for g in group_cols]
+    groups = [frame.col(g) for g in group_cols]
     select = (
         exp.select(
             *groups,
@@ -851,7 +950,7 @@ def hist2d_plan(
             value = exp.Count(this=exp.Star())
         else:
             conds.append(frame.usable(z_col, sch.get(z_col)))
-            z = exp.cast(col(z_col), exp.DataType.Type.DOUBLE)
+            z = exp.cast(frame.col(z_col), exp.DataType.Type.DOUBLE)
             value = {"sum": exp.Sum, "mean": exp.Avg, "min": exp.Min, "max": exp.Max}[
                 histfunc
             ](this=z)
@@ -883,16 +982,21 @@ def _agg_sql(
 ) -> exp.Expression:
     if values_col is None:
         return exp.Count(this=exp.Star())
-    v = col(values_col)
+    v = frame.col(values_col)
     if agg == "sum":
         # Polars sums an all-null group to 0, SQL to NULL.
         return exp.Coalesce(this=exp.Sum(this=v), expressions=[_num(0)])
     if agg == "mean":
         return exp.Avg(this=exp.cast(v, exp.DataType.Type.DOUBLE))
-    if agg == "min":
-        return exp.Min(this=v)
-    if agg == "max":
-        return exp.Max(this=v)
+    if agg in ("min", "max"):
+        fn = exp.Min if agg == "min" else exp.Max
+        dtype = frame.source.schema.get(values_col)
+        if dtype is None or not dtype.is_float():
+            return fn(this=v)
+        # Polars skips NaN, and returns NaN only when every value is NaN. SQL
+        # sorts NaN above every number, so MAX would return it.
+        numbers = exp.case().when(exp.Not(this=frame.nan(values_col)), v)
+        return exp.Coalesce(this=fn(this=numbers), expressions=[fn(this=v.copy())])
     if agg == "n_unique":
         # Polars counts null as one more value; COUNT(DISTINCT) skips it.
         has_null = exp.Max(
@@ -903,7 +1007,11 @@ def _agg_sql(
         return exp.Add(
             this=exp.Count(this=exp.Distinct(expressions=[v])), expression=has_null
         )
-    if agg == "median" and frame.dialect in ("postgres", "duckdb"):
+    if agg == "median":
+        if frame.dialect == "clickhouse":
+            # Exact and interpolating, like Polars' median; plain ``median``
+            # in ClickHouse samples.
+            return exp.Anonymous(this="quantileExactInclusive(0.5)", expressions=[v])
         return exp.PercentileCont(this=v, expression=_num(0.5))
     raise ValueError(f"agg {agg!r} is not supported on a {frame.dialect} source")
 
@@ -925,11 +1033,12 @@ def group_agg_plan(
     """
 
     def run(frame: SQLFrame) -> pl.DataFrame:
-        groups = [col(g) for g in group_cols]
+        groups = [frame.col(g) for g in group_cols]
+        # The uid comes from the spec, so it is renamed here, never quoted.
         select = exp.select(
-            *groups, _alias(_agg_sql(frame, agg, values_col), uid)
+            *groups, _alias(_agg_sql(frame, agg, values_col), _P + "v")
         ).group_by(*[g.copy() for g in groups])
-        df = frame.collect(select)
+        df = frame.collect(select).rename({_P + "v": uid})
         sch = frame.source.schema
         used = {c: sch[c] for c in (*group_cols, *([values_col] if values_col else []))}
         expected = (
@@ -950,24 +1059,32 @@ def corr_plan(
     it: one struct of ``columns`` and the row-major symmetric ``z_flat``."""
 
     def run(frame: SQLFrame) -> pl.DataFrame:
+        sch = frame.source.schema
         n = len(cols)
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
         dbl = exp.DataType.Type.DOUBLE
-        aggs = [
-            _alias(
-                exp.Corr(
-                    this=exp.cast(col(cols[i]), dbl),
-                    expression=exp.cast(col(cols[j]), dbl),
-                ),
-                f"{_P}{i}_{j}",
-            )
-            for i, j in pairs
-        ]
-        row = frame.collect(exp.select(*aggs)).row(0)
+        aggs = []
+        for i, j in pairs:
+            a, b = cols[i], cols[j]
+            # CORR skips a pair with a null, as Polars does. Polars gives NaN
+            # when a NaN is in the data; DuckDB raises on it, so the NaN rows
+            # are left out of CORR and flagged on their own.
+            both = exp.and_(frame.usable(a, sch.get(a)), frame.usable(b, sch.get(b)))
+            x = exp.case().when(both, exp.cast(frame.col(a), dbl))
+            y = exp.case().when(both.copy(), exp.cast(frame.col(b), dbl))
+            aggs.append(_alias(exp.Corr(this=x, expression=y), f"{_P}r{i}_{j}"))
+            nans = [frame.nan(c) for c in (a, b) if sch.get(c, pl.Null).is_float()]
+            if nans:
+                flag = exp.case().when(exp.or_(*nans), _num(1)).else_(_num(0))
+                aggs.append(_alias(exp.Max(this=flag), f"{_P}n{i}_{j}"))
+        row = frame.collect(exp.select(*aggs)).row(0, named=True)
         mat = np.eye(n)
-        for (i, j), r in zip(pairs, row):
-            # A pair without a correlation is 0.0, as ``_corr_expr`` packs it.
-            r = 0.0 if r is None else float(r)
+        for i, j in pairs:
+            r = row[f"{_P}r{i}_{j}"]
+            # No correlation (no rows, a constant column) is NaN, as in Polars.
+            if r is None or row.get(f"{_P}n{i}_{j}") == 1:
+                r = float("nan")
+            r = float(r)
             mat[i, j] = mat[j, i] = abs(r) if absolute else r
         return pl.DataFrame(
             {"columns": [cols], "z_flat": [mat.ravel().tolist()]}
