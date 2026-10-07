@@ -30,6 +30,18 @@ def polars_lf_from(data) -> pl.LazyFrame:
     raise ValueError(f"Unsupported data type: {type(data)}")
 
 
+def as_source(data, cache: bool = False):
+    """The source behind a ``Figure`` or ``Dashboard``.
+
+    A ``flexviz.sql.SQLSource`` is a source already; anything else is data that
+    ``polars_lf_from`` accepts, wrapped in an ``LFQueryBuilder``.
+    """
+    if getattr(data, "is_sql", False):
+        data.cache = cache
+        return data
+    return LFQueryBuilder(polars_lf_from(data), cache=cache)
+
+
 def get_col_name(col: str | pl.Expr) -> str:
     if isinstance(col, str):
         return col
@@ -161,6 +173,9 @@ class LFQueryBuilder:
     You can pass both a Polars DataFrame or LazyFrame to initialize the LFQueryBuilder.
     If a DataFrame is passed, it will be converted to a LazyFrame.
     """
+
+    #: ``flexviz.sql.SQLSource`` is the other source kind.
+    is_sql = False
 
     def __init__(
         self,
@@ -333,6 +348,14 @@ class LFQueryBuilder:
         if missing:
             memo.update(self._minmax_collect(self._ldf, missing, sch))
         return {c: memo[c] for c in columns}
+
+    def compile_filter(
+        self, predicates: list[Any], schema: pl.Schema | None
+    ) -> pl.Expr:
+        """One selection's predicates as the filter this source applies."""
+        from .predicates import predicates_to_expr
+
+        return predicates_to_expr(predicates, schema, is_scan=self.is_scan)
 
     # --------------- Handling flags ---------------
 

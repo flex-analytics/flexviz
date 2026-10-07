@@ -40,7 +40,7 @@ from .figure import (
     _render_dashboard,
     _start_server_thread,
 )
-from .LF import LFQueryBuilder, polars_lf_from
+from .LF import LFQueryBuilder, as_source
 from .spec import (
     ClientState,
     DashboardSpec,
@@ -105,7 +105,7 @@ class Dashboard:
         self._cache_enabled: bool = cache
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
+            self._backend_lf = as_source(data, cache=cache)
 
         self._figures: list[Figure] = []
         # Raw link_axes calls, resolved in to_spec against the finished figures,

@@ -86,6 +86,7 @@ class GeoHistogram2D(FlexTrace):
     """
 
     trace_type: str = "geo_histogram2d"
+    sql_support = True
     select_policy_doc: str = "map box — (lon, lat) bounds"
     recompute_policy_doc: str = "map coordinates — re-bins on viewport change"
     overlay_style: str = "filtered_only"
@@ -244,6 +245,7 @@ class GeoHistogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
+        sql_source: bool = False,
         **_: Any,
     ) -> AggregationSpec:
         """Return the geo 2-D histogram aggregation spec.
@@ -266,6 +268,7 @@ class GeoHistogram2D(FlexTrace):
             domains,
             schema,
             scan_source,
+            sql_source,
         )
         return spec
 

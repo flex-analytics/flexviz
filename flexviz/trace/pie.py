@@ -57,6 +57,7 @@ class PiePlot(FlexTrace):
     """
 
     trace_type: str = "pie"
+    sql_support = True
     select_policy_doc: str = "categorical — slice click"
     overlay_style: str = "filtered_only"
 
@@ -187,6 +188,8 @@ class PiePlot(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
         if self.values_col is None:
@@ -195,6 +198,23 @@ class PiePlot(FlexTrace):
             agg_fn = _AGG_FUNCTIONS[self.agg]
             agg_expr = agg_fn(self.values_col).alias(self.uid)
 
+        if sql_source:
+            from ..sql import group_agg_plan
+
+            return GroupedAggregationSpec(
+                uid=self.uid,
+                group_cols=self.label_cols,
+                agg_exprs=(),
+                sort_cols=self.label_cols,
+                plan=group_agg_plan(
+                    self.uid,
+                    self.label_cols,
+                    self.label_cols,
+                    self.agg,
+                    self.values_col,
+                    agg_expr,
+                ),
+            )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=self.label_cols,
