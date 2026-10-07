@@ -421,6 +421,7 @@ class LinePlot(FlexTrace):
 
     trace_type: str = "line"
     domain_follows_filter: ClassVar[bool] = True
+    sql_support = True
     select_policy_doc: str = "x anchor only — vertical band across all series"
     recompute_policy_doc: str = (
         "x anchor — downsample window (frozen if update_on_zoom=False)"
@@ -626,6 +627,11 @@ class LinePlot(FlexTrace):
         dtype gate.
         """
         self.check_schema(source.schema)
+        if getattr(source, "is_sql", False) and not self._x_width:
+            raise ValueError(
+                "downsample='nth' cannot run on a SQL source: a database has no "
+                "row order to stride. Use 'minmax', 'lttb' or 'fpcs'."
+            )
         if self._x_width and self.group_by_cols is None and not source.is_scan:
             source.check_line_x(self.x_col)
 
@@ -694,6 +700,7 @@ class LinePlot(FlexTrace):
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
+        sql_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped line aggregation spec.
 
@@ -730,9 +737,10 @@ class LinePlot(FlexTrace):
         if group_by_cols is not None:
             # Grouped lines restrict the frame *before* grouping, and a
             # frame-level filter is not a slice, so this path keeps the mask.
+            # The SQL twin builds its own viewport filter from ``x_range``.
             vp_expr = (
                 _range_filter_expr(self.x_col, x_range, schema=schema)
-                if x_range is not None
+                if x_range is not None and not sql_source
                 else None
             )
             spec = {
@@ -760,6 +768,7 @@ class LinePlot(FlexTrace):
                         None if x_range is not None else (domains or {})[self.x_col],
                         schema,
                         group_cols=group_by_cols,
+                        sql=sql_source,
                     ),
                 )
             return GroupedAggregationSpec(
@@ -782,9 +791,9 @@ class LinePlot(FlexTrace):
             n_buckets = _bucket_budget(self.n_points, self.downsample)
             x_domain = None if x_range is not None else (domains or {})[self.x_col]
 
-            if scan_source:
+            if scan_source or sql_source:
                 # The kernel needs the whole column in memory, so a scan runs
-                # the streaming plan instead.
+                # the streaming plan instead, and a database its SQL twin.
                 return AggregationSpec(
                     uid=self.uid,
                     plan=pairs_plan(
@@ -800,6 +809,7 @@ class LinePlot(FlexTrace):
                         x_range,
                         x_domain,
                         schema,
+                        sql=sql_source,
                     ),
                 )
 

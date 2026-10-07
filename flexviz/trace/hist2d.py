@@ -73,6 +73,7 @@ def hist2d_agg_spec(
     domains: Mapping[str, tuple[Any, Any]] | None,
     schema: pl.Schema | None,
     scan_source: bool,
+    sql_source: bool = False,
 ) -> tuple[AggregationSpec, tuple[int, int]]:
     """The 2-D histogram aggregation spec, plus the grid it bins on.
 
@@ -96,6 +97,22 @@ def hist2d_agg_spec(
     masks = [m for m in (x_mask, y_mask) if m is not None]
     mask = masks[0] & masks[1] if len(masks) == 2 else (masks[0] if masks else None)
     grid = (nb_x, nb_y)
+
+    if sql_source:
+        from ..sql import hist2d_plan
+
+        plan = hist2d_plan(
+            x_col,
+            y_col,
+            z_col,
+            nb_x,
+            nb_y,
+            histfunc,
+            edges,
+            (x_range is not None, y_range is not None),
+            uid,
+        )
+        return AggregationSpec(uid=uid, plan=plan), grid
 
     if scan_source:
         plan = hist2d_fold_plan(
@@ -183,6 +200,7 @@ class Histogram2D(FlexTrace):
     """
 
     trace_type: str = "histogram2d"
+    sql_support = True
     select_policy_doc: str = "both axes (x, y) — 2-D box select"
     recompute_policy_doc: str = "both axes (x, y) — re-bins to viewport"
     overlay_style: str = "filtered_only"
@@ -434,6 +452,7 @@ class Histogram2D(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
+        sql_source: bool = False,
         **_: Any,
     ) -> AggregationSpec:
         """Return the 2-D histogram aggregation spec (see ``hist2d_agg_spec``)."""
@@ -454,6 +473,7 @@ class Histogram2D(FlexTrace):
             domains,
             schema,
             scan_source,
+            sql_source,
         )
         return spec
 

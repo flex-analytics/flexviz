@@ -375,7 +375,13 @@ class FlexEngine:
         too, because the brush is unknown at build time: the live envelope is
         an approximate preview that the committed selection POST replaces.
         """
-        if self._backend_lf is None or self._source_name is None:
+        # A SQL source has no cube path yet: the client falls back to the
+        # committed-selection request.
+        if (
+            self._backend_lf is None
+            or self._source_name is None
+            or getattr(self._backend_lf, "is_sql", False)
+        ):
             return [], {}
 
         viewports_by_figure = _normalize_viewports(viewports_by_figure)
@@ -798,9 +804,7 @@ class FlexEngine:
             if not sel.predicates:
                 continue
             filter_exprs.append(
-                predicates_to_expr(
-                    sel.predicates, backend_schema, is_scan=self._backend_lf.is_scan
-                )
+                self._backend_lf.compile_filter(sel.predicates, backend_schema)
             )
         return filter_exprs
 
@@ -967,6 +971,7 @@ class FlexEngine:
                     domains=trace_domains,
                     scan_source=lf is not None and lf.is_scan,
                     sorted_cols=lf.sorted_cols if lf is not None else frozenset(),
+                    sql_source=getattr(lf, "is_sql", False),
                 )
             )
 
