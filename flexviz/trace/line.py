@@ -626,6 +626,7 @@ class LinePlot(FlexTrace):
         grouped plan and a scan plan read x in no order, so they stop at the
         dtype gate.
         """
+        super().check_source(source)
         self.check_schema(source.schema)
         if getattr(source, "is_sql", False) and not self._x_width:
             raise ValueError(
