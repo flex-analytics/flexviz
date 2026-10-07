@@ -9,6 +9,9 @@
 Everything is normalized to a lazy Polars frame internally. Non-Polars inputs
 are converted once at construction time; from then on all work is lazy.
 
+They also accept a `SQLSource`, which keeps the data in a database and sends
+each aggregation there as SQL. See [Databases](databases.md).
+
 ## Stay lazy
 
 FlexViz does not collect your frame when you build a figure. Each interaction
