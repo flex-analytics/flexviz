@@ -235,11 +235,28 @@ class FlexTrace(ABC):
         The engine calls it for every trace before the domains are resolved.
         Reads the schema, and may read data.
         """
-        if getattr(source, "is_sql", False) and not self.sql_support:
+        if not getattr(source, "is_sql", False):
+            return
+        if not self.sql_support:
             raise ValueError(
                 f"A {self.trace_type} trace cannot run on a SQL source yet. "
                 "Load the rows into a Polars frame for it."
             )
+        # Reads the schema only. The SQL builder refuses an unknown column
+        # too; this names it before any query runs.
+        cols = [
+            c
+            for v in (
+                *self._backend_data.values(),
+                self.group_by_cols or (),
+                self._params.get("path") or (),
+                self._params.get("columns") or (),
+            )
+            for c in ([v] if isinstance(v, str) else v)
+        ]
+        missing = [c for c in dict.fromkeys(cols) if c not in source.schema]
+        if missing:
+            raise ValueError(f"column(s) {missing} not in the SQL source")
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose ``(min, max)`` this trace's spec needs.

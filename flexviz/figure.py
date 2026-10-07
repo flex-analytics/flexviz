@@ -178,6 +178,11 @@ class Figure:
     def _add_trace(self, trace: FlexTrace) -> Figure:
         """Assign a uid and register a trace."""
         trace.uid = str(uuid4())
+        # A database source checks here, so a chart it cannot run fails in the
+        # user's code instead of as a 500 in the browser. The check reads only
+        # the schema; on a frame it can read data, so it waits for a request.
+        if getattr(self._backend_lf, "is_sql", False):
+            trace.check_source(self._backend_lf)
         self._traces.append(trace)
         return self
 
