@@ -285,7 +285,13 @@ class PlotlyAdapter(AbstractAdapter):
         dash_json = _json_for_inline_script(spec.model_dump())
         server_url_js = _json_for_inline_script(server_url)
         from ..cache import is_source_cacheable
+        from ..server import stream_versions
 
+        # The version at render time: an append after it makes the first
+        # poll refresh, so the page misses none.
+        streaming_sources_js = _json_for_inline_script(
+            stream_versions(f.source for f in spec.figures)
+        )
         cacheable_sources_js = _json_for_inline_script(
             sorted(
                 {
@@ -446,6 +452,7 @@ class PlotlyAdapter(AbstractAdapter):
     const SERVER_URL     = {server_url_js};
     const _fvAllFigUids  = {fig_uids_js};
     const FV_CACHEABLE_SOURCES = {cacheable_sources_js};
+    const FV_STREAMING_SOURCES = {streaming_sources_js};
     {fig_has_multi_y_js}
     {fig_supports_zoom_pan_js}
     {fig_lockable_axes_js}
