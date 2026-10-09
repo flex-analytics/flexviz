@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from .spec import ClauseFilter, SelectionPredicate, SelectionState
-from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bounds
+from .trace.base import _dtype_for_col, _range_filter_expr, _temporal_bound_toward
 
 
 def _values_to_typed_series(
@@ -91,14 +91,10 @@ def _clause_to_expr(
                 hi, dtype, up=clause.closed not in ("both", "right")
             ),
         )
-    else:
-        bounds = _typed_range_bounds(clause.column, clause.range, schema, clause.closed)
-    if bounds is None:
-        # range was None — should never happen because the model_validator
-        # rejects it, but treat as a no-op for safety.
-        return pl.lit(True)
-    lo, hi = bounds
-    return pl.col(clause.column).is_between(lo, hi, closed=clause.closed)
+        return pl.col(clause.column).is_between(*bounds, closed=clause.closed)
+    expr = _range_filter_expr(clause.column, clause.range, schema, clause.closed)
+    # range was None: the model_validator rejects that, so this is a safe no-op.
+    return pl.lit(True) if expr is None else expr
 
 
 def predicate_to_expr(

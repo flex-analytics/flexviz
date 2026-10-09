@@ -102,6 +102,19 @@ def _apply_viewport(expr: pl.Expr, vp: Viewport | None) -> pl.Expr:
     return expr.filter(vp)
 
 
+def _slice_window(start: pl.Expr, end: pl.Expr) -> tuple[pl.Expr, pl.Expr]:
+    """``(offset, length)`` of the rows ``[start, end)``, empty when ``end < start``.
+
+    An inverted pair of bounds (a viewport wholly outside an integer dtype)
+    gives ``end < start``. The row counts are unsigned, so the subtraction
+    runs signed.
+    """
+    return (
+        start,
+        (end.cast(pl.Int64) - start.cast(pl.Int64)).clip(lower_bound=0),
+    )
+
+
 def _viewport_window(
     x_col: str,
     x_range: tuple | None,
@@ -126,8 +139,7 @@ def _viewport_window(
         return _range_filter_expr(x_col, x_range, schema)
     lo, hi = bounds
     x = pl.col(x_col)
-    start = x.search_sorted(lo, "left")
-    return (start, x.search_sorted(hi, "right") - start)
+    return _slice_window(x.search_sorted(lo, "left"), x.search_sorted(hi, "right"))
 
 
 # ---------------------------------------------------------------------------
