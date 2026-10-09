@@ -1,9 +1,11 @@
 """SQLSource: a database source gives the deltas a Polars source gives.
 
 The core matrix runs on an in-process DuckDB. A reduced matrix runs on Postgres
-when ``FLEXVIZ_TEST_POSTGRES_URI`` is set, and on ClickHouse when
+when ``FLEXVIZ_TEST_POSTGRES_URI`` is set, on ClickHouse when
 ``FLEXVIZ_TEST_CLICKHOUSE_URI`` is set
-(``clickhouse://user:password@host:port/database``).
+(``clickhouse://user:password@host:port/database``), and on Trino when
+``FLEXVIZ_TEST_TRINO_URI`` is set (``trino://user@host:port/catalog/schema``, a
+catalog that can create tables, such as ``memory``).
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ DUCKDB = "_sql_test_duckdb"
 
 PG_ENV = "FLEXVIZ_TEST_POSTGRES_URI"
 CH_ENV = "FLEXVIZ_TEST_CLICKHOUSE_URI"
+TRINO_ENV = "FLEXVIZ_TEST_TRINO_URI"
 
 N = 12_000
 T0 = dt.datetime(2026, 1, 1)
@@ -696,7 +699,7 @@ def test_special_and_integer_literals_round_trip(duck):
     assert not _same_values(duck.execute(sql).fetchone(), values)
 
 
-@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse"])
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse", "trino"])
 def test_negative_float_literal_is_parenthesized(duck, dialect):
     """``a - -1`` printed as ``a --1`` would read as a comment."""
     frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
@@ -714,7 +717,7 @@ def test_negative_literal_subtracts(duck, value):
     assert duck.execute(rendered).fetchone()[0] == 2 - value
 
 
-@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse"])
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse", "trino"])
 def test_identifiers_are_quoted(dialect):
     con = duckdb.connect()
     con.execute('CREATE TABLE t ("we""ird name" INT, "select" INT)')
@@ -752,6 +755,8 @@ AWKWARD = 'it\'s a \\ back\\slash "dq" -- not a comment; DROP TABLE src'
             "postgres",
             "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'",
         ),
+        # Trino has no backslash escape in a string literal.
+        ("trino", "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'"),
         # ClickHouse reads a backslash as an escape.
         (
             "clickhouse",
@@ -1427,7 +1432,11 @@ def _real_matrix() -> list[tuple[str, str, str]]:
     # Generated only for a configured database: hundreds of skips say nothing.
     return [
         (backend, case, event)
-        for backend, env in (("postgres", PG_ENV), ("clickhouse", CH_ENV))
+        for backend, env in (
+            ("postgres", PG_ENV),
+            ("clickhouse", CH_ENV),
+            ("trino", TRINO_ENV),
+        )
         if os.environ.get(env)
         for case, event in _matrix(REAL_CASES, REAL_EVENTS)
     ]
@@ -1441,7 +1450,7 @@ def test_real_database_matches_polars(request, backend, case, event):
     _assert_same(client, name + "_ref", name, case, event)
 
 
-@pytest.mark.parametrize("backend", ["postgres", "clickhouse"])
+@pytest.mark.parametrize("backend", ["postgres", "clickhouse", "trino"])
 def test_real_database_literals_round_trip(request, backend):
     src = request.getfixturevalue(f"{backend}_source")
     values = [*_random_doubles(30), math.inf, -math.inf, math.nan, 2**62 + 1, -7]
@@ -1459,6 +1468,165 @@ def test_clickhouse_schema_from_nullable_columns(clickhouse_table):
     assert src.schema == DF.select(_REAL_COLUMNS).schema
 
 
+_TRINO_TYPES = {
+    pl.Float64: "double",
+    pl.Int64: "bigint",
+    pl.String: "varchar",
+    pl.Boolean: "boolean",
+    pl.Date: "date",
+}
+
+
+def _trino_type(dtype: pl.DataType) -> str:
+    if isinstance(dtype, pl.Datetime):
+        return "timestamp(6)" + (" with time zone" if dtype.time_zone else "")
+    return _TRINO_TYPES[dtype.base_type()]
+
+
+def _trino_value(v: Any) -> str:
+    """A Trino literal for one test value. Test data only, never user input."""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "nan()"
+        return f"DOUBLE '{v!r}'"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, dt.datetime):
+        zone = " UTC" if v.tzinfo else ""
+        return (
+            f"TIMESTAMP '{v.replace(tzinfo=None).isoformat(' ', 'microseconds')}{zone}'"
+        )
+    if isinstance(v, dt.date):
+        return f"DATE '{v.isoformat()}'"
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def _trino_connect() -> Any:
+    trino = pytest.importorskip("trino")
+    parts = urlsplit(os.environ[TRINO_ENV])
+    catalog, schema = parts.path.strip("/").split("/")
+    return trino.dbapi.connect(
+        host=parts.hostname,
+        port=parts.port or 8080,
+        user=unquote(parts.username or "flexviz"),
+        catalog=catalog,
+        schema=schema,
+    )
+
+
+def _trino_execute(sql: str) -> None:
+    conn = _trino_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        cur.fetchall()
+    finally:
+        conn.close()
+
+
+@pytest.fixture(scope="module")
+def trino_source() -> Any:
+    if not os.environ.get(TRINO_ENV):
+        pytest.skip(f"set {TRINO_ENV} to run against Trino")
+    pytest.importorskip("trino")
+    table = f"fv_test_{secrets.token_hex(6)}"
+    df = DF.select(_REAL_COLUMNS)
+    cols = ", ".join(f'"{c}" {_trino_type(t)}' for c, t in df.schema.items())
+    _trino_execute(f'CREATE TABLE "{table}" ({cols})')
+    try:
+        for chunk in df.iter_slices(2_000):
+            rows = ", ".join(
+                "(" + ", ".join(_trino_value(v) for v in row) + ")"
+                for row in chunk.iter_rows()
+            )
+            _trino_execute(f'INSERT INTO "{table}" VALUES {rows}')
+        src = SQLSource(_trino_connect, dialect="trino", table=table)
+        ref = src._run(exp.select("*").order_by(exp.column("rid", quoted=True)))
+        register_source(_real_name("trino") + "_ref", ref)
+        register_source(_real_name("trino"), src)
+        yield src
+    finally:
+        _trino_execute(f'DROP TABLE IF EXISTS "{table}"')
+
+
+def test_trino_schema_matches_the_frame(trino_source):
+    """The type names map to the frame's dtypes."""
+    assert trino_source.schema == DF.select(_REAL_COLUMNS).schema
+
+
+def test_trino_quotes_identifiers_and_strings(trino_source):
+    """A column name with a double quote and a comment marker, and a string
+    value with quotes, a backslash and SQL, reach Trino as data."""
+    name = 'we"ird -- name; DROP TABLE x'
+    query = (
+        f'SELECT "w" AS "{name.replace(chr(34), chr(34) * 2)}", "cat" '
+        f'FROM "{trino_source._table}"'
+    )
+    src = SQLSource(_trino_connect, dialect="trino", query=query)
+    frame = SQLFrame(src)
+    cond = exp.or_(
+        exp.EQ(this=frame.col("cat"), expression=frame.lit(AWKWARD)),
+        frame.range_cond(name, -1.0, 1.0),
+    )
+    got = src._run(exp.select(exp.Count(this=exp.Star())).where(cond)).item()
+    want = DF.filter(pl.col("w").is_between(-1.0, 1.0)).height
+    assert got == want
+
+
+def test_trino_millisecond_timestamp(trino_source):
+    """A timestamp(3) column reads as milliseconds, and bins and buckets in
+    milliseconds: the exact ``date_diff`` path, not the text form."""
+    cols = ["rid", "ts_ms", "w"]
+    query = (
+        'SELECT "rid", CAST("ts" AS timestamp(3)) AS "ts_ms", "w" '
+        f'FROM "{trino_source._table}"'
+    )
+    src = SQLSource(_trino_connect, dialect="trino", query=query)
+    assert src.schema == DF.select(cols).schema
+    register_source("_sql_test_trino_ms", src)
+    register_source("_sql_test_trino_ms_ref", DF.select(cols))
+    client = TestClient(app)
+    dash = Dashboard()
+    hist = dash.add_figure()
+    CASES["hist_ts_ms"][0](hist)
+    line = dash.add_figure()
+    line.add_line(x="ts_ms", y="w", n_points=300)
+    for event in ("init", "zoom"):
+        state, ev = _event(
+            event, {hist._uid: CASES["hist_ts_ms"][1], line._uid: LINE_TS_ZOOM}
+        )
+        want = _post(client, dash, "_sql_test_trino_ms_ref", state, ev)
+        got = _post(client, dash, "_sql_test_trino_ms", state, ev)
+        assert want[hist._uid] and want[line._uid]
+        assert not _diff(want, got)
+
+
+@pytest.mark.parametrize(
+    "cast",
+    [
+        "AT TIME ZONE 'UTC' AS timestamp(6)",
+        "AT TIME ZONE 'America/New_York' AS timestamp(6) with time zone",
+    ],
+)
+def test_trino_epoch_microseconds_are_exact(trino_source, cast):
+    """``phys`` gives the exact epoch microseconds from 1922 to 2200, where a
+    plain double rounds wrong from about 2100 on."""
+    query = f"""SELECT us, CAST(from_unixtime_nanos(us * 1000) {cast}) AS c
+    FROM (SELECT b + n * 7919 + (n * n) % 997 AS us
+          FROM UNNEST(sequence(0, 9999)) AS t(n)
+          CROSS JOIN UNNEST(ARRAY[BIGINT '-1500000000123457', BIGINT '0',
+            BIGINT '1767225600000000', BIGINT '7258118400000000']) AS s(b))"""
+    src = SQLSource(_trino_connect, dialect="trino", query=query)
+    frame = SQLFrame(src)
+    phys = frame.phys("c", src.schema["c"])
+    wrong = exp.CountIf(this=exp.NEQ(this=phys, expression=frame.col("us")))
+    assert src._run(exp.select(wrong, exp.Count(this=exp.Star()))).row(0) == (0, 40_000)
+
+
 @pytest.mark.parametrize(
     ("name", "dtype"),
     [
@@ -1474,3 +1642,39 @@ def test_clickhouse_schema_from_nullable_columns(clickhouse_table):
 )
 def test_clickhouse_type_names(name, dtype):
     assert _clickhouse_dtype(name) == dtype
+
+
+@pytest.mark.parametrize(
+    ("name", "dtype"),
+    [
+        ("integer", pl.Int32()),
+        ("decimal(10, 2)", pl.Float64()),
+        ("varchar(3)", pl.String()),
+        ("char(3)", pl.String()),
+        ("timestamp(3)", pl.Datetime("ms")),
+        ("timestamp(6)", pl.Datetime("us")),
+        ("timestamp(9)", pl.Datetime("us")),
+        ("timestamp(6) with time zone", pl.Datetime("us", "UTC")),
+        ("uuid", None),
+        ("time(3)", None),
+        ("array(integer)", None),
+    ],
+)
+def test_trino_type_names(name, dtype):
+    from flexviz.sql import _trino_dtype
+
+    assert _trino_dtype(name) == dtype
+
+
+def test_trino_column_without_dtype_fails_at_add_time(trino_source):
+    """A uuid column is not in the schema: Trino compares it with no string, so
+    a selection on it could not run. The chart fails when it is added."""
+    query = (
+        "SELECT uuid '12151fd2-7586-11e9-8f9e-2a86e4085a59' AS u, \"w\" "
+        f'FROM "{trino_source._table}"'
+    )
+    src = SQLSource(_trino_connect, dialect="trino", query=query)
+    assert list(src.schema) == ["w"]
+    fig = Dashboard(src).add_figure()
+    with pytest.raises(ValueError, match="not in the SQL source"):
+        fig.add_bar(labels="u")
