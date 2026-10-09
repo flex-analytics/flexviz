@@ -4242,8 +4242,13 @@ def _temporal_target_dashboard_url(port: int, source_name: str, live_brush: str)
     return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
 
 
-def _temporal_line_dashboard_url(port: int, source_name: str) -> str:
-    """Numeric hist(a) source + a line(t, b) target on Datetime("us")."""
+def _temporal_line_dashboard_url(
+    port: int, source_name: str, hole: bool = False
+) -> str:
+    """Numeric hist(a) source + a line(t, b) target on Datetime("us"). With
+    *hole*, t skips four days, so the line has a gap."""
+    import datetime as dt
+
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
     from flexviz.spec import LayoutSpec, encode_spec
@@ -4252,6 +4257,10 @@ def _temporal_line_dashboard_url(port: int, source_name: str) -> str:
     df = base.with_columns(
         pl.Series("a", [((i * 37) % 1000) / 10 for i in range(base.height)])
     ).sort("t")
+    if hole:
+        df = df.filter(
+            ~pl.col("t").is_between(dt.datetime(2020, 1, 12), dt.datetime(2020, 1, 16))
+        )
     register_source(source_name, df, cache=True)
 
     dash = Dashboard(df)
@@ -4465,6 +4474,46 @@ class TestTemporalTargetCube:
             assert len(xs) > 10
             off = [x for x in xs if x is not None and not near_a_row(x)]
             assert off == [], (stage, off[:3])
+
+    def test_temporal_live_line_gaps_match_render_gaps(
+        self, page: Page, server_port: int
+    ):
+        """The live envelope finds its gaps on the physical x
+        (``lineEnvDeltaFromCells``). They equal what ``fvApplyLineGaps``
+        finds on the drawn strings."""
+        url = _temporal_line_dashboard_url(
+            server_port, "_cube_temporal_line_gaps", hole=True
+        )
+        page.goto(url)
+        _wait_for_init(page)
+        _enter_select_mode(page)
+        live_trace = """() => {
+            const tr = divs[1].data[0];
+            return {x: Array.from(tr.x || []), y: Array.from(tr.y || [])};
+        }"""
+        before = page.evaluate(live_trace)
+        x1, x2, y = _fig_drag_coords(page, 0, 0.2, 0.6)
+        page.mouse.move(x1, y)
+        page.mouse.down()
+        page.mouse.move((x1 + x2) / 2, y, steps=8)
+        page.wait_for_function(
+            f"(before) => JSON.stringify(({live_trace})().y) !== JSON.stringify(before.y)",
+            arg=before,
+            timeout=10_000,
+        )
+        live = page.evaluate(live_trace)
+        again = page.evaluate(
+            """(tr) => {
+                const keep = tr.x.map(v => v !== null);
+                return window.fvApplyLineGaps(
+                    tr.x.filter((_, i) => keep[i]), tr.y.filter((_, i) => keep[i]), true);
+            }""",
+            live,
+        )
+        page.mouse.up()
+
+        assert None in live["x"], "the four-day hole must break the live line"
+        assert again == live
 
 
 # ---------------------------------------------------------------------------

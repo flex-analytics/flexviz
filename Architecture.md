@@ -528,7 +528,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan, the grouped histogram plan and the domain probe (filtered or not) are the exceptions: all stream on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
 - Viewport restriction, ungrouped lines: an ungrouped x-width line on a resident frame is sorted by contract, so its viewport is a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. The scan plan passes an `is_between` mask into `pairs_plan` instead. A resident `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines and both scan plans always mask (the filter runs frame-level, before `group_by` or the gather).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_viewports` in `engine.py`, the first step of both `process` and `build_cubes` — so neither formulation nor a cube domain ever sees a reversed pair.
-- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init, commit, and live cube.
+- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init and commit. The live cube envelope runs the same function on its physical x before it formats the points, and arrives `gapped`, so the render does not parse its datetime strings back on every frame.
 - Range-brush selections emit a `ClauseFilter(range=...)` per axis; the predicate compiler applies typed `is_between` filters.
 
 ### Histogram
@@ -1336,8 +1336,8 @@ refuses such targets and they stay on the server path (issue #139). Centers
 (hist, hist2d, and the x of a line envelope) go through `_fvDimToCenter` in `runtime/cube.js`, which
 rounds in the column's physical unit, as the server does (µs for `Datetime("us")`, ms for a `Date`
 center), and formats a datetime string with µs precision. Committed edges use the same formatter
-(`_fvUsToDatetime`). A line envelope keeps x numeric through its reduction and formats only the
-points it emits. Edges go through `_fvDimToEdge`, which returns epoch-ms
+(`_fvUsToDatetime`). A line envelope keeps x numeric through its reduction, finds its gaps on
+those numbers, and formats only the points it emits. Edges go through `_fvDimToEdge`, which returns epoch-ms
 via `fvPhysicalToEpochMs`. The split matters because Plotly reads a bare number on a date axis
 through the browser's local time zone, but reads a datetime string as wall-clock time. A numeric
 center would sit one or more hours off the server's outside UTC. Edges are plain axis positions for

@@ -431,6 +431,7 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     // Bin-edge triples feed the hover lookup and the geo rectangles below.
     if (k === 'x_edges' || k === 'y_edges') continue;
     if (k === 'lat_edges' || k === 'lon_edges') continue;
+    if (k === 'gapped') continue;
     trace[k] = v;
   }
   if (updates && updates.lat_edges && updates.lon_edges) {
@@ -448,7 +449,8 @@ function buildTraceFromTemplate(template, logicalUid, renderLayer, updates, opac
     trace.offsetgroup = logicalUid;
     trace.alignmentgroup = 'fv-bars';
   }
-  if (applyLineGaps && Array.isArray(trace.x) && Array.isArray(trace.y)) {
+  // A live cube envelope arrives with its gaps already in (lineEnvDeltaFromCells).
+  if (applyLineGaps && !updates?.gapped && Array.isArray(trace.x) && Array.isArray(trace.y)) {
     const gapped = fvApplyLineGaps(trace.x, trace.y, true);
     trace.x = gapped.x;
     trace.y = gapped.y;

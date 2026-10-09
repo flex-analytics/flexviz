@@ -163,22 +163,36 @@ function fvPhysicalToTemporal(value, unit) {
   return _fvUsToDatetime(unit === 'us' ? Math.ceil(value) : Math.ceil(value) * 1000);
 }
 
+const _FV_PAD2 = Array.from({ length: 100 }, (_, i) => String(i).padStart(2, '0'));
+const _FV_PAD3 = Array.from({ length: 1000 }, (_, i) => String(i).padStart(3, '0'));
+let _fvDayKey = NaN;
+let _fvDayPrefix = '';
+
 // The one datetime formatter: integral epoch µs → "YYYY-MM-DD HH:MM:SS.ffffff"
-// (UTC wall-clock, 4-digit year; no toISOString, which writes "+010000" past
-// year 9999). Callers round or ceil first, so µs precision survives. Plotly
-// and the server's own parser read it as the same instant as the server's
-// "…T…" center strings, which drop an all-zero fraction.
+// (UTC wall-clock). Callers round or ceil first, so µs precision survives.
+// Plotly and the server's own parser read it as the same instant as the
+// server's "…T…" center strings, which drop an all-zero fraction. A live line
+// formats thousands of points per frame, so the time of day comes from integer
+// arithmetic and lookup tables, and the date part is kept for the last day:
+// measured faster than toISOString.
 function _fvUsToDatetime(us) {
-  const usRem = ((us % 1000) + 1000) % 1000;
-  const d = new Date((us - usRem) / 1000);
-  const pad = (n, w) => String(n).padStart(w, '0');
-  return pad(d.getUTCFullYear(), 4)
-    + '-' + pad(d.getUTCMonth() + 1, 2)
-    + '-' + pad(d.getUTCDate(), 2)
-    + ' ' + pad(d.getUTCHours(), 2)
-    + ':' + pad(d.getUTCMinutes(), 2)
-    + ':' + pad(d.getUTCSeconds(), 2)
-    + '.' + pad(d.getUTCMilliseconds(), 3) + pad(usRem, 3);
+  const day = Math.floor(us / 86400000000);
+  let t = us - day * 86400000000;
+  if (day !== _fvDayKey) {
+    const d = new Date(day * 86400000);
+    _fvDayKey = day;
+    _fvDayPrefix = String(d.getUTCFullYear()).padStart(4, '0')
+      + '-' + _FV_PAD2[d.getUTCMonth() + 1] + '-' + _FV_PAD2[d.getUTCDate()] + ' ';
+  }
+  const h = Math.floor(t / 3600000000);
+  t -= h * 3600000000;
+  const m = Math.floor(t / 60000000);
+  t -= m * 60000000;
+  const sec = Math.floor(t / 1000000);
+  t -= sec * 1000000;
+  const ms = Math.floor(t / 1000);
+  return _fvDayPrefix + _FV_PAD2[h] + ':' + _FV_PAD2[m] + ':' + _FV_PAD2[sec]
+    + '.' + _FV_PAD3[ms] + _FV_PAD3[t - ms * 1000];
 }
 
 // A physical temporal value (epoch µs/ms, or integer day index) → epoch
@@ -981,27 +995,34 @@ function fvApplyLineGaps(x, y, addGaps) {
 // bucket emit the two points (x@ymin, y_min) and (x@ymax, y_max) sorted by x
 // within the bucket (equal x ⇒ ymin first), buckets concatenated by ascending
 // bucket index → {x:[...], y:[...]}. y values are the decoded f32-quantized
-// partials. Gaps are applied later at render time (fvApplyLineGaps in
-// buildTraceFromTemplate); this envelope, like the server delta, is gapless.
-// The cells carry x in the bucket dim's (bdim) physical unit; only the emitted
-// points are formatted (_fvDimToCenter), once each.
+// partials. The cells carry x in the bucket dim's (bdim) physical unit, so the
+// gaps (fvApplyLineGaps, the trace's add_gaps) are found on those numbers, and
+// only the emitted points are formatted (_fvDimToCenter). The delta is marked
+// `gapped`, so the render does not parse the strings back to find them again.
+// The committed /update delta, gapless like every server delta, replaces it.
 function lineEnvDeltaFromCells(traceSpec, cells, bdim) {
   const sorted = cells.slice().sort((a, b) => a.bucketIdx - b.bucketIdx);
-  const x = [];
-  const y = [];
+  const xs = [];
+  const ys = [];
   for (const c of sorted) {
     const ptMin = { x: c.xAtYmin, y: c.yMin };
     const ptMax = { x: c.xAtYmax, y: c.yMax };
     // Sort the two points by x within the bucket; equal x ⇒ ymin first.
     const first = ptMax.x < ptMin.x ? ptMax : ptMin;
     const second = first === ptMin ? ptMax : ptMin;
-    x.push(_fvDimToCenter(bdim, first.x), _fvDimToCenter(bdim, second.x));
-    y.push(first.y, second.y);
+    xs.push(first.x, second.x);
+    ys.push(first.y, second.y);
   }
-  // Gaps are inserted client-side at RENDER time (buildTraceFromTemplate →
-  // fvApplyLineGaps); the live envelope ships gapless, exactly like the server
-  // delta now does. The committed /update delta still replaces this envelope.
-  return { uid: traceSpec.uid, updates: { x, y } };
+  const addGaps = !(traceSpec.params && traceSpec.params.add_gaps === false);
+  const { x, y } = fvApplyLineGaps(xs, ys, addGaps);
+  return {
+    uid: traceSpec.uid,
+    updates: {
+      x: x.map(v => (v === null ? null : _fvDimToCenter(bdim, v))),
+      y,
+      gapped: true,
+    },
+  };
 }
 
 // Grouped line target (contract D + J): split the combined envelope cells by
