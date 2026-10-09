@@ -27,13 +27,17 @@ detail table with a join:
 |---|---|---|---|---|---|
 | Live ClickHouse | same machine | 0.6 | 1.0 | 0.55 | 1.1 |
 | Live ClickHouse | 20 Mbit/s, 30 ms | 0.7 | 2.0 | 1.3 | 1.5 |
+| Live Trino, Parquet files | same machine | 0.1 | 4.3 | 1.25 | 3.6 |
+| Live Trino, Parquet files | 20 Mbit/s, 30 ms | 0.4 | 5.1 | 2.4 | 4.3 |
+| Live DuckDB, the same Parquet files | same machine | 0.1 | 1.5 | 0.6 | 1.7 |
 | Live Postgres | same machine | 0.1 | 8.8 | 0.9 | 7.2 |
 | Live Postgres | 20 Mbit/s, 30 ms | 0.8 | 15.2 | 3.9 | 9.5 |
 | Extract, ADBC | same machine | 2.0 | 0.5 | 0.35 | 0.4 |
 | Extract, ADBC | 20 Mbit/s, 30 ms | 105 | 0.4 | 0.3 | 0.3 |
 | Extract, SQLAlchemy | same machine | 9.7 | 0.5 | 0.35 | 0.4 |
 
-On the full 100M-row table, live ClickHouse renders in 1.5 s and live
+On the full 100M-row table, live ClickHouse renders in 1.5 s, live DuckDB on
+Parquet files in 3.0 s, live Trino on the same files in 4.6 s, and live
 Postgres in 45 s on the same machine.
 
 ### Short, wide runs
@@ -54,9 +58,9 @@ machine, because every chart query read the whole table.
 
 Use these rules:
 
-- **A columnar engine** (ClickHouse or DuckDB): use a live `SQLSource`. The
-  engine aggregates millions of rows in milliseconds, so every zoom and
-  selection stays interactive.
+- **A columnar engine** (ClickHouse, DuckDB or Trino): use a live
+  `SQLSource`. The engine aggregates millions of rows in milliseconds to
+  seconds, so every zoom and selection stays interactive.
 - **Postgres with a few hundred thousand rows behind each chart**: a live
   `SQLSource` is interactive, if the query can use an index. Postgres
   aggregates 10 to 30 times more slowly than a columnar engine, so the row
@@ -129,6 +133,30 @@ src = fv.SQLSource(
 )
 ```
 
+Trino example (`pip install trino`):
+
+```python
+import trino
+
+src = fv.SQLSource(
+    lambda: trino.dbapi.connect(
+        host="trino.example", port=8080, user="reader", catalog="iceberg", schema="fab"
+    ),
+    table="log_detail",
+    dialect="trino",
+)
+```
+
+On Trino, a column of type `uuid`, `time`, `varbinary`, `array`, `map` or `row`
+is not available to charts. Cast it in the query, for example
+`CAST(run_id AS varchar) AS run_id`.
+
+Use Trino through its catalogs for files and lakehouse tables (Hive, Iceberg,
+Delta Lake). Do not put Trino in front of Postgres to speed it up: Trino's
+Postgres connector does not push a binned `GROUP BY` down, so Trino reads every
+row from Postgres. A 60-bin histogram over 100M rows took 63 s that way and
+11 s in Postgres directly.
+
 ### What runs in the database
 
 Each chart is one `GROUP BY` query. A line becomes one row per x bucket (per
@@ -153,8 +181,12 @@ and ClickHouse.
 
 ### Supported dialects and charts
 
-Dialects: Postgres, DuckDB and ClickHouse. Other dialects give an error at
-construction.
+Dialects: Postgres, DuckDB, ClickHouse and Trino. Other dialects give an error
+at construction.
+
+The test suite runs on these four engines only. FlexViz does not test engines
+that are compatible with one of them, for example TimescaleDB (Postgres),
+MotherDuck (DuckDB) or Starburst (Trino).
 
 | Chart | Live on a `SQLSource` |
 |---|---|
@@ -181,6 +213,8 @@ have, gives an error when you add the chart, in your own code.
   in memory instead of sorting on disk. A line over 5M rows took 3.1 s with
   64 MB and 1.9 s with 1 GB:
   `ALTER ROLE flexviz_reader SET work_mem = '1GB'`.
+- On Trino, a median (`agg="median"`) sorts the values of each group in
+  memory, because Trino has no exact percentile function.
 - `Dashboard(src, cache=True)` declares that the data does not change while the
   server runs. FlexViz then keeps the column bounds and the first render. Do
   not set it on a table that receives new rows.
@@ -229,3 +263,19 @@ If the rows do not fit in memory, write them to Parquet once and scan the file:
 df.write_parquet("runs.parquet")
 fv.Dashboard(pl.scan_parquet("runs.parquet"))
 ```
+
+## Files on object storage: no warehouse
+
+If the data is already Parquet or Iceberg files, for example on S3, one
+machine can read it without a warehouse:
+
+- Polars: pass `pl.scan_parquet("s3://bucket/runs/*.parquet")` or
+  `pl.scan_iceberg(...)` to `Dashboard`. FlexViz keeps the scan lazy.
+- DuckDB: pass a DuckDB connection to `SQLSource`, with a query that reads the
+  files, for example
+  `fv.SQLSource(duckdb.connect(), query="SELECT * FROM read_parquet('s3://bucket/runs/*.parquet')")`.
+  For Iceberg, attach the catalog with DuckDB's `iceberg` extension first.
+
+On one machine and the same Parquet files, DuckDB rendered the dashboard of
+the first table in 1.5 s and Trino in 4.3 s. Trino is the better choice when
+your team already runs it, or when the data needs more than one machine.
