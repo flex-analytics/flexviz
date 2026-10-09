@@ -160,11 +160,19 @@ function fvPhysicalToTemporal(value, unit) {
   if (unit === 'day') {
     return new Date(Math.ceil(value) * 86400000).toISOString().slice(0, 10);
   }
-  const us = unit === 'us' ? Math.ceil(value) : Math.ceil(value) * 1000;
+  return _fvUsToDatetime(unit === 'us' ? Math.ceil(value) : Math.ceil(value) * 1000);
+}
+
+// The one datetime formatter: integral epoch µs → "YYYY-MM-DD HH:MM:SS.ffffff"
+// (UTC wall-clock, 4-digit year; no toISOString, which writes "+010000" past
+// year 9999). Callers round or ceil first, so µs precision survives. Plotly
+// and the server's own parser read it as the same instant as the server's
+// "…T…" center strings, which drop an all-zero fraction.
+function _fvUsToDatetime(us) {
   const usRem = ((us % 1000) + 1000) % 1000;
   const d = new Date((us - usRem) / 1000);
   const pad = (n, w) => String(n).padStart(w, '0');
-  return d.getUTCFullYear()
+  return pad(d.getUTCFullYear(), 4)
     + '-' + pad(d.getUTCMonth() + 1, 2)
     + '-' + pad(d.getUTCDate(), 2)
     + ' ' + pad(d.getUTCHours(), 2)
@@ -174,16 +182,34 @@ function fvPhysicalToTemporal(value, unit) {
 }
 
 // A physical temporal value (epoch µs/ms, or integer day index) → epoch
-// milliseconds — the numeric form a Plotly DATE axis renders directly (it reads
-// bare numbers as ms-since-epoch). Inverse of fvTemporalToPhysical's number
-// branch; used for a line target's binned bucket axis (contract J + G), whose
-// cube is built on the column's physical representation but must render on the
-// line's date axis. No ceil/quantize: a line is postRequired (the commit POST
-// replaces this approximate envelope), so faithful sub-unit x is preferred.
+// milliseconds. Inverse of fvTemporalToPhysical's number branch. Use it only
+// for coordinates Plotly takes as plain axis positions (the hover edge
+// triples). A data value on a date axis must go through _fvDimToCenter:
+// Plotly reads a bare number through the browser's local zone, but a datetime
+// string as wall-clock time.
 function fvPhysicalToEpochMs(value, unit) {
   if (unit === 'us') return value / 1000;
   if (unit === 'day') return value * 86400000;
   return value; // 'ms'
+}
+
+// A target dim's physical value → a hover-edge coordinate: epoch-ms for a
+// temporal dim, as the server sends its edges, unchanged otherwise. Linear, so
+// it also maps a bin step.
+function _fvDimToEdge(dim, v) {
+  return dim.unit ? fvPhysicalToEpochMs(v, dim.unit) : v;
+}
+
+// A target dim's physical value → a drawn data value (bin center, line x). A
+// temporal dim yields a naive datetime string, rounded in the column's
+// physical unit like the server's centers (a Date center to the ms): Plotly
+// places it at its wall-clock time on a date axis, where a bare epoch-ms
+// number would shift by the browser's zone offset.
+function _fvDimToCenter(dim, v) {
+  const unit = dim.unit;
+  if (!unit) return v;
+  if (unit === 'day') return _fvUsToDatetime(Math.round(v * 86400000) * 1000);
+  return _fvUsToDatetime(unit === 'us' ? Math.round(v) : Math.round(v) * 1000);
 }
 
 // Mirror of the trace classes' overlay_style for the engine's active-selection
@@ -423,8 +449,8 @@ function decodeFVCube(bytes) {
     bins: d.bins,
     domain: d.domain,
     // Physical unit of a temporal binned dim (contract G); null for numeric
-    // dims. A line target renders this axis on a Plotly DATE axis, so the
-    // physical bucket value must be mapped back to epoch-ms (fvLineEnvCells).
+    // dims. A target draws this axis on a Plotly DATE axis, so the physical
+    // value is mapped back to a datetime (_fvDimToCenter, _fvDimToEdge).
     unit: d.unit ?? null,
     categories: d.categories,
     col: d.kind === 'binned' ? cols['__bin__' + d.name] : cols[d.name],
@@ -688,7 +714,9 @@ function histDeltaFromCounts(traceSpec, header, counts) {
   const lo = dim.domain[0];
   const width = (dim.domain[1] - lo) / dim.bins;
   const centers = new Array(dim.bins);
-  for (let i = 0; i < dim.bins; i++) centers[i] = lo + (i + 0.5) * width;
+  for (let i = 0; i < dim.bins; i++) {
+    centers[i] = _fvDimToCenter(dim, lo + (i + 0.5) * width);
+  }
 
   let values = Array.from(counts);
   const histnorm = (traceSpec.params && traceSpec.params.histnorm) || 'count';
@@ -709,7 +737,7 @@ function histDeltaFromCounts(traceSpec, header, counts) {
 
   // Per-axis [lo, step, n]: hover finds its bin from it, the same triple the
   // server sends.
-  const edges = [lo, width, dim.bins];
+  const edges = [_fvDimToEdge(dim, lo), _fvDimToEdge(dim, width), dim.bins];
   // Prop key = the single backend_data key, exactly how the adapter
   // (Histogram.from_trace_spec) determines orientation.
   const propKey = Object.keys(traceSpec.backend_data || {})[0] || 'x';
@@ -850,12 +878,8 @@ function fvLineEnvCells(entry, binRanges) {
   const bdim = bucketInfo.dim;
   const lo = bdim.domain[0];
   const width = (bdim.domain[1] - lo) / bdim.bins;
-  // A temporal bucket axis is binned on the column's physical representation
-  // (epoch µs/ms, day index); the line renders on a Plotly DATE axis, which
-  // reads bare numbers as epoch-ms — so map physical → epoch-ms (contract G).
-  // Without this the raw physical value (e.g. epoch µs, ~1000× an ms) lands
-  // millennia off-axis and the panel renders empty.
-  const unit = bdim.unit || null;
+  // x stays in the physical unit through the reduction; the emitted points
+  // become datetime strings in lineEnvDeltaFromCells (contract G).
   const yMinCol = entry.cols.y_min;
   const yMaxCol = entry.cols.y_max;
   const xArgMin = entry.cols.x_argmin;
@@ -866,7 +890,7 @@ function fvLineEnvCells(entry, binRanges) {
     // bucket_lo = lo + bin*width; x = bucket_lo + (off/65535)*width.
     const bucketLo = lo + bin * width;
     const phys = bucketLo + (off / 65535) * width;
-    return unit ? fvPhysicalToEpochMs(phys, unit) : phys;
+    return phys;
   };
 
   const acc = new Map(); // composite code key -> cell
@@ -959,7 +983,9 @@ function fvApplyLineGaps(x, y, addGaps) {
 // bucket index → {x:[...], y:[...]}. y values are the decoded f32-quantized
 // partials. Gaps are applied later at render time (fvApplyLineGaps in
 // buildTraceFromTemplate); this envelope, like the server delta, is gapless.
-function lineEnvDeltaFromCells(traceSpec, cells) {
+// The cells carry x in the bucket dim's (bdim) physical unit; only the emitted
+// points are formatted (_fvDimToCenter), once each.
+function lineEnvDeltaFromCells(traceSpec, cells, bdim) {
   const sorted = cells.slice().sort((a, b) => a.bucketIdx - b.bucketIdx);
   const x = [];
   const y = [];
@@ -969,7 +995,7 @@ function lineEnvDeltaFromCells(traceSpec, cells) {
     // Sort the two points by x within the bucket; equal x ⇒ ymin first.
     const first = ptMax.x < ptMin.x ? ptMax : ptMin;
     const second = first === ptMin ? ptMax : ptMin;
-    x.push(first.x, second.x);
+    x.push(_fvDimToCenter(bdim, first.x), _fvDimToCenter(bdim, second.x));
     y.push(first.y, second.y);
   }
   // Gaps are inserted client-side at RENDER time (buildTraceFromTemplate →
@@ -984,16 +1010,16 @@ function lineEnvDeltaFromCells(traceSpec, cells) {
 // each group reuses the uid recorded in the existing grouped layer data by
 // group_value_key (mirrors fvGroupedResultsFromCells); a group with no
 // recorded uid is skipped.
-function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
+function fvLineEnvGroupedResults(figUid, traceSpec, entry, cells) {
   const groupBy = (traceSpec.params && traceSpec.params.group_by) || [];
   const groupIdx = [];
-  header.target_dims.forEach((d, i) => {
+  entry.targetDims.forEach((d, i) => {
     if (groupBy.includes(d.name)) groupIdx.push(i);
   });
-  // Map each group dim's index to a code→category resolver from the header.
+  // Map each group dim's index to a code→category resolver.
   const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
-    const parts = groupIdx.map(i => header.target_dims[i].categories[cell.codes[i]]);
+    const parts = groupIdx.map(i => entry.targetDims[i].categories[cell.codes[i]]);
     const gvk = _fvGroupValueKey(parts);
     let group = byGroup.get(gvk);
     if (!group) {
@@ -1016,11 +1042,12 @@ function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
   // Group order mirrors the server's sort over the group columns.
   const ordered = [...byGroup.entries()].sort(
     (a, b) => _fvCompareCodes(a[1].codes, b[1].codes));
+  const bdim = _fvLineEnvBucketDim(entry).dim;
   const groupResults = [];
   for (const [gvk, group] of ordered) {
     const uid = uidForGroup(gvk);
     if (!uid) continue;
-    const updates = lineEnvDeltaFromCells(traceSpec, group.cells).updates;
+    const updates = lineEnvDeltaFromCells(traceSpec, group.cells, bdim).updates;
     groupResults.push({ uid, group_value_key: gvk, updates });
   }
   return groupResults;
@@ -1244,8 +1271,8 @@ function hist2dDeltaFromEntry(traceSpec, entry, binRanges) {
     }
   }
 
-  const xCenters = _fvCenters(xLo, xHi, nbX);
-  const yCenters = _fvCenters(yLo, yHi, nbY);
+  const xCenters = _fvCenters(xLo, xHi, nbX).map(v => _fvDimToCenter(dimX, v));
+  const yCenters = _fvCenters(yLo, yHi, nbY).map(v => _fvDimToCenter(dimY, v));
   const z = [];
   for (let j = 0; j < nbY; j++) z.push(values.slice(j * nbX, (j + 1) * nbX));
   return {
@@ -1254,8 +1281,8 @@ function hist2dDeltaFromEntry(traceSpec, entry, binRanges) {
       x: xCenters,
       y: yCenters,
       z,
-      x_edges: [xLo, (xHi - xLo) / nbX, nbX],
-      y_edges: [yLo, (yHi - yLo) / nbY, nbY],
+      x_edges: [_fvDimToEdge(dimX, xLo), _fvDimToEdge(dimX, (xHi - xLo) / nbX), nbX],
+      y_edges: [_fvDimToEdge(dimY, yLo), _fvDimToEdge(dimY, (yHi - yLo) / nbY), nbY],
     },
   };
 }

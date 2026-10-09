@@ -4218,6 +4218,255 @@ class TestTemporalSourceCube:
             assert len(v) == 26, v
 
 
+def _temporal_target_dashboard_url(port: int, source_name: str, live_brush: str) -> str:
+    """Numeric hist(a) source + temporal targets: hist(t) on Datetime("us"),
+    hist(d) on Date, and hist2d(t, b)."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    base = _temporal_browser_df("us")
+    df = base.with_columns(
+        pl.Series("a", [((i * 37) % 1000) / 10 for i in range(base.height)]),
+        pl.col("t").dt.date().alias("d"),
+    )
+    register_source(source_name, df, cache=True)
+
+    dash = Dashboard(df)
+    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    dash.add_figure(title="HistUs").add_histogram(x="t", bins=_TGT_BINS)
+    dash.add_figure(title="HistDate").add_histogram(x="d", bins=_TGT_BINS)
+    dash.add_figure(title="Hist2d").add_histogram2d(x="t", y="b", x_bins=10, y_bins=8)
+    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = live_brush
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+def _temporal_line_dashboard_url(port: int, source_name: str) -> str:
+    """Numeric hist(a) source + a line(t, b) target on Datetime("us")."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import LayoutSpec, encode_spec
+
+    base = _temporal_browser_df("us")
+    df = base.with_columns(
+        pl.Series("a", [((i * 37) % 1000) / 10 for i in range(base.height)])
+    ).sort("t")
+    register_source(source_name, df, cache=True)
+
+    dash = Dashboard(df)
+    dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+    dash.add_figure(title="Line").add_line(x="t", y="b", n_points=100)
+    spec = dash.to_spec(source_name=source_name, layout=LayoutSpec(draggable=False))
+    spec.client_state.live_brush = "auto"
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+
+# Per target figure: where Plotly draws each bin center on the x axis (``d2c``
+# is the position, so a browser-zone shift of a numeric date shows up) and the
+# hover-band edge triple.
+_TEMPORAL_TARGET_SNAPSHOT_JS = """(figs) => {
+    const out = {};
+    for (const i of figs) {
+        const gd = divs[i];
+        const tr = gd.data[0];
+        const edges = hoverEdgesByTraceUid[stripLayerSuffix(tr.uid)] || {};
+        out[i] = {
+            x: Array.from(tr.x || []).map(v => gd._fullLayout.xaxis.d2c(v)),
+            x_edges: edges.x || null,
+        };
+    }
+    return out;
+}"""
+
+
+def _brush_temporal_targets(page: Page, live: bool, figs: list[int]) -> dict:
+    """Drag-brush figure 0 and snapshot the temporal target figures *figs*
+    mid-drag (when *live*, once every target has re-rendered) and after
+    mouseup."""
+    x1, x2, y = _fig_drag_coords(page, 0, 0.2, 0.6)
+    before = page.evaluate(
+        "(figs) => figs.map(i => JSON.stringify(divs[i].data[0].z || divs[i].data[0].y))",
+        figs,
+    )
+    page.mouse.move(x1, y)
+    page.mouse.down()
+    page.mouse.move((x1 + x2) / 2, y, steps=8)
+    if live:
+        page.wait_for_function(
+            """([figs, before]) => figs.every((i, k) => {
+                const tr = divs[i].data[0];
+                return JSON.stringify(tr.z || tr.y) !== before[k];
+            })""",
+            arg=[figs, before],
+            timeout=10_000,
+        )
+    mid = page.evaluate(_TEMPORAL_TARGET_SNAPSHOT_JS, figs)
+    page.mouse.move(x2, y, steps=8)
+    page.wait_for_timeout(300)
+    page.mouse.up()
+    page.wait_for_timeout(1_000)
+    return {
+        "live": mid,
+        "committed": page.evaluate(_TEMPORAL_TARGET_SNAPSHOT_JS, figs),
+    }
+
+
+# The browser zone is not UTC: Plotly reads a numeric date through the local
+# zone and a datetime string as wall-clock time, so only here do the two differ.
+@pytest.mark.browser_context_args(timezone_id="Europe/Brussels")
+class TestTemporalTargetCube:
+    def test_temporal_target_axes_match_server_path(self, page: Page, server_port: int):
+        """A cube-served temporal histogram / histogram2d target draws its
+        bin centers where the server delta (``live_brush="off"``) does, and
+        carries the same hover edges: in the live preview and after mouseup."""
+        figs = [1, 2, 3]
+        bodies = _capture_updates(page)
+        page.goto(_temporal_target_dashboard_url(server_port, "_cube_tt_off", "off"))
+        _wait_for_init(page)
+        _fig_select_mode(page, 0)
+        bodies.clear()
+        server = _brush_temporal_targets(page, False, figs)["committed"]
+        assert [b["event"]["type"] for b in bodies] == ["selection"]
+
+        page.goto(_temporal_target_dashboard_url(server_port, "_cube_tt_auto", "auto"))
+        _wait_for_init(page)
+        _fig_select_mode(page, 0)
+        bodies.clear()
+        client = _brush_temporal_targets(page, True, figs)
+        assert [b["event"]["type"] for b in bodies] == ["cube_request"]
+
+        for stage in ("live", "committed"):
+            for i in "123":
+                got, want = client[stage][i], server[i]
+                # The unfiltered bins are the same grid, whatever the brush.
+                assert len(got["x"]) == len(want["x"]) > 0
+                assert got["x"] == pytest.approx(want["x"], abs=1.0), (stage, i)
+                assert got["x_edges"] == pytest.approx(want["x_edges"], rel=1e-9), (
+                    stage,
+                    i,
+                )
+
+    def test_microsecond_centers_match_server_path(self, page: Page, server_port: int):
+        """A Datetime("us") column spanning about 1 ms keeps its µs centers:
+        ten bins give ten distinct positions, equal to the server's, where
+        rounding to the ms would stack them on two."""
+        import datetime as dt
+
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import LayoutSpec, encode_spec
+
+        def url(name: str, live_brush: str) -> str:
+            n = 3_000
+            df = pl.DataFrame(
+                {
+                    "t": pl.Series(
+                        "t",
+                        [
+                            dt.datetime(2020, 1, 1)
+                            + dt.timedelta(microseconds=i % 1001)
+                            for i in range(n)
+                        ],
+                        dtype=pl.Datetime("us"),
+                    ),
+                    "a": [((i * 37) % 1000) / 10 for i in range(n)],
+                }
+            )
+            register_source(name, df, cache=True)
+            dash = Dashboard(df)
+            dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+            dash.add_figure(title="HistUs").add_histogram(x="t", bins=10)
+            spec = dash.to_spec(source_name=name, layout=LayoutSpec(draggable=False))
+            spec.client_state.live_brush = live_brush
+            return f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+        page.goto(url("_cube_tt_us_off", "off"))
+        _wait_for_init(page)
+        _fig_select_mode(page, 0)
+        server = _brush_temporal_targets(page, False, [1])["committed"]["1"]
+
+        page.goto(url("_cube_tt_us_auto", "auto"))
+        _wait_for_init(page)
+        _fig_select_mode(page, 0)
+        client = _brush_temporal_targets(page, True, [1])
+        # d2c counts ms; 1 µs is 0.001.
+        assert len(set(server["x"])) == 10
+        for stage in ("live", "committed"):
+            assert client[stage]["1"]["x"] == pytest.approx(server["x"], abs=1e-3)
+            assert client[stage]["1"]["x_edges"] == pytest.approx(
+                server["x_edges"], rel=1e-9
+            )
+
+    def test_zone_aware_target_falls_back_to_the_server(
+        self, page: Page, server_port: int
+    ):
+        """A target on a Datetime in another zone is not cube-served: the
+        commit POSTs a selection, and the centers equal the
+        ``live_brush="off"`` ones."""
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_source
+        from flexviz.spec import LayoutSpec, encode_spec
+
+        def url(name: str, live_brush: str) -> str:
+            base = _temporal_browser_df("us")
+            df = base.with_columns(
+                pl.col("t").dt.replace_time_zone("Europe/Brussels"),
+                a=pl.Series([((i * 37) % 1000) / 10 for i in range(base.height)]),
+            )
+            register_source(name, df, cache=True)
+            dash = Dashboard(df)
+            dash.add_figure(title="Source").add_histogram(x="a", bins=_SRC_BINS)
+            dash.add_figure(title="HistTz").add_histogram(x="t", bins=_TGT_BINS)
+            spec = dash.to_spec(source_name=name, layout=LayoutSpec(draggable=False))
+            spec.client_state.live_brush = live_brush
+            return f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}&renderer=plotly"
+
+        got = {}
+        for mode in ("off", "auto"):
+            bodies = _capture_updates(page)
+            page.goto(url(f"_cube_tt_tz_{mode}", mode))
+            _wait_for_init(page)
+            _fig_select_mode(page, 0)
+            bodies.clear()
+            got[mode] = _brush_temporal_targets(page, False, [1])["committed"]["1"]
+            assert "selection" in [b["event"]["type"] for b in bodies]
+        assert len(got["auto"]["x"]) == _TGT_BINS
+        assert got["auto"]["x"] == pytest.approx(got["off"]["x"], abs=1.0)
+
+    def test_temporal_line_envelope_lands_on_data(self, page: Page, server_port: int):
+        """A cube-served temporal line envelope is drawn where the data is:
+        every drawn x lies within 1 s of a row's time, as rendered on the
+        axis."""
+        import bisect
+        import datetime as dt
+
+        df = _temporal_browser_df("us")
+        rows = sorted(
+            t.replace(tzinfo=dt.timezone.utc).timestamp() * 1000
+            for t in df["t"].unique().to_list()
+        )
+
+        def near_a_row(ms: float) -> bool:
+            k = bisect.bisect_left(rows, ms)
+            return any(
+                abs(rows[m] - ms) <= 1000 for m in (k - 1, k) if 0 <= m < len(rows)
+            )
+
+        page.goto(_temporal_line_dashboard_url(server_port, "_cube_tt_line"))
+        _wait_for_init(page)
+        _fig_select_mode(page, 0)
+        bodies = _capture_updates(page)
+        got = _brush_temporal_targets(page, True, [1])
+        # A line is postRequired: the commit POST replaces the envelope.
+        assert [b["event"]["type"] for b in bodies] == ["cube_request", "selection"]
+        for stage in ("live", "committed"):
+            xs = got[stage]["1"]["x"]
+            assert len(xs) > 10
+            off = [x for x in xs if x is not None and not near_a_row(x)]
+            assert off == [], (stage, off[:3])
+
+
 # ---------------------------------------------------------------------------
 # Zoom-key interplay hardening (plan step 7)
 # ---------------------------------------------------------------------------
@@ -4958,10 +5207,10 @@ class TestLineTargetCube:
         """Regression: a LINE target with a TEMPORAL x renders on a Plotly DATE
         axis (the server ships datetime → ISO strings). The cube bins that axis
         on the column's *physical* representation (epoch µs for Datetime("us")),
-        so the live envelope must map physical → epoch-ms before restyling —
+        so the live envelope must map physical → datetime strings before restyling —
         otherwise the bare physical numbers (≈1000× an ms) land millennia
         off-axis and the panel renders EMPTY mid-drag. Asserts the mid-drag
-        envelope x values are numeric epoch-ms inside the data's date range."""
+        envelope x values are datetime strings inside the data's date range."""
         import datetime as dt
 
         url = _temporal_line_target_dashboard_url(server_port, "_cube_tline_tgt")
@@ -4996,17 +5245,14 @@ class TestLineTargetCube:
         page.mouse.up()
 
         # The panel is NOT empty, the axis is still a date axis, and every
-        # envelope x is a numeric epoch-ms that decodes to a 2020 date (the data
-        # year) — i.e. on-screen. Pre-fix these were epoch-µs (~year 51935).
+        # envelope x is a datetime string in 2020 (the data year), so on-screen.
         assert page.evaluate("divs[1]._fullLayout.xaxis.type") == "date"
         assert len(drag_xy["x"]) > 0 and len(drag_xy["y"]) > 0
         for xv in drag_xy["x"]:
-            assert isinstance(xv, (int, float)), (
-                f"expected numeric epoch-ms, got {xv!r}"
-            )
-            d = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=xv)
+            assert isinstance(xv, str), f"expected a datetime string, got {xv!r}"
+            d = dt.datetime.fromisoformat(xv)
             assert dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1), (
-                f"envelope x {xv} decodes to {d}, outside the data's date range"
+                f"envelope x {xv} is outside the data's date range"
             )
 
     def test_grouped_temporal_line_target_live_updates_on_date_axis(
@@ -5014,7 +5260,7 @@ class TestLineTargetCube:
     ):
         """The user's exact case: a GROUPED line target with a temporal x. Each
         child line renders on the shared date axis, so every child's mid-drag
-        envelope x must be epoch-ms inside the data's date range — the binned
+        envelope x must be a datetime string inside the data's date range — the binned
         temporal bucket dim is resolved correctly even with the group
         (categorical) dim interleaved in the cube target dims."""
         import datetime as dt
@@ -5059,12 +5305,10 @@ class TestLineTargetCube:
         flat = [xv for xs in after for xv in xs]
         assert len(flat) > 0
         for xv in flat:
-            assert isinstance(xv, (int, float)), (
-                f"expected numeric epoch-ms, got {xv!r}"
-            )
-            d = dt.datetime(1970, 1, 1) + dt.timedelta(milliseconds=xv)
+            assert isinstance(xv, str), f"expected a datetime string, got {xv!r}"
+            d = dt.datetime.fromisoformat(xv)
             assert dt.datetime(2019, 12, 1) <= d <= dt.datetime(2020, 2, 1), (
-                f"child envelope x {xv} decodes to {d}, outside the data's range"
+                f"child envelope x {xv} is outside the data's range"
             )
 
     def test_hist_source_live_updates_line_target(self, page: Page, server_port: int):

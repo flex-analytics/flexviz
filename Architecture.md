@@ -1327,15 +1327,23 @@ predicate, draws the same box. The `plotly_selected` echo guard converts both si
 before its half-bin comparison (half the source step).
 
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
-column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. Most
-temporal targets (hist, hist2d) render that axis as a Plotly **linear** axis — the server delta
-*also* emits physical numbers, so the cube delta matches and no conversion is needed. A **line**
-target is the exception: the server seeds its x as datetime → ISO strings, so Plotly makes it a
-**date** axis (which reads bare numbers as epoch-ms). The cube line-envelope therefore maps each
-bucket x from physical → epoch-ms via `fvPhysicalToEpochMs` (`fvLineEnvCells`); without it the raw
-physical value — epoch µs is ~1000× an ms — lands millennia off-axis and the panel renders empty
-mid-drag. No quantize is needed: the line is `postRequired`, so the commit POST's legacy delta
-replaces the approximate envelope.
+column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. The
+server delta draws that axis as a Plotly **date** axis: for naive and UTC columns the centers are
+naive datetime strings, and the `[lo, step, n]` hover edges are numeric epoch-ms. The cube deltas
+send the same two forms. A column in another time zone gets offset strings from the server (Plotly
+reads their wall-clock fields), which the cube does not reproduce, so `_resolved_target_dims`
+refuses such targets and they stay on the server path (issue #139). Centers
+(hist, hist2d, and the x of a line envelope) go through `_fvDimToCenter` in `runtime/cube.js`, which
+rounds in the column's physical unit, as the server does (µs for `Datetime("us")`, ms for a `Date`
+center), and formats a datetime string with µs precision. Committed edges use the same formatter
+(`_fvUsToDatetime`). A line envelope keeps x numeric through its reduction and formats only the
+points it emits. Edges go through `_fvDimToEdge`, which returns epoch-ms
+via `fvPhysicalToEpochMs`. The split matters because Plotly reads a bare number on a date axis
+through the browser's local time zone, but reads a datetime string as wall-clock time. A numeric
+center would sit one or more hours off the server's outside UTC. Edges are plain axis positions for
+the hover lookup, so they stay numeric. Normalization (`histnorm`) keeps the physical step. No
+quantize is needed: the server's rounding of centers to the physical unit is below 1 ms, and the
+line is `postRequired`, so the commit POST's legacy delta replaces the approximate envelope.
 
 ### The two cube caches (and the existing response cache)
 
