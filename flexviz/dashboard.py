@@ -33,6 +33,7 @@ from uuid import uuid4
 import polars as pl
 from pydantic import ValidationError
 
+from .cache import is_source_cacheable
 from .figure import (
     Figure,
     _effective_live_brush,
@@ -465,7 +466,9 @@ class Dashboard:
         source_name:
             Name under which the shared backend LazyFrame is registered
             with the server's data-source registry.  Defaults to the
-            dashboard's uid so multiple ``show()`` calls never collide.
+            dashboard's uid so multiple ``show()`` calls never collide.  A
+            dashboard without data reads the source registered under this
+            name, such as a stream from ``register_stream``.
         rows:
             Optional row count used to seed initial ``layout.grid_items``.
             Mutually exclusive with ``cols`` and with explicit
@@ -493,9 +496,10 @@ class Dashboard:
             reads it).  ``"auto"`` enables drag-time cube slicing where
             available; ``"off"`` restores mouseup-only selection.  ``None``
             (default) resolves to ``"auto"``.  Live brushing requires
-            ``cache=True`` (cubes are only built for cacheable sources), so when
-            caching is off this is forced to ``"off"`` — silently for the
-            default, with a warning if ``"auto"`` was passed explicitly.
+            a cacheable source (cubes are only built for those), so when the
+            registered source is not cacheable, such as a stream, this is
+            forced to ``"off"`` — silently for the default, with a warning if
+            ``"auto"`` was passed explicitly.
         block:
             Outside a notebook, ``show()`` blocks until Ctrl-C.  Pass
             ``block=False`` to return at once.  Ignored in a notebook.
@@ -518,7 +522,7 @@ class Dashboard:
             rows=rows,
             cols=cols,
             draggable=draggable,
-            effective_cache=effective_cache,
+            effective_cache=is_source_cacheable(source_name),
             live_brush=live_brush,
             layout=layout,
         )
