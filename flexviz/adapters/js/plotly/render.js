@@ -152,21 +152,27 @@ function _columnFor(figSpec, axisProp) {
   return bd.values || bd.y || null;
 }
 
+// Whether the figure can zoom and pan now: the Zoom and Pan buttons, the wheel
+// and the middle-button drag all follow this.
+function _fvCanZoomPan(figUid) {
+  return figSupportsZoomPan[figUidToIdx[figUid]] === true
+    && window.fvAreCurrentAxesLocked?.(figUid) !== true;
+}
+
 function updateModeIndicator(figUid, dragmode) {
   const figIdx = figUidToIdx[figUid];
   if (figIdx === undefined) return;
   const controls = window.fvPanelControlRoot?.(figIdx);
   if (!controls) return;
-  const supportsZoomPan = figSupportsZoomPan[figIdx];
   const axesLocked = window.fvAreCurrentAxesLocked?.(figUid) === true;
+  const canZoomPan = _fvCanZoomPan(figUid);
   for (const btn of controls.querySelectorAll('.fv-mode-btn')) {
     const mode = btn.dataset.mode;
     btn.classList.toggle('mode-active', mode === dragmode);
-    btn.disabled = (!supportsZoomPan && (mode === 'zoom' || mode === 'pan'))
-      || (axesLocked && (mode === 'zoom' || mode === 'pan'));
+    btn.disabled = !canZoomPan && (mode === 'zoom' || mode === 'pan');
   }
   for (const btn of controls.querySelectorAll('.fv-mode-action-btn[data-action="reset-panel"]')) {
-    btn.disabled = !supportsZoomPan;
+    btn.disabled = !figSupportsZoomPan[figIdx];
   }
   window.fvUpdateAxisLockButtons?.(figUid);
   const warn = controls.querySelector('.fv-mode-warn');

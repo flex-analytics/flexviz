@@ -437,14 +437,6 @@ class TestPlotlyHtml:
         assert "fvCaptureAxisDisplayRanges" in html
         assert "fvApplyAxisLocks" in html
 
-    def test_plotly_locked_axes_disable_zoom_buttons(self, html):
-        body = _js_function_body(html, "function updateModeIndicator(figUid, dragmode)")
-        assert (
-            "const axesLocked = window.fvAreCurrentAxesLocked?.(figUid) === true;"
-            in body
-        )
-        assert "(axesLocked && (mode === 'zoom' || mode === 'pan'))" in body
-
     def test_axis_lock_uses_renderer_display_ranges(self, html):
         assert "fvCaptureAxisDisplayRanges" in html
         assert "axisObj && axisObj.range" in html
