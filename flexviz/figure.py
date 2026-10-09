@@ -202,7 +202,8 @@ class Figure:
             Column name for x-axis data.  A ``"minmax"``, ``"lttb"`` or
             ``"fpcs"`` line buckets by x width, so ``x`` must be a
             64-bit-or-smaller numeric or a temporal.  Ungrouped on a resident
-            frame it must also be sorted ascending and free of nulls and NaN.
+            frame it must also be sorted ascending, with any nulls first and
+            any NaN last.  The line skips null and NaN x.
         y:
             Column name for y-axis data.
         name:
@@ -221,8 +222,8 @@ class Figure:
             Downsampling algorithm: ``"minmax"`` (default), ``"lttb"``
             (MinMaxLTTB), ``"fpcs"``, or ``"nth"``.  All four work grouped.
         assume_sorted_x:
-            The engine reads x for nulls, NaN and ascending order, and raises
-            `ValueError` when the column fails. That pass runs once per source
+            The engine reads x for ascending order (nulls first, NaN last)
+            and raises `ValueError` when the column fails. That pass runs once per source
             and column, and only for an ungrouped x-width line on a resident
             frame. Set True to skip it by marking the column sorted. Only pass
             it if you guarantee `x` meets the contract: a column that breaks it
