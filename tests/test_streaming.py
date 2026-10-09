@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flexviz import Dashboard, Figure, register_source, register_stream
+from flexviz.adapters.plotly_adapter import PlotlyAdapter
 from flexviz.cache import is_source_cacheable
 from flexviz.server import _sources, app
 from flexviz.spec import AxisRange, SelectionState
@@ -426,3 +427,21 @@ def test_numeric_window():
     with TestClient(app) as client:
         xs = _line_x(_refresh(client, spec), spec)
     assert min(xs) >= 899 and max(xs) == 999
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
+
+
+def test_page_lists_only_streaming_sources():
+    name = _name()
+    stream = register_stream(name, _rows(0, 10), order_by="t")
+    stream.append(_rows(10, 1))
+    register_source("static_src_for_stream_test", _rows(0, 10))
+    html = PlotlyAdapter()._build_dashboard_html(_line_hist_spec(name))
+    assert f'const FV_STREAMING_SOURCES = {{"{name}": 1}};' in html
+    static = PlotlyAdapter()._build_dashboard_html(
+        _line_hist_spec("static_src_for_stream_test")
+    )
+    assert "const FV_STREAMING_SOURCES = {};" in static

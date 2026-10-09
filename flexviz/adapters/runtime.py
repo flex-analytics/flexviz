@@ -34,6 +34,7 @@ _SHARED_SOURCES: list[str] = [
     "runtime/selection-summary.js",
     "runtime/overlay.js",
     "runtime/hover.js",
+    "runtime/stream.js",
     "toolbar.js",
 ]
 

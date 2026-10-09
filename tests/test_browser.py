@@ -8503,3 +8503,59 @@ class TestThemeBrowser:
             return ticks.length && Math.min(...ticks.map(t => t.getBoundingClientRect().left)) - left;
         }""")
         assert overflow >= 0
+
+
+class TestStreamBrowser:
+    def test_page_follows_appends_and_a_zoom_holds(self, page: Page, server_port: int):
+        from flexviz.dashboard import Dashboard
+        from flexviz.server import register_stream
+        from flexviz.spec import encode_spec
+
+        def rows(start: int, n: int) -> pl.DataFrame:
+            i = list(range(start, start + n))
+            return pl.DataFrame({"i": i, "v": [float(k % 7) for k in i]})
+
+        stream = register_stream("_browser_stream", rows(0, 200), order_by="i")
+        dash = Dashboard()
+        dash.add_figure().add_line(x="i", y="v", n_points=2000)
+        dash.add_figure().add_histogram(x="v", bins=7)
+        spec = dash.to_spec(source_name="_browser_stream")
+        page.goto(f"http://127.0.0.1:{server_port}/view?spec={encode_spec(spec)}")
+        _wait_for_init(page)
+
+        last_x = """() => {
+            const xs = document.getElementById('fv-plot-0').data[0].x;
+            return xs.filter(x => x != null).at(-1);
+        }"""
+        hist_total = """() => document.getElementById('fv-plot-1').data[0].y
+            .reduce((a, b) => a + b, 0)"""
+        x_range = "() => document.getElementById('fv-plot-0')._fullLayout.xaxis.range"
+
+        # No interaction: the poll picks up the append.
+        stream.append(rows(200, 100))
+        page.wait_for_function(f"({last_x})() === 299", timeout=10_000)
+        assert page.evaluate(x_range)[1] >= 299  # autorange follows
+
+        # A held mouse button blocks the refresh; the release lets it through.
+        updates: list[str] = []
+        page.on(
+            "request",
+            lambda req: (
+                updates.append(req.url) if "/dashboard/update" in req.url else None
+            ),
+        )
+        box = page.locator("#fv-plot-1 .nsewdrag").first.bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        stream.append(rows(300, 50))
+        page.wait_for_timeout(2_500)
+        assert updates == []
+        page.mouse.up()
+        page.wait_for_function(f"({hist_total})() === 350", timeout=10_000)
+
+        _relayout_when_idle(page, 0, {"xaxis.range[0]": 50, "xaxis.range[1]": 150})
+        page.wait_for_function(f"({x_range})()[1] === 150", timeout=10_000)
+        stream.append(rows(350, 50))
+        page.wait_for_function(f"({hist_total})() === 400", timeout=10_000)
+        assert page.evaluate(x_range) == [50, 150]
+        assert page.evaluate(last_x) <= 150
