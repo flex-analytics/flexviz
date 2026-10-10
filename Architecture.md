@@ -1025,15 +1025,16 @@ SQLSource
 - **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
   renders literals per dialect. The functions whose meaning differs per
   dialect (`phys`, `nan`, `num`, `int_div`, `extreme_by`, `lit`) are defined
-  there.
+  there. The median in `_agg_sql` also switches on the dialect.
 - **Trino.** `date_diff` counts epoch units exactly, but in milliseconds at
   most. A microsecond column adds the microseconds within the millisecond from
   `to_unixtime`, a double. That is exact while one ulp of the epoch seconds
   is below 1 µs, about the years 1700 to 2240 (the whole double rounded wrong
   from 2100 on), and 2.6 times faster than reading the digits of the text
-  form. Trino has no exact percentile, so the median is
-  the mean of the middle values of `array_sort(array_agg(v))`, which holds each
-  group in memory. The `trino` driver returns rows: the dtypes come from the
+  form. Trino has no exact percentile, so the median is the mean of the
+  middle values of `array_sort(array_agg(v))`, sorted once per group and held
+  in memory. Where the sum of the two middle values overflows, each is halved
+  first. The `trino` driver returns rows: the dtypes come from the
   type names of the cursor description, and `decimal` reads as Float64. A
   column of another type (uuid, time, varbinary, array, map, row) is left out
   of the schema: Trino compares it with no string literal, so a selection on
