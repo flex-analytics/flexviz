@@ -4555,6 +4555,19 @@ class TestTemporalTargetCube:
         )
         assert None not in drawn
 
+        # A step of exactly 4.1 medians is no gap, on numbers or on strings.
+        exact = page.evaluate(
+            """() => {
+                const ms = [1, 251, 1276, 1526];
+                const xs = ms.map(o => '2020-01-01 00:00:0' + (o / 1000).toFixed(3));
+                return [
+                    window.fvApplyLineGaps(ms, ms.map(() => 0), true).x,
+                    window.fvApplyLineGaps(xs, xs.map(() => 0), true).x,
+                ];
+            }"""
+        )
+        assert [None in x for x in exact] == [False, False]
+
 
 # ---------------------------------------------------------------------------
 # Zoom-key interplay hardening (plan step 7)

@@ -951,7 +951,7 @@ function fvLineEnvCells(entry, binRanges) {
 // Project a line-x value to a number for gap diffing. Numbers pass through;
 // ISO / Plotly date strings parse via fvTemporalToPhysical to integral epoch
 // µs, exact below 2**53 (year 2255). Fractional epoch ms would round µs steps,
-// and gap detection compares their ratio (diff > 4.1 * median).
+// and gap detection compares their ratio (diff / median > 4.1).
 function fvLineGapXToNumber(v) {
   if (typeof v === 'number') return v;
   if (v == null) return NaN;
@@ -980,11 +980,12 @@ function fvApplyLineGaps(x, y, addGaps) {
   const mid = diffs.length >> 1;
   const med = diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
   if (!(med > 0)) return { x, y };
-  const threshold = 4.1 * med;
   const outX = [x[0]];
   const outY = [y[0]];
   for (let i = 1; i < x.length; i++) {
-    if (xn[i] - xn[i - 1] > threshold) { outX.push(null); outY.push(null); }
+    // The ratio, not diff > 4.1 * med: the product rounds, so a step of
+    // exactly 4.1 medians would break in one unit and not in another.
+    if ((xn[i] - xn[i - 1]) / med > 4.1) { outX.push(null); outY.push(null); }
     outX.push(x[i]);
     outY.push(y[i]);
   }
