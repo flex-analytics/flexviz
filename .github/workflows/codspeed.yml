@@ -88,7 +88,7 @@ jobs:
       - name: Verify the release plugin is importable
         run: uv run --no-sync python -c "import os; from flexviz_polars import _internal; size = os.path.getsize(_internal.__file__); print(_internal.__file__, size); assert size < 20_000_000, 'debug build'"
 
-      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+      - uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
         with:
           mode: walltime
           run: uv run --no-sync pytest benchmarks --codspeed -p no:randomly
