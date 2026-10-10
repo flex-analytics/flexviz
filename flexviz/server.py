@@ -8,7 +8,8 @@ server never needs to remember anything between calls.
 
 The only server-side state is the *data-source registry* — a mapping of
 named identifiers to ``LFQueryBuilder`` instances.  These are registered
-once at startup (or before ``uvicorn.run``) and are read-only thereafter.
+once at startup (or before ``uvicorn.run``). A stream (``register_stream``)
+swaps in a new builder on each append.
 
     ┌─────────────────────────────────────────────────────┐
     │  _sources: Dict[str, LFQueryBuilder]                │  ← read-only after startup
@@ -20,6 +21,7 @@ once at startup (or before ``uvicorn.run``) and are read-only thereafter.
     │  GET  /view                                         │
     │  GET  /h/{n}   (run_server only, not ``app``)       │  ← reads .flexviz/history.jsonl in cwd
     │  GET  /sources                                      │  ← introspection / health
+    │  GET  /sources/{name}/version                       │  ← stream version, polled
     │  GET  /cache/stats                                  │
     └─────────────────────────────────────────────────────┘
 
@@ -50,13 +52,20 @@ from __future__ import annotations
 import gzip
 import ipaddress
 import logging
+import math
+import numbers
 import re
 import socket
+import threading
 import warnings
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
+from datetime import timedelta, timezone
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import polars as pl
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.gzip import GZipMiddleware
@@ -86,10 +95,15 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Data-source registry — the only server-side state.
-# Populated before the server starts; read-only during request handling.
+# Populated before the server starts. A stream's append swaps its builder.
 # ---------------------------------------------------------------------------
 
 _sources: dict[str, LFQueryBuilder] = {}
+_streams: dict[str, Stream] = {}
+# Guards every write to both registries and each stream append, so a builder,
+# its stream handle and the version change together.
+# ponytail: one lock for all streams; an append holds it for about 0.1 ms.
+_registry_lock = threading.RLock()
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:
@@ -118,27 +132,36 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         caches (its data may have changed). Re-registering with the same
         ``LFQueryBuilder`` object already under that name invalidates
         nothing and emits a ``UserWarning``; use it only to flip ``cache``.
+
+        ``cache=False`` does not make FlexViz read your data again. A
+        resident frame is a snapshot: rows you add to it in place later are
+        not seen. For data that grows, use ``register_stream``.
     """
-    is_reregistration = name in _sources
-    if is_reregistration and data is _sources[name]:
-        warnings.warn(
-            f"source {name!r} re-registered with the same LFQueryBuilder "
-            "object; nothing was invalidated. Pass raw data or a new "
-            "builder if the source data changed.",
-            UserWarning,
-            stacklevel=2,
-        )
-        _sources[name].cache = cache
+    # Build first: invalid data must leave the registry as it was.
+    builder = (
+        data
+        if isinstance(data, LFQueryBuilder)
+        else LFQueryBuilder(polars_lf_from(data))
+    )
+    with _registry_lock:
+        # A new registration replaces a stream too; the old handle then
+        # refuses appends, so it cannot swap its data back in.
+        _streams.pop(name, None)
+        # The registrar declares the contract, so the source learns it here
+        # whoever built the builder.
+        builder.cache = cache
         set_source_cacheable(name, cache)
-        return
-    if isinstance(data, LFQueryBuilder):
-        _sources[name] = data
-    else:
-        _sources[name] = LFQueryBuilder(polars_lf_from(data))
-    # The registrar declares the contract, so the source learns it here whoever
-    # built the builder.
-    _sources[name].cache = cache
-    set_source_cacheable(name, cache)
+        is_reregistration = name in _sources
+        if is_reregistration and builder is _sources[name]:
+            warnings.warn(
+                f"source {name!r} re-registered with the same LFQueryBuilder "
+                "object; nothing was invalidated. Pass raw data or a new "
+                "builder if the source data changed.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return
+        _sources[name] = builder
     if is_reregistration:
         # Re-registration may carry new data, so the (now possibly stale)
         # caches are dropped wholesale — keys are hashed and cannot be filtered
@@ -147,6 +170,181 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         # registration leaves the caches alone.
         get_cache().clear()
         get_cube_cache().clear()
+
+
+class Stream:
+    """A resident source that grows by appends. ``register_stream`` returns it.
+
+    Each append builds a new ``LFQueryBuilder`` and swaps it into the
+    registry. A request resolves its builder once, so it reads one version.
+    Polars chunks are immutable, so an older builder keeps its rows.
+    ``version`` starts at 0 and goes up by one on each append that adds rows.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        frame: pl.DataFrame,
+        order_by: str,
+        window: timedelta | float | None,
+        version: int,
+    ) -> None:
+        self.name = name
+        self.order_by = order_by
+        self.window = window
+        self.version = version
+        self._frame = frame
+
+    def append(self, data: Any) -> None:
+        """Append rows to the stream.
+
+        ``data`` is a Polars DataFrame or LazyFrame, a pandas DataFrame or
+        an Arrow table; a LazyFrame is collected. The rows must be sorted by
+        ``order_by``, without nulls or NaN in it, and start at or after the
+        last row of the stream. Its columns must match the stream's names,
+        order and dtypes.
+
+        Thread-safe: appends from several threads run one after the other.
+
+        Raises
+        ------
+        ValueError
+            If the rows are out of order.
+        RuntimeError
+            If a later registration replaced this stream.
+        """
+        batch = _collected(data)
+        _check_order(batch, self.order_by)
+        if batch.is_empty():
+            return
+        with _registry_lock:
+            if _streams.get(self.name) is not self:
+                raise RuntimeError(f"stream {self.name!r} was replaced")
+            last = self._frame.get_column(self.order_by)
+            if len(last) and batch[self.order_by][0] < last[-1]:
+                raise ValueError(
+                    f"appended rows start before the last '{self.order_by}' "
+                    f"of stream {self.name!r} ({last[-1]})"
+                )
+            # rechunk=False keeps an append O(batch). A rechunk now and then
+            # keeps the chunk count, and so the per-request cost, bounded.
+            frame = pl.concat([self._frame, batch], rechunk=False)
+            if frame.n_chunks() > 64:
+                frame = frame.rechunk()
+            self._frame = frame
+            _sources[self.name] = _stream_builder(frame, self.order_by)
+            self.version += 1
+
+
+def _collected(data: Any) -> pl.DataFrame:
+    if isinstance(data, pl.DataFrame):
+        # The caller may extend its frame in place; the stream keeps its own.
+        return data.clone()
+    return polars_lf_from(data).collect(engine="streaming")
+
+
+def _check_order(frame: pl.DataFrame, order_by: str) -> None:
+    col = frame.get_column(order_by)
+    if (
+        col.has_nulls()
+        or (col.dtype.is_float() and col.is_nan().any())
+        or not col.is_sorted()
+    ):
+        raise ValueError(f"'{order_by}' must be sorted ascending, without nulls or NaN")
+
+
+def _check_window(window: Any, dtype: pl.DataType) -> None:
+    if window is None:
+        return
+    if isinstance(dtype, pl.Datetime):
+        valid = isinstance(window, timedelta) and window > timedelta(0)
+    else:
+        valid = (
+            dtype.is_numeric()
+            and isinstance(window, numbers.Real)
+            and not isinstance(window, bool)
+            and math.isfinite(window)
+            and window > 0
+        )
+    if not valid:
+        raise ValueError(
+            "window must be a positive timedelta for a Datetime order_by, "
+            f"or a positive finite number for a numeric one; got {window!r} "
+            f"for dtype {dtype}"
+        )
+
+
+def _stream_builder(frame: pl.DataFrame, order_by: str) -> LFQueryBuilder:
+    builder = LFQueryBuilder(frame)
+    # The append checks keep order_by sorted, so no request checks it again.
+    builder.assume_sorted(order_by)
+    return builder
+
+
+def register_stream(
+    name: str,
+    data: Any,
+    order_by: str,
+    window: timedelta | float | None = None,
+) -> Stream:
+    """Register a named source that grows over time, and return its handle.
+
+    Call ``Stream.append`` to add rows. An open page polls the server once a
+    second and refreshes every chart when rows were added. A stream is
+    resident (held in memory) and never cached.
+
+    Show it with a dashboard that has no data of its own, so the dashboard
+    reads the stream by name::
+
+        stream = register_stream("live", df, order_by="timestamp")
+        dash = Dashboard()
+        dash.add_figure().add_line("timestamp", "value")
+        dash.show(source_name="live")
+
+    Registering a name again replaces the stream, and the old handle then
+    raises on append.
+
+    Parameters
+    ----------
+    name:
+        Identifier that clients reference via ``FigureSpec.source``.
+    data:
+        The first rows: a Polars DataFrame or LazyFrame, a pandas DataFrame
+        or an Arrow table. A LazyFrame is collected. It can be empty.
+    order_by:
+        The column that orders the rows, such as a timestamp. The rows must be
+        sorted by it, without nulls or NaN, and each append must start at or
+        after the last row.
+    window:
+        A trailing x range: a positive ``timedelta`` for a ``Datetime``
+        ``order_by``, a positive number for a numeric one. An x axis over
+        ``order_by`` that is not zoomed or locked then shows only
+        ``[last - window, last]`` and slides as data arrives. A zoom or pan
+        shows any range of the history. Other charts, such as a histogram of
+        another column, still use all rows.
+
+    Raises
+    ------
+    ValueError
+        If ``data`` is not sorted by ``order_by``, has nulls or NaN in it, or
+        ``window`` does not fit the dtype of ``order_by``.
+    """
+    frame = _collected(data)
+    _check_order(frame, order_by)
+    _check_window(window, frame.schema[order_by])
+    builder = _stream_builder(frame, order_by)
+    with _registry_lock:
+        old = _streams.get(name)
+        # Carry the version on, so an open page also refreshes onto the new data.
+        stream = Stream(name, frame, order_by, window, old.version + 1 if old else 0)
+        register_source(name, builder)
+        _streams[name] = stream
+    return stream
+
+
+def stream_versions(names: Iterable[str | None]) -> dict[str, int]:
+    """The current version of each name that is a stream."""
+    return {n: _streams[n].version for n in names if n in _streams}
 
 
 def get_source(name: str) -> LFQueryBuilder:
@@ -279,6 +477,93 @@ def _viewports_by_figure(
 ) -> dict[str, dict[str, tuple[Any, Any] | None]]:
     """Build per-figure viewport ranges from shared interaction state."""
     return {fig.uid: _figure_viewport_from_state(state, fig.uid) for fig in figures}
+
+
+def _fill_stream_viewports(
+    spec: DashboardSpec,
+    source_map: dict[str | None, LFQueryBuilder | None],
+    viewports_by_figure: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Give an unzoomed x axis over a stream's ``order_by`` the range it shows.
+
+    A locked axis gets its pinned range: the client pins only the display, and
+    rows that arrive later must not stretch the grid past it. Otherwise, with
+    ``window``, the axis gets ``[last - window, last]``. The range has the form
+    the client sends for a zoom, so the traces aggregate only that range. The
+    request state is not changed, so the client still sees the axis at
+    autorange. Other axes keep the client's ranges: a pinned bar or heatmap
+    range has half-bin padding, which a zoom grid would snap to an extra bin.
+
+    Returns the viewport keys pinned to a lock.
+    """
+    client = spec.client_state
+    pinned_keys = []
+    for fig in spec.figures:
+        stream = _streams.get(fig.source)
+        if stream is None:
+            continue
+        viewport = viewports_by_figure[fig.uid]
+        axes = {
+            ts.axes[0]
+            for ts in fig.traces
+            if ts.axes
+            and ts.backend_data.get("x") == stream.order_by
+            and viewport.get(ts.axes[0]) is None
+        }
+        window = None
+        for axis in axes:
+            key = f"{fig.uid}/{axis}"
+            pinned = client.axis_lock_ranges.get(key)
+            # The client keys locks by axis family: "x" also covers "x2".
+            if pinned is not None and client.axis_locks.get(f"{fig.uid}/{axis[0]}"):
+                viewport[axis] = pinned.as_tuple()
+                pinned_keys.append(key)
+                continue
+            if stream.window is None:
+                continue
+            if window is None:
+                window = _stream_window(stream, source_map[fig.source])
+            if window is not None:
+                viewport[axis] = window
+    return pinned_keys
+
+
+def _stream_window(stream: Stream, builder: LFQueryBuilder) -> tuple[Any, Any] | None:
+    """``[last - window, last]`` over the rows of ``builder``, or None if empty.
+
+    ``builder`` is the one this request resolved, not the live stream: an
+    append since then must not move the window past the rows.
+    """
+    last = pl.col(stream.order_by).last()
+    if not isinstance(stream.window, timedelta):
+        # Python math: exact on integers, and no unsigned wrap below 0 (the
+        # range filter clamps that bound). A Decimal takes the window as a
+        # Decimal, exact to the default 28 digits.
+        hi = builder._ldf.select(last).collect(engine="in-memory").item()
+        if hi is None:
+            return None
+        window = stream.window
+        if isinstance(hi, Decimal):
+            integral = isinstance(window, numbers.Integral)
+            window = Decimal(str(window if integral else float(window)))
+        return hi - window, hi
+    # Polars does the time math in absolute time, so it holds across a DST
+    # change. A Python datetime holds microseconds, so the upper bound rounds
+    # up to keep the last row of a nanosecond column.
+    lo, hi = (
+        builder._ldf.select(
+            (last - stream.window).alias("lo"),
+            (last + timedelta(microseconds=1)).alias("hi"),
+        )
+        .collect(engine="in-memory")
+        .row(0)
+    )
+    if hi is None:
+        return None
+    if hi.tzinfo is not None:
+        # In UTC, the text order is the time order, also in a repeated hour.
+        lo, hi = lo.astimezone(timezone.utc), hi.astimezone(timezone.utc)
+    return lo.isoformat(), hi.isoformat()
 
 
 def _serialise_updates(updates: dict[str, Any], uid: str) -> dict[str, Any]:
@@ -452,6 +737,15 @@ async def list_sources() -> list[str]:  # type: ignore[return]
     Useful for health checks and frontend introspection.
     """
     return list(_sources)
+
+
+@app.get("/sources/{name:path}/version")
+async def source_version(name: str) -> int:
+    """Return a stream's version. A page that shows a stream polls it."""
+    stream = _streams.get(name)
+    if stream is None:
+        raise HTTPException(status_code=404, detail=f"no stream {name!r}")
+    return stream.version
 
 
 @app.get("/cache/stats")
@@ -649,6 +943,14 @@ async def dashboard_update(
             uid_to_fig_uid[trace.uid] = fig_spec.uid
 
     viewports_by_figure = _viewports_by_figure(req.spec.state, req.spec.figures)
+    pinned_keys = _fill_stream_viewports(req.spec, source_map, viewports_by_figure)
+    if pinned_keys:
+        # A lock sends no request, so this one may be the first to bin over
+        # the pinned range: list the axes as changed, so the background
+        # re-bins with the foreground.
+        event = event.model_copy(
+            update={"viewport_keys": [*event.viewport_keys, *pinned_keys]}
+        )
 
     # -- cube path: assemble cubes for the active source's figure; no deltas.
     #    The response is a binary cube bundle, not JSON deltas. ----------------

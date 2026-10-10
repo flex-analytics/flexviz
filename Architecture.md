@@ -181,8 +181,8 @@ DashboardSpec
             / show_grid / show_share / show_export / show_import: bool (all True by default)
 
 InteractionEvent
-├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
-├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed
+├── type: "init" | "viewport" | "selection" | "deselect" | "refresh" | "cube_request"
+├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed (the server adds a stream's locked keys)
 └── force_update: bool
 
 A viewport event carries no ranges: the engine reads every range from
@@ -869,8 +869,9 @@ FlexEngine
          grid, so the engine sends a fresh bg. init/deselect still emit the
          sole unfiltered layer for every trace) and execute
          only the layers required by the event (`selection` → fg, plus bg when
-         a trace's viewport key changed; `init`/`deselect` → bg; `viewport` →
-         bg or bg+fg depending on active selections)
+         a trace's viewport key changed; `init`/`deselect` → bg; `viewport` and
+         `refresh` → bg or bg+fg depending on active selections; `refresh`
+         also sends a fresh bg for every trace)
       10. Route regular results to _to_update(df_agg)
       11. Route grouped results to _to_grouped_update(df_grouped)
       12. Normalize Series → list once; emit TraceDelta / GroupedChildDelta
@@ -984,15 +985,33 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 
 ## Server Layer
 
-FastAPI app in `server.py`. The only persistent server state is:
+FastAPI app in `server.py`. The only persistent server state is the source registry:
 
 ```python
 _sources: Dict[str, LFQueryBuilder]
+_streams: Dict[str, Stream]   # the names in _sources that are streams
 ```
 
-Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.
+`register_source(name, data, cache=False)` fills `_sources`, usually at `show()` time. `register_stream` fills both maps. Each stream append swaps a new builder into `_sources`. One lock (`_registry_lock`) guards every write to the two maps and every append. A registration builds and checks its builder before it takes the lock, so invalid data changes nothing. Everything else is request-scoped.
 
 `GET /h/{n}` also reads no server state (and `app` does not serve it, see Origin): it re-reads an agent-owned history file from the working directory on every request and stores nothing, see the agent-loop section above.
+
+### Streams
+
+`register_stream(name, data, order_by, window=None)` registers a resident source that grows by `Stream.append`. Each stream keeps one `pl.DataFrame`. An append does these steps:
+
+1. It checks the batch: `order_by` is sorted, has no nulls or NaN, and does not start before the last row.
+2. It concatenates the batch without a rechunk. Past 64 chunks it rechunks.
+3. It builds a new `LFQueryBuilder` with `order_by` marked sorted and swaps it into `_sources`.
+4. It increments `Stream.version`.
+
+A request resolves its builder once, so it reads one version. Polars chunks are immutable, so an older builder keeps its rows. Each builder holds one version, so its min/max memo needs no invalidation. A new registration of the name replaces the stream. The old handle then raises on append.
+
+A stream is never cacheable. Its cacheable flag stays False, so the response cache, the cube cache and the client init cache stay off. `show()` takes the live-brush setting from the flag of the registered source, so live brushing is off too.
+
+The page polls `GET /sources/{name}/version` once a second (`runtime/stream.js`). It polls only the sources in `FV_STREAMING_SOURCES`, which holds the versions at render time. The poll skips a hidden tab. It also skips while a mouse button is down, and it checks again before it sends the refresh. When a version changed, the page sends one `refresh` event with `force_update: true`. The engine recomputes every trace and keeps the selections, with the layers of a `viewport` event. It also sends a fresh background for `filtered_only` traces in overlay mode, because their cached background holds the old rows. The request writes no viewport. The page keeps the new versions only when the refresh worked, so a failed refresh is tried again. The server stores no interaction state for this: the version is a property of the data.
+
+With `window`, `dashboard_update` fills the missing x viewport of each figure whose trace has `x == order_by`. The range is `[last - window, last]`, in the form the client sends for a zoom. `last` comes from the builder that the request resolved, so the window always overlaps the rows. A locked x axis over `order_by` with no viewport gets its pinned range (`axis_lock_ranges`) instead, with or without `window`: the client pins only the display, and rows that arrive later must not stretch the grid past it. Other locked axes keep the client's ranges, because a pinned bar or heatmap range has half-bin padding, which a zoom grid would snap to an extra bin. The fill changes only the request-local viewport map, never the request state. The client still sees the axis at autorange, so Plotly fits it to the windowed data. A real zoom wins. `_fill_stream_viewports` returns the pinned keys, and `dashboard_update` lists them as changed in a copy of the event, because the lock itself sent no request: the background then gets the pinned grid with the foreground. Polars computes the datetime bounds, so a time-zone-aware window spans the same elapsed time across a DST change. Zone-aware bounds go out in UTC, so their text order is their time order, also in the repeated autumn hour. The upper bound is rounded up by 1 µs, because a Python datetime cannot hold the nanoseconds of the last row. Python computes numeric bounds, exact on integers. On an unsigned `order_by` the lower bound can fall below 0, and the integer range filter clamps it.
 
 ### Caching carve-out to the stateless invariant
 
@@ -1020,6 +1039,7 @@ A `static` source also memoizes each column's resolved unfiltered min/max (`LFQu
 | `GET`  | `/view`             | Render shared spec (`?renderer=plotly`)  |
 | `GET`  | `/h/{n}`            | Render `flexviz history` entry `n` (`renderer` defaults to the recorded URL's). Served by `run_server` only |
 | `GET`  | `/sources`          | List registered source names (health check)       |
+| `GET`  | `/sources/{name}/version` | Version of a stream (404 for other names), polled by the page |
 | `GET`  | `/cache/stats`      | Cache hits/misses/entries + cacheable sources     |
 
 ### Origin
@@ -1535,7 +1555,8 @@ adapters/js/
 │   ├── overlay.js            ← overlay cache helpers
 │   ├── selections.js         ← selection list/predicate helpers
 │   ├── selection-summary.js  ← per-figure selection summary UI
-│   └── hover.js              ← linked-hover dispatch
+│   ├── hover.js              ← linked-hover dispatch
+│   └── stream.js             ← stream version polling
 └── plotly/
     ├── traces.js             ← configsByFig, trace template builders
     ├── theme.js              ← Plotly layout template from the tokens, fvApplyTheme
@@ -1581,6 +1602,7 @@ Shared runtime responsibilities:
 - **Layer data** — `ensureGroupColor`, `setLayerData`, `setGroupedLayerData`, `setHasBackground`. Every write carries a number from one counter (`fvNextWriteSeq`): a request's number, taken when it is sent, or a new number for a client-side write (cube live brush, runtime cache reset). Each slot (a trace layer, a figure's background flag) refuses a write older than the data it holds. An abandoned live-brush gesture puts back each slot it changed together with the slot's earlier number (`fvSaveLayerData`, `fvSaveHasBackground`), so a response to a request sent before the gesture still applies.
 - **Delta application** — `postDashboardUpdate` separates request, delta-apply, and render error handling; updates layer caches, tracks bg y-extent for axis anchoring, and renders each dirty figure with per-figure guards. Responses can arrive in any order: the newest data wins per slot, and a late response still fills the slots that newer requests did not re-aggregate. The init cache key is taken when the request is sent.
 - **Overlay restore** — `fvEnsureOverlayBackground`, `fvResetRuntimeCache`, `fvRestoreFromSpec`
+- **Stream polling** — `runtime/stream.js` polls the version of each source in `FV_STREAMING_SOURCES` and refreshes all figures when one changed (see Streams in the Server Layer)
 - **Linked hover** — `stripLayerSuffix` (strips the `__fv_layer_bg` / `__fv_layer_fg` suffixes), `getHoverPayload`, `_fvIsHoverEnabled`, `planHoverVisuals` with the bin lookup `binAt`
 
 The shared runtime and `toolbar.js` call these renderer hooks. The adapter page defines `_fvAllFigUids`, and the renderer bundle (`plotly/*.js`) defines the others. A second renderer must define all of them.

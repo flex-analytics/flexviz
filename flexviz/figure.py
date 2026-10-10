@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import polars as pl
 
+from .cache import is_source_cacheable
 from .LF import LFQueryBuilder, polars_lf_from
 from .spec import DashboardSpec, FigureSpec, VisualizationSpec
 from .trace.bar import BarPlot
@@ -871,7 +872,9 @@ class Figure:
         source_name:
             Name under which the figure's backend LazyFrame is registered
             with the server's data-source registry.  Defaults to the
-            figure's uid so multiple ``show()`` calls never collide.
+            figure's uid so multiple ``show()`` calls never collide.  A
+            figure without data reads the source registered under this
+            name, such as a stream from ``register_stream``.
         host:
             Server bind address.
         port:
@@ -885,9 +888,10 @@ class Figure:
             reads it).  ``"auto"`` enables drag-time cube slicing where
             available; ``"off"`` restores mouseup-only selection.  ``None``
             (default) resolves to ``"auto"``.  Live brushing requires
-            ``cache=True`` (cubes are only built for cacheable sources), so when
-            caching is off this is forced to ``"off"`` — silently for the
-            default, with a warning if ``"auto"`` was passed explicitly.
+            a cacheable source (cubes are only built for those), so when the
+            registered source is not cacheable, such as a stream, this is
+            forced to ``"off"`` — silently for the default, with a warning if
+            ``"auto"`` was passed explicitly.
         block:
             Outside a notebook, ``show()`` blocks until Ctrl-C.  Pass
             ``block=False`` to return at once.  Ignored in a notebook.
@@ -897,7 +901,7 @@ class Figure:
         if port == "auto":
             port = _pick_free_port(host)
 
-        if source_name is None:
+        if source_name is None and self._backend_lf is not None:
             # TODO: see TODO in dashboard.show()
             source_name = self._uid
 
@@ -905,11 +909,10 @@ class Figure:
         _register_source_if_needed(source_name, self._backend_lf, cache=effective_cache)
         _start_server_thread(host, port)
 
-        src = source_name if self._backend_lf is not None else None
-        spec = self.to_spec(source=src)
+        spec = self.to_spec(source=source_name)
         dash_spec = DashboardSpec(figures=[spec.figure], state=spec.state)
         dash_spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+            live_brush, is_source_cacheable(source_name)
         )
         _render_dashboard(
             renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
@@ -956,8 +959,13 @@ def _register_source_if_needed(
     if backend_lf is None:
         return
     from .cache import set_source_cacheable
-    from .server import _sources, register_source
+    from .server import _sources, _streams, register_source
 
+    if source_name in _streams:
+        raise ValueError(
+            f"source_name={source_name!r} is a stream; this data would replace "
+            "it. Build the Dashboard or Figure without data to show the stream."
+        )
     existing = _sources.get(source_name)
     if existing is not None:
         if existing is not backend_lf:

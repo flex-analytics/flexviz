@@ -1212,7 +1212,7 @@ class FlexEngine:
             return ("bg", "fg") if viewport_changed else ("fg",)
         if event.type in ("init", "deselect"):
             return ("bg",)
-        if event.type == "viewport":
+        if event.type in ("viewport", "refresh"):
             return ("bg", "fg") if has_active_selections else ("bg",)
         raise ValueError(f"Unsupported interaction event type: {event.type!r}")
 
@@ -1227,8 +1227,8 @@ class FlexEngine:
         Every trace needs the sole unfiltered layer used by init/deselect.
         While a filtered foreground is shown, ``filtered_only`` traces reuse
         the cached unfiltered data. If the event changes one of their
-        ``recompute_axes``, that cache holds the old grid. The engine then
-        sends a fresh background.
+        ``recompute_axes``, that cache holds the old grid, and after a stream
+        refresh it holds old rows. The engine then sends a fresh background.
         """
         if not foreground_shown:
             return specs
@@ -1270,10 +1270,12 @@ class FlexEngine:
                 foreground_shown = partition.owner is None and bool(
                     partition.filter_exprs
                 )
+                # After a refresh every cached background holds old rows.
+                refresh = event.type == "refresh"
                 rebinned_uids = {
                     item.info.uid
                     for item in partition.items
-                    if self._viewport_changed(item.info, changed_axes)
+                    if refresh or self._viewport_changed(item.info, changed_axes)
                 }
                 bg_specs += self._background_specs(
                     specs, foreground_shown, rebinned_uids
