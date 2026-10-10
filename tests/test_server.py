@@ -135,13 +135,15 @@ def test_large_cube_response_is_gzipped():
     assert len(resp.content) > 1024
 
 
-def test_small_response_is_not_gzipped():
+def test_small_response_is_not_gzipped(monkeypatch):
     """A tiny response stays uncompressed — below ``minimum_size`` the
     middleware passes it through (regression: gzip is size-gated, not blanket)."""
     from fastapi.testclient import TestClient
 
     from flexviz.server import app
 
+    # /sources lists every source that other tests in this process registered.
+    monkeypatch.setattr("flexviz.server._sources", {})
     with TestClient(app) as client:
         resp = client.get("/sources", headers={"Accept-Encoding": "gzip"})
     assert resp.status_code == 200
