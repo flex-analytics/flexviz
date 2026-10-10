@@ -1667,6 +1667,33 @@ def test_trino_type_names(name, dtype):
     assert _trino_dtype(name) == dtype
 
 
+def test_trino_median_of_large_values():
+    """The median of two middle values whose sum overflows a double halves each
+    one first; a group of one value is that value."""
+    if not os.environ.get(TRINO_ENV):
+        pytest.skip(f"set {TRINO_ENV} to run against Trino")
+    df = pl.DataFrame(
+        {
+            "g": ["one", "two", "two", "even", "even", "even", "even"],
+            "v": [1e308, 1e308, 1.5e308, 1.0, 2.0, 4.0, 1e300],
+        }
+    )
+    rows = ", ".join(f"('{g}', DOUBLE '{v!r}')" for g, v in df.iter_rows())
+    query = f"SELECT * FROM (VALUES {rows}) AS t(g, v)"
+    register_source("_sql_test_trino_median_ref", df)
+    register_source(
+        "_sql_test_trino_median",
+        SQLSource(_trino_connect, dialect="trino", query=query),
+    )
+    client = TestClient(app)
+    dash = Dashboard()
+    dash.add_figure().add_bar(labels="g", values="v", agg="median")
+    state, ev = _event("init", {})
+    want = _post(client, dash, "_sql_test_trino_median_ref", state, ev)
+    got = _post(client, dash, "_sql_test_trino_median", state, ev)
+    assert not _diff(want, got)
+
+
 @pytest.mark.parametrize(
     "column",
     [

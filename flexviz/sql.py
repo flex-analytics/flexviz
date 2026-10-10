@@ -1118,11 +1118,16 @@ def _agg_sql(
             return exp.Anonymous(this="quantileExactInclusive(0.5)", expressions=[v])
         if frame.dialect == "trino":
             # Trino has only approx_percentile: the mean of the middle values of
-            # the sorted group. The array holds the whole group in memory.
-            sorted_v = "array_sort(array_agg(CAST(:v AS double)) FILTER (WHERE :v IS NOT NULL))"
+            # the group, sorted once. The array holds the group in memory. Each
+            # value is halved first only where the sum overflows, so no other
+            # result changes.
+            a = "element_at(s, (cardinality(s) + 1) / 2)"
+            b = "element_at(s, cardinality(s) / 2 + 1)"
             return _trino(
-                f"(element_at({sorted_v}, (cardinality({sorted_v}) + 1) / 2)"
-                f" + element_at({sorted_v}, cardinality({sorted_v}) / 2 + 1)) / 2",
+                "transform(ARRAY[array_sort(array_agg(CAST(:v AS double))"
+                " FILTER (WHERE :v IS NOT NULL))], s ->"
+                f" CASE WHEN is_infinite({a} + {b}) THEN {a} / 2 + {b} / 2"
+                f" ELSE ({a} + {b}) / 2 END)[1]",
                 v=v,
             )
         return exp.PercentileCont(this=v, expression=_num(0.5))
