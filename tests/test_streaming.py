@@ -328,6 +328,83 @@ def test_a_zone_aware_window_spans_the_elapsed_time_across_dst():
     ]
 
 
+def test_a_zone_aware_window_spans_the_repeated_autumn_hour():
+    name = _name()
+    # The last row is 02:45+01:00, in the hour that 2026-10-25 repeats.
+    start = dt.datetime(2026, 10, 25, 0, 45, tzinfo=dt.timezone.utc)
+    df = pl.DataFrame(
+        {
+            "t": pl.datetime_range(
+                start, start + dt.timedelta(hours=1), "1m", eager=True
+            ).dt.convert_time_zone("Europe/Brussels"),
+            "v": [float(i) for i in range(61)],
+        }
+    )
+    register_stream(name, df, order_by="t", window=dt.timedelta(hours=1))
+    dash = Dashboard()
+    dash.add_figure().add_line("t", "v", n_points=1000)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert [y for y in delta["updates"]["y"] if y is not None] == [
+        float(i) for i in range(61)
+    ]
+
+
+@pytest.mark.parametrize("dtype", [pl.UInt8, pl.UInt64])
+def test_an_unsigned_window_longer_than_the_rows(dtype):
+    name = _name()
+    df = pl.DataFrame({"i": pl.Series([0, 1, 2], dtype=dtype), "v": [0.0, 1.0, 2.0]})
+    register_stream(name, df, order_by="i", window=10)
+    dash = Dashboard()
+    dash.add_figure().add_line("i", "v", n_points=50)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert [y for y in delta["updates"]["y"] if y is not None] == [0.0, 1.0, 2.0]
+
+
+def test_a_selection_after_a_lock_rebins_the_background_too():
+    """The lock sends no request, so the next request is the first to bin
+    over the pinned range: background and foreground must share that grid."""
+    name = _name()
+    df = pl.DataFrame(
+        {"i": list(range(100)), "v": [float(k % 7 + 1) for k in range(100)]}
+    )
+    register_stream(name, df, order_by="i")
+    dash = Dashboard()
+    dash.add_figure().add_histogram("i", bins=10)
+    dash.add_figure().add_histogram2d("i", "v", x_bins=10, y_bins=7)
+    spec = dash.to_spec(source_name=name)
+    spec.state.cross_filter_mode = "overlay"
+    source, target = (f.uid for f in spec.figures)
+    for axis, (lo, hi) in {"x": (-0.5, 99.5), "y": (0.5, 7.5)}.items():
+        spec.client_state.axis_locks[f"{target}/{axis}"] = True
+        spec.client_state.axis_lock_ranges[f"{target}/{axis}"] = AxisRange(
+            min=lo, max=hi
+        )
+    spec.state.selections = [
+        SelectionState.model_validate(
+            {
+                "source_figure_uid": source,
+                "predicates": [{"clauses": [{"column": "i", "range": [0, 20]}]}],
+            }
+        )
+    ]
+    with TestClient(app) as client:
+        resp = client.post(
+            "/dashboard/update",
+            json={
+                "spec": spec.model_dump(mode="json"),
+                "event": {"type": "selection", "force_update": True},
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    layers = {d["layer"]: d["updates"] for d in resp.json()["figure_deltas"][target]}
+    assert set(layers) == {"bg", "fg"}
+    assert layers["bg"]["y"] == layers["fg"]["y"]
+
+
 def test_a_nanosecond_window_keeps_the_last_row():
     name = _name()
     df = pl.DataFrame(
