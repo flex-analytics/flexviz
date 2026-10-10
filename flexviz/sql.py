@@ -264,8 +264,8 @@ class SQLFrame:
 
     def phys(self, name: str, dtype: pl.DataType | None) -> exp.Expression:
         """A column in its Polars physical units: epoch units for a temporal
-        column, the raw column otherwise. Grids are arithmetic on these."""
-        c = self.col(name)
+        column, ``num`` otherwise. Grids are arithmetic on these."""
+        c = self.num(name)
         if dtype is None or not dtype.is_temporal():
             return c
         d = self.dialect
@@ -692,7 +692,7 @@ class SQLSource:
             aggs = []
             for i, c in enumerate(missing):
                 dtype = sch.get(c)
-                v: exp.Expression = self.col(c)
+                v = frame.num(c)
                 if dtype is not None and dtype.is_float():
                     v = exp.case().when(frame.usable(c, dtype), v)
                 aggs += [
