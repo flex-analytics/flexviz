@@ -569,6 +569,9 @@ class SQLSource:
             except Exception:
                 # An idle connection can have been dropped (a database restart,
                 # an idle timeout): run the query once more, on a new one.
+                # ponytail: any error retries, so a query that really fails (a
+                # statement timeout) runs twice; test the connection first if
+                # that cost matters.
                 return self._run_on(self._open(), sql)
 
     def _run_on(self, conn: Any, sql: str) -> pl.DataFrame:
