@@ -347,8 +347,13 @@ class SQLFrame:
             return _num(value)
         if isinstance(value, int) and not isinstance(value, bool):
             return _num(value)
-        if isinstance(value, (dt.datetime, dt.date, bool, str, int)):
-            return exp.convert(value)
+        if isinstance(value, dt.datetime) and self.dialect == "clickhouse":
+            # ClickHouse reads a datetime without a zone in the server's zone,
+            # but a naive Polars datetime is UTC, as the driver reads it.
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=dt.timezone.utc)
+            else:
+                value = value.astimezone(dt.timezone.utc)
         return exp.convert(value)
 
     def range_cond(
