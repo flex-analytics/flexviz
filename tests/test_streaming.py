@@ -295,6 +295,30 @@ def test_a_locked_axis_aggregates_over_its_pinned_range(window):
     assert len(xs) == 100  # every locked row, not a 1000-point grid over 10000
 
 
+def test_a_lock_on_another_column_keeps_its_bins():
+    """A pinned histogram range has half-bin padding: as a zoom it would snap
+    to an extra, empty bin. Only an x axis over order_by is pinned."""
+    name = _name()
+    df = pl.DataFrame(
+        {"i": list(range(70)), "v": [float(k % 7 + 1) for k in range(70)]}
+    )
+    register_stream(name, df, order_by="i")
+    dash = Dashboard()
+    dash.add_figure().add_histogram("v", bins=7)
+    spec = dash.to_spec(source_name=name)
+    uid = spec.figures[0].uid
+    with TestClient(app) as client:
+        (before,) = _refresh(client, spec)[uid]
+        xs = before["updates"]["x"]
+        half = (xs[1] - xs[0]) / 2
+        spec.client_state.axis_locks[f"{uid}/x"] = True
+        spec.client_state.axis_lock_ranges[f"{uid}/x"] = AxisRange(
+            min=xs[0] - half, max=xs[-1] + half
+        )
+        (after,) = _refresh(client, spec)[uid]
+    assert after["updates"]["y"] == before["updates"]["y"] == [10] * 7
+
+
 def test_the_stream_keeps_its_own_copy_of_the_first_frame():
     name = _name()
     df = _rows(0, 10)
@@ -328,27 +352,42 @@ def test_a_zone_aware_window_spans_the_elapsed_time_across_dst():
     ]
 
 
-def test_a_zone_aware_window_spans_the_repeated_autumn_hour():
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+@pytest.mark.parametrize("minutes", [60, 30])
+def test_a_zone_aware_window_spans_the_repeated_autumn_hour(unit, minutes):
     name = _name()
-    # The last row is 02:45+01:00, in the hour that 2026-10-25 repeats.
-    start = dt.datetime(2026, 10, 25, 0, 45, tzinfo=dt.timezone.utc)
+    # The last row is 02:15+01:00, in the hour that 2026-10-25 repeats; 30
+    # minutes earlier is 02:45+02:00, which sorts after it as text.
+    start = dt.datetime(2026, 10, 25, 0, 15, tzinfo=dt.timezone.utc)
     df = pl.DataFrame(
         {
             "t": pl.datetime_range(
-                start, start + dt.timedelta(hours=1), "1m", eager=True
+                start, start + dt.timedelta(hours=1), "1m", time_unit=unit, eager=True
             ).dt.convert_time_zone("Europe/Brussels"),
             "v": [float(i) for i in range(61)],
         }
     )
-    register_stream(name, df, order_by="t", window=dt.timedelta(hours=1))
+    register_stream(name, df, order_by="t", window=dt.timedelta(minutes=minutes))
     dash = Dashboard()
     dash.add_figure().add_line("t", "v", n_points=1000)
     spec = dash.to_spec(source_name=name)
     with TestClient(app) as client:
         (delta,) = _refresh(client, spec)[spec.figures[0].uid]
     assert [y for y in delta["updates"]["y"] if y is not None] == [
-        float(i) for i in range(61)
+        float(i) for i in range(60 - minutes, 61)
     ]
+
+
+def test_an_integer_window_is_exact_past_2_53():
+    name = _name()
+    df = pl.DataFrame({"i": [2**53, 2**53 + 1, 2**53 + 2], "v": [0.0, 1.0, 2.0]})
+    register_stream(name, df, order_by="i", window=1)
+    dash = Dashboard()
+    dash.add_figure().add_line("i", "v", n_points=50)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert [y for y in delta["updates"]["y"] if y is not None] == [1.0, 2.0]
 
 
 @pytest.mark.parametrize("dtype", [pl.UInt8, pl.UInt64])
