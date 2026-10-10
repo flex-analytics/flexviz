@@ -156,18 +156,6 @@ def _connector(connection: Any) -> tuple[Callable[[], Any], str | None]:
     )
 
 
-def _dialect_of(conn: Any) -> str | None:
-    """The dialect of an open connection, from its driver module."""
-    module = type(conn).__module__.split(".", 1)[0].lstrip("_")
-    if module in ("psycopg", "psycopg2", "adbc_driver_postgresql"):
-        return "postgres"
-    if module == "clickhouse_connect":
-        return "clickhouse"
-    if module == "duckdb":
-        return "duckdb"
-    return None
-
-
 def _fetch(conn: Any, sql: str) -> pl.DataFrame:
     """Run ``sql`` on one connection, as a Polars frame.
 
@@ -519,16 +507,14 @@ class SQLSource:
         self._minmax_memo: dict[str, tuple[Any, Any]] = {}
         name = dialect or implied
         if name is None:
-            # Open one connection now: it names its driver, and the first query
-            # reuses it.
-            conn = self._open()
-            name = _dialect_of(conn)
-            self._idle.put(conn)
-        name = _DIALECT_ALIASES.get(name, name) if name else None
+            raise ValueError(
+                "A function that opens a connection needs dialect=, one of "
+                f"{list(_DIALECTS)}."
+            )
+        name = _DIALECT_ALIASES.get(name, name)
         if name not in _DIALECTS:
             raise ValueError(
-                f"dialect {name!r} is not supported yet; supported: {list(_DIALECTS)}. "
-                "Pass dialect= if FlexViz could not infer it."
+                f"dialect {name!r} is not supported yet; supported: {list(_DIALECTS)}."
             )
         self.dialect: str = name
         self._table = table

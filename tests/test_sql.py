@@ -886,7 +886,7 @@ def test_sqlsource_export_is_lazy():
 def test_unknown_dialect_is_refused(duck):
     with pytest.raises(ValueError, match="dialect 'oracle' is not supported"):
         SQLSource(duck, table="src", dialect="oracle")
-    with pytest.raises(ValueError, match="dialect None is not supported"):
+    with pytest.raises(ValueError, match="needs dialect="):
         SQLSource(lambda: object(), table="src")
 
 
