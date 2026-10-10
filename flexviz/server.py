@@ -60,7 +60,7 @@ import threading
 import warnings
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -146,6 +146,10 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         # A new registration replaces a stream too; the old handle then
         # refuses appends, so it cannot swap its data back in.
         _streams.pop(name, None)
+        # The registrar declares the contract, so the source learns it here
+        # whoever built the builder.
+        builder.cache = cache
+        set_source_cacheable(name, cache)
         is_reregistration = name in _sources
         if is_reregistration and builder is _sources[name]:
             warnings.warn(
@@ -155,14 +159,8 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
                 UserWarning,
                 stacklevel=2,
             )
-            builder.cache = cache
-            set_source_cacheable(name, cache)
             return
         _sources[name] = builder
-        # The registrar declares the contract, so the source learns it here
-        # whoever built the builder.
-        builder.cache = cache
-        set_source_cacheable(name, cache)
     if is_reregistration:
         # Re-registration may carry new data, so the (now possibly stale)
         # caches are dropped wholesale — keys are hashed and cannot be filtered
@@ -199,8 +197,8 @@ class Stream:
     def append(self, data: Any) -> None:
         """Append rows to the stream.
 
-        ``data`` is anything ``register_source`` accepts; a LazyFrame is
-        collected. The rows must be sorted by ``order_by``, without nulls or
+        ``data`` is a Polars DataFrame or LazyFrame, a pandas DataFrame or
+        an Arrow table; a LazyFrame is collected. The rows must be sorted by ``order_by``, without nulls or
         NaN in it, and start at or after the last row of the stream. Its
         columns must match the stream's names, order and dtypes.
 
@@ -238,7 +236,8 @@ class Stream:
 
 def _collected(data: Any) -> pl.DataFrame:
     if isinstance(data, pl.DataFrame):
-        return data
+        # The caller may extend its frame in place; the stream keeps its own.
+        return data.clone()
     return polars_lf_from(data).collect(engine="streaming")
 
 
@@ -308,8 +307,8 @@ def register_stream(
     name:
         Identifier that clients reference via ``FigureSpec.source``.
     data:
-        The first rows: anything ``register_source`` accepts. A LazyFrame is
-        collected. It can be empty.
+        The first rows: a Polars DataFrame or LazyFrame, a pandas DataFrame
+        or an Arrow table. A LazyFrame is collected. It can be empty.
     order_by:
         The column that orders the rows, such as a timestamp. The rows must be
         sorted by it, without nulls or NaN, and each append must start at or
@@ -483,38 +482,53 @@ def _fill_stream_windows(
     source_map: dict[str | None, LFQueryBuilder | None],
     viewports_by_figure: dict[str, dict[str, Any]],
 ) -> None:
-    """Give an unzoomed, unlocked x axis over a stream's ``order_by`` its window.
+    """Give the unzoomed axes of a stream figure the range they show.
 
-    The range has the form the client sends for a zoom, so the traces
-    aggregate only the window. The request state is not changed, so the
-    client still sees the axis at autorange and Plotly fits it to the data.
-    A locked axis keeps all rows: its pinned range must not go empty.
+    A locked axis gets its pinned range: the client pins only the display, and
+    rows that arrive later must not stretch the grid past it. An unlocked x
+    axis over ``order_by`` gets the window. The range has the form the client
+    sends for a zoom, so the traces aggregate only that range. The request
+    state is not changed, so the client still sees the axis at autorange.
     """
+    client = spec.client_state
     for fig in spec.figures:
-        stream = _streams.get(fig.source) if fig.source is not None else None
-        if stream is None or stream.window is None:
+        stream = _streams.get(fig.source)
+        if stream is None:
+            continue
+        viewport = viewports_by_figure[fig.uid]
+        prefix = f"{fig.uid}/"
+        for key, pinned in client.axis_lock_ranges.items():
+            axis = key.removeprefix(prefix)
+            # The client keys locks by axis family: "x" also covers "x2".
+            if (
+                key.startswith(prefix)
+                and client.axis_locks.get(prefix + axis[0])
+                and viewport.get(axis) is None
+            ):
+                viewport[axis] = pinned.as_tuple()
+        if stream.window is None:
             continue
         # The last row of the builder this request reads, not of the live
         # stream: an append since then must not move the window past the rows.
-        high = (
+        # Polars does the time math, in absolute time across a DST change.
+        last = pl.col(stream.order_by).last()
+        lo, hi = (
             source_map[fig.source]
-            ._ldf.select(pl.col(stream.order_by).last())
+            ._ldf.select((last - stream.window).alias("lo"), last.alias("hi"))
             .collect(engine="in-memory")
-            .item()
+            .row(0)
         )
-        if high is None:
+        if hi is None:
             continue
-        lo, hi = high - stream.window, high
-        if isinstance(high, date):  # also datetime; Python does the time math
-            lo, hi = lo.isoformat(), hi.isoformat()
-        viewport = viewports_by_figure[fig.uid]
+        if isinstance(hi, datetime):
+            # A Python datetime holds microseconds: round the last row up, so
+            # a nanosecond column keeps it.
+            lo, hi = lo.isoformat(), (hi + timedelta(microseconds=1)).isoformat()
         for ts in fig.traces:
             if (
                 ts.axes
                 and ts.backend_data.get("x") == stream.order_by
                 and viewport.get(ts.axes[0]) is None
-                # The client keys locks by axis family: "x" also covers "x2".
-                and not spec.client_state.axis_locks.get(f"{fig.uid}/{ts.axes[0][0]}")
             ):
                 viewport[ts.axes[0]] = (lo, hi)
 
