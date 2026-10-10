@@ -147,8 +147,8 @@ src = fv.SQLSource(
 )
 ```
 
-On Trino, a column of type `uuid`, `time`, `varbinary`, `array`, `map` or `row`
-is not available to charts. Cast it in the query, for example
+On Trino, a column of a type such as `uuid`, `json`, `time`, `varbinary`,
+`array`, `map` or `row` is not available to charts. Cast it in the query, for example
 `CAST(run_id AS varchar) AS run_id`. A timestamp finer than microseconds
 (`timestamp(9)`) is not available either; read it as
 `CAST(ts AS timestamp(6)) AS ts`.
@@ -177,9 +177,11 @@ with these exceptions:
 - On Postgres, a sum of 64-bit integers is exact only up to 2**53.
 - On Postgres, the minimum and the maximum of a text column follow the
   collation of the database.
+- On Trino, a microsecond timestamp bins exactly only from about the year 1700
+  to 2240 (see Limits).
 
-The test suite compares the two for every supported chart on DuckDB, Postgres
-and ClickHouse.
+The test suite compares the two for every supported chart on DuckDB, Postgres,
+ClickHouse and Trino.
 
 ### Supported dialects and charts
 
@@ -217,6 +219,10 @@ have, gives an error when you add the chart, in your own code.
   `ALTER ROLE flexviz_reader SET work_mem = '1GB'`.
 - On Trino, a median (`agg="median"`) sorts the values of each group in
   memory, because Trino has no exact percentile function.
+- On Trino, the epoch microseconds of a `timestamp(6)` are exact from about
+  the year 1700 to 2240. Outside that range (for example a `9999-12-31`
+  sentinel date) a value can be 1 µs or more off, so it can fall in the bin
+  next to its own at a bin edge. The value that a chart shows stays exact.
 - `Dashboard(src, cache=True)` declares that the data does not change while the
   server runs. FlexViz then keeps the column bounds and the first render. Do
   not set it on a table that receives new rows.
