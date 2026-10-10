@@ -149,7 +149,9 @@ src = fv.SQLSource(
 
 On Trino, a column of type `uuid`, `time`, `varbinary`, `array`, `map` or `row`
 is not available to charts. Cast it in the query, for example
-`CAST(run_id AS varchar) AS run_id`.
+`CAST(run_id AS varchar) AS run_id`. A timestamp finer than microseconds
+(`timestamp(9)`) is not available either; read it as
+`CAST(ts AS timestamp(6)) AS ts`.
 
 Use Trino through its catalogs for files and lakehouse tables (Hive, Iceberg,
 Delta Lake). Do not put Trino in front of Postgres to speed it up: Trino's
