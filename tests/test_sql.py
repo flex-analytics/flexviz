@@ -1036,7 +1036,7 @@ def test_cube_request_on_sql_source_returns_empty_bundle(client):
 
 # DuckDB-only cases: Postgres stores microseconds only.
 REAL_CASES = [c for c in CASES if c not in ("hist_ts_ms", "hist_ts_ns")]
-REAL_EVENTS = ("init", "zoom", "values_sel", "compound_sel", "overlay")
+REAL_EVENTS = ("init", "zoom", "values_sel", "temporal_sel", "compound_sel", "overlay")
 REAL_XFAILS: dict[str, dict[tuple[str, str], str]] = {"postgres": {}, "clickhouse": {}}
 # Real databases do not keep the frame's row order: rid restores it, and the
 # reference frame is read back from the database so both sides share dtypes.
