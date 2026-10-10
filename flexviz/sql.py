@@ -535,7 +535,7 @@ class SQLSource:
         return f'WITH "{_SRC}" AS ({self._query}) {body}'
 
     def _open(self) -> Any:
-        """A new connection in autocommit mode.
+        """A new connection, in autocommit mode if FlexViz owns it.
 
         DB-API starts a transaction with the first query. On Postgres an idle
         pooled connection would then sit "idle in transaction" and hold its
@@ -543,12 +543,15 @@ class SQLSource:
         TRUNCATE (a nightly reload) and holds back vacuum.
         """
         conn = self._connect()
-        raw = getattr(conn, "dbapi_connection", conn)
+        if hasattr(conn, "dbapi_connection"):
+            # A SQLAlchemy connection goes back to the app's pool, so it keeps
+            # its mode; ``_run`` ends each query's transaction instead.
+            return conn
         try:
-            if hasattr(raw, "adbc_connection"):
-                raw.adbc_connection.set_autocommit(True)
-            elif hasattr(raw, "autocommit"):
-                raw.autocommit = True
+            if hasattr(conn, "adbc_connection"):
+                conn.adbc_connection.set_autocommit(True)
+            elif hasattr(conn, "autocommit"):
+                conn.autocommit = True
         except Exception:
             pass
         return conn

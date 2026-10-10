@@ -1125,6 +1125,40 @@ def test_postgres_sqlalchemy_engine(postgres_source):
         engine.dispose()
 
 
+def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source):
+    """A connection that goes back to the app's pool is not left in autocommit:
+    a transaction that the app rolls back stays rolled back."""
+    sa = pytest.importorskip("sqlalchemy")
+    pytest.importorskip("psycopg")
+    uri = os.environ[PG_ENV].replace("postgresql://", "postgresql+psycopg://")
+    engine = sa.create_engine(uri, pool_size=1, max_overflow=1)
+    table = f"fv_test_{secrets.token_hex(6)}"
+    src = SQLSource(engine, table=postgres_source._table)
+    try:
+        # psycopg gives no dtypes for an empty result: the schema query runs on
+        # a second connection, which goes back to the pool.
+        assert src.schema == postgres_source.schema
+        with engine.begin() as c:
+            c.exec_driver_sql(f'CREATE TABLE "{table}" (n int)')
+        with pytest.raises(RuntimeError), engine.begin() as c:
+            c.exec_driver_sql(f'INSERT INTO "{table}" VALUES (1)')
+            raise RuntimeError
+        with engine.connect() as c:
+            assert c.exec_driver_sql(f'SELECT count(*) FROM "{table}"').scalar() == 0
+        # The source's own idle connection still holds no table lock.
+        src.physical_minmax(["w"])
+        with engine.begin() as c:
+            c.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
+            c.exec_driver_sql(
+                f'LOCK TABLE "{postgres_source._table}" IN ACCESS EXCLUSIVE MODE'
+            )
+    finally:
+        _close_pool(src)
+        with engine.begin() as c:
+            c.exec_driver_sql(f'DROP TABLE IF EXISTS "{table}"')
+        engine.dispose()
+
+
 # Labels with three decimals, and integers whose bucket width is 3: a numeric
 # column compared or bucketed in decimal instead of as a double moves rows.
 _PG_NUMERIC_QUERY = """SELECT g::double precision AS t, (g % 10)::int AS run_id,
