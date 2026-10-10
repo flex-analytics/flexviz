@@ -456,7 +456,7 @@ class TestPlotlyHtml:
         assert "touchedLockedAxes" in body
         assert "fvApplyAxisLocks" in body
         assert "fvWriteViewport(figUid + '/' + k" in body
-        assert "fvCommitViewportChange(figUid, changed)" in body
+        assert "_fvCommitNavigation(figUid, changed)" in body
         assert "axis_ranges" not in body
 
     def test_panel_reset_preserves_locked_axis_ranges(self, html):
