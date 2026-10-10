@@ -4568,6 +4568,29 @@ class TestTemporalTargetCube:
         )
         assert [None in x for x in exact] == [False, False]
 
+        # A Date x gives the same gaps live as drawn: on fractional days, a
+        # step of exactly 4.1 medians rounds either way.
+        day = page.evaluate(
+            """() => {
+                const base = 18000;
+                const ms = [0, 20, 40, 60, 80, 100, 182, 202];
+                const days = ms.map(o => base + o / 86400000);
+                const cells = [0, 1, 2, 3].map(i => ({
+                    codes: [i], bucketIdx: i,
+                    yMin: 0, xAtYmin: days[2 * i], yMax: 1, xAtYmax: days[2 * i + 1],
+                }));
+                const entry = {targetDims: [
+                    {kind: 'binned', name: 'd', unit: 'day', bins: 4,
+                     domain: [base, base + 1]},
+                ]};
+                const x = window.fvLineEnvDeltaFromCells(
+                    {uid: 'u', params: {}}, cells, entry).updates.x;
+                return [x, window.fvApplyLineGaps(x, x.map(() => 0), true).x];
+            }"""
+        )
+        assert day[0] == day[1]
+        assert None not in day[0]
+
 
 # ---------------------------------------------------------------------------
 # Zoom-key interplay hardening (plan step 7)

@@ -208,23 +208,19 @@ function fvPhysicalToEpochMs(value, unit) {
   return value; // 'ms', or no unit
 }
 
-// A physical value rounded as _fvDimToCenter writes it: to the physical unit,
-// a Date to the ms.
-function _fvDimRound(dim, v) {
-  if (!dim.unit) return v;
-  return dim.unit === 'day' ? Math.round(v * 86400000) / 86400000 : Math.round(v);
+// A temporal dim's physical value → whole epoch µs, rounded in the column's
+// physical unit like the server's centers (a Date center to the ms).
+function _fvDimToUs(dim, v) {
+  if (dim.unit === 'day') return Math.round(v * 86400000) * 1000;
+  return dim.unit === 'us' ? Math.round(v) : Math.round(v) * 1000;
 }
 
 // A target dim's physical value → a drawn data value (bin center, line x). A
-// temporal dim yields a naive datetime string, rounded in the column's
-// physical unit like the server's centers (a Date center to the ms): Plotly
-// places it at its wall-clock time on a date axis, where a bare epoch-ms
-// number would shift by the browser's zone offset.
+// temporal dim yields a naive datetime string (_fvDimToUs): Plotly places it
+// at its wall-clock time on a date axis, where a bare epoch-ms number would
+// shift by the browser's zone offset.
 function _fvDimToCenter(dim, v) {
-  const unit = dim.unit;
-  if (!unit) return v;
-  if (unit === 'day') return _fvUsToDatetime(Math.round(v * 86400000) * 1000);
-  return _fvUsToDatetime(unit === 'us' ? Math.round(v) : Math.round(v) * 1000);
+  return dim.unit ? _fvUsToDatetime(_fvDimToUs(dim, v)) : v;
 }
 
 // Mirror of the trace classes' overlay_style for the engine's active-selection
@@ -996,14 +992,17 @@ function fvApplyLineGaps(x, y, addGaps) {
 // bucket emit the two points (x@ymin, y_min) and (x@ymax, y_max) sorted by x
 // within the bucket (equal x ⇒ ymin first), buckets concatenated by ascending
 // bucket index → {x:[...], y:[...]}. y values are the decoded f32-quantized
-// partials. The cells carry x in the bucket dim's physical unit, so the gaps
-// (fvApplyLineGaps, the trace's add_gaps) are found on those numbers, rounded
-// as they are written, and only the emitted points are formatted
-// (_fvDimToCenter). The delta is marked `gapped`, so the render does not parse
-// the strings back to find them again. The committed /update delta, gapless
-// like every server delta, replaces it.
+// partials. The cells carry x in the bucket dim's physical unit. A temporal x
+// becomes whole epoch µs (_fvDimToUs), the gaps (fvApplyLineGaps, the trace's
+// add_gaps) are found on those numbers, and only the emitted points are
+// formatted. The delta is marked `gapped`, so the render does not parse the
+// strings back to find them again. The committed /update delta, gapless like
+// every server delta, replaces it.
 function lineEnvDeltaFromCells(traceSpec, cells, entry) {
   const bdim = _fvLineEnvBucketDim(entry).dim;
+  // Gaps are found on x as it is written: whole epoch µs, as the render
+  // parses the strings back.
+  const written = bdim.unit ? v => _fvDimToUs(bdim, v) : v => v;
   const sorted = cells.slice().sort((a, b) => a.bucketIdx - b.bucketIdx);
   const xs = [];
   const ys = [];
@@ -1013,7 +1012,7 @@ function lineEnvDeltaFromCells(traceSpec, cells, entry) {
     // Sort the two points by x within the bucket; equal x ⇒ ymin first.
     const first = ptMax.x < ptMin.x ? ptMax : ptMin;
     const second = first === ptMin ? ptMax : ptMin;
-    xs.push(_fvDimRound(bdim, first.x), _fvDimRound(bdim, second.x));
+    xs.push(written(first.x), written(second.x));
     ys.push(first.y, second.y);
   }
   const addGaps = !(traceSpec.params && traceSpec.params.add_gaps === false);
@@ -1021,7 +1020,7 @@ function lineEnvDeltaFromCells(traceSpec, cells, entry) {
   return {
     uid: traceSpec.uid,
     updates: {
-      x: x.map(v => (v === null ? null : _fvDimToCenter(bdim, v))),
+      x: bdim.unit ? x.map(v => (v === null ? null : _fvUsToDatetime(v))) : x,
       y,
       gapped: true,
     },
