@@ -378,6 +378,20 @@ def test_a_zone_aware_window_spans_the_repeated_autumn_hour(unit, minutes):
     ]
 
 
+def test_a_float_window_on_a_decimal_order_by():
+    name = _name()
+    df = pl.DataFrame(
+        {"i": pl.Series([0, 1, 2]).cast(pl.Decimal(10, 2)), "g": ["a", "a", "a"]}
+    )
+    register_stream(name, df, order_by="i", window=1.0)
+    dash = Dashboard()
+    dash.add_figure().add_histogram("i", group_by="g", bins=2)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert sum(delta["group_results"][0]["updates"]["y"]) == 2
+
+
 def test_an_integer_window_is_exact_past_2_53():
     name = _name()
     df = pl.DataFrame({"i": [2**53, 2**53 + 1, 2**53 + 2], "v": [0.0, 1.0, 2.0]})
