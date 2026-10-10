@@ -33,6 +33,7 @@ class TreeMap(FlexTrace):
     """
 
     trace_type: str = "treemap"
+    sql_support = True
     select_policy_doc: str = "categorical — hierarchical path click"
     overlay_style: str = "filtered_only"
 
@@ -138,6 +139,8 @@ class TreeMap(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
         path = self._params["path"]
@@ -147,11 +150,24 @@ class TreeMap(FlexTrace):
         else:
             agg_fn = _AGG_FUNCTIONS[self._params["agg"]]
             agg_expr = agg_fn(values_col).alias(self.uid)
+        plan = None
+        if sql_source:
+            from ..sql import group_agg_plan
+
+            plan = group_agg_plan(
+                self.uid,
+                tuple(path),
+                tuple(path),
+                self._params["agg"],
+                values_col,
+                agg_expr,
+            )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=tuple(path),
             agg_exprs=(agg_expr,),
             sort_cols=tuple(path),
+            plan=plan,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:

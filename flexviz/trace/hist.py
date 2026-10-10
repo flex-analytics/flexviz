@@ -95,7 +95,6 @@ def _streaming_hist_plan(
             raise ValueError(f"histogram bounds are inverted: lo={lo} > hi={hi}")
 
         bin_idx = _fixed_hist_bin_expr(value_expr, lo, hi, bins, "__fv_b")
-        all_bins = pl.DataFrame({"__fv_b": range(bins)}, schema={"__fv_b": pl.Int32})
 
         cols = list(group_cols)
         counted = (
@@ -103,19 +102,31 @@ def _streaming_hist_plan(
             .agg(pl.len().alias("__fv_count"))
             .collect(engine="streaming")
         )
-        # No rows leaves no groups, so the chain returns a zero-row frame of the
-        # right shape and needs no branch of its own.
-        dense = counted.select(cols).unique().join(all_bins, how="cross")
-        return (
-            dense.join(counted, on=[*cols, "__fv_b"], how="left", nulls_equal=True)
-            .sort([*cols, "__fv_b"])
-            .with_columns(pl.col("__fv_count").fill_null(0).cast(pl.UInt32))
-            .group_by(cols, maintain_order=True)
-            .agg(pl.struct(pl.col("__fv_count").alias("count")).alias(uid))
-            .sort(cols)
-        )
+        return _dense_hist_groups(counted, cols, bins, uid)
 
     return run
+
+
+def _dense_hist_groups(
+    counted: pl.DataFrame, cols: list[str], bins: int, uid: str
+) -> pl.DataFrame:
+    """Per-group bin counts as one row per group holding every bin, in order.
+
+    ``counted`` holds ``cols``, ``__fv_b`` and ``__fv_count`` for the non-empty
+    bins. The Polars plan and its SQL twin both end here.
+    """
+    all_bins = pl.DataFrame({"__fv_b": range(bins)}, schema={"__fv_b": pl.Int32})
+    # No rows leaves no groups, so the chain returns a zero-row frame of the
+    # right shape and needs no branch of its own.
+    dense = counted.select(cols).unique().join(all_bins, how="cross")
+    return (
+        dense.join(counted, on=[*cols, "__fv_b"], how="left", nulls_equal=True)
+        .sort([*cols, "__fv_b"])
+        .with_columns(pl.col("__fv_count").fill_null(0).cast(pl.UInt32))
+        .group_by(cols, maintain_order=True)
+        .agg(pl.struct(pl.col("__fv_count").alias("count")).alias(uid))
+        .sort(cols)
+    )
 
 
 class Histogram(FlexTrace):
@@ -143,6 +154,7 @@ class Histogram(FlexTrace):
     """
 
     trace_type: str = "histogram"
+    sql_support = True
     select_policy_doc: str = "data (prop) axis only — orthogonal range dropped"
     recompute_policy_doc: str = (
         "binned axis (x or y by orientation) — re-bins to viewport"
@@ -319,6 +331,7 @@ class Histogram(FlexTrace):
         *,
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
+        sql_source: bool = False,
         **_: Any,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped histogram aggregation spec.
@@ -364,6 +377,25 @@ class Histogram(FlexTrace):
         self._bin_edges = (lo, hi, n_bins)
 
         group_by_cols = self.group_by_cols
+        if sql_source:
+            from ..sql import grouped_hist_plan, hist1d_plan
+
+            zoomed = axis_range is not None
+            if group_by_cols is not None:
+                return GroupedAggregationSpec(
+                    uid=self.uid,
+                    group_cols=group_by_cols,
+                    sort_cols=group_by_cols,
+                    agg_exprs=(),
+                    plan=grouped_hist_plan(
+                        self.data_col, lo, hi, n_bins, self.uid, group_by_cols, zoomed
+                    ),
+                )
+            return AggregationSpec(
+                uid=self.uid,
+                plan=hist1d_plan(self.data_col, lo, hi, n_bins, self.uid, zoomed),
+            )
+
         if group_by_cols is not None:
             # ------------------------------------------------------------------
             # Grouped path: the viewport mask runs as a pre_group_filter, before

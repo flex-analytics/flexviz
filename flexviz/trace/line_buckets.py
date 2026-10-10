@@ -239,6 +239,7 @@ def pairs_plan(
     schema: pl.Schema | None,
     *,
     group_cols: tuple[str, ...] | None = None,
+    sql: bool = False,
 ):
     """Stage 1 of every x-width strategy: the bucket extrema kept as pairs.
 
@@ -254,6 +255,11 @@ def pairs_plan(
     The pair names live only as struct fields: grouped, the frame still carries
     the user's group columns, and a top-level ``x_min`` beside a group column of
     that name would collide.
+
+    With ``sql`` the plan runs on a ``SQLFrame``: the database returns the
+    bucket extrema (``flexviz.sql.bucket_extrema``), and the same code shapes
+    them. ``vp_filter`` is then unused, the SQL twin builds its own from
+    ``x_range``.
     """
     pair_cols = (
         f"{_ALIAS_PREFIX}lo_{x_col}",
@@ -265,8 +271,13 @@ def pairs_plan(
         *(pl.col(c).alias(f) for c, f in zip(pair_cols, _PAIR_FIELDS))
     )
 
+    if sql:
+        from ..sql import bucket_extrema as extrema
+    else:
+        extrema = _bucket_extrema
+
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        result = _bucket_extrema(
+        result = extrema(
             filtered_ldf,
             x_col,
             y_col,

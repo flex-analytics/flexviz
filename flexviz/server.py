@@ -131,7 +131,7 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         _sources[name].cache = cache
         set_source_cacheable(name, cache)
         return
-    if isinstance(data, LFQueryBuilder):
+    if isinstance(data, LFQueryBuilder) or getattr(data, "is_sql", False):
         _sources[name] = data
     else:
         _sources[name] = LFQueryBuilder(polars_lf_from(data))

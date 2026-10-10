@@ -30,6 +30,18 @@ def polars_lf_from(data) -> pl.LazyFrame:
     raise ValueError(f"Unsupported data type: {type(data)}")
 
 
+def as_source(data, cache: bool = False):
+    """The source behind a ``Figure`` or ``Dashboard``.
+
+    A ``flexviz.sql.SQLSource`` is a source already; anything else is data that
+    ``polars_lf_from`` accepts, wrapped in an ``LFQueryBuilder``.
+    """
+    if getattr(data, "is_sql", False):
+        data.cache = cache
+        return data
+    return LFQueryBuilder(polars_lf_from(data), cache=cache)
+
+
 def get_col_name(col: str | pl.Expr) -> str:
     if isinstance(col, str):
         return col
@@ -114,12 +126,12 @@ class AggregationSpec:
     expr: pl.Expr | None = None
     uid: str = ""
     #: Optional escape hatch for an aggregation that cannot be a select
-    #: expression. Called as ``plan(filtered_ldf)`` and must return a one-row
-    #: DataFrame whose single column is aliased to ``uid``, i.e. exactly the
-    #: column the batched ``select`` would have produced. Set only when a spec
-    #: needs a streaming plan or a batch fold that cannot ride the shared
-    #: select.
-    plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
+    #: expression. Called as ``plan(filtered_ldf)`` (on a SQL source with a
+    #: ``flexviz.sql.SQLFrame`` instead) and must return a one-row DataFrame
+    #: whose single column is aliased to ``uid``, i.e. exactly the column the
+    #: batched ``select`` would have produced. Set only when a spec needs a
+    #: streaming plan, a batch fold or SQL that cannot ride the shared select.
+    plan: Callable[[Any], pl.DataFrame] | None = None
 
     def __post_init__(self) -> None:
         if self.expr is None and self.plan is None:
@@ -147,11 +159,13 @@ class GroupedAggregationSpec:
     #: Optional escape hatch for a grouped aggregation that is a whole plan
     #: instead of an expression list. Called as ``plan(batch_ldf)``, where
     #: ``batch_ldf`` already carries the cross-filter and this spec's
-    #: ``pre_group_filters``. It must return a frame with ``group_cols`` plus
-    #: one column named ``uid``, the shape the fused grouped query returns.
-    #: ``agg_exprs`` is ignored when ``plan`` is set, and a plan spec never
-    #: fuses with other grouped specs.
-    plan: Callable[[pl.LazyFrame], pl.DataFrame] | None = None
+    #: ``pre_group_filters``; on a SQL source with a ``flexviz.sql.SQLFrame``
+    #: that carries the cross-filter (a SQL spec has no ``pre_group_filters``).
+    #: It must return a frame with ``group_cols`` plus one column named
+    #: ``uid``, the shape the fused grouped query returns. ``agg_exprs`` is
+    #: ignored when ``plan`` is set, and a plan spec never fuses with other
+    #: grouped specs.
+    plan: Callable[[Any], pl.DataFrame] | None = None
 
 
 class LFQueryBuilder:
@@ -161,6 +175,9 @@ class LFQueryBuilder:
     You can pass both a Polars DataFrame or LazyFrame to initialize the LFQueryBuilder.
     If a DataFrame is passed, it will be converted to a LazyFrame.
     """
+
+    #: ``flexviz.sql.SQLSource`` is the other source kind.
+    is_sql = False
 
     def __init__(
         self,
@@ -333,6 +350,14 @@ class LFQueryBuilder:
         if missing:
             memo.update(self._minmax_collect(self._ldf, missing, sch))
         return {c: memo[c] for c in columns}
+
+    def compile_filter(
+        self, predicates: list[Any], schema: pl.Schema | None
+    ) -> pl.Expr:
+        """One selection's predicates as the filter this source applies."""
+        from .predicates import predicates_to_expr
+
+        return predicates_to_expr(predicates, schema, is_scan=self.is_scan)
 
     # --------------- Handling flags ---------------
 

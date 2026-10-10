@@ -23,7 +23,7 @@ from uuid import uuid4
 
 import polars as pl
 
-from .LF import LFQueryBuilder, polars_lf_from
+from .LF import LFQueryBuilder, as_source, polars_lf_from
 from .spec import DashboardSpec, FigureSpec, VisualizationSpec
 from .trace.bar import BarPlot
 from .trace.base import FlexTrace, _composite_label
@@ -164,7 +164,7 @@ class Figure:
         self._cache_enabled: bool = cache
         self._backend_lf: LFQueryBuilder | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
+            self._backend_lf = as_source(data, cache=cache)
 
         self._uid: str = str(uuid4())
         self._traces: list[FlexTrace] = []
@@ -178,6 +178,11 @@ class Figure:
     def _add_trace(self, trace: FlexTrace) -> Figure:
         """Assign a uid and register a trace."""
         trace.uid = str(uuid4())
+        # A database source checks here, so a chart it cannot run fails in the
+        # user's code instead of as a 500 in the browser. The check reads only
+        # the schema; on a frame it can read data, so it waits for a request.
+        if getattr(self._backend_lf, "is_sql", False):
+            trace.check_source(self._backend_lf)
         self._traces.append(trace)
         return self
 
@@ -833,7 +838,11 @@ class Figure:
         fig._uid = spec.figure.uid
         # A spec carries no cache opt-in; ``show(cache=...)`` still overrides.
         fig._cache_enabled = False
-        if backend_lf is not None and not isinstance(backend_lf, LFQueryBuilder):
+        if (
+            backend_lf is not None
+            and not isinstance(backend_lf, LFQueryBuilder)
+            and not getattr(backend_lf, "is_sql", False)
+        ):
             fig._backend_lf = LFQueryBuilder(
                 polars_lf_from(backend_lf), cache=fig._cache_enabled
             )

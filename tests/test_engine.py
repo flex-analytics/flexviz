@@ -2305,9 +2305,9 @@ class TestEngineSelectionFilterExprs:
         Patching the compiler is the smallest hook that sees both the routing
         keyword and the expression the engine actually applies.
         """
-        import flexviz.engine as engine_mod
+        import flexviz.predicates as predicates_mod
 
-        real = engine_mod.predicates_to_expr
+        real = predicates_mod.predicates_to_expr
         compiled: list[str] = []
 
         def spy(predicates, schema, *, is_scan=False):
@@ -2315,7 +2315,7 @@ class TestEngineSelectionFilterExprs:
             compiled.append(str(expr))
             return expr
 
-        monkeypatch.setattr(engine_mod, "predicates_to_expr", spy)
+        monkeypatch.setattr(predicates_mod, "predicates_to_expr", spy)
 
         lf = LFQueryBuilder(source)
         src = BarPlot(labels="country", values="v", agg="sum")

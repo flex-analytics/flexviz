@@ -76,6 +76,7 @@ class BarPlot(FlexTrace):
     """
 
     trace_type: str = "bar"
+    sql_support = True
     select_policy_doc: str = "categorical — label click (not a box-range)"
 
     def __init__(
@@ -236,6 +237,8 @@ class BarPlot(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
         """Return a grouped aggregation spec for ``group_by().agg().sort()``."""
@@ -254,11 +257,19 @@ class BarPlot(FlexTrace):
             group_cols = label_cols
             sort_cols = label_cols
 
+        plan = None
+        if sql_source:
+            from ..sql import group_agg_plan
+
+            plan = group_agg_plan(
+                self.uid, group_cols, sort_cols, self.agg, self.values_col, agg_expr
+            )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=group_cols,
             agg_exprs=(agg_expr,),
             sort_cols=sort_cols,
+            plan=plan,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
