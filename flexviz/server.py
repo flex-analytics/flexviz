@@ -479,16 +479,19 @@ def _viewports_by_figure(
 
 def _fill_stream_windows(
     spec: DashboardSpec,
+    event: InteractionEvent,
     source_map: dict[str | None, LFQueryBuilder | None],
     viewports_by_figure: dict[str, dict[str, Any]],
 ) -> None:
     """Give the unzoomed axes of a stream figure the range they show.
 
     A locked axis gets its pinned range: the client pins only the display, and
-    rows that arrive later must not stretch the grid past it. An unlocked x
-    axis over ``order_by`` gets the window. The range has the form the client
-    sends for a zoom, so the traces aggregate only that range. The request
-    state is not changed, so the client still sees the axis at autorange.
+    rows that arrive later must not stretch the grid past it. The lock sends no
+    request, so the axis is also listed as changed: the background then gets
+    the pinned grid with the foreground. An unlocked x axis over ``order_by``
+    gets the window. The range has the form the client sends for a zoom, so
+    the traces aggregate only that range. The request state is not changed, so
+    the client still sees the axis at autorange.
     """
     client = spec.client_state
     for fig in spec.figures:
@@ -506,24 +509,30 @@ def _fill_stream_windows(
                 and viewport.get(axis) is None
             ):
                 viewport[axis] = pinned.as_tuple()
+                event.viewport_keys.append(key)
         if stream.window is None:
             continue
         # The last row of the builder this request reads, not of the live
         # stream: an append since then must not move the window past the rows.
-        # Polars does the time math, in absolute time across a DST change.
         last = pl.col(stream.order_by).last()
+        if isinstance(stream.window, timedelta):
+            # Polars does the time math in absolute time, so it holds across a
+            # DST change. A Python datetime holds microseconds, so the upper
+            # bound rounds up to keep the last row of a nanosecond column.
+            bounds = (last - stream.window, last + timedelta(microseconds=1))
+        else:
+            # Float, so an unsigned column does not wrap below 0.
+            bounds = (last.cast(pl.Float64) - stream.window, last)
         lo, hi = (
             source_map[fig.source]
-            ._ldf.select((last - stream.window).alias("lo"), last.alias("hi"))
+            ._ldf.select(bounds[0].alias("lo"), bounds[1].alias("hi"))
             .collect(engine="in-memory")
             .row(0)
         )
         if hi is None:
             continue
         if isinstance(hi, datetime):
-            # A Python datetime holds microseconds: round the last row up, so
-            # a nanosecond column keeps it.
-            lo, hi = lo.isoformat(), (hi + timedelta(microseconds=1)).isoformat()
+            lo, hi = lo.isoformat(), hi.isoformat()
         for ts in fig.traces:
             if (
                 ts.axes
@@ -910,7 +919,7 @@ async def dashboard_update(
             uid_to_fig_uid[trace.uid] = fig_spec.uid
 
     viewports_by_figure = _viewports_by_figure(req.spec.state, req.spec.figures)
-    _fill_stream_windows(req.spec, source_map, viewports_by_figure)
+    _fill_stream_windows(req.spec, event, source_map, viewports_by_figure)
 
     # -- cube path: assemble cubes for the active source's figure; no deltas.
     #    The response is a binary cube bundle, not JSON deltas. ----------------
