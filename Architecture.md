@@ -1012,7 +1012,11 @@ SQLSource
   Polars plan's arithmetic in SQL, on the column's physical units (epoch units
   per dialect for a temporal column). A float literal is written in exponent
   form: DuckDB reads a plain decimal literal as an exact `DECIMAL` and rounds it
-  to a double one ulp off, which moved a domain-minimum row to bucket -1.
+  to a double one ulp off, which moved a domain-minimum row to bucket -1. It
+  is also cast to a non-nullable double: Postgres reads an exponent literal as
+  `numeric`, so a `numeric` column would compare and bucket in decimal, not as
+  the double that Polars uses. A nullable cast made a ClickHouse bucket query
+  2.5 times slower.
 - **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
   renders literals per dialect. Five functions differ in meaning and are
   defined per dialect: physical units (`phys`), usable rows (`usable`, NaN
@@ -1034,7 +1038,9 @@ SQLSource
   the server's lifetime. A connection that fails a query is closed. Arrow
   drivers (ADBC, DuckDB) keep column types in an empty result; for row drivers
   the schema comes from the cursor description (Postgres OIDs, ClickHouse type
-  names).
+  names). Postgres `numeric` reads as Float64 on every driver: the OID map
+  says so for row drivers, and ADBC, which sends `numeric` as text, gets those
+  columns cast after the fetch.
 - **Postgres x at an extremum.** The array form returns x as a double, exact
   below 2**53. A 64-bit integer or nanosecond x takes
   `(array_agg(x ORDER BY y, x))[1]` instead, which keeps its type.
