@@ -949,13 +949,13 @@ function fvLineEnvCells(entry, binRanges) {
 }
 
 // Project a line-x value to a number for gap diffing. Numbers pass through;
-// ISO / Plotly date strings parse via fvTemporalToPhysical. The UNIT is
-// irrelevant — gap detection is a ratio (diff > 4.1 * median), so any
-// consistent monotonic projection yields the same gaps; 'ms' is arbitrary.
+// ISO / Plotly date strings parse via fvTemporalToPhysical to integral epoch
+// µs, exact below 2**53 (year 2255). Fractional epoch ms would round µs steps,
+// and gap detection compares their ratio (diff > 4.1 * median).
 function fvLineGapXToNumber(v) {
   if (typeof v === 'number') return v;
   if (v == null) return NaN;
-  return fvTemporalToPhysical(v, 'ms');
+  return fvTemporalToPhysical(v, 'us');
 }
 
 // Insert a null (x, y) break wherever the gap between consecutive x exceeds

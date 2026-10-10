@@ -4544,6 +4544,17 @@ class TestTemporalTargetCube:
         assert got["x"].count(None) == 1
         assert got["x"] == got["again"]
 
+        # Written µs strings diff exactly: steps of 1, 4 and 1 µs are no gap
+        # (4 < 4.1 x the median), as on the physical numbers.
+        drawn = page.evaluate(
+            """() => {
+                const xs = [1, 2, 6, 7].map(
+                    o => '2020-01-01 00:00:00.' + String(o).padStart(6, '0'));
+                return window.fvApplyLineGaps(xs, xs.map(() => 0), true).x;
+            }"""
+        )
+        assert None not in drawn
+
 
 # ---------------------------------------------------------------------------
 # Zoom-key interplay hardening (plan step 7)
