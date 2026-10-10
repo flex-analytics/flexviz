@@ -44,11 +44,7 @@ from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bou
 
 #: The dialects whose SQL has run against a real database in the test suite.
 _DIALECTS = ("postgres", "duckdb", "clickhouse")
-_DIALECT_ALIASES = {
-    "postgresql": "postgres",
-    "psycopg": "postgres",
-    "psycopg2": "postgres",
-}
+_DIALECT_ALIASES = {"postgresql": "postgres"}
 
 # Every column a plan adds carries this prefix, like the Polars plans.
 _P = "__fv_"
@@ -258,9 +254,6 @@ class SQLFrame:
 
     source: SQLSource
     where: tuple[exp.Expression, ...] = ()
-
-    def filter(self, *conds: exp.Expression) -> SQLFrame:
-        return SQLFrame(self.source, self.where + tuple(conds))
 
     @property
     def dialect(self) -> str:
@@ -519,11 +512,6 @@ class SQLSource:
         what = f"table={self._table!r}" if self._table else "query=..."
         return f"SQLSource({self.dialect}, {what})"
 
-    @property
-    def static(self) -> bool:
-        """Whether the data cannot change: only what the registrar declared."""
-        return self.cache
-
     # -- execution -----------------------------------------------------------
 
     def _sql(self, select: exp.Select) -> str:
@@ -629,9 +617,6 @@ class SQLSource:
 
     # -- the source surface the engine uses ----------------------------------
 
-    def check_line_x(self, col_name: str) -> None:
-        """Nothing to check: a SQL plan reads x in no order."""
-
     def assume_sorted(self, col_name: str) -> None:
         """Order does not matter to a SQL plan, so the promise is not needed."""
 
@@ -685,11 +670,11 @@ class SQLSource:
     ) -> dict[str, tuple[Any, Any]]:
         """``(min, max)`` per column in physical units, in one query.
 
-        NaN is left out, as Polars' min and max leave it out. A ``static``
-        source keeps the unfiltered result, like ``LFQueryBuilder``.
+        NaN is left out, as Polars' min and max leave it out. With ``cache``
+        the source keeps the unfiltered result, like ``LFQueryBuilder``.
         """
         sch = schema if schema is not None else self.schema
-        memo = self._minmax_memo if self.static and not filter_exprs else {}
+        memo = self._minmax_memo if self.cache and not filter_exprs else {}
         missing = list(dict.fromkeys(c for c in columns if c not in memo))
         if missing:
             frame = SQLFrame(self, tuple(filter_exprs))
@@ -734,16 +719,8 @@ class SQLSource:
                     f"trace {spec.uid!r} has no SQL formulation for this source"
                 )
 
-        def run(spec: AggregationSpec | GroupedAggregationSpec) -> pl.DataFrame:
-            if isinstance(spec, GroupedAggregationSpec) and spec.pre_group_filters:
-                return spec.plan(frame.filter(*spec.pre_group_filters))
-            return spec.plan(frame)
-
-        if len(agg_specs) > 1:
-            with ThreadPoolExecutor(max_workers=self.max_connections) as pool:
-                results = list(pool.map(run, agg_specs))
-        else:
-            results = [run(s) for s in agg_specs]
+        with ThreadPoolExecutor(max_workers=self.max_connections) as pool:
+            results = list(pool.map(lambda spec: spec.plan(frame), agg_specs))
 
         regular_df = pl.DataFrame()
         grouped_dfs: dict[str, pl.DataFrame] = {}
