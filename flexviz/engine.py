@@ -380,7 +380,7 @@ class FlexEngine:
         if (
             self._backend_lf is None
             or self._source_name is None
-            or getattr(self._backend_lf, "is_sql", False)
+            or self._backend_lf.is_sql
         ):
             return [], {}
 
@@ -971,7 +971,7 @@ class FlexEngine:
                     domains=trace_domains,
                     scan_source=lf is not None and lf.is_scan,
                     sorted_cols=lf.sorted_cols if lf is not None else frozenset(),
-                    sql_source=getattr(lf, "is_sql", False),
+                    sql_source=lf is not None and lf.is_sql,
                 )
             )
 

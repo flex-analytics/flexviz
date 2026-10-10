@@ -628,7 +628,7 @@ class LinePlot(FlexTrace):
         """
         super().check_source(source)
         self.check_schema(source.schema)
-        if getattr(source, "is_sql", False) and not self._x_width:
+        if source.is_sql and not self._x_width:
             raise ValueError(
                 "downsample='nth' cannot run on a SQL source: a database has no "
                 "row order to stride. Use 'minmax', 'lttb' or 'fpcs'."
