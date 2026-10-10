@@ -438,11 +438,13 @@ class SQLFrame:
 
 
 def _drop_final_semicolon(query: str, dialect: str) -> str:
-    """``query`` without a final ``;``, which cannot stand inside ``WITH``.
-    A comment after it stays: the dialect's tokens tell code from comment."""
+    """``query`` without its final ``;`` tokens, which cannot stand inside
+    ``WITH``. A comment after them stays: the dialect's tokens tell code from
+    comment."""
     tokens = Dialect.get_or_raise(dialect).tokenize(query)
-    if tokens and tokens[-1].token_type == TokenType.SEMICOLON:
-        return query[: tokens[-1].start] + query[tokens[-1].end + 1 :]
+    while tokens and tokens[-1].token_type == TokenType.SEMICOLON:
+        last = tokens.pop()
+        query = query[: last.start] + query[last.end + 1 :]
     return query
 
 
