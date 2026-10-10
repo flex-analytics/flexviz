@@ -378,18 +378,23 @@ def test_a_zone_aware_window_spans_the_repeated_autumn_hour(unit, minutes):
     ]
 
 
-def test_a_float_window_on_a_decimal_order_by():
+@pytest.mark.parametrize(
+    ("values", "window", "count"),
+    [([0, 1, 2], 1.0, 2), ([2**53 + 2, 2**53 + 3], 1, 2)],
+    ids=["float_window", "exact_past_2_53"],
+)
+def test_a_window_on_a_decimal_order_by(values, window, count):
     name = _name()
     df = pl.DataFrame(
-        {"i": pl.Series([0, 1, 2]).cast(pl.Decimal(10, 2)), "g": ["a", "a", "a"]}
+        {"i": pl.Series(values).cast(pl.Decimal(38, 0)), "g": ["a"] * len(values)}
     )
-    register_stream(name, df, order_by="i", window=1.0)
+    register_stream(name, df, order_by="i", window=window)
     dash = Dashboard()
     dash.add_figure().add_histogram("i", group_by="g", bins=2)
     spec = dash.to_spec(source_name=name)
     with TestClient(app) as client:
         (delta,) = _refresh(client, spec)[spec.figures[0].uid]
-    assert sum(delta["group_results"][0]["updates"]["y"]) == 2
+    assert sum(delta["group_results"][0]["updates"]["y"]) == count
 
 
 def test_an_integer_window_is_exact_past_2_53():
