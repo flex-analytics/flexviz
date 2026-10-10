@@ -402,7 +402,7 @@ class SQLFrame:
             isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
         )
         y_fits = y_dtype is not None and (
-            y_dtype.is_float() or y_dtype in _INT32_OR_SMALLER
+            y_dtype.is_float() or y_dtype in (pl.Boolean, pl.Int8, pl.Int16, pl.Int32)
         )
         if x_fits and y_fits:
             dbl = exp.DataType.Type.DOUBLE
@@ -435,18 +435,6 @@ class SQLFrame:
             this=exp.Paren(this=ordered), expressions=[exp.Literal.number(0)]
         )
         return first, agg(this=y.copy())
-
-
-#: The integer dtypes a double holds exactly.
-_INT32_OR_SMALLER = (
-    pl.Boolean,
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-)
 
 
 def _drop_final_semicolon(query: str, dialect: str) -> str:
@@ -606,6 +594,10 @@ class SQLSource:
             return df.schema
         # A driver that returns rows has nothing to infer from in an empty
         # result. A Postgres driver still describes each column by type OID.
+        if self.dialect != "postgres":
+            raise TypeError(
+                "The driver returned no column types. Use an Arrow driver (ADBC)."
+            )
         with self._slots:
             conn = self._open()
             try:
@@ -614,10 +606,6 @@ class SQLSource:
                 desc = cur.description
             finally:
                 _close(conn)
-        if self.dialect != "postgres":
-            raise TypeError(
-                "The driver returned no column types. Use an Arrow driver (ADBC)."
-            )
         return pl.Schema({d[0]: _PG_OIDS.get(int(d[1]), pl.String()) for d in desc})
 
     def col(self, name: str) -> exp.Column:
