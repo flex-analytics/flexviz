@@ -572,18 +572,26 @@ class SQLSource:
             try:
                 conn = self._idle.get_nowait()
             except queue.Empty:
-                conn = self._open()
+                return self._run_on(self._open(), sql)
             try:
-                df = _fetch(conn, sql)
-                raw = getattr(conn, "dbapi_connection", conn)
-                if getattr(raw, "autocommit", True) is False:
-                    # The driver kept its transaction: end it before idling.
-                    raw.rollback()
-            except BaseException:
-                # A failed connection can be broken; the next query opens a new one.
-                _close(conn)
-                raise
-            self._idle.put(conn)
+                return self._run_on(conn, sql)
+            except Exception:
+                # An idle connection can have been dropped (a database restart,
+                # an idle timeout): run the query once more, on a new one.
+                return self._run_on(self._open(), sql)
+
+    def _run_on(self, conn: Any, sql: str) -> pl.DataFrame:
+        try:
+            df = _fetch(conn, sql)
+            raw = getattr(conn, "dbapi_connection", conn)
+            if getattr(raw, "autocommit", True) is False:
+                # The driver kept its transaction: end it before idling.
+                raw.rollback()
+        except BaseException:
+            # A failed connection can be broken; the next query opens a new one.
+            _close(conn)
+            raise
+        self._idle.put(conn)
         return df
 
     @cached_property

@@ -1128,6 +1128,20 @@ def test_postgres_pool_holds_no_table_lock(postgres_source):
         conn.rollback()
 
 
+def test_postgres_replaces_a_dropped_idle_connection(postgres_source):
+    """A database restart or an idle timeout drops a pooled connection: the
+    next query runs on a new one instead of failing."""
+    adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
+    src = SQLSource(os.environ[PG_ENV], table=postgres_source._table)
+    try:
+        pid = src._run(exp.select(exp.func("pg_backend_pid")).limit(1)).item()
+        with adbc.connect(os.environ[PG_ENV]) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
+        assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
+    finally:
+        _close_pool(src)
+
+
 def test_postgres_sqlalchemy_engine(postgres_source):
     """A SQLAlchemy engine: psycopg returns no dtypes for an empty result, so
     the schema comes from the Postgres type OIDs."""
