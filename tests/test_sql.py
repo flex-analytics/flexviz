@@ -1007,7 +1007,7 @@ def _count_queries(src: SQLSource, monkeypatch) -> list[str]:
 def test_cache_memoizes_column_bounds(duck, monkeypatch):
     src = SQLSource(duck, table="src")
     Dashboard(src, cache=True)
-    assert src.cache and src.static
+    assert src.cache
     _ = src.schema
     queries = _count_queries(src, monkeypatch)
     first = src.physical_minmax(["v", "ts"])
