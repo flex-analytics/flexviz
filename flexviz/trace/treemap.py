@@ -150,28 +150,24 @@ class TreeMap(FlexTrace):
         else:
             agg_fn = _AGG_FUNCTIONS[self._params["agg"]]
             agg_expr = agg_fn(values_col).alias(self.uid)
+        plan = None
         if sql_source:
             from ..sql import group_agg_plan
 
-            return GroupedAggregationSpec(
-                uid=self.uid,
-                group_cols=tuple(path),
-                agg_exprs=(),
-                sort_cols=tuple(path),
-                plan=group_agg_plan(
-                    self.uid,
-                    tuple(path),
-                    tuple(path),
-                    self._params["agg"],
-                    values_col,
-                    agg_expr,
-                ),
+            plan = group_agg_plan(
+                self.uid,
+                tuple(path),
+                tuple(path),
+                self._params["agg"],
+                values_col,
+                agg_expr,
             )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=tuple(path),
             agg_exprs=(agg_expr,),
             sort_cols=tuple(path),
+            plan=plan,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:

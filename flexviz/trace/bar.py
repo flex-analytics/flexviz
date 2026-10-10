@@ -257,23 +257,19 @@ class BarPlot(FlexTrace):
             group_cols = label_cols
             sort_cols = label_cols
 
+        plan = None
         if sql_source:
             from ..sql import group_agg_plan
 
-            return GroupedAggregationSpec(
-                uid=self.uid,
-                group_cols=group_cols,
-                agg_exprs=(),
-                sort_cols=sort_cols,
-                plan=group_agg_plan(
-                    self.uid, group_cols, sort_cols, self.agg, self.values_col, agg_expr
-                ),
+            plan = group_agg_plan(
+                self.uid, group_cols, sort_cols, self.agg, self.values_col, agg_expr
             )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=group_cols,
             agg_exprs=(agg_expr,),
             sort_cols=sort_cols,
+            plan=plan,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
