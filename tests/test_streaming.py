@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import threading
 import uuid
+from fractions import Fraction
 
 import polars as pl
 import pytest
@@ -380,8 +381,12 @@ def test_a_zone_aware_window_spans_the_repeated_autumn_hour(unit, minutes):
 
 @pytest.mark.parametrize(
     ("values", "window", "count"),
-    [([0, 1, 2], 1.0, 2), ([2**53 + 2, 2**53 + 3], 1, 2)],
-    ids=["float_window", "exact_past_2_53"],
+    [
+        ([0, 1, 2], 1.0, 2),
+        ([0, 1, 2], Fraction(1, 2), 1),
+        ([2**53 + 2, 2**53 + 3], 1, 2),
+    ],
+    ids=["float_window", "fraction_window", "exact_past_2_53"],
 )
 def test_a_window_on_a_decimal_order_by(values, window, count):
     name = _name()

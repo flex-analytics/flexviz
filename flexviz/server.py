@@ -538,13 +538,14 @@ def _stream_window(stream: Stream, builder: LFQueryBuilder) -> tuple[Any, Any] |
     if not isinstance(stream.window, timedelta):
         # Python math: exact on integers, and no unsigned wrap below 0 (the
         # range filter clamps that bound). A Decimal takes the window as a
-        # Decimal, so it stays exact too.
+        # Decimal, exact to the default 28 digits.
         hi = builder._ldf.select(last).collect(engine="in-memory").item()
         if hi is None:
             return None
         window = stream.window
         if isinstance(hi, Decimal):
-            window = Decimal(str(window))
+            integral = isinstance(window, numbers.Integral)
+            window = Decimal(str(window if integral else float(window)))
         return hi - window, hi
     # Polars does the time math in absolute time, so it holds across a DST
     # change. A Python datetime holds microseconds, so the upper bound rounds
