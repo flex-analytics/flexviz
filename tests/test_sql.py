@@ -162,6 +162,9 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         LINE_TS_ZOOM,
     ),
     "line_dec_y": (_add("add_line", x="t", y="dec", n_points=300), LINE_T_ZOOM),
+    # Postgres holds no 64-bit integer past 2**53 or timestamp as a double.
+    "line_big_y": (_add("add_line", x="t", y="big", n_points=300), LINE_T_ZOOM),
+    "line_ts_y": (_add("add_line", x="t", y="ts", n_points=300), LINE_T_ZOOM),
     "line_nan_y": (_add("add_line", x="t", y="vn", n_points=300), LINE_T_ZOOM),
     "line_grouped_int": (
         _add("add_line", x="t", y="w", n_points=300, group_by="g"),
@@ -1177,15 +1180,28 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
 
 
 _k = np.arange(200)
-# Line y columns the Postgres array form cannot hold as a double. Each frame has
-# no y tie in a bucket, so the x at an extremum is unique.
+# Line y columns the Postgres array form cannot hold as a double, and the
+# n_points. Each frame has no y tie in a bucket, so the x at an extremum is unique.
 _PG_LINE_Y = {
     # One True and one False per bucket.
-    "bool": pl.DataFrame(
-        {
-            "x": np.ravel(np.column_stack([2.0 * _k, 2.0 * _k + 0.001])),
-            "y": np.tile([True, False], 200),
-        }
+    "bool": (
+        pl.DataFrame(
+            {
+                "x": np.ravel(np.column_stack([2.0 * _k, 2.0 * _k + 0.001])),
+                "y": np.tile([True, False], 200),
+            }
+        ),
+        400,
+    ),
+    # One bucket: as doubles, the first two y values tie.
+    "int64": (
+        pl.DataFrame(
+            {
+                "x": pl.Series([0, 1, 2], dtype=pl.Int32),
+                "y": [2**53 + 1, 2**53, 2**53 + 2],
+            }
+        ),
+        2,
     ),
 }
 
@@ -1196,7 +1212,7 @@ def test_postgres_line_y_types(frame):
     if not uri:
         pytest.skip(f"set {PG_ENV} to run against Postgres")
     adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
-    df = _PG_LINE_Y[frame]
+    df, n_points = _PG_LINE_Y[frame]
     table = f"fv_test_{secrets.token_hex(6)}"
     with adbc.connect(uri) as conn:
         with conn.cursor() as cur:
@@ -1209,7 +1225,7 @@ def test_postgres_line_y_types(frame):
         register_source(name, src)
         client = TestClient(app)
         dash = Dashboard()
-        dash.add_figure().add_line(x="x", y="y", n_points=400)
+        dash.add_figure().add_line(x="x", y="y", n_points=n_points)
         want = _post(client, dash, name + "_ref", {}, SELECT)
         got = _post(client, dash, name, {}, SELECT)
         assert all(want.values())

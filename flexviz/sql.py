@@ -755,6 +755,17 @@ class SQLSource:
 # ---------------------------------------------------------------------------
 
 
+_INT32_OR_SMALLER = (
+    pl.Boolean,
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+)
+
+
 def _cast_like(df: pl.DataFrame, dtypes: dict[str, pl.DataType]) -> pl.DataFrame:
     """Cast the result columns to the dtypes the Polars path produces."""
     return df.with_columns(
@@ -805,9 +816,14 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
-    # The Postgres array form needs x as a double, exact only below 2**53.
-    exact = x_dtype in (pl.Int64, pl.UInt64) or (
-        isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
+    # The Postgres array form holds x and y as doubles: x is exact only below
+    # 2**53, and y must be a float or an integer of at most 32 bits.
+    exact = (
+        x_dtype in (pl.Int64, pl.UInt64)
+        or (isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns")
+        or not (
+            y_dtype is not None and (y_dtype.is_float() or y_dtype in _INT32_OR_SMALLER)
+        )
     )
     array_form = frame.dialect == "postgres" and not exact
     x_arg = frame.phys(x_col, x_dtype) if array_form else frame.col(x_col)
