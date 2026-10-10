@@ -198,28 +198,24 @@ class PiePlot(FlexTrace):
             agg_fn = _AGG_FUNCTIONS[self.agg]
             agg_expr = agg_fn(self.values_col).alias(self.uid)
 
+        plan = None
         if sql_source:
             from ..sql import group_agg_plan
 
-            return GroupedAggregationSpec(
-                uid=self.uid,
-                group_cols=self.label_cols,
-                agg_exprs=(),
-                sort_cols=self.label_cols,
-                plan=group_agg_plan(
-                    self.uid,
-                    self.label_cols,
-                    self.label_cols,
-                    self.agg,
-                    self.values_col,
-                    agg_expr,
-                ),
+            plan = group_agg_plan(
+                self.uid,
+                self.label_cols,
+                self.label_cols,
+                self.agg,
+                self.values_col,
+                agg_expr,
             )
         return GroupedAggregationSpec(
             uid=self.uid,
             group_cols=self.label_cols,
             agg_exprs=(agg_expr,),
             sort_cols=self.label_cols,
+            plan=plan,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
