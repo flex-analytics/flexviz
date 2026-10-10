@@ -983,7 +983,7 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 ### SQL sources
 
 `SQLSource` in `sql.py` is the second source kind. The data stays in a database
-(Postgres, DuckDB or ClickHouse), and each trace aggregation runs there as one
+(Postgres, DuckDB, ClickHouse or Trino), and each trace aggregation runs there as one
 SQL query. It offers the surface the engine and the server use of an
 `LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
 true: a plan reads rows in no order), `physical_minmax`, `compile_filter` and
@@ -993,8 +993,8 @@ server stores it in `_sources` like a builder, and `Figure`, `Dashboard` and
 
 ```
 SQLSource
-├── dialect                     ← "postgres" | "duckdb" | "clickhouse", inferred from a URI, an engine or a DuckDB connection; dialect= for a function
-├── schema                      ← Polars schema of `SELECT * ... LIMIT 0` (Postgres OIDs when the driver returns rows)
+├── dialect                     ← "postgres" | "duckdb" | "clickhouse" | "trino", inferred from a URI, an engine or a DuckDB connection; dialect= for a function
+├── schema                      ← Polars schema of `SELECT * ... LIMIT 0` (Postgres OIDs, ClickHouse or Trino type names when the driver returns rows)
 ├── compile_filter(predicates)  ← twin of `predicates_to_expr`: the same typed bounds, as a SQLGlot condition
 ├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
 └── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
@@ -1018,20 +1018,46 @@ SQLSource
   `numeric`, so a `numeric` column would compare and bucket in decimal, not as
   the double that Polars uses. A nullable cast made a ClickHouse bucket query
   2.5 times slower.
+  A plan groups by the bucket expression, not by its alias: Trino cannot see
+  a select alias in `GROUP BY`, and Postgres and ClickHouse make the same plan
+  for both forms.
 - **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
   renders literals per dialect. These functions differ in meaning and are
   defined per dialect: physical units (`phys`), NaN (`nan`, used by `usable`
   for the rows a bin takes), a value column as a number (`num`), integer
   division (`int_div`), the x at a y extremum
-  (`extreme_by`: `arg_min` in DuckDB and ClickHouse; on Postgres the smallest
-  `ARRAY[y, x]`, which was faster on 5M rows than `array_agg ORDER BY`,
+  (`extreme_by`: `arg_min` in DuckDB and ClickHouse, `min_by` in Trino; on
+  Postgres the smallest `ARRAY[y, x]`, which was faster on 5M rows than `array_agg ORDER BY`,
   `DISTINCT ON` and window functions) and typed literals (`lit`; on
   ClickHouse a datetime is written in UTC, because ClickHouse reads a datetime
   without a zone in the server's zone, and the driver reads values as UTC).
+  On a y tie, `arg_min` and `min_by` keep any row of the tie: a
+  `ROW(y, x)` key made the Trino line query 3 times slower on 100M rows.
+  One more function switches on the dialect outside `SQLFrame`: the median in
+  `_agg_sql` (`quantileExactInclusive` on ClickHouse, a sorted array on Trino,
+  `PERCENTILE_CONT` elsewhere).
+- **Trino.** `date_diff` counts epoch units exactly, but in milliseconds at
+  most. A microsecond column adds the microseconds within the millisecond from
+  `to_unixtime`, a double. That is exact while one ulp of the epoch seconds
+  is below 1 µs, about the years 1700 to 2240 (the whole double rounded wrong
+  from 2100 on), and 2.6 times faster than reading the digits of the text
+  form. Trino has no exact percentile, so the median is the mean of the
+  middle values of `array_sort(array_agg(v))`, sorted once per group and held
+  in memory. Where the sum of the two middle values overflows, each is halved
+  first. The `trino` driver returns rows: the dtypes come from the
+  type names of the cursor description, and `decimal` reads as Float64. A
+  column of another type (uuid, time, varbinary, array, map, row) is left out
+  of the schema: Trino compares it with no string literal, so a selection on
+  it could not run. A timestamp finer than microseconds is left out too: the
+  driver rounds it to a Python datetime, the epoch in SQL does not, so a bin
+  would disagree with the value. Trino in front of Postgres pulls the rows: its connector
+  does not push down a bin key, a text group key or `min_by`.
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name
   that is not in the schema (and, on ClickHouse, a name with a backslash, which
-  ClickHouse reads as an escape inside a quoted identifier). Every other
+  ClickHouse reads as an escape inside a quoted identifier; Trino, like
+  Postgres, doubles a quote in an identifier and in a string, and has no
+  backslash escape). Every other
   identifier is a FlexViz constant: a trace uid is never an SQL alias.
 - **The user's query is never re-rendered.** `query=` goes into a `WITH`
   clause as written; `table=` is parsed as a table name.
@@ -1047,8 +1073,8 @@ SQLSource
   on a new connection: a database restart or an idle timeout drops idle
   connections. Arrow drivers (ADBC, DuckDB) keep column types in an empty
   result. psycopg gives the schema from the type OIDs of the cursor
-  description. ClickHouse results are built from the type names of the cursor
-  description, with their time zones. Postgres `numeric` and ClickHouse
+  description. ClickHouse and Trino results are built from the type names of
+  the cursor description, with their time zones. Postgres `numeric` and ClickHouse
   `Decimal` read as Float64: the OID map and the type names say so for row
   drivers, and ADBC, which sends `numeric` as text, gets those columns cast
   after the fetch.

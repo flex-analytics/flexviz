@@ -31,6 +31,7 @@ import numpy as np
 import polars as pl
 
 try:
+    import sqlglot
     from sqlglot import exp
     from sqlglot.dialects.dialect import Dialect
     from sqlglot.tokens import TokenType
@@ -45,7 +46,7 @@ from .spec import ClauseFilter, SelectionPredicate
 from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bounds
 
 #: The dialects whose SQL has run against a real database in the test suite.
-_DIALECTS = ("postgres", "duckdb", "clickhouse")
+_DIALECTS = ("postgres", "duckdb", "clickhouse", "trino")
 _DIALECT_ALIASES = {"postgresql": "postgres", "clickhousedb": "clickhouse"}
 
 # Every column a plan adds carries this prefix, like the Polars plans.
@@ -81,6 +82,40 @@ _CH_SIMPLE: dict[str, pl.DataType] = {
     "Date": pl.Date(),
     "Date32": pl.Date(),
 }
+
+
+def _trino_dtype(name: str) -> pl.DataType | None:
+    """The Polars dtype of a Trino type name, as the ``trino`` driver's rows load.
+
+    ``decimal`` reads as Float64, as Postgres ``numeric``. None for other
+    types (uuid, time, varbinary, array, map, row, ...): the driver returns
+    Python objects for them, and Trino compares them with no string. None also
+    for a timestamp finer than microseconds: the driver rounds it to a Python
+    datetime, but the epoch in SQL does not, so a bin would disagree with the
+    value. ``CAST(c AS timestamp(6))`` in the query reads it.
+    """
+    base, _, args = name.partition("(")
+    simple = {
+        "boolean": pl.Boolean(),
+        "tinyint": pl.Int8(),
+        "smallint": pl.Int16(),
+        "integer": pl.Int32(),
+        "bigint": pl.Int64(),
+        "real": pl.Float32(),
+        "double": pl.Float64(),
+        "decimal": pl.Float64(),
+        "date": pl.Date(),
+        "varchar": pl.String(),
+    }
+    if base in simple:
+        return simple[base]
+    if base == "timestamp":
+        precision = int(args.split(")")[0]) if args else 3
+        if precision > 6:
+            return None
+        zone = "UTC" if name.endswith("with time zone") else None
+        return pl.Datetime("ms" if precision <= 3 else "us", zone)
+    return None
 
 
 def _clickhouse_dtype(name: str) -> pl.DataType:
@@ -191,6 +226,22 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
         cur.execute(sql)
         schema = {d[0]: _clickhouse_dtype(str(d[1])) for d in cur.description}
         return pl.DataFrame(cur.fetchall(), schema=schema, orient="row")
+    if module == "trino":
+        # Rows without types: the cursor names each column's Trino type. A
+        # column of a type without a dtype is left out, so it is not in the
+        # schema, and a chart on it fails when it is added.
+        cur = conn.cursor()
+        try:
+            cur.execute(sql)
+            rows = cur.fetchall()
+            types = [(d[0], _trino_dtype(d[1])) for d in cur.description]
+        finally:
+            cur.close()
+        keep = [i for i, (_, t) in enumerate(types) if t is not None]
+        if len(keep) < len(types):
+            rows = [[r[i] for i in keep] for r in rows]
+        schema = {types[i][0]: types[i][1] for i in keep}
+        return pl.DataFrame(rows, schema=schema, orient="row", strict=False)
     return pl.read_database(sql, conn)
 
 
@@ -213,7 +264,9 @@ def _alias(e: exp.Expression, name: str) -> exp.Alias:
 def _num(v: float) -> exp.Expression:
     """A numeric literal that parses back to the same double or integer."""
     if isinstance(v, float) and not math.isfinite(v):
-        return exp.cast(exp.Literal.string(repr(v)), exp.DataType.Type.DOUBLE)
+        # Trino casts only the spelled-out name, which every dialect reads.
+        text = "NaN" if math.isnan(v) else ("Infinity" if v > 0 else "-Infinity")
+        return exp.cast(exp.Literal.string(text), exp.DataType.Type.DOUBLE)
     if v < 0:
         # Parenthesized, so ``a - -1`` can never print as the comment ``a --1``.
         return exp.Paren(this=exp.Neg(this=_num(-v)))
@@ -229,6 +282,14 @@ def _num(v: float) -> exp.Expression:
 
 def _and(*conds: exp.Expression) -> exp.Expression:
     return exp.and_(*conds) if conds else exp.true()
+
+
+def _trino(template: str, **kw: exp.Expression) -> exp.Expression:
+    """A Trino expression from SQL text: each ``:name`` is replaced by the
+    expression ``name``, so no identifier is formatted into the text."""
+    return sqlglot.parse_one(template, read="trino").transform(
+        lambda n: kw[n.name].copy() if isinstance(n, exp.Placeholder) else n
+    )
 
 
 @dataclass(frozen=True)
@@ -250,9 +311,13 @@ class SQLFrame:
 
     def num(self, name: str) -> exp.Expression:
         """A value column as a number. Postgres neither sums, takes the min of,
-        nor casts to a double a Boolean, so it becomes an integer there."""
+        nor casts to a double a Boolean, and Trino does not sum one, so it
+        becomes an integer there."""
         c = self.col(name)
-        if self.dialect == "postgres" and self.source.schema[name] == pl.Boolean:
+        if (
+            self.dialect in ("postgres", "trino")
+            and self.source.schema[name] == pl.Boolean
+        ):
             return exp.cast(c, exp.DataType.Type.INT)
         return c
 
@@ -274,6 +339,8 @@ class SQLFrame:
         if dtype == pl.Date:
             if d == "clickhouse":
                 return exp.func("toInt32", c)
+            if d == "trino":
+                return _trino("date_diff('day', DATE '1970-01-01', :c)", c=c)
             epoch = exp.cast(exp.Literal.string("1970-01-01"), exp.DataType.Type.DATE)
             return exp.cast(c - epoch, exp.DataType.Type.BIGINT)
         if not isinstance(dtype, pl.Datetime):
@@ -289,6 +356,27 @@ class SQLFrame:
             return exp.func(
                 f"toUnixTimestamp64{fn}",
                 exp.func("toDateTime64", c, exp.Literal.number(precision)),
+            )
+        if d == "trino":
+            # date_diff counts exactly, but in milliseconds at most. The
+            # microseconds within the millisecond come from to_unixtime, a
+            # double: exact while one ulp of the epoch seconds is below 1 us,
+            # about the years 1700 to 2240 (measured: exact from 1922 to 2240,
+            # off by 1 us in 2300). The whole double rounded wrong from 2100 on.
+            epoch = "TIMESTAMP '1970-01-01 00:00:00" + (
+                " UTC'" if dtype.time_zone else "'"
+            )
+            ms = f"date_diff('millisecond', {epoch}, :c)"
+            if unit == "ms":
+                return _trino(ms, c=c)
+            seconds = (
+                "to_unixtime(:c)"
+                if dtype.time_zone
+                else "to_unixtime(with_timezone(:c, 'UTC'))"
+            )
+            return _trino(
+                f"{ms} * 1000 + CAST(round(({seconds} - {ms} / 1e3) * 1e6) AS bigint)",
+                c=c,
             )
         # Postgres keeps microseconds. date_part returns a double, so the
         # scaled value is within 0.5 of the exact count and rounds back to it
@@ -311,7 +399,7 @@ class SQLFrame:
         if self.dialect == "clickhouse":
             # isNaN refuses a Decimal, which the schema reads as Float64.
             return exp.func("isNaN", exp.func("toFloat64", c))
-        return exp.func("isnan", c)
+        return exp.func("is_nan" if self.dialect == "trino" else "isnan", c)
 
     def usable(self, name: str, dtype: pl.DataType | None) -> exp.Expression:
         """Not null, and not NaN for a float: the rows a bin or a bucket takes."""
@@ -329,7 +417,8 @@ class SQLFrame:
             return exp.func("intDiv", a, _num(b))
         if d == "duckdb":
             return exp.IntDiv(this=a, expression=_num(b))
-        # Postgres: ``/`` on two integers truncates, which is floor for a >= 0.
+        # Postgres and Trino: ``/`` on two integers truncates, which is floor
+        # for a >= 0. SQLGlot's Trino IntDiv divides as a double.
         return exp.Div(this=a, expression=_num(b), typed=True)
 
     def lit(self, value: Any, dtype: pl.DataType | None = None) -> exp.Expression:
@@ -340,8 +429,6 @@ class SQLFrame:
         if dtype is not None and dtype.is_temporal() and isinstance(value, int):
             value = pl.Series([value], dtype=pl.Int64).cast(dtype).item()
         if isinstance(value, float):
-            if math.isnan(value):
-                return exp.cast(exp.Literal.string("NaN"), exp.DataType.Type.DOUBLE)
             return _num(value)
         if isinstance(value, int) and not isinstance(value, bool):
             return _num(value)
@@ -822,7 +909,8 @@ def bucket_extrema(
             _alias(hi_y, names["hi_y"]),
         )
         .where(*conds)
-        .group_by(*[g.copy() for g in groups], exp.column(_BUCKET, quoted=True))
+        # By the expression, not its alias, which Trino cannot see in GROUP BY.
+        .group_by(*[g.copy() for g in groups], bucket.copy())
     )
     df = frame.collect(select)
 
@@ -885,7 +973,7 @@ def hist_counts(
             _alias(exp.Count(this=exp.Star()), _P + "count"),
         )
         .where(*conds)
-        .group_by(*[g.copy() for g in groups], exp.column(_P + "b", quoted=True))
+        .group_by(*[g.copy() for g in groups], b.copy())
     )
     df = frame.collect(select)
     dtypes: dict[str, pl.DataType] = {_P + "b": pl.Int32(), _P + "count": pl.UInt32()}
@@ -970,7 +1058,7 @@ def hist2d_plan(
         select = (
             exp.select(_alias(cell, _P + "c"), _alias(value, _P + "v"))
             .where(*conds)
-            .group_by(exp.column(_P + "c", quoted=True))
+            .group_by(cell.copy())
         )
         df = frame.collect(select)
         idx = df[_P + "c"].cast(pl.Int64).to_numpy()
@@ -1025,6 +1113,20 @@ def _agg_sql(
             # Exact and interpolating, like Polars' median; plain ``median``
             # in ClickHouse samples.
             return exp.Anonymous(this="quantileExactInclusive(0.5)", expressions=[v])
+        if frame.dialect == "trino":
+            # Trino has only approx_percentile: the mean of the middle values of
+            # the group, sorted once. The array holds the group in memory. Each
+            # value is halved first only where the sum overflows, so no other
+            # result changes.
+            a = "element_at(s, (cardinality(s) + 1) / 2)"
+            b = "element_at(s, cardinality(s) / 2 + 1)"
+            return _trino(
+                "transform(ARRAY[array_sort(array_agg(CAST(:v AS double))"
+                " FILTER (WHERE :v IS NOT NULL))], s ->"
+                f" CASE WHEN is_infinite({a} + {b}) THEN {a} / 2 + {b} / 2"
+                f" ELSE ({a} + {b}) / 2 END)[1]",
+                v=v,
+            )
         return exp.PercentileCont(this=v, expression=_num(0.5))
     raise ValueError(f"agg {agg!r} is not supported on a {frame.dialect} source")
 

@@ -256,7 +256,10 @@ class FlexTrace(ABC):
         ]
         missing = [c for c in dict.fromkeys(cols) if c not in source.schema]
         if missing:
-            raise ValueError(f"column(s) {missing} not in the SQL source")
+            raise ValueError(
+                f"column(s) {missing} not in the SQL source, or of a type FlexViz "
+                "cannot read (cast it in the query)"
+            )
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose ``(min, max)`` this trace's spec needs.
