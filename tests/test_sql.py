@@ -944,7 +944,10 @@ def test_single_dbapi_connection_is_refused():
 # ---------------------------------------------------------------------------
 
 
-def test_query_with_a_join():
+@pytest.mark.parametrize(
+    "end", ["", " ;\n", "\n-- a comment"], ids=["plain", "semicolon", "comment"]
+)
+def test_query_with_a_join(end):
     rng = np.random.default_rng(5)
     facts = pl.DataFrame(
         {
@@ -964,7 +967,9 @@ def test_query_with_a_join():
     register_source(
         "_sql_test_join_db",
         SQLSource(
-            con, query="SELECT f.x, f.y, d.name FROM facts f JOIN dims d ON f.id = d.id"
+            con,
+            query="SELECT f.x, f.y, d.name FROM facts f JOIN dims d ON f.id = d.id"
+            + end,
         ),
     )
     client = TestClient(app)

@@ -539,8 +539,10 @@ class SQLSource:
         body = select.from_(exp.to_identifier(_SRC, quoted=True)).sql(
             dialect=self.dialect
         )
-        # The query is the user's own SQL: it goes in as written, never re-rendered.
-        return f'WITH "{_SRC}" AS ({self._query}) {body}'
+        # The query is the user's own SQL: it goes in as written, never
+        # re-rendered. The newline ends a trailing ``--`` comment.
+        query = self._query.rstrip().rstrip(";")
+        return f'WITH "{_SRC}" AS ({query}\n) {body}'
 
     def _open(self) -> Any:
         """A new connection, in autocommit mode if FlexViz owns it.
