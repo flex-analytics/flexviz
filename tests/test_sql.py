@@ -32,7 +32,7 @@ from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
 from flexviz.server import app, register_source
-from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype
+from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype, _trino_dtype
 
 pytestmark = pytest.mark.integration
 
@@ -1662,8 +1662,6 @@ def test_clickhouse_type_names(name, dtype):
     ],
 )
 def test_trino_type_names(name, dtype):
-    from flexviz.sql import _trino_dtype
-
     assert _trino_dtype(name) == dtype
 
 

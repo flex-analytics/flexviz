@@ -105,6 +105,8 @@ def _trino_dtype(name: str) -> pl.DataType | None:
         "double": pl.Float64(),
         "decimal": pl.Float64(),
         "date": pl.Date(),
+        "varchar": pl.String(),
+        "char": pl.String(),
     }
     if base in simple:
         return simple[base]
@@ -114,8 +116,6 @@ def _trino_dtype(name: str) -> pl.DataType | None:
             return None
         zone = "UTC" if name.endswith("with time zone") else None
         return pl.Datetime("ms" if precision <= 3 else "us", zone)
-    if base in ("varchar", "char"):
-        return pl.String()
     return None
 
 
@@ -285,13 +285,9 @@ def _and(*conds: exp.Expression) -> exp.Expression:
     return exp.and_(*conds) if conds else exp.true()
 
 
-def _trino(
-    template: str, c: exp.Expression | None = None, **kw: exp.Expression
-) -> exp.Expression:
-    """A Trino expression from SQL text: ``:c`` (and each ``:name``) is replaced
-    by an expression, so no identifier is formatted into the text."""
-    if c is not None:
-        kw["c"] = c
+def _trino(template: str, **kw: exp.Expression) -> exp.Expression:
+    """A Trino expression from SQL text: each ``:name`` is replaced by the
+    expression ``name``, so no identifier is formatted into the text."""
     return sqlglot.parse_one(template, read="trino").transform(
         lambda n: kw[n.name].copy() if isinstance(n, exp.Placeholder) else n
     )
@@ -345,7 +341,7 @@ class SQLFrame:
             if d == "clickhouse":
                 return exp.func("toInt32", c)
             if d == "trino":
-                return _trino("date_diff('day', DATE '1970-01-01', :c)", c)
+                return _trino("date_diff('day', DATE '1970-01-01', :c)", c=c)
             epoch = exp.cast(exp.Literal.string("1970-01-01"), exp.DataType.Type.DATE)
             return exp.cast(c - epoch, exp.DataType.Type.BIGINT)
         if not isinstance(dtype, pl.Datetime):
@@ -373,13 +369,15 @@ class SQLFrame:
             )
             ms = f"date_diff('millisecond', {epoch}, :c)"
             if unit == "ms":
-                return _trino(ms, c)
-            seconds = "to_unixtime(with_timezone(:c, 'UTC'))"
-            if dtype.time_zone:
-                seconds = "to_unixtime(:c)"
+                return _trino(ms, c=c)
+            seconds = (
+                "to_unixtime(:c)"
+                if dtype.time_zone
+                else "to_unixtime(with_timezone(:c, 'UTC'))"
+            )
             return _trino(
                 f"{ms} * 1000 + CAST(round(({seconds} - {ms} / 1e3) * 1e6) AS bigint)",
-                c,
+                c=c,
             )
         # Postgres keeps microseconds. date_part returns a double, so the
         # scaled value is within 0.5 of the exact count and rounds back to it
