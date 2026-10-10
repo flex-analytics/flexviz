@@ -106,7 +106,6 @@ def _trino_dtype(name: str) -> pl.DataType | None:
         "decimal": pl.Float64(),
         "date": pl.Date(),
         "varchar": pl.String(),
-        "char": pl.String(),
     }
     if base in simple:
         return simple[base]
