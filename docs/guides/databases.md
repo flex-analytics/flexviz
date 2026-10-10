@@ -14,10 +14,14 @@ next section gives measured numbers.
 
 The measurements below use one dashboard with four charts. Two charts show one
 line per process run, one bar chart counts the runs per recipe, and one
-histogram shows the pressure distribution. The data is 100 runs of 50,000
-rows (5M rows), selected from a 100M-row detail table with a join. Times are
-medians in seconds. "Ready" is the time until the first chart request can
-start.
+histogram shows the pressure distribution. Times are medians in seconds.
+"Ready" is the time until the first chart request can start: for an extract,
+the load.
+
+### Long runs
+
+100 runs of 50,000 rows (5M rows) and 5 columns, selected from a 100M-row
+detail table with a join:
 
 | Path | Network | Ready | First render | Zoom | Brush |
 |---|---|---|---|---|---|
@@ -32,17 +36,39 @@ start.
 On the full 100M-row table, live ClickHouse renders in 1.5 s and live
 Postgres in 45 s on the same machine.
 
+### Short, wide runs
+
+100 runs of 1,813 rows (181,300 rows), selected from a 7M-row detail table.
+The query returns 211 columns, and the dashboard uses 5 of them. The detail
+table has an index on the join column.
+
+| Path | Network | Ready | First render | Zoom | Brush |
+|---|---|---|---|---|---|
+| Live Postgres | same machine | 0.1 | 0.66 | 0.4 | 0.55 |
+| Extract, connectorx, 5 columns | same machine | 0.3 | 0.3 | 0.2 | 0.25 |
+| Extract, connectorx, 211 columns | same machine | 2.3 | 0.3 | 0.2 | 0.25 |
+| Extract, SQLAlchemy + pandas, 211 columns | same machine | 17.6 | 0.3 | 0.25 | 0.25 |
+
+Without the index, live Postgres took 3.2 s per first render on the same
+machine, because every chart query read the whole table.
+
 Use these rules:
 
-- **A columnar engine** (ClickHouse, DuckDB, and warehouses such as Snowflake,
-  BigQuery or Trino): use a live `SQLSource`. The engine aggregates millions
-  of rows in milliseconds, so every zoom and selection stays interactive.
-- **A row store** (Postgres) on a fast network, with rows that fit in memory:
-  extract the rows once with an Arrow driver. Postgres aggregates 10 to 30
-  times more slowly than a columnar engine, and every live interaction waits
-  for it.
-- **A row store over a slow network, or more rows than fit in memory**: use a
-  live `SQLSource`. Only the aggregates cross the network.
+- **A columnar engine** (ClickHouse or DuckDB): use a live `SQLSource`. The
+  engine aggregates millions of rows in milliseconds, so every zoom and
+  selection stays interactive.
+- **Postgres with a few hundred thousand rows behind each chart**: a live
+  `SQLSource` is interactive, if the query can use an index. Postgres
+  aggregates 10 to 30 times more slowly than a columnar engine, so the row
+  count decides.
+- **Postgres with millions of rows behind each chart**: extract the plotted
+  columns once. Every live interaction waits several seconds for Postgres.
+- **Short series over a slow network**: extract. A line draws 1,000 points per
+  series, so a series of 2,000 rows comes back almost whole on every request.
+  An extract sends those rows once.
+- **Long series, histograms and bars over a slow network, or more rows than
+  fit in memory**: use a live `SQLSource`. Only the aggregates cross the
+  network.
 
 ## Live: `SQLSource`
 
@@ -136,8 +162,9 @@ have, gives an error when you add the chart, in your own code.
 - Live brushing (the cube) is off for a SQL source. A brush updates the other
   charts when you release the mouse, with one request.
 - Every interaction is a database query. Zoom and selection speed follow the
-  database. Add an index on the columns that you filter and zoom on, for
-  example `(run_id, elapsed_s)`.
+  database. Add an index on the columns that you join, filter and zoom on, for
+  example `(run_id, elapsed_s)`. Postgres does not index a foreign key column
+  by itself.
 - On Postgres, a larger `work_mem` for the FlexViz user lets the grouping stay
   in memory instead of sorting on disk. A line over 5M rows took 3.1 s with
   64 MB and 1.9 s with 1 GB:
@@ -161,9 +188,13 @@ have, gives an error when you add the chart, in your own code.
 
 ## Extract: load the rows once
 
+Select only the columns that you plot. For a wide table, the column count
+matters more than the driver: in the short-run measurements, 5 of 211 columns
+loaded 8 times faster.
+
 Load the rows with an Arrow driver. A driver that returns Python rows
-(SQLAlchemy with psycopg, or `pandas.read_sql`) is 4 to 5 times slower for
-millions of rows.
+(SQLAlchemy with psycopg, or `pandas.read_sql`) was 5 to 8 times slower in the
+measurements above.
 
 ```python
 import polars as pl
@@ -173,8 +204,14 @@ df = pl.read_database_uri(query, uri, engine="adbc")  # pip install adbc-driver-
 dash = fv.Dashboard(df, cache=True)
 ```
 
-`engine="connectorx"` (`pip install connectorx`) also returns Arrow. If the
-rows do not fit in memory, write them to Parquet once and scan the file:
+`engine="connectorx"` (`pip install connectorx`) also returns Arrow.
+
+Cast a Postgres `numeric` column to `double precision` in the query, for
+example `chamber_pressure::double precision AS chamber_pressure`. ADBC returns
+`numeric` as text and connectorx as `Decimal`, and FlexViz charts need a float.
+A `SQLSource` reads `numeric` as a float with every driver.
+
+If the rows do not fit in memory, write them to Parquet once and scan the file:
 
 ```python
 df.write_parquet("runs.parquet")
