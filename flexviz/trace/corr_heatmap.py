@@ -164,7 +164,7 @@ class CorrHeatmap(FlexTrace):
 
     def check_source(self, source: Any) -> None:
         super().check_source(source)
-        if getattr(source, "is_sql", False) and self.method != "pearson":
+        if source.is_sql and self.method != "pearson":
             raise ValueError(
                 f"method={self.method!r} cannot run on a SQL source: a database "
                 "computes Pearson correlation only."

@@ -235,7 +235,7 @@ class FlexTrace(ABC):
         The engine calls it for every trace before the domains are resolved.
         Reads the schema, and may read data.
         """
-        if not getattr(source, "is_sql", False):
+        if not source.is_sql:
             return
         if not self.sql_support:
             raise ValueError(
