@@ -15,6 +15,7 @@ import secrets
 import subprocess
 import sys
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -899,6 +900,17 @@ def test_dialect_alias_is_accepted(duck):
     assert (
         SQLSource(lambda: None, table="src", dialect="postgresql").dialect == "postgres"
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "dialect"), [("postgresql", "postgres"), ("clickhousedb", "clickhouse")]
+)
+def test_sqlalchemy_dialect_names(name, dialect):
+    """The dialect of a SQLAlchemy engine comes from its dialect name."""
+    engine = SimpleNamespace(
+        raw_connection=lambda: None, dialect=SimpleNamespace(name=name)
+    )
+    assert SQLSource(engine, table="src").dialect == dialect
 
 
 def test_unknown_uri_scheme_is_refused():
