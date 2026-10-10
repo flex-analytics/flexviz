@@ -1,9 +1,9 @@
 // === FlexViz shared runtime — stream polling ===
 // Requires: delta.js loaded first (postDashboardUpdate, SERVER_URL).
 //
-// A changed stream version triggers one viewport request with force_update:
-// it recomputes every trace and writes no viewport, so autorange axes follow
-// the data and zoomed axes keep their range.
+// A changed stream version triggers one refresh request: it recomputes every
+// trace and writes no viewport, so autorange axes follow the data and zoomed
+// axes keep their range.
 
 const _fvStreamVersions = { ...FV_STREAMING_SOURCES };
 
@@ -27,7 +27,7 @@ async function _fvPollStreams() {
       // Keep the versions only after a refresh that worked, so a failed one
       // is retried on the next poll.
       if (Object.keys(changed).length && !_fvPointerDown
-          && await postDashboardUpdate({ type: 'viewport', viewport_keys: [], force_update: true })) {
+          && await postDashboardUpdate({ type: 'refresh', force_update: true })) {
         Object.assign(_fvStreamVersions, changed);
       }
     } catch (e) {

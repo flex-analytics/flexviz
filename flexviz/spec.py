@@ -365,7 +365,8 @@ class ClientState(BaseModel):
     Included in every POST body to ``/dashboard/update`` and in
     share/export/import serialisation. The engine ignores it. The
     ``DashboardSpec`` validator reads ``axis_links``, ``axis_locks`` and
-    ``axis_lock_ranges`` to check the links.
+    ``axis_lock_ranges`` to check the links, and a stream's locked axis
+    aggregates over its pinned range.
 
     This is the designated home for client-only-but-persistent state:
     hover mode, annotation visibility, panel collapse state, axis locks, etc.
@@ -373,8 +374,8 @@ class ClientState(BaseModel):
     ``axis_locks`` maps ``"{figure_uid}/{axis_family}"`` → locked flag, where
     the family ``x`` also covers ``x2``. ``axis_lock_ranges`` maps
     ``"{figure_uid}/{axis_id}"`` → the pinned ``AxisRange`` of each locked
-    axis. Both are applied entirely client-side (JS pins the viewport); only
-    the link validator reads them.
+    axis. The client pins the viewport. The server reads them only to check
+    links and to aggregate a stream's locked axis over its pinned range.
 
     ``live_brush`` gates the cube live-brush loop (spec §2.5): ``"auto"``
     (default) binds ``plotly_selecting`` on range-geometry figures and slices

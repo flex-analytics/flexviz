@@ -241,7 +241,7 @@ def _refresh(client, spec):
         "/dashboard/update",
         json={
             "spec": spec.model_dump(mode="json"),
-            "event": {"type": "viewport", "viewport_keys": [], "force_update": True},
+            "event": {"type": "refresh", "force_update": True},
         },
     )
     assert resp.status_code == 200, resp.text
@@ -277,14 +277,98 @@ def test_window_comes_from_the_rows_the_request_reads(monkeypatch):
     assert xs.max() == T0 + dt.timedelta(seconds=99)
 
 
-def test_window_skips_a_locked_axis():
+@pytest.mark.parametrize("window", [None, dt.timedelta(seconds=30)])
+def test_a_locked_axis_aggregates_over_its_pinned_range(window):
+    """Rows that arrive after a lock must not stretch the grid past it."""
     name = _name()
-    register_stream(name, _rows(0, 100), order_by="t", window=dt.timedelta(seconds=30))
+    stream = register_stream(name, _rows(0, 100), order_by="t", window=window)
+    stream.append(_rows(100, 9900))
     spec = _line_hist_spec(name)
-    spec.client_state.axis_locks[f"{spec.figures[0].uid}/x"] = True
+    uid = spec.figures[0].uid
+    spec.client_state.axis_locks[f"{uid}/x"] = True
+    spec.client_state.axis_lock_ranges[f"{uid}/x"] = AxisRange(
+        min="2026-01-01 00:00:00", max="2026-01-01 00:01:39"
+    )
     with TestClient(app) as client:
-        xs = _line_x(_refresh(client, spec), spec)
-    assert len(xs) == 100
+        xs = pl.Series(_line_x(_refresh(client, spec), spec)).str.to_datetime()
+    assert xs.max() <= T0 + dt.timedelta(seconds=99)
+    assert len(xs) == 100  # every locked row, not a 1000-point grid over 10000
+
+
+def test_the_stream_keeps_its_own_copy_of_the_first_frame():
+    name = _name()
+    df = _rows(0, 10)
+    stream = register_stream(name, df, order_by="t")
+    df.extend(_rows(0, 1))  # in place: out of order for the stream
+    stream.append(_rows(10, 1))
+    assert _sources[name]._ldf.collect()["t"].to_list() == _rows(0, 11)["t"].to_list()
+
+
+def test_a_zone_aware_window_spans_the_elapsed_time_across_dst():
+    name = _name()
+    # 2026-03-29 01:00 UTC: Brussels moves from +01:00 to +02:00.
+    # The last row is 03:45+02:00; an hour earlier is 01:45+01:00.
+    start = dt.datetime(2026, 3, 29, 0, 45, tzinfo=dt.timezone.utc)
+    df = pl.DataFrame(
+        {
+            "t": pl.datetime_range(
+                start, start + dt.timedelta(hours=1), "1m", eager=True
+            ).dt.convert_time_zone("Europe/Brussels"),
+            "v": [float(i) for i in range(61)],
+        }
+    )
+    register_stream(name, df, order_by="t", window=dt.timedelta(hours=1))
+    dash = Dashboard()
+    dash.add_figure().add_line("t", "v", n_points=1000)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert [y for y in delta["updates"]["y"] if y is not None] == [
+        float(i) for i in range(61)
+    ]
+
+
+def test_a_nanosecond_window_keeps_the_last_row():
+    name = _name()
+    df = pl.DataFrame(
+        {"t": pl.Series([0, 100, 200]).cast(pl.Datetime("ns")), "v": [0.0, 1.0, 2.0]}
+    )
+    register_stream(name, df, order_by="t", window=dt.timedelta(seconds=1))
+    dash = Dashboard()
+    dash.add_figure().add_line("t", "v", n_points=1000)
+    spec = dash.to_spec(source_name=name)
+    with TestClient(app) as client:
+        (delta,) = _refresh(client, spec)[spec.figures[0].uid]
+    assert [y for y in delta["updates"]["y"] if y is not None][-1] == 2.0
+
+
+def test_overlay_refresh_sends_a_fresh_background_for_filtered_only_traces():
+    """A box shows only its foreground over a cached background, which holds
+    the old rows after an append."""
+    name = _name()
+    df = pl.DataFrame({"i": list(range(100)), "v": [float(i) for i in range(100)]})
+    stream = register_stream(name, df, order_by="i")
+    dash = Dashboard()
+    dash.add_figure().add_histogram("i", bins=10)
+    dash.add_figure().add_boxplot("v")
+    spec = dash.to_spec(source_name=name)
+    spec.state.cross_filter_mode = "overlay"
+    spec.state.selections = [
+        SelectionState.model_validate(
+            {
+                "source_figure_uid": spec.figures[0].uid,
+                "predicates": [{"clauses": [{"column": "i", "range": [0, 300]}]}],
+            }
+        )
+    ]
+    stream.append(
+        pl.DataFrame(
+            {"i": list(range(100, 200)), "v": [float(i) for i in range(100, 200)]}
+        )
+    )
+    with TestClient(app) as client:
+        deltas = _refresh(client, spec)[spec.figures[1].uid]
+    assert {d["layer"] for d in deltas} == {"bg", "fg"}
 
 
 def test_overlay_refresh_returns_both_layers_with_new_rows():
