@@ -142,6 +142,26 @@ def _viewport_window(
     return _slice_window(x.search_sorted(lo, "left"), x.search_sorted(hi, "right"))
 
 
+def _kernel_x_window(
+    x_col: str, x_range: tuple | None, schema: pl.Schema | None
+) -> Viewport | None:
+    """The rows of a sorted x the kernel reads, without null and NaN.
+
+    Zoomed, the viewport's ``search_sorted`` bounds already land between the
+    null prefix and the NaN suffix. Unzoomed, Polars sorts nulls first and NaN
+    last, so the valid rows are the slice ``[null_count, first row past +inf)``.
+    Both resolve inside the expression, so they follow a cross-filter.
+    """
+    if x_range is not None:
+        return _viewport_window(x_col, x_range, schema, True)
+    x = pl.col(x_col)
+    dtype = _dtype_for_col(schema, x_col)
+    # NaN sorts above infinity, so the first row past +inf starts the suffix.
+    is_float = dtype is not None and dtype.is_float()
+    end = x.search_sorted(float("inf"), "right") if is_float else x.len()
+    return _slice_window(x.null_count(), end)
+
+
 # ---------------------------------------------------------------------------
 # Stage 2: pure-Python thinning of the bucket output
 # ---------------------------------------------------------------------------
@@ -842,7 +862,7 @@ class LinePlot(FlexTrace):
                     self.y_col,
                     # The kernel needs x sorted, and the engine raised if it was
                     # not, so the viewport is always a slice here.
-                    _viewport_window(self.x_col, x_range, schema, True),
+                    _kernel_x_window(self.x_col, x_range, schema),
                     n_buckets,
                     self.uid,
                     grid,

@@ -64,8 +64,10 @@ An ungrouped `"minmax"`, `"lttb"` or `"fpcs"` line buckets by equal x width and
 binary-searches the bucket edges. Its x column must be a 64-bit-or-smaller numeric, or a temporal,
 and must not be infinite. Wider numerics (`Int128`, `Decimal`) have no edge type
 in the kernel and are rejected. On a resident frame x must also be sorted
-ascending and free of nulls and NaN. The engine verifies this before it
-aggregates and raises `ValueError` when the column breaks the contract.
+ascending in Polars order, where nulls come first and NaN last. The engine
+verifies this before it aggregates and raises `ValueError` when the column is
+not sorted. The line skips the null prefix and the NaN suffix. A null or NaN
+inside the column breaks the order, so it raises.
 `Figure.add_line` itself checks nothing.
 
 A `UInt64` x whose values go above `i64::MAX` fails on a resident frame,
@@ -81,7 +83,7 @@ file-source plan can, so without the gate the same line would work on one source
 kind and fail on the other. An `"lttb"` line asks for more, a numeric, temporal
 or Boolean y, because the triangle rule does arithmetic on it.
 
-- The order, null, and NaN check costs one pass over x, and only an ungrouped
+- The order check costs one pass over x, and only an ungrouped
   x-width line on a resident frame runs it. A resident frame is a snapshot, so
   the check runs once per source and column.
 - `add_line(..., assume_sorted_x=True)` skips the check. Only pass it when you
@@ -113,7 +115,7 @@ fig.add_line(x="i", y="value")   # a uniform x makes every bucket hold equal row
 
 | Column | What happens |
 | --- | --- |
-| x | An infinite value raises `ValueError`. A null or NaN raises on a resident frame. A file source and a grouped line drop the row. |
+| x | An infinite value raises `ValueError`. A `minmax`, `lttb` or `fpcs` line drops a row with a null or NaN x on every path. Ungrouped on a resident frame, it also needs the nulls first and the NaN last, as an ascending sort leaves them (`sort(nulls_last=True)` does not). |
 | y | `nth` is a stride. It keeps every nth row, null or NaN y included, so the renderer draws a gap at the true position. `minmax`, `lttb`, and `fpcs` drop a row with a null or NaN y. |
 
 An infinite y is a value: the x-width strategies keep it as an extremum, and
@@ -123,8 +125,7 @@ An infinite bound has no finite bucket width, so the grid cannot be built. Drop
 the rows first:
 
 ```python
-df = df.drop_nulls("x")                     # nulls
-df = df.filter(pl.col("x").is_finite())     # NaN and infinities
+df = df.filter(pl.col("x").is_finite())     # infinities, and null and NaN too
 ```
 
 ## Gap handling
