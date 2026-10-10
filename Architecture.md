@@ -1341,7 +1341,8 @@ precision. Committed edges use the same formatter (`_fvUsToDatetime`). A line en
 numeric through its reduction, finds its gaps on the whole epoch µs it writes, and formats only
 the points it emits. Edges go through `fvPhysicalToEpochMs`, which returns epoch-ms. The split
 matters because Plotly reads a bare number on a date axis through the browser's local time
-zone, but reads a datetime string as wall-clock time. A numeric center would sit one or more hours off the server's outside UTC. Edges are plain axis positions for
+zone, but reads a datetime string as wall-clock time. A numeric center would sit one or more
+hours off the server's outside UTC. Edges are plain axis positions for
 the hover lookup, so they stay numeric. Normalization (`histnorm`) keeps the physical step. No
 quantize is needed: the server's rounding of centers to the physical unit is below 1 ms, and the
 line is `postRequired`, so the commit POST's legacy delta replaces the approximate envelope.
