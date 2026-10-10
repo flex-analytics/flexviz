@@ -44,7 +44,7 @@ from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bou
 
 #: The dialects whose SQL has run against a real database in the test suite.
 _DIALECTS = ("postgres", "duckdb", "clickhouse")
-_DIALECT_ALIASES = {"postgresql": "postgres"}
+_DIALECT_ALIASES = {"postgresql": "postgres", "clickhousedb": "clickhouse"}
 
 # Every column a plan adds carries this prefix, like the Polars plans.
 _P = "__fv_"
