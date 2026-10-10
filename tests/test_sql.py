@@ -232,6 +232,10 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     "bar_sum": (_add("add_bar", labels="cat", values="vb", agg="sum"), None),
     "bar_sum_int": (_add("add_bar", labels="cat", values="ib", agg="sum"), None),
     "bar_mean": (_add("add_bar", labels="cat", values="vb", agg="mean"), None),
+    # Postgres has no double cast of a Boolean, nor SUM, MIN or MAX of one.
+    "bar_sum_bool": (_add("add_bar", labels="cat", values="flag", agg="sum"), None),
+    "bar_mean_bool": (_add("add_bar", labels="cat", values="flag", agg="mean"), None),
+    "bar_max_bool": (_add("add_bar", labels="cat", values="flag", agg="max"), None),
     "bar_sum_dec": (_add("add_bar", labels="cat", values="dec", agg="sum"), None),
     "bar_median": (_add("add_bar", labels="cat", values="vb", agg="median"), None),
     "bar_min": (_add("add_bar", labels="cat", values="vb", agg="min"), None),
@@ -284,6 +288,18 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         )
         for fn in ("sum", "mean", "min", "max")
     },
+    "hist2d_bool_z": (
+        _add(
+            "add_histogram2d",
+            x="t",
+            y="w",
+            z="flag",
+            histfunc="mean",
+            x_bins=8,
+            y_bins=8,
+        ),
+        None,
+    ),
     "hist2d_nan_z": (
         _add(
             "add_histogram2d", x="t", y="w", z="vn", histfunc="max", x_bins=8, y_bins=8
@@ -307,6 +323,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         {"coordinates": [[-50.0, -10.0], [40.0, -10.0], [40.0, 30.0], [-50.0, 30.0]]},
     ),
     "corr": (_add("add_corr_heatmap", columns=["t", "v", "w", "i"]), None),
+    "corr_bool": (_add("add_corr_heatmap", columns=["w", "flag"]), None),
     "corr_nan": (_add("add_corr_heatmap", columns=["vn", "w"]), None),
     "corr_abs": (
         _add("add_corr_heatmap", columns=["v", "w", "lat"], absolute=True),
@@ -1157,6 +1174,52 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
         with engine.begin() as c:
             c.exec_driver_sql(f'DROP TABLE IF EXISTS "{table}"')
         engine.dispose()
+
+
+_k = np.arange(200)
+# Line y columns the Postgres array form cannot hold as a double. Each frame has
+# no y tie in a bucket, so the x at an extremum is unique.
+_PG_LINE_Y = {
+    # One True and one False per bucket.
+    "bool": pl.DataFrame(
+        {
+            "x": np.ravel(np.column_stack([2.0 * _k, 2.0 * _k + 0.001])),
+            "y": np.tile([True, False], 200),
+        }
+    ),
+}
+
+
+@pytest.mark.parametrize("frame", list(_PG_LINE_Y))
+def test_postgres_line_y_types(frame):
+    uri = os.environ.get(PG_ENV)
+    if not uri:
+        pytest.skip(f"set {PG_ENV} to run against Postgres")
+    adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
+    df = _PG_LINE_Y[frame]
+    table = f"fv_test_{secrets.token_hex(6)}"
+    with adbc.connect(uri) as conn:
+        with conn.cursor() as cur:
+            cur.adbc_ingest(table, df.to_arrow(), mode="create")
+        conn.commit()
+    src = SQLSource(uri, table=table)
+    try:
+        name = f"_sql_test_pg_line_y_{frame}"
+        register_source(name + "_ref", df)
+        register_source(name, src)
+        client = TestClient(app)
+        dash = Dashboard()
+        dash.add_figure().add_line(x="x", y="y", n_points=400)
+        want = _post(client, dash, name + "_ref", {}, SELECT)
+        got = _post(client, dash, name, {}, SELECT)
+        assert all(want.values())
+        assert not _diff(want, got)
+    finally:
+        _close_pool(src)
+        with adbc.connect(uri) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'DROP TABLE IF EXISTS "{table}"')
+            conn.commit()
 
 
 # Labels with three decimals, and integers whose bucket width is 3: a numeric
