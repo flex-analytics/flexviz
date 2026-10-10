@@ -1041,11 +1041,12 @@ SQLSource
   form. Trino has no exact percentile, so the median is
   the mean of the middle values of `array_sort(array_agg(v))`, which holds each
   group in memory. The `trino` driver returns rows: the dtypes come from the
-  type names of the cursor description, `decimal` reads as Float64, and a
-  timestamp finer than microseconds reads as microseconds (the driver returns
-  Python datetimes). A column of another type (uuid, time, varbinary, array,
-  map, row) is left out of the schema: Trino compares it with no string
-  literal, so a selection on it could not run. Trino in front of Postgres pulls the rows: its connector
+  type names of the cursor description, and `decimal` reads as Float64. A
+  column of another type (uuid, time, varbinary, array, map, row) is left out
+  of the schema: Trino compares it with no string literal, so a selection on
+  it could not run. A timestamp finer than microseconds is left out too: the
+  driver rounds it to a Python datetime, the epoch in SQL does not, so a bin
+  would disagree with the value. Trino in front of Postgres pulls the rows: its connector
   does not push down a bin key, a text group key or `min_by`.
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name

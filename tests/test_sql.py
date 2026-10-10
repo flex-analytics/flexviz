@@ -1653,7 +1653,8 @@ def test_clickhouse_type_names(name, dtype):
         ("char(3)", pl.String()),
         ("timestamp(3)", pl.Datetime("ms")),
         ("timestamp(6)", pl.Datetime("us")),
-        ("timestamp(9)", pl.Datetime("us")),
+        ("timestamp(9)", None),
+        ("timestamp(7) with time zone", None),
         ("timestamp(6) with time zone", pl.Datetime("us", "UTC")),
         ("uuid", None),
         ("time(3)", None),
@@ -1666,15 +1667,22 @@ def test_trino_type_names(name, dtype):
     assert _trino_dtype(name) == dtype
 
 
-def test_trino_column_without_dtype_fails_at_add_time(trino_source):
-    """A uuid column is not in the schema: Trino compares it with no string, so
-    a selection on it could not run. The chart fails when it is added."""
-    query = (
-        "SELECT uuid '12151fd2-7586-11e9-8f9e-2a86e4085a59' AS u, \"w\" "
-        f'FROM "{trino_source._table}"'
-    )
+@pytest.mark.parametrize(
+    "column",
+    [
+        # Trino compares a uuid with no string, so a selection could not run.
+        "uuid '12151fd2-7586-11e9-8f9e-2a86e4085a59'",
+        # The driver rounds to microseconds, which the epoch in SQL does not.
+        "CAST(\"ts\" + INTERVAL '0.000000501' SECOND AS timestamp(9))",
+    ],
+    ids=["uuid", "timestamp9"],
+)
+def test_trino_column_without_dtype_fails_at_add_time(trino_source, column):
+    """A column of a type FlexViz cannot read is not in the schema, so a chart
+    on it fails when it is added."""
+    query = f'SELECT {column} AS u, "w" FROM "{trino_source._table}"'
     src = SQLSource(_trino_connect, dialect="trino", query=query)
     assert list(src.schema) == ["w"]
     fig = Dashboard(src).add_figure()
     with pytest.raises(ValueError, match="not in the SQL source"):
-        fig.add_bar(labels="u")
+        fig.add_histogram(x="u")

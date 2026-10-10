@@ -87,10 +87,12 @@ _CH_SIMPLE: dict[str, pl.DataType] = {
 def _trino_dtype(name: str) -> pl.DataType | None:
     """The Polars dtype of a Trino type name, as the ``trino`` driver's rows load.
 
-    The driver gives Python datetimes, so a timestamp finer than microseconds
-    reads as microseconds. ``decimal`` reads as Float64, as Postgres ``numeric``.
-    None for other types (uuid, time, varbinary, array, map, row): the driver
-    returns Python objects for them, and Trino compares them with no string.
+    ``decimal`` reads as Float64, as Postgres ``numeric``. None for other
+    types (uuid, time, varbinary, array, map, row, ...): the driver returns
+    Python objects for them, and Trino compares them with no string. None also
+    for a timestamp finer than microseconds: the driver rounds it to a Python
+    datetime, but the epoch in SQL does not, so a bin would disagree with the
+    value. ``CAST(c AS timestamp(6))`` in the query reads it.
     """
     base, _, args = name.partition("(")
     simple = {
@@ -108,6 +110,8 @@ def _trino_dtype(name: str) -> pl.DataType | None:
         return simple[base]
     if base == "timestamp":
         precision = int(args.split(")")[0]) if args else 3
+        if precision > 6:
+            return None
         zone = "UTC" if name.endswith("with time zone") else None
         return pl.Datetime("ms" if precision <= 3 else "us", zone)
     if base in ("varchar", "char"):
