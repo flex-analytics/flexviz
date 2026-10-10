@@ -1139,7 +1139,13 @@ def corr_plan(
             aggs.append(_alias(exp.Corr(this=x, expression=y), f"{_P}r{i}_{j}"))
             nans = [frame.nan(c) for c in (a, b) if sch.get(c, pl.Null).is_float()]
             if nans:
-                flag = exp.case().when(exp.or_(*nans), _num(1)).else_(_num(0))
+                # Only a NaN in a complete pair: Polars skips a pair with a null.
+                complete = [
+                    exp.Not(this=exp.Is(this=frame.col(c), expression=exp.Null()))
+                    for c in (a, b)
+                ]
+                nan_pair = exp.and_(*complete, exp.or_(*nans))
+                flag = exp.case().when(nan_pair, _num(1)).else_(_num(0))
                 aggs.append(_alias(exp.Max(this=flag), f"{_P}n{i}_{j}"))
         row = frame.collect(exp.select(*aggs)).row(0, named=True)
         mat = np.eye(n)
