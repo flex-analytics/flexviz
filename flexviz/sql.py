@@ -32,6 +32,8 @@ import polars as pl
 
 try:
     from sqlglot import exp
+    from sqlglot.dialects.dialect import Dialect
+    from sqlglot.tokens import TokenType
 except ImportError as e:  # pragma: no cover - depends on the install
     raise ImportError(
         "SQL sources need SQLGlot. Install it with: pip install 'flexviz[sql]'"
@@ -447,6 +449,15 @@ _INT32_OR_SMALLER = (
 )
 
 
+def _drop_final_semicolon(query: str, dialect: str) -> str:
+    """``query`` without a final ``;``, which cannot stand inside ``WITH``.
+    A comment after it stays: the dialect's tokens tell code from comment."""
+    tokens = Dialect.get_or_raise(dialect).tokenize(query)
+    if tokens and tokens[-1].token_type == TokenType.SEMICOLON:
+        return query[: tokens[-1].start] + query[tokens[-1].end + 1 :]
+    return query
+
+
 def _eval(exprs: Sequence[pl.Expr]) -> tuple[Any, ...]:
     """Evaluate literal Polars expressions to Python values."""
     return pl.select(*[e.alias(str(i)) for i, e in enumerate(exprs)]).row(0)
@@ -514,7 +525,7 @@ class SQLSource:
             )
         self.dialect: str = name
         self._table = table
-        self._query = query
+        self._query = query and _drop_final_semicolon(query, name)
 
     def __repr__(self) -> str:
         what = f"table={self._table!r}" if self._table else "query=..."
@@ -532,8 +543,7 @@ class SQLSource:
         )
         # The query is the user's own SQL: it goes in as written, never
         # re-rendered. The newline ends a trailing ``--`` comment.
-        query = self._query.rstrip().rstrip(";")
-        return f'WITH "{_SRC}" AS ({query}\n) {body}'
+        return f'WITH "{_SRC}" AS ({self._query}\n) {body}'
 
     def _open(self) -> Any:
         """A new connection, in autocommit mode if FlexViz owns it.
