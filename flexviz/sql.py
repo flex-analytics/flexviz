@@ -783,12 +783,16 @@ def bucket_extrema(
     x_col: str,
     y_col: str,
     n_buckets: int,
+    vp_filter: pl.Expr | None,
     x_range: tuple | None,
     x_domain: tuple | None,
     schema: pl.Schema | None,
+    *,
     group_cols: tuple[str, ...] | None = None,
 ) -> pl.DataFrame:
-    """The SQL twin of ``line_buckets._bucket_extrema``: same grid, same columns.
+    """The SQL twin of ``line_buckets._bucket_extrema``: same grid, same columns,
+    same signature. ``vp_filter`` is unused: the zoom filter comes from
+    ``x_range``.
 
     One row per non-empty equal-x-width bucket (per group), with the x and y at
     the bucket's y minimum and y maximum. The bucket arithmetic copies the Polars
