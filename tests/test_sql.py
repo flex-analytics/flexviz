@@ -29,7 +29,7 @@ from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
 from flexviz.server import app, register_source
-from flexviz.sql import SQLFrame, SQLSource
+from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype
 
 pytestmark = pytest.mark.integration
 
@@ -66,6 +66,8 @@ def _frame() -> pl.DataFrame:
                 for d in rng.integers(0, 60, N)
             ],
             "v": rng.normal(10, 3, N),
+            # Three decimals: a DECIMAL column in ClickHouse.
+            "dec": rng.integers(-100_000, 100_000, N) / 1000,
             "w": rng.normal(0, 1, N),
             "vn": rng.normal(0, 1, N),
             "i": rng.integers(-50, 50, N),
@@ -159,6 +161,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         _add("add_line", x="ts", y="w", n_points=200, downsample="lttb"),
         LINE_TS_ZOOM,
     ),
+    "line_dec_y": (_add("add_line", x="t", y="dec", n_points=300), LINE_T_ZOOM),
     "line_nan_y": (_add("add_line", x="t", y="vn", n_points=300), LINE_T_ZOOM),
     "line_grouped_int": (
         _add("add_line", x="t", y="w", n_points=300, group_by="g"),
@@ -229,6 +232,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     "bar_sum": (_add("add_bar", labels="cat", values="vb", agg="sum"), None),
     "bar_sum_int": (_add("add_bar", labels="cat", values="ib", agg="sum"), None),
     "bar_mean": (_add("add_bar", labels="cat", values="vb", agg="mean"), None),
+    "bar_sum_dec": (_add("add_bar", labels="cat", values="dec", agg="sum"), None),
     "bar_median": (_add("add_bar", labels="cat", values="vb", agg="median"), None),
     "bar_min": (_add("add_bar", labels="cat", values="vb", agg="min"), None),
     "bar_max": (_add("add_bar", labels="cat", values="vb", agg="max"), None),
@@ -1197,8 +1201,8 @@ _CH_TYPES = {
 
 
 # Columns whose ClickHouse type is not the default for their dtype: ``ts`` is
-# the native 32-bit ``DateTime`` (whole seconds, as the data).
-_CH_COLUMN_TYPES = {"ts": "DateTime"}
+# the native 32-bit ``DateTime`` (whole seconds, as the data), ``dec`` a DECIMAL.
+_CH_COLUMN_TYPES = {"ts": "DateTime", "dec": "Decimal(10, 3)"}
 
 
 def _ch_type(name: str, dtype: pl.DataType) -> str:
@@ -1258,10 +1262,6 @@ def clickhouse_source(clickhouse_table) -> Any:
         schema=DF.select(_REAL_COLUMNS).schema,
         orient="row",
     )
-    # The DB-API driver reports no types for a Nullable column on an empty
-    # result (see test_clickhouse_schema_from_nullable_columns), so the schema
-    # is given here to reach the rest of the matrix.
-    src.__dict__["schema"] = ref.schema
     register_source(_real_name("clickhouse") + "_ref", ref)
     register_source(_real_name("clickhouse"), src)
     return src
@@ -1313,5 +1313,23 @@ def test_real_database_literals_round_trip(request, backend):
 
 
 def test_clickhouse_schema_from_nullable_columns(clickhouse_table):
+    """The schema comes from the ClickHouse type names, with their time zones;
+    a DECIMAL reads as Float64."""
     src = SQLSource(_ch_connect, table=clickhouse_table, dialect="clickhouse")
-    assert src.schema["v"] == pl.Float64
+    assert src.schema == DF.select(_REAL_COLUMNS).schema
+
+
+@pytest.mark.parametrize(
+    ("name", "dtype"),
+    [
+        ("DateTime", pl.Datetime("us")),
+        ("Nullable(DateTime('UTC'))", pl.Datetime("us", "UTC")),
+        ("DateTime64(3)", pl.Datetime("ms")),
+        ("DateTime64(6, 'Europe/Brussels')", pl.Datetime("us", "Europe/Brussels")),
+        ("Nullable(DateTime64(9, 'UTC'))", pl.Datetime("ns", "UTC")),
+        ("Nullable(Decimal(10, 3))", pl.Float64()),
+        ("LowCardinality(Nullable(String))", pl.String()),
+    ],
+)
+def test_clickhouse_type_names(name, dtype):
+    assert _clickhouse_dtype(name) == dtype

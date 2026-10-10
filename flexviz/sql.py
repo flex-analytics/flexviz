@@ -92,11 +92,17 @@ def _clickhouse_dtype(name: str) -> pl.DataType:
             name = name[len(wrapper) : -1]
     if name in _CH_SIMPLE:
         return _CH_SIMPLE[name]
-    if name.startswith("DateTime64("):
-        precision = int(name[len("DateTime64(") :].split(",")[0].strip(" )"))
-        return pl.Datetime("ms" if precision <= 3 else "us" if precision <= 6 else "ns")
+    if name.startswith("Decimal"):
+        # Read as a double, as Postgres numeric is.
+        return pl.Float64()
     if name.startswith("DateTime"):
-        return pl.Datetime("us")
+        # DateTime64(precision[, 'zone']) or DateTime[('zone')]
+        args = [a.strip(" '") for a in name.partition("(")[2].rstrip(")").split(",")]
+        unit = "us"
+        if name.startswith("DateTime64("):
+            precision = int(args.pop(0))
+            unit = "ms" if precision <= 3 else "us" if precision <= 6 else "ns"
+        return pl.Datetime(unit, args[0] if args and args[0] else None)
     return pl.String()
 
 
@@ -192,6 +198,13 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
         ]
         df: pl.DataFrame = pl.from_arrow(table)  # type: ignore[assignment]
         return df.with_columns(pl.col(numeric).cast(pl.Float64))
+    if module == "clickhouse_connect":
+        # Typed by the column type names, so an empty result keeps its types.
+        # Polars cannot read some of them, such as Nullable(Decimal(p, s)).
+        cur = conn.cursor()
+        cur.execute(sql)
+        schema = {d[0]: _clickhouse_dtype(str(d[1])) for d in cur.description}
+        return pl.DataFrame(cur.fetchall(), schema=schema, orient="row")
     return pl.read_database(sql, conn)
 
 
@@ -313,7 +326,10 @@ class SQLFrame:
         if self.dialect == "postgres":
             # In Postgres NaN equals NaN and sorts above every number.
             return exp.EQ(this=c, expression=self.lit(float("nan")))
-        return exp.func("isNaN" if self.dialect == "clickhouse" else "isnan", c)
+        if self.dialect == "clickhouse":
+            # isNaN refuses a Decimal, which the schema reads as Float64.
+            return exp.func("isNaN", exp.func("toFloat64", c))
+        return exp.func("isnan", c)
 
     def usable(self, name: str, dtype: pl.DataType | None) -> exp.Expression:
         """Not null, and not NaN for a float: the rows a bin or a bucket takes."""
@@ -564,8 +580,7 @@ class SQLSource:
         if all(dtype != pl.Null for dtype in df.schema.values()):
             return df.schema
         # A driver that returns rows has nothing to infer from in an empty
-        # result. It still describes each column: Postgres drivers by type
-        # OID, ClickHouse by type name.
+        # result. A Postgres driver still describes each column by type OID.
         with self._slots:
             conn = self._open()
             try:
@@ -574,15 +589,11 @@ class SQLSource:
                 desc = cur.description
             finally:
                 _close(conn)
-        if self.dialect == "postgres":
-            types = {d[0]: _PG_OIDS.get(int(d[1]), pl.String()) for d in desc}
-        elif self.dialect == "clickhouse":
-            types = {d[0]: _clickhouse_dtype(str(d[1])) for d in desc}
-        else:
+        if self.dialect != "postgres":
             raise TypeError(
                 "The driver returned no column types. Use an Arrow driver (ADBC)."
             )
-        return pl.Schema(types)
+        return pl.Schema({d[0]: _PG_OIDS.get(int(d[1]), pl.String()) for d in desc})
 
     def col(self, name: str) -> exp.Column:
         """A quoted column of this source.
