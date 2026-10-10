@@ -1999,6 +1999,8 @@ function handleWheel(evt, figUid) {
 const _fvWheelAt = {};
 const _fvWheelCommits = {};
 function _fvCommitNavigation(figUid, keys) {
+  // A relayout within 300 ms of a wheel event comes from it: Plotly sends it
+  // 50 ms after the notch.
   if (!(performance.now() - _fvWheelAt[figUid] < 300)) {
     fvCommitViewportChange(figUid, keys);
     return;
