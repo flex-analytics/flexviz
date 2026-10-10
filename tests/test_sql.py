@@ -946,7 +946,9 @@ def test_single_dbapi_connection_is_refused():
 
 
 @pytest.mark.parametrize(
-    "end", ["", " ;\n", "\n-- a comment"], ids=["plain", "semicolon", "comment"]
+    "end",
+    ["", " ;\n", "\n-- a comment", "; -- a comment", ";\n-- a comment", "; /* c */"],
+    ids=["plain", "semicolon", "comment", "semicolon-comment", "comment-line", "block"],
 )
 def test_query_with_a_join(end):
     rng = np.random.default_rng(5)
