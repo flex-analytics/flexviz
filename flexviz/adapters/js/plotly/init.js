@@ -75,6 +75,11 @@ function bindFigure(figUid) {
   gd.on('plotly_unhover',  function()   { handlePlotlyUnhover(); });
   gd.addEventListener('pointerdown', suspendHoverForDrag);
   gd.addEventListener('pointerleave', resumeHoverAfterDrag);
+  // Capture phase: both run before Plotly's draggers and the map see the event.
+  gd.addEventListener(
+    'wheel', function(evt) { handleWheel(evt, figUid); }, { capture: true, passive: false }
+  );
+  gd.addEventListener('mousedown', function(evt) { handleMiddleButtonDown(evt, figUid); }, true);
 
   // Conditional click handlers for pie / treemap figures
   const figSpec = figSpecByUid[figUid];
