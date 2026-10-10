@@ -274,6 +274,14 @@ class SQLFrame:
     def col(self, name: str) -> exp.Column:
         return self.source.col(name)
 
+    def num(self, name: str) -> exp.Expression:
+        """A value column as a number. Postgres neither sums, takes the min of,
+        nor casts to a double a Boolean, so it becomes an integer there."""
+        c = self.col(name)
+        if self.dialect == "postgres" and self.source.schema[name] == pl.Boolean:
+            return exp.cast(c, exp.DataType.Type.INT)
+        return c
+
     def collect(self, select: exp.Select) -> pl.DataFrame:
         """Run ``select`` over the filtered rows, as a Polars frame."""
         if self.where:
@@ -803,7 +811,7 @@ def bucket_extrema(
     )
     array_form = frame.dialect == "postgres" and not exact
     x_arg = frame.phys(x_col, x_dtype) if array_form else frame.col(x_col)
-    y = frame.col(y_col)
+    y = frame.num(y_col)
     lo_x, lo_y = frame.extreme_by(x_arg, y, "min", exact=exact)
     hi_x, hi_y = frame.extreme_by(x_arg.copy(), y.copy(), "max", exact=exact)
     names = {
@@ -990,7 +998,7 @@ def hist2d_plan(
             value = exp.Count(this=exp.Star())
         else:
             conds.append(frame.usable(z_col, sch.get(z_col)))
-            z = exp.cast(frame.col(z_col), exp.DataType.Type.DOUBLE)
+            z = exp.cast(frame.num(z_col), exp.DataType.Type.DOUBLE)
             value = {"sum": exp.Sum, "mean": exp.Avg, "min": exp.Min, "max": exp.Max}[
                 histfunc
             ](this=z)
@@ -1022,7 +1030,7 @@ def _agg_sql(
 ) -> exp.Expression:
     if values_col is None:
         return exp.Count(this=exp.Star())
-    v = frame.col(values_col)
+    v = frame.num(values_col)
     if agg == "sum":
         # Polars sums an all-null group to 0, SQL to NULL.
         return exp.Coalesce(this=exp.Sum(this=v), expressions=[_num(0)])
@@ -1110,8 +1118,8 @@ def corr_plan(
             # when a NaN is in the data; DuckDB raises on it, so the NaN rows
             # are left out of CORR and flagged on their own.
             both = exp.and_(frame.usable(a, sch.get(a)), frame.usable(b, sch.get(b)))
-            x = exp.case().when(both, exp.cast(frame.col(a), dbl))
-            y = exp.case().when(both.copy(), exp.cast(frame.col(b), dbl))
+            x = exp.case().when(both, exp.cast(frame.num(a), dbl))
+            y = exp.case().when(both.copy(), exp.cast(frame.num(b), dbl))
             aggs.append(_alias(exp.Corr(this=x, expression=y), f"{_P}r{i}_{j}"))
             nans = [frame.nan(c) for c in (a, b) if sch.get(c, pl.Null).is_float()]
             if nans:
