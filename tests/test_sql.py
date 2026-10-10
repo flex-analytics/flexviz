@@ -255,6 +255,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     ),
     "bar_null_label": (_add("add_bar", labels="sub", values="w", agg="mean"), None),
     "bar_bool_label": (_add("add_bar", labels="flag"), None),
+    "bar_date_label": (_add("add_bar", labels="day"), None),
     "bar_two_labels": (_add("add_bar", labels=["cat", "g"], values="w"), None),
     "bar_grouped": (
         _add("add_bar", labels="cat", values="w", agg="sum", group_by="flag"),
@@ -1322,8 +1323,13 @@ _CH_TYPES = {
 
 
 # Columns whose ClickHouse type is not the default for their dtype: ``ts`` is
-# the native 32-bit ``DateTime`` (whole seconds, as the data), ``dec`` a DECIMAL.
-_CH_COLUMN_TYPES = {"ts": "DateTime", "dec": "Decimal(10, 3)"}
+# the native 32-bit ``DateTime`` (whole seconds, as the data), ``dec`` a
+# DECIMAL, ``day`` a Date in both wrappers, in the order ClickHouse writes them.
+_CH_COLUMN_TYPES = {
+    "ts": "Nullable(DateTime)",
+    "dec": "Nullable(Decimal(10, 3))",
+    "day": "LowCardinality(Nullable(Date))",
+}
 
 
 def _ch_type(name: str, dtype: pl.DataType) -> str:
@@ -1331,8 +1337,8 @@ def _ch_type(name: str, dtype: pl.DataType) -> str:
         return _CH_COLUMN_TYPES[name]
     if isinstance(dtype, pl.Datetime):
         tz = f", '{dtype.time_zone}'" if dtype.time_zone else ""
-        return f"DateTime64(6{tz})"
-    return _CH_TYPES[dtype.base_type()]
+        return f"Nullable(DateTime64(6{tz}))"
+    return f"Nullable({_CH_TYPES[dtype.base_type()]})"
 
 
 def _ch_params() -> dict[str, Any]:
@@ -1358,9 +1364,11 @@ def clickhouse_client() -> Any:
 def clickhouse_table(clickhouse_client) -> Any:
     table = f"fv_test_{secrets.token_hex(6)}"
     df = DF.select(_REAL_COLUMNS)
-    cols = ", ".join(f'"{c}" Nullable({_ch_type(c, t)})' for c, t in df.schema.items())
+    cols = ", ".join(f'"{c}" {_ch_type(c, t)}' for c, t in df.schema.items())
     clickhouse_client.command(
-        f'CREATE TABLE "{table}" ({cols}) ENGINE = MergeTree ORDER BY tuple()'
+        f'CREATE TABLE "{table}" ({cols}) ENGINE = MergeTree ORDER BY tuple()',
+        # For ``day``: a query can make such a column without the setting.
+        settings={"allow_suspicious_low_cardinality_types": 1},
     )
     try:
         clickhouse_client.insert(table, df.rows(), column_names=df.columns)
@@ -1443,7 +1451,8 @@ def test_clickhouse_schema_from_nullable_columns(clickhouse_table):
         ("DateTime64(6, 'Europe/Brussels')", pl.Datetime("us", "Europe/Brussels")),
         ("Nullable(DateTime64(9, 'UTC'))", pl.Datetime("ns", "UTC")),
         ("Nullable(Decimal(10, 3))", pl.Float64()),
-        ("LowCardinality(Nullable(String))", pl.String()),
+        ("LowCardinality(Nullable(Int32))", pl.Int32()),
+        ("Nullable(LowCardinality(String))", pl.String()),
     ],
 )
 def test_clickhouse_type_names(name, dtype):

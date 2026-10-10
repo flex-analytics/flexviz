@@ -83,9 +83,9 @@ _CH_SIMPLE: dict[str, pl.DataType] = {
 
 def _clickhouse_dtype(name: str) -> pl.DataType:
     """The Polars dtype of a ClickHouse type name, as its DB-API rows load."""
-    for wrapper in ("Nullable(", "LowCardinality("):
-        while name.startswith(wrapper):
-            name = name[len(wrapper) : -1]
+    # In any order: ClickHouse writes LowCardinality(Nullable(T)).
+    while name.startswith(("Nullable(", "LowCardinality(")):
+        name = name[name.index("(") + 1 : -1]
     if name in _CH_SIMPLE:
         return _CH_SIMPLE[name]
     if name.startswith("Decimal"):
