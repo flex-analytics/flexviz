@@ -1166,7 +1166,7 @@ function _fvCubeApplyTargetSlices(targets, rangesForEntry, gesture) {
       setLayerData(delta.uid, layerKey, delta.updates);
     } else if (ts.trace_type === 'line') {
       const cells = fvLineEnvCells(entry, binRanges);
-      const delta = lineEnvDeltaFromCells(ts, cells, _fvLineEnvBucketDim(entry).dim);
+      const delta = lineEnvDeltaFromCells(ts, cells, entry);
       setLayerData(delta.uid, layerKey, delta.updates);
     } else if (ts.trace_type === 'corr_heatmap') {
       // corr restyles the full z matrix each frame (cells = len(cols)^2, tiny).

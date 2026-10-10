@@ -1329,7 +1329,7 @@ before its half-bin comparison (half the source step).
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
 column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. The
 server delta draws that axis as a Plotly **date** axis: for naive and UTC columns the centers are
-naive datetime strings, and the `[lo, step, n]` hover edges are numeric epoch-ms. The cube deltas
+datetime strings (the server writes a UTC center with a `Z` suffix, Plotly places both at the same time), and the `[lo, step, n]` hover edges are numeric epoch-ms. The cube deltas
 send the same two forms. A column in another time zone gets offset strings from the server (Plotly
 reads their wall-clock fields), which the cube does not reproduce, so `_resolved_target_dims`
 refuses such targets and they stay on the server path (issue #139). Centers
@@ -1337,8 +1337,8 @@ refuses such targets and they stay on the server path (issue #139). Centers
 rounds in the column's physical unit, as the server does (µs for `Datetime("us")`, ms for a `Date`
 center), and formats a datetime string with µs precision. Committed edges use the same formatter
 (`_fvUsToDatetime`). A line envelope keeps x numeric through its reduction, finds its gaps on
-those numbers, and formats only the points it emits. Edges go through `_fvDimToEdge`, which returns epoch-ms
-via `fvPhysicalToEpochMs`. The split matters because Plotly reads a bare number on a date axis
+those numbers rounded as they are written, and formats only the points it emits. Edges go through
+`fvPhysicalToEpochMs`, which returns epoch-ms. The split matters because Plotly reads a bare number on a date axis
 through the browser's local time zone, but reads a datetime string as wall-clock time. A numeric
 center would sit one or more hours off the server's outside UTC. Edges are plain axis positions for
 the hover lookup, so they stay numeric. Normalization (`histnorm`) keeps the physical step. No

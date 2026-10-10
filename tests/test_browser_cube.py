@@ -4515,6 +4515,35 @@ class TestTemporalTargetCube:
         assert None in live["x"], "the four-day hole must break the live line"
         assert again == live
 
+    def test_live_line_gaps_use_the_written_x(self, page: Page, server_port: int):
+        """Gaps are found on x rounded to the column unit, as it is written.
+        Unrounded, the steps are 1.98 ms and the jump 8.02 ms: no gap. Written,
+        they are 1 ms and 9 ms, which the render (and the server) breaks."""
+        page.goto(_temporal_line_dashboard_url(server_port, "_cube_line_gap_rounding"))
+        _wait_for_init(page)
+        got = page.evaluate(
+            """() => {
+                const base = 1577836800000;
+                const cell = (i, a, b) => ({
+                    codes: [i], bucketIdx: i,
+                    yMin: 0, xAtYmin: base + a, yMax: 1, xAtYmax: base + b,
+                });
+                const entry = {targetDims: [
+                    {kind: 'binned', name: 't', unit: 'ms', bins: 2, domain: [base, base + 30]},
+                ]};
+                const delta = window.fvLineEnvDeltaFromCells(
+                    {uid: 'u', params: {}},
+                    [cell(0, 10.51, 12.49), cell(1, 20.51, 22.49)],
+                    entry,
+                ).updates;
+                const xs = delta.x.filter(v => v !== null);
+                const again = window.fvApplyLineGaps(xs, xs.map(() => 0), true);
+                return {x: delta.x, again: again.x};
+            }"""
+        )
+        assert got["x"].count(None) == 1
+        assert got["x"] == got["again"]
+
 
 # ---------------------------------------------------------------------------
 # Zoom-key interplay hardening (plan step 7)
