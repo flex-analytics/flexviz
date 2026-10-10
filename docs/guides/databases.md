@@ -150,8 +150,8 @@ src = fv.SQLSource(
 On Trino, a column of a type such as `uuid`, `json`, `time`, `varbinary`,
 `char`, `array`, `map` or `row` is not available to charts. Cast it in the
 query, for example `CAST(run_id AS varchar) AS run_id`. A `char` value comes
-back padded with spaces, which a selection on it cannot match. A timestamp finer than microseconds
-(`timestamp(9)`) is not available either; read it as
+back padded with spaces, which a selection on it cannot match. A timestamp
+finer than microseconds (`timestamp(9)`) is not available either; read it as
 `CAST(ts AS timestamp(6)) AS ts`.
 
 Use Trino through its catalogs for files and lakehouse tables (Hive, Iceberg,
