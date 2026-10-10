@@ -180,9 +180,18 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
         cur = conn.cursor()
         try:
             cur.execute(sql)
-            return pl.from_arrow(cur.fetch_arrow_table())  # type: ignore[return-value]
+            table = cur.fetch_arrow_table()
         finally:
             cur.close()
+        # ADBC sends Postgres numeric as text. It reads as Float64, as the
+        # type OID map does for row drivers.
+        numeric = [
+            f.name
+            for f in table.schema
+            if (f.metadata or {}).get(b"ADBC:postgresql:typname") == b"numeric"
+        ]
+        df: pl.DataFrame = pl.from_arrow(table)  # type: ignore[assignment]
+        return df.with_columns(pl.col(numeric).cast(pl.Float64))
     return pl.read_database(sql, conn)
 
 
@@ -213,7 +222,13 @@ def _num(v: float) -> exp.Expression:
         # Scientific notation: DuckDB reads a plain decimal literal as an exact
         # DECIMAL and rounds it to a double one ulp off (54 of 3,000 random
         # values); in exponent form all three dialects parse the exact double.
-        return exp.Literal.number(f"{v:.17e}")
+        # Typed: Postgres reads an exponent literal as numeric, so a numeric
+        # column would compare and subtract in decimal, not as a double. Not
+        # Nullable: in ClickHouse that made a bucket query 2.5x slower.
+        return exp.cast(
+            exp.Literal.number(f"{v:.17e}"),
+            exp.DataType(this=exp.DataType.Type.DOUBLE, nullable=False),
+        )
     return exp.Literal.number(int(v))
 
 

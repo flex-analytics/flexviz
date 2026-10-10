@@ -682,7 +682,7 @@ def test_negative_float_literal_is_parenthesized(duck, dialect):
     frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
     a = exp.column("a", quoted=True)
     sql = exp.Sub(this=a, expression=frame.lit(-1.5)).sql(dialect=dialect)
-    assert sql == '"a" - (-1.50000000000000000e+00)'
+    assert sql.startswith('"a" - (-CAST(1.50000000000000000e+00 AS ')
 
 
 @pytest.mark.parametrize("value", [-1.5, -3, -(2**62), -1e-300])
@@ -1119,6 +1119,72 @@ def test_postgres_sqlalchemy_engine(postgres_source):
     finally:
         _close_pool(src)
         engine.dispose()
+
+
+# Labels with three decimals, and integers whose bucket width is 3: a numeric
+# column compared or bucketed in decimal instead of as a double moves rows.
+_PG_NUMERIC_QUERY = """SELECT g::double precision AS t, (g % 10)::int AS run_id,
+ ((g % 7) * 12.345)::numeric(10,3) AS lab, g::numeric AS xi,
+ (((g * 7919) % 100000) / 1000.0)::numeric(10,3) AS p
+FROM generate_series(0, 600) AS g"""
+
+
+@pytest.mark.parametrize("driver", ["adbc", "psycopg"])
+def test_postgres_numeric_reads_as_float64(driver):
+    """A numeric column gives the deltas of the same rows as Float64.
+
+    ADBC sends numeric as text, psycopg as Decimal; both read as Float64, and
+    the database compares and buckets it as a double, as Polars does.
+    """
+    uri = os.environ.get(PG_ENV)
+    if not uri:
+        pytest.skip(f"set {PG_ENV} to run against Postgres")
+    if driver == "adbc":
+        pytest.importorskip("adbc_driver_postgresql")
+        src = SQLSource(uri, query=_PG_NUMERIC_QUERY)
+    else:
+        psycopg = pytest.importorskip("psycopg")
+        src = SQLSource(
+            lambda: psycopg.connect(uri), query=_PG_NUMERIC_QUERY, dialect="postgres"
+        )
+    # Python divides correctly rounded, as Postgres casts numeric to a double.
+    g = range(601)
+    ref = pl.DataFrame(
+        {
+            "t": [float(i) for i in g],
+            "run_id": pl.Series([i % 10 for i in g], dtype=pl.Int32),
+            "lab": [i % 7 * 12345 / 1000 for i in g],
+            "xi": [float(i) for i in g],
+            "p": [i * 7919 % 100000 / 1000 for i in g],
+        }
+    )
+    try:
+        assert src.schema == ref.schema
+        name = f"_sql_test_pg_numeric_{driver}"
+        register_source(name + "_ref", ref)
+        register_source(name, src)
+        client = TestClient(app)
+        dash = Dashboard()
+        dash.add_figure().add_line(x="t", y="p", group_by="run_id", n_points=200)
+        dash.add_figure().add_line(x="xi", y="t", n_points=400)
+        dash.add_figure().add_line(x="t", y="p", n_points=100, downsample="lttb")
+        dash.add_figure().add_bar(labels="lab")
+        dash.add_figure().add_bar(labels="run_id", values="p", agg="sum")
+        dash.add_figure().add_histogram(x="p", bins=10)
+        for clause in (
+            {"column": "lab", "values": [24.69, 37.035]},
+            {"column": "lab", "range": [12.345, 37.035]},
+        ):
+            sel = [
+                {"source_figure_uid": ELSEWHERE, "predicates": [{"clauses": [clause]}]}
+            ]
+            for state, ev in (_event("init", {}), ({"selections": sel}, SELECT)):
+                want = _post(client, dash, name + "_ref", state, ev)
+                got = _post(client, dash, name, state, ev)
+                assert all(want.values())
+                assert not _diff(want, got)
+    finally:
+        _close_pool(src)
 
 
 _CH_TYPES = {
