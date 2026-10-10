@@ -216,12 +216,8 @@ def _num(v: float) -> exp.Expression:
         # Parenthesized, so ``a - -1`` can never print as the comment ``a --1``.
         return exp.Paren(this=exp.Neg(this=_num(-v)))
     if isinstance(v, float):
-        # Scientific notation: DuckDB reads a plain decimal literal as an exact
-        # DECIMAL and rounds it to a double one ulp off (54 of 3,000 random
-        # values); in exponent form all three dialects parse the exact double.
-        # Typed: Postgres reads an exponent literal as numeric, so a numeric
-        # column would compare and subtract in decimal, not as a double. Not
-        # Nullable: in ClickHouse that made a bucket query 2.5x slower.
+        # Exponent form, cast to a non-nullable double: see "SQL sources" in
+        # Architecture.md for why each part matters.
         return exp.cast(
             exp.Literal.number(f"{v:.17e}"),
             exp.DataType(this=exp.DataType.Type.DOUBLE, nullable=False),
