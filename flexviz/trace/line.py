@@ -804,7 +804,7 @@ class LinePlot(FlexTrace):
                         self.uid,
                         (
                             _range_filter_expr(self.x_col, x_range, schema=schema)
-                            if x_range is not None
+                            if x_range is not None and not sql_source
                             else None
                         ),
                         x_range,
