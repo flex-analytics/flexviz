@@ -1650,7 +1650,8 @@ def test_clickhouse_type_names(name, dtype):
         ("integer", pl.Int32()),
         ("decimal(10, 2)", pl.Float64()),
         ("varchar(3)", pl.String()),
-        ("char(3)", pl.String()),
+        # Padded values that a filter cannot match: Trino strips the spaces.
+        ("char(3)", None),
         ("timestamp(3)", pl.Datetime("ms")),
         ("timestamp(6)", pl.Datetime("us")),
         ("timestamp(9)", None),
