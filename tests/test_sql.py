@@ -1196,7 +1196,14 @@ _CH_TYPES = {
 }
 
 
-def _ch_type(dtype: pl.DataType) -> str:
+# Columns whose ClickHouse type is not the default for their dtype: ``ts`` is
+# the native 32-bit ``DateTime`` (whole seconds, as the data).
+_CH_COLUMN_TYPES = {"ts": "DateTime"}
+
+
+def _ch_type(name: str, dtype: pl.DataType) -> str:
+    if name in _CH_COLUMN_TYPES:
+        return _CH_COLUMN_TYPES[name]
     if isinstance(dtype, pl.Datetime):
         tz = f", '{dtype.time_zone}'" if dtype.time_zone else ""
         return f"DateTime64(6{tz})"
@@ -1226,7 +1233,7 @@ def clickhouse_client() -> Any:
 def clickhouse_table(clickhouse_client) -> Any:
     table = f"fv_test_{secrets.token_hex(6)}"
     df = DF.select(_REAL_COLUMNS)
-    cols = ", ".join(f'"{c}" Nullable({_ch_type(t)})' for c, t in df.schema.items())
+    cols = ", ".join(f'"{c}" Nullable({_ch_type(c, t)})' for c, t in df.schema.items())
     clickhouse_client.command(
         f'CREATE TABLE "{table}" ({cols}) ENGINE = MergeTree ORDER BY tuple()'
     )

@@ -287,8 +287,14 @@ class SQLFrame:
         if d == "duckdb":
             return exp.func(f"epoch_{unit}", c)
         if d == "clickhouse":
-            fn = {"ms": "Milli", "us": "Micro", "ns": "Nano"}[unit]
-            return exp.func(f"toUnixTimestamp64{fn}", c)
+            # The epoch functions take only DateTime64, not the 32-bit DateTime.
+            precision, fn = {"ms": (3, "Milli"), "us": (6, "Micro"), "ns": (9, "Nano")}[
+                unit
+            ]
+            return exp.func(
+                f"toUnixTimestamp64{fn}",
+                exp.func("toDateTime64", c, exp.Literal.number(precision)),
+            )
         # Postgres keeps microseconds. date_part returns a double, so the
         # scaled value is within 0.5 of the exact count and rounds back to it
         # (equal to the numeric EXTRACT on all 100M benchmark rows, 2x faster).
