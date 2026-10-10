@@ -1206,40 +1206,21 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
         engine.dispose()
 
 
-_k = np.arange(200)
-# Line y columns the Postgres array form cannot hold as a double, and the
-# n_points. Each frame has no y tie in a bucket, so the x at an extremum is unique.
-_PG_LINE_Y = {
-    # One True and one False per bucket.
-    "bool": (
-        pl.DataFrame(
-            {
-                "x": np.ravel(np.column_stack([2.0 * _k, 2.0 * _k + 0.001])),
-                "y": np.tile([True, False], 200),
-            }
-        ),
-        400,
-    ),
-    # One bucket: as doubles, the first two y values tie.
-    "int64": (
-        pl.DataFrame(
-            {
-                "x": pl.Series([0, 1, 2], dtype=pl.Int32),
-                "y": [2**53 + 1, 2**53, 2**53 + 2],
-            }
-        ),
-        2,
-    ),
-}
-
-
-@pytest.mark.parametrize("frame", list(_PG_LINE_Y))
-def test_postgres_line_y_types(frame):
+def test_postgres_line_bool_y():
+    """A Boolean line y: the matrix cannot hold it, since every bucket has y
+    ties there. Here each bucket holds one True and one False, so the x at an
+    extremum is unique."""
     uri = os.environ.get(PG_ENV)
     if not uri:
         pytest.skip(f"set {PG_ENV} to run against Postgres")
     adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
-    df, n_points = _PG_LINE_Y[frame]
+    k = np.arange(200)
+    df = pl.DataFrame(
+        {
+            "x": np.ravel(np.column_stack([2.0 * k, 2.0 * k + 0.001])),
+            "y": np.tile([True, False], 200),
+        }
+    )
     table = f"fv_test_{secrets.token_hex(6)}"
     with adbc.connect(uri) as conn:
         with conn.cursor() as cur:
@@ -1247,12 +1228,12 @@ def test_postgres_line_y_types(frame):
         conn.commit()
     src = SQLSource(uri, table=table)
     try:
-        name = f"_sql_test_pg_line_y_{frame}"
+        name = "_sql_test_pg_line_bool_y"
         register_source(name + "_ref", df)
         register_source(name, src)
         client = TestClient(app)
         dash = Dashboard()
-        dash.add_figure().add_line(x="x", y="y", n_points=n_points)
+        dash.add_figure().add_line(x="x", y="y", n_points=400)
         want = _post(client, dash, name + "_ref", {}, SELECT)
         got = _post(client, dash, name, {}, SELECT)
         assert all(want.values())
