@@ -993,7 +993,7 @@ server stores it in `_sources` like a builder, and `Figure`, `Dashboard` and
 
 ```
 SQLSource
-├── dialect                     ← "postgres" | "duckdb" | "clickhouse", inferred from the connection or given
+├── dialect                     ← "postgres" | "duckdb" | "clickhouse", inferred from a URI, an engine or a DuckDB connection; dialect= for a function
 ├── schema                      ← Polars schema of `SELECT * ... LIMIT 0` (Postgres OIDs when the driver returns rows)
 ├── compile_filter(predicates)  ← twin of `predicates_to_expr`: the same typed bounds, as a SQLGlot condition
 ├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
