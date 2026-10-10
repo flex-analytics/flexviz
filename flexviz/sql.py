@@ -245,11 +245,6 @@ def _num(v: float) -> exp.Expression:
     return exp.Literal.number(int(v))
 
 
-def _sub(a: exp.Expression, b: exp.Expression) -> exp.Paren:
-    """``(a - b)``: an AST built by hand gets no parentheses of its own."""
-    return exp.Paren(this=exp.Sub(this=a, expression=b))
-
-
 def _and(*conds: exp.Expression) -> exp.Expression:
     return exp.and_(*conds) if conds else exp.true()
 
@@ -301,7 +296,7 @@ class SQLFrame:
             if d == "clickhouse":
                 return exp.func("toInt32", c)
             epoch = exp.cast(exp.Literal.string("1970-01-01"), exp.DataType.Type.DATE)
-            return exp.cast(_sub(c, epoch), exp.DataType.Type.BIGINT)
+            return exp.cast(c - epoch, exp.DataType.Type.BIGINT)
         if not isinstance(dtype, pl.Datetime):
             raise TypeError(f"column {name!r} has dtype {dtype}, not binnable in SQL")
         unit = dtype.time_unit
@@ -324,7 +319,7 @@ class SQLFrame:
             this="date_part", expressions=[exp.Literal.string("epoch"), c]
         )
         return exp.cast(
-            exp.Round(this=exp.Mul(this=epoch, expression=_num(scale))),
+            exp.Round(this=epoch * _num(scale)),
             exp.DataType.Type.BIGINT,
         )
 
@@ -810,9 +805,10 @@ def bucket_extrema(
         if x_dtype is not None and x_dtype.is_float()
         else -(-span // n_buckets)
     )
-    offset = _sub(frame.phys(x_col, x_dtype), _num(x_lo))
+    # Parenthesized: int_div builds its own node around it.
+    offset = exp.paren(frame.phys(x_col, x_dtype) - _num(x_lo), copy=False)
     if isinstance(bsz, float):
-        raw = exp.Floor(this=exp.Mul(this=offset, expression=_num(1.0 / bsz)))
+        raw = exp.Floor(this=offset * _num(1.0 / bsz))
     else:
         raw = frame.int_div(offset, bsz)
     bucket = exp.Least(
@@ -876,6 +872,29 @@ def bucket_extrema(
     return _cast_like(df, dtypes)
 
 
+def _bin_index(
+    frame: SQLFrame, name: str, lo: float, hi: float, n: int, cast: exp.DataType.Type
+) -> exp.Expression:
+    """The bin of a row, as ``_fixed_hist_bin_expr`` computes it (which mirrors
+    the kernel), in the same order:
+    ``min(max(floor((v - lo) * (n / (hi - lo)) + eps), 0), n - 1)``.
+    """
+    from .cube import _FIXED_HIST_ROUND_EPS
+
+    scale = n / (hi - lo) if hi > lo else 0.0
+    v = exp.cast(
+        frame.phys(name, frame.source.schema.get(name)), exp.DataType.Type.DOUBLE
+    )
+    raw = exp.Floor(this=(v - _num(lo)) * _num(scale) + _num(_FIXED_HIST_ROUND_EPS))
+    return exp.cast(
+        exp.Least(
+            this=exp.Greatest(this=raw, expressions=[_num(0)]),
+            expressions=[_num(n - 1)],
+        ),
+        cast,
+    )
+
+
 def hist_counts(
     frame: SQLFrame,
     col_name: str,
@@ -887,30 +906,10 @@ def hist_counts(
 ) -> pl.DataFrame:
     """Rows per bin (per group): ``group_cols``, ``__fv_b`` and ``__fv_count``.
 
-    The bin index is ``_fixed_hist_bin_expr``'s, which mirrors the kernel:
-    ``min(floor((v - lo) * (n / (hi - lo)) + eps), n - 1)``, in the same order.
+    The bin index is ``_bin_index``.
     """
-    from .cube import _FIXED_HIST_ROUND_EPS
-
     dtype = frame.source.schema.get(col_name)
-    scale = bins / (hi - lo) if hi > lo else 0.0
-    v = exp.cast(frame.phys(col_name, dtype), exp.DataType.Type.DOUBLE)
-    raw = exp.Floor(
-        this=exp.Add(
-            this=exp.Mul(
-                this=_sub(v, _num(lo)),
-                expression=_num(scale),
-            ),
-            expression=_num(_FIXED_HIST_ROUND_EPS),
-        )
-    )
-    b = exp.cast(
-        exp.Least(
-            this=exp.Greatest(this=raw, expressions=[_num(0)]),
-            expressions=[_num(bins - 1)],
-        ),
-        exp.DataType.Type.INT,
-    )
+    b = _bin_index(frame, col_name, lo, hi, bins, exp.DataType.Type.INT)
     conds = [frame.usable(col_name, dtype)]
     if zoomed:
         conds.append(frame.phys_range_cond(col_name, lo, hi))
@@ -981,7 +980,6 @@ def hist2d_plan(
 
     Count, min and max are exact. Sum and mean add in the database's order.
     """
-    from .cube import _FIXED_HIST_ROUND_EPS
     from .trace.batch_fold import _fold_result_frame
 
     def run(frame: SQLFrame) -> pl.DataFrame:
@@ -992,34 +990,11 @@ def hist2d_plan(
             (x_col, edges[0], edges[1], nb_x, zoomed[0]),
             (y_col, edges[2], edges[3], nb_y, zoomed[1]),
         ):
-            dtype = sch.get(name)
-            scale = n / (hi - lo) if hi > lo else 0.0
-            v = exp.cast(frame.phys(name, dtype), exp.DataType.Type.DOUBLE)
-            raw = exp.Floor(
-                this=exp.Add(
-                    this=exp.Mul(
-                        this=_sub(v, _num(lo)),
-                        expression=_num(scale),
-                    ),
-                    expression=_num(_FIXED_HIST_ROUND_EPS),
-                )
-            )
-            bins.append(
-                exp.cast(
-                    exp.Least(
-                        this=exp.Greatest(this=raw, expressions=[_num(0)]),
-                        expressions=[_num(n - 1)],
-                    ),
-                    exp.DataType.Type.BIGINT,
-                )
-            )
-            conds.append(frame.usable(name, dtype))
+            bins.append(_bin_index(frame, name, lo, hi, n, exp.DataType.Type.BIGINT))
+            conds.append(frame.usable(name, sch.get(name)))
             if z:
                 conds.append(frame.phys_range_cond(name, lo, hi))
-        cell = exp.Add(
-            this=exp.Paren(this=exp.Mul(this=bins[1], expression=_num(nb_x))),
-            expression=bins[0],
-        )
+        cell = bins[1] * _num(nb_x) + bins[0]
         if z_col is None:
             value = exp.Count(this=exp.Star())
         else:
