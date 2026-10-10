@@ -985,8 +985,9 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 `SQLSource` in `sql.py` is the second source kind. The data stays in a database
 (Postgres, DuckDB or ClickHouse), and each trace aggregation runs there as one
 SQL query. It offers the surface the engine and the server use of an
-`LFQueryBuilder`: `schema`, `static`, `is_scan` (always true: a plan reads
-rows in no order), `physical_minmax`, `compile_filter` and `aggregate`. The
+`LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
+true: a plan reads rows in no order), `physical_minmax`, `compile_filter` and
+`aggregate`. The
 server stores it in `_sources` like a builder, and `Figure`, `Dashboard` and
 `register_source` take it in place of data (`LF.as_source`).
 
@@ -995,7 +996,7 @@ SQLSource
 ├── dialect                     ← "postgres" | "duckdb" | "clickhouse", inferred from the connection or given
 ├── schema                      ← Polars schema of `SELECT * ... LIMIT 0` (Postgres OIDs when the driver returns rows)
 ├── compile_filter(predicates)  ← twin of `predicates_to_expr`: the same typed bounds, as a SQLGlot condition
-├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized when static
+├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
 └── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
 ```
 
@@ -1018,9 +1019,10 @@ SQLSource
   the double that Polars uses. A nullable cast made a ClickHouse bucket query
   2.5 times slower.
 - **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
-  renders literals per dialect. Five functions differ in meaning and are
-  defined per dialect: physical units (`phys`), usable rows (`usable`, NaN
-  differs), integer division (`int_div`), the x at a y extremum
+  renders literals per dialect. These functions differ in meaning and are
+  defined per dialect: physical units (`phys`), NaN (`nan`, used by `usable`
+  for the rows a bin takes), a value column as a number (`num`), integer
+  division (`int_div`), the x at a y extremum
   (`extreme_by`: `arg_min` in DuckDB and ClickHouse; on Postgres the smallest
   `ARRAY[y, x]`, which was faster on 5M rows than `array_agg ORDER BY`,
   `DISTINCT ON` and window functions) and typed literals (`lit`; on
