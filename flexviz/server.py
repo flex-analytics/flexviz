@@ -61,6 +61,7 @@ import warnings
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from datetime import timedelta, timezone
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -536,9 +537,11 @@ def _stream_window(stream: Stream, builder: LFQueryBuilder) -> tuple[Any, Any] |
     last = pl.col(stream.order_by).last()
     if not isinstance(stream.window, timedelta):
         # Python math: exact on integers, and no unsigned wrap below 0 (the
-        # range filter clamps that bound).
+        # range filter clamps that bound). A Decimal takes no float window.
         hi = builder._ldf.select(last).collect(engine="in-memory").item()
-        return None if hi is None else (hi - stream.window, hi)
+        if hi is None:
+            return None
+        return (float(hi) if isinstance(hi, Decimal) else hi) - stream.window, hi
     # Polars does the time math in absolute time, so it holds across a DST
     # change. A Python datetime holds microseconds, so the upper bound rounds
     # up to keep the last row of a nanosecond column.
