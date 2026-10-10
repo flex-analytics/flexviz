@@ -297,6 +297,10 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         )
         for fn in ("sum", "mean", "min", "max")
     },
+    "hist2d_bool_x": (
+        _add("add_histogram2d", x="flag", y="w", x_bins=2, y_bins=10),
+        None,
+    ),
     "hist2d_bool_z": (
         _add(
             "add_histogram2d",
