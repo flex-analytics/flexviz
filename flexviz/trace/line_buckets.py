@@ -271,32 +271,23 @@ def pairs_plan(
         *(pl.col(c).alias(f) for c, f in zip(pair_cols, _PAIR_FIELDS))
     )
 
-    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        if sql:
-            from ..sql import bucket_extrema
+    if sql:
+        from ..sql import bucket_extrema as extrema
+    else:
+        extrema = _bucket_extrema
 
-            result = bucket_extrema(
-                filtered_ldf,
-                x_col,
-                y_col,
-                n_buckets,
-                x_range,
-                x_domain,
-                schema,
-                group_cols,
-            )
-        else:
-            result = _bucket_extrema(
-                filtered_ldf,
-                x_col,
-                y_col,
-                n_buckets,
-                vp_filter,
-                x_range,
-                x_domain,
-                schema,
-                group_cols=group_cols,
-            )
+    def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
+        result = extrema(
+            filtered_ldf,
+            x_col,
+            y_col,
+            n_buckets,
+            vp_filter,
+            x_range,
+            x_domain,
+            schema,
+            group_cols=group_cols,
+        )
         if group_cols is not None:
             cols = list(group_cols)
             # The drop is scoped to the pair so a null group value keeps its
