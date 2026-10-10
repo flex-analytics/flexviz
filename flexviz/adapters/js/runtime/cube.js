@@ -160,30 +160,67 @@ function fvPhysicalToTemporal(value, unit) {
   if (unit === 'day') {
     return new Date(Math.ceil(value) * 86400000).toISOString().slice(0, 10);
   }
-  const us = unit === 'us' ? Math.ceil(value) : Math.ceil(value) * 1000;
-  const usRem = ((us % 1000) + 1000) % 1000;
-  const d = new Date((us - usRem) / 1000);
-  const pad = (n, w) => String(n).padStart(w, '0');
-  return d.getUTCFullYear()
-    + '-' + pad(d.getUTCMonth() + 1, 2)
-    + '-' + pad(d.getUTCDate(), 2)
-    + ' ' + pad(d.getUTCHours(), 2)
-    + ':' + pad(d.getUTCMinutes(), 2)
-    + ':' + pad(d.getUTCSeconds(), 2)
-    + '.' + pad(d.getUTCMilliseconds(), 3) + pad(usRem, 3);
+  return _fvUsToDatetime(unit === 'us' ? Math.ceil(value) : Math.ceil(value) * 1000);
+}
+
+const _FV_PAD2 = Array.from({ length: 100 }, (_, i) => String(i).padStart(2, '0'));
+const _FV_PAD3 = Array.from({ length: 1000 }, (_, i) => String(i).padStart(3, '0'));
+let _fvDayKey = NaN;
+let _fvDayPrefix = '';
+
+// The one datetime formatter: integral epoch µs → "YYYY-MM-DD HH:MM:SS.ffffff"
+// (UTC wall-clock). Callers round or ceil first, so µs precision survives.
+// Plotly and the server's own parser read it as the same instant as the
+// server's "…T…" center strings, which drop an all-zero fraction. A live line
+// formats thousands of points per frame, so the time of day comes from integer
+// arithmetic and lookup tables, and the date part is kept for the last day:
+// measured faster than toISOString.
+function _fvUsToDatetime(us) {
+  const day = Math.floor(us / 86400000000);
+  let t = us - day * 86400000000;
+  if (day !== _fvDayKey) {
+    const d = new Date(day * 86400000);
+    _fvDayKey = day;
+    _fvDayPrefix = String(d.getUTCFullYear()).padStart(4, '0')
+      + '-' + _FV_PAD2[d.getUTCMonth() + 1] + '-' + _FV_PAD2[d.getUTCDate()] + ' ';
+  }
+  const h = Math.floor(t / 3600000000);
+  t -= h * 3600000000;
+  const m = Math.floor(t / 60000000);
+  t -= m * 60000000;
+  const sec = Math.floor(t / 1000000);
+  t -= sec * 1000000;
+  const ms = Math.floor(t / 1000);
+  return _fvDayPrefix + _FV_PAD2[h] + ':' + _FV_PAD2[m] + ':' + _FV_PAD2[sec]
+    + '.' + _FV_PAD3[ms] + _FV_PAD3[t - ms * 1000];
 }
 
 // A physical temporal value (epoch µs/ms, or integer day index) → epoch
-// milliseconds — the numeric form a Plotly DATE axis renders directly (it reads
-// bare numbers as ms-since-epoch). Inverse of fvTemporalToPhysical's number
-// branch; used for a line target's binned bucket axis (contract J + G), whose
-// cube is built on the column's physical representation but must render on the
-// line's date axis. No ceil/quantize: a line is postRequired (the commit POST
-// replaces this approximate envelope), so faithful sub-unit x is preferred.
+// milliseconds. Inverse of fvTemporalToPhysical's number branch. Use it only
+// for coordinates Plotly takes as plain axis positions (the hover edge
+// triples). A data value on a date axis must go through _fvDimToCenter:
+// Plotly reads a bare number through the browser's local zone, but a datetime
+// string as wall-clock time.
+// Linear, so it also maps a bin step; a numeric dim (no unit) passes through.
 function fvPhysicalToEpochMs(value, unit) {
   if (unit === 'us') return value / 1000;
   if (unit === 'day') return value * 86400000;
-  return value; // 'ms'
+  return value; // 'ms', or no unit
+}
+
+// A temporal dim's physical value → whole epoch µs, rounded in the column's
+// physical unit like the server's centers (a Date center to the ms).
+function _fvDimToUs(dim, v) {
+  if (dim.unit === 'day') return Math.round(v * 86400000) * 1000;
+  return dim.unit === 'us' ? Math.round(v) : Math.round(v) * 1000;
+}
+
+// A target dim's physical value → a drawn data value (bin center, line x). A
+// temporal dim yields a naive datetime string (_fvDimToUs): Plotly places it
+// at its wall-clock time on a date axis, where a bare epoch-ms number would
+// shift by the browser's zone offset.
+function _fvDimToCenter(dim, v) {
+  return dim.unit ? _fvUsToDatetime(_fvDimToUs(dim, v)) : v;
 }
 
 // Mirror of the trace classes' overlay_style for the engine's active-selection
@@ -423,8 +460,8 @@ function decodeFVCube(bytes) {
     bins: d.bins,
     domain: d.domain,
     // Physical unit of a temporal binned dim (contract G); null for numeric
-    // dims. A line target renders this axis on a Plotly DATE axis, so the
-    // physical bucket value must be mapped back to epoch-ms (fvLineEnvCells).
+    // dims. A target draws this axis on a Plotly DATE axis, so the physical
+    // value is mapped back to a datetime (_fvDimToCenter, fvPhysicalToEpochMs).
     unit: d.unit ?? null,
     categories: d.categories,
     col: d.kind === 'binned' ? cols['__bin__' + d.name] : cols[d.name],
@@ -688,7 +725,9 @@ function histDeltaFromCounts(traceSpec, header, counts) {
   const lo = dim.domain[0];
   const width = (dim.domain[1] - lo) / dim.bins;
   const centers = new Array(dim.bins);
-  for (let i = 0; i < dim.bins; i++) centers[i] = lo + (i + 0.5) * width;
+  for (let i = 0; i < dim.bins; i++) {
+    centers[i] = _fvDimToCenter(dim, lo + (i + 0.5) * width);
+  }
 
   let values = Array.from(counts);
   const histnorm = (traceSpec.params && traceSpec.params.histnorm) || 'count';
@@ -709,7 +748,7 @@ function histDeltaFromCounts(traceSpec, header, counts) {
 
   // Per-axis [lo, step, n]: hover finds its bin from it, the same triple the
   // server sends.
-  const edges = [lo, width, dim.bins];
+  const edges = [fvPhysicalToEpochMs(lo, dim.unit), fvPhysicalToEpochMs(width, dim.unit), dim.bins];
   // Prop key = the single backend_data key, exactly how the adapter
   // (Histogram.from_trace_spec) determines orientation.
   const propKey = Object.keys(traceSpec.backend_data || {})[0] || 'x';
@@ -850,12 +889,8 @@ function fvLineEnvCells(entry, binRanges) {
   const bdim = bucketInfo.dim;
   const lo = bdim.domain[0];
   const width = (bdim.domain[1] - lo) / bdim.bins;
-  // A temporal bucket axis is binned on the column's physical representation
-  // (epoch µs/ms, day index); the line renders on a Plotly DATE axis, which
-  // reads bare numbers as epoch-ms — so map physical → epoch-ms (contract G).
-  // Without this the raw physical value (e.g. epoch µs, ~1000× an ms) lands
-  // millennia off-axis and the panel renders empty.
-  const unit = bdim.unit || null;
+  // x stays in the physical unit through the reduction; the emitted points
+  // become datetime strings in lineEnvDeltaFromCells (contract G).
   const yMinCol = entry.cols.y_min;
   const yMaxCol = entry.cols.y_max;
   const xArgMin = entry.cols.x_argmin;
@@ -865,8 +900,7 @@ function fvLineEnvCells(entry, binRanges) {
   const dequant = (bin, off) => {
     // bucket_lo = lo + bin*width; x = bucket_lo + (off/65535)*width.
     const bucketLo = lo + bin * width;
-    const phys = bucketLo + (off / 65535) * width;
-    return unit ? fvPhysicalToEpochMs(phys, unit) : phys;
+    return bucketLo + (off / 65535) * width;
   };
 
   const acc = new Map(); // composite code key -> cell
@@ -911,13 +945,13 @@ function fvLineEnvCells(entry, binRanges) {
 }
 
 // Project a line-x value to a number for gap diffing. Numbers pass through;
-// ISO / Plotly date strings parse via fvTemporalToPhysical. The UNIT is
-// irrelevant — gap detection is a ratio (diff > 4.1 * median), so any
-// consistent monotonic projection yields the same gaps; 'ms' is arbitrary.
+// ISO / Plotly date strings parse via fvTemporalToPhysical to integral epoch
+// µs, exact below 2**53 (year 2255). Fractional epoch ms would round µs steps,
+// and gap detection compares their ratio (diff / median > 4.1).
 function fvLineGapXToNumber(v) {
   if (typeof v === 'number') return v;
   if (v == null) return NaN;
-  return fvTemporalToPhysical(v, 'ms');
+  return fvTemporalToPhysical(v, 'us');
 }
 
 // Insert a null (x, y) break wherever the gap between consecutive x exceeds
@@ -942,11 +976,12 @@ function fvApplyLineGaps(x, y, addGaps) {
   const mid = diffs.length >> 1;
   const med = diffs.length % 2 ? diffs[mid] : (diffs[mid - 1] + diffs[mid]) / 2;
   if (!(med > 0)) return { x, y };
-  const threshold = 4.1 * med;
   const outX = [x[0]];
   const outY = [y[0]];
   for (let i = 1; i < x.length; i++) {
-    if (xn[i] - xn[i - 1] > threshold) { outX.push(null); outY.push(null); }
+    // The ratio, not diff > 4.1 * med: the product rounds, so a step of
+    // exactly 4.1 medians would break in one unit and not in another.
+    if ((xn[i] - xn[i - 1]) / med > 4.1) { outX.push(null); outY.push(null); }
     outX.push(x[i]);
     outY.push(y[i]);
   }
@@ -957,25 +992,37 @@ function fvApplyLineGaps(x, y, addGaps) {
 // bucket emit the two points (x@ymin, y_min) and (x@ymax, y_max) sorted by x
 // within the bucket (equal x ⇒ ymin first), buckets concatenated by ascending
 // bucket index → {x:[...], y:[...]}. y values are the decoded f32-quantized
-// partials. Gaps are applied later at render time (fvApplyLineGaps in
-// buildTraceFromTemplate); this envelope, like the server delta, is gapless.
-function lineEnvDeltaFromCells(traceSpec, cells) {
+// partials. The cells carry x in the bucket dim's physical unit. A temporal x
+// becomes whole epoch µs (_fvDimToUs), the gaps (fvApplyLineGaps, the trace's
+// add_gaps) are found on those numbers, and only the emitted points are
+// formatted. The delta is marked `gapped`, so the render does not parse the
+// strings back to find them again. The committed /update delta, gapless like
+// every server delta, replaces it.
+function lineEnvDeltaFromCells(traceSpec, cells, entry) {
+  const bdim = _fvLineEnvBucketDim(entry).dim;
+  const written = bdim.unit ? v => _fvDimToUs(bdim, v) : v => v;
   const sorted = cells.slice().sort((a, b) => a.bucketIdx - b.bucketIdx);
-  const x = [];
-  const y = [];
+  const xs = [];
+  const ys = [];
   for (const c of sorted) {
     const ptMin = { x: c.xAtYmin, y: c.yMin };
     const ptMax = { x: c.xAtYmax, y: c.yMax };
     // Sort the two points by x within the bucket; equal x ⇒ ymin first.
     const first = ptMax.x < ptMin.x ? ptMax : ptMin;
     const second = first === ptMin ? ptMax : ptMin;
-    x.push(first.x, second.x);
-    y.push(first.y, second.y);
+    xs.push(written(first.x), written(second.x));
+    ys.push(first.y, second.y);
   }
-  // Gaps are inserted client-side at RENDER time (buildTraceFromTemplate →
-  // fvApplyLineGaps); the live envelope ships gapless, exactly like the server
-  // delta now does. The committed /update delta still replaces this envelope.
-  return { uid: traceSpec.uid, updates: { x, y } };
+  const addGaps = !(traceSpec.params && traceSpec.params.add_gaps === false);
+  const { x, y } = fvApplyLineGaps(xs, ys, addGaps);
+  return {
+    uid: traceSpec.uid,
+    updates: {
+      x: bdim.unit ? x.map(v => (v === null ? null : _fvUsToDatetime(v))) : x,
+      y,
+      gapped: true,
+    },
+  };
 }
 
 // Grouped line target (contract D + J): split the combined envelope cells by
@@ -984,16 +1031,16 @@ function lineEnvDeltaFromCells(traceSpec, cells) {
 // each group reuses the uid recorded in the existing grouped layer data by
 // group_value_key (mirrors fvGroupedResultsFromCells); a group with no
 // recorded uid is skipped.
-function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
+function fvLineEnvGroupedResults(figUid, traceSpec, entry, cells) {
   const groupBy = (traceSpec.params && traceSpec.params.group_by) || [];
   const groupIdx = [];
-  header.target_dims.forEach((d, i) => {
+  entry.targetDims.forEach((d, i) => {
     if (groupBy.includes(d.name)) groupIdx.push(i);
   });
-  // Map each group dim's index to a code→category resolver from the header.
+  // Map each group dim's index to a code→category resolver.
   const byGroup = new Map(); // group_value_key -> {codes, cells}
   for (const cell of cells) {
-    const parts = groupIdx.map(i => header.target_dims[i].categories[cell.codes[i]]);
+    const parts = groupIdx.map(i => entry.targetDims[i].categories[cell.codes[i]]);
     const gvk = _fvGroupValueKey(parts);
     let group = byGroup.get(gvk);
     if (!group) {
@@ -1020,7 +1067,7 @@ function fvLineEnvGroupedResults(figUid, traceSpec, header, cells) {
   for (const [gvk, group] of ordered) {
     const uid = uidForGroup(gvk);
     if (!uid) continue;
-    const updates = lineEnvDeltaFromCells(traceSpec, group.cells).updates;
+    const updates = lineEnvDeltaFromCells(traceSpec, group.cells, entry).updates;
     groupResults.push({ uid, group_value_key: gvk, updates });
   }
   return groupResults;
@@ -1244,8 +1291,8 @@ function hist2dDeltaFromEntry(traceSpec, entry, binRanges) {
     }
   }
 
-  const xCenters = _fvCenters(xLo, xHi, nbX);
-  const yCenters = _fvCenters(yLo, yHi, nbY);
+  const xCenters = _fvCenters(xLo, xHi, nbX).map(v => _fvDimToCenter(dimX, v));
+  const yCenters = _fvCenters(yLo, yHi, nbY).map(v => _fvDimToCenter(dimY, v));
   const z = [];
   for (let j = 0; j < nbY; j++) z.push(values.slice(j * nbX, (j + 1) * nbX));
   return {
@@ -1254,8 +1301,8 @@ function hist2dDeltaFromEntry(traceSpec, entry, binRanges) {
       x: xCenters,
       y: yCenters,
       z,
-      x_edges: [xLo, (xHi - xLo) / nbX, nbX],
-      y_edges: [yLo, (yHi - yLo) / nbY, nbY],
+      x_edges: [fvPhysicalToEpochMs(xLo, dimX.unit), fvPhysicalToEpochMs((xHi - xLo) / nbX, dimX.unit), nbX],
+      y_edges: [fvPhysicalToEpochMs(yLo, dimY.unit), fvPhysicalToEpochMs((yHi - yLo) / nbY, dimY.unit), nbY],
     },
   };
 }

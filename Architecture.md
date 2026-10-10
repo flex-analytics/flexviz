@@ -528,7 +528,7 @@ fig.add_line(x="timestamp", y="value", name="Sensor A", n_points=1000, add_gaps=
 - **Collect engine**: the builder's own collects use `engine="streaming"` when the source reads from storage (its unoptimized plan roots at `SCAN [...]`) and `engine="in-memory"` for a resident frame, fixed per source (`LFQueryBuilder.collect_engine`) rather than left to `"auto"`. The line bucket plan, the grouped histogram plan and the domain probe (filtered or not) are the exceptions: all stream on both source kinds. The same `is_scan` signal picks the kernel-vs-native formulation above.
 - Viewport restriction, ungrouped lines: an ungrouped x-width line on a resident frame is sorted by contract, so its viewport is a binary-searched, zero-copy `slice(search_sorted(lo), search_sorted(hi) - start)`. The scan plan passes an `is_between` mask into `pairs_plan` instead. A resident `nth` line slices only when the x column was asserted sorted (`assume_sorted` / `check_line_x`, surfaced via `LFQueryBuilder.sorted_cols` and threaded by the engine as `sorted_cols`), and takes a dtype-aware `is_between` mask otherwise. Performance-only choice — `tests/test_trace_line.py::TestSortedViewportSlice` asserts the slice returns exactly what the mask returns. Grouped lines and both scan plans always mask (the filter runs frame-level, before `group_by` or the gather).
 - The engine normalizes descending viewport ranges (reversed plotly axes report high-to-low) to `lo <= hi` at ingestion — `_normalize_viewports` in `engine.py`, the first step of both `process` and `build_cubes` — so neither formulation nor a cube domain ever sees a reversed pair.
-- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init, commit, and live cube.
+- `_to_update`: unpacks struct → `{"x": series, "y": series}`, gapless. Gap (`null`) breaks across large x jumps are a client-side display concern, inserted at render time by `fvApplyLineGaps` (`adapters/js/runtime/cube.js`) for every line trace — init and commit. The live cube envelope runs the same function on its physical x before it formats the points, and arrives `gapped`, so the render does not parse its datetime strings back on every frame.
 - Range-brush selections emit a `ClauseFilter(range=...)` per axis; the predicate compiler applies typed `is_between` filters.
 
 ### Histogram
@@ -1327,15 +1327,25 @@ predicate, draws the same box. The `plotly_selected` echo guard converts both si
 before its half-bin comparison (half the source step).
 
 **Temporal binned *target* dims.** A binned target dim over a temporal column is built on the
-column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. Most
-temporal targets (hist, hist2d) render that axis as a Plotly **linear** axis — the server delta
-*also* emits physical numbers, so the cube delta matches and no conversion is needed. A **line**
-target is the exception: the server seeds its x as datetime → ISO strings, so Plotly makes it a
-**date** axis (which reads bare numbers as epoch-ms). The cube line-envelope therefore maps each
-bucket x from physical → epoch-ms via `fvPhysicalToEpochMs` (`fvLineEnvCells`); without it the raw
-physical value — epoch µs is ~1000× an ms — lands millennia off-axis and the panel renders empty
-mid-drag. No quantize is needed: the line is `postRequired`, so the commit POST's legacy delta
-replaces the approximate envelope.
+column's physical representation (epoch µs/ms, day index) and the header ships its `unit`. The
+server delta draws that axis as a Plotly **date** axis: for naive and UTC columns the centers are
+datetime strings (the server writes a UTC center with a `Z` suffix, Plotly places both at the
+same time), and the `[lo, step, n]` hover edges are numeric epoch-ms. The cube deltas send the
+same two forms. A column in another time zone gets offset strings from the server (Plotly
+reads their wall-clock fields), which the cube does not reproduce, so `_resolved_target_dims`
+refuses such targets and they stay on the server path (issue #139). Centers
+(hist, hist2d, and the x of a line envelope) go through `_fvDimToCenter` in `runtime/cube.js`,
+which rounds to whole epoch µs in the column's physical unit, as the server does (µs for
+`Datetime("us")`, ms for a `Date` center, `_fvDimToUs`), and formats a datetime string with µs
+precision. Committed edges use the same formatter (`_fvUsToDatetime`). A line envelope keeps x
+numeric through its reduction, finds its gaps on the whole epoch µs it writes, and formats only
+the points it emits. Edges go through `fvPhysicalToEpochMs`, which returns epoch-ms. The split
+matters because Plotly reads a bare number on a date axis through the browser's local time
+zone, but reads a datetime string as wall-clock time. A numeric center would sit one or more
+hours off the server's outside UTC. Edges are plain axis positions for
+the hover lookup, so they stay numeric. Normalization (`histnorm`) keeps the physical step. No
+quantize is needed: the server's rounding of centers to the physical unit is below 1 ms, and the
+line is `postRequired`, so the commit POST's legacy delta replaces the approximate envelope.
 
 ### The two cube caches (and the existing response cache)
 
