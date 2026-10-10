@@ -760,8 +760,9 @@ def _typed_range_bounds(
 ) -> tuple[pl.Expr, pl.Expr] | None:
     """Return typed lower/upper literal expressions for a column range.
 
-    ``closed`` must match the ``is_between`` closed-ness the caller will
-    apply to the returned bounds; it only affects integer-column rounding.
+    ``closed`` is the closed-ness of ``range_``. For an integer column the
+    returned bounds are inclusive whatever ``closed`` is, so the caller applies
+    ``closed="both"``. For any other column the caller applies ``closed``.
     """
     if range_ is None:
         return None
@@ -773,25 +774,32 @@ def _typed_range_bounds(
     if dtype.is_temporal():
         return (_typed_temporal_lit(lo, dtype), _typed_temporal_lit(hi, dtype))
     if dtype.is_integer():
-        # Convert float bounds to integers preserving real-valued membership
-        # over the integers, per side of the interval:
-        #   closed bound → round toward the interval interior:
-        #     lo=0.25, x ≥ 0.25 ⟺ x ≥ ceil(0.25) = 1
-        #     hi=86.5, x ≤ 86.5 ⟺ x ≤ floor(86.5) = 86
-        #   open bound → round away from the interior:
-        #     lo=0.2,  x > 0.2  ⟺ x > floor(0.2) = 0
-        #     hi=1.2,  x < 1.2  ⟺ x < ceil(1.2)  = 2
-        # Exact-integer float bounds are unchanged by either rounding.
+        # Turn each bound into an inclusive integer bound with the same
+        # real-valued membership over the integers:
+        #   closed lo=0.25, x >= 0.25 <=> x >= ceil(0.25)    = 1
+        #   open   lo=0.2,  x >  0.2  <=> x >= floor(0.2)+1 = 1
+        #   closed hi=86.5, x <= 86.5 <=> x <= floor(86.5)   = 86
+        #   open   hi=1.2,  x <  1.2  <=> x <= ceil(1.2)-1   = 1
         # trunc (Polars' default cast) is wrong for positive fractional lo and
         # negative fractional hi (it rounds toward zero instead of inward).
         # Casting literals to the column dtype also avoids Polars upcasting the
         # entire column to f64 (measured ~10x speedup).
-        lo_closed = closed in ("both", "left")
-        hi_closed = closed in ("both", "right")
-        if isinstance(lo, float):
-            lo = math.ceil(lo) if lo_closed else math.floor(lo)
-        if isinstance(hi, float):
-            hi = math.floor(hi) if hi_closed else math.ceil(hi)
+        if isinstance(lo, (int, float)):
+            lo = math.ceil(lo) if closed in ("both", "left") else math.floor(lo) + 1
+        if isinstance(hi, (int, float)):
+            hi = math.floor(hi) if closed in ("both", "right") else math.ceil(hi) - 1
+        # A bound past the dtype range casts to null, which selects nothing and
+        # which a binary search reads as "before every value". Clamping keeps
+        # it a bound. Inclusive bounds make the clamp exact on either side, and
+        # a range wholly outside becomes the inverted pair, which is empty.
+        # Any other bound comes only from a crafted request: plain cast.
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            d_min, d_max = pl.select(
+                dtype.min().alias("min"), dtype.max().alias("max")
+            ).row(0)
+            if lo > d_max or hi < d_min:
+                lo, hi = d_max, d_min
+            lo, hi = max(lo, d_min), min(hi, d_max)
         return (
             pl.lit(lo).cast(dtype, strict=False),
             pl.lit(hi).cast(dtype, strict=False),
@@ -825,9 +833,13 @@ def _range_filter_expr(
     col_name: str,
     range_: tuple[Any, Any] | None,
     schema: pl.Schema | None = None,
+    closed: str = "both",
 ) -> pl.Expr | None:
     """Build a typed ``is_between`` expression for ``col_name`` and ``range_``."""
-    bounds = _typed_range_bounds(col_name, range_, schema)
+    bounds = _typed_range_bounds(col_name, range_, schema, closed)
     if bounds is None:
         return None
-    return pl.col(col_name).is_between(*bounds)
+    dtype = _dtype_for_col(schema, col_name)
+    if dtype is not None and dtype.is_integer():
+        closed = "both"  # _typed_range_bounds made the bounds inclusive
+    return pl.col(col_name).is_between(*bounds, closed=closed)

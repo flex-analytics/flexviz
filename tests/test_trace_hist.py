@@ -345,6 +345,27 @@ class TestHistogramViewportSnap:
             )["x"]
         )
 
+    @pytest.mark.parametrize(
+        "dtype,x_range",
+        [
+            (pl.UInt32, (-3.5, 2.5)),
+            (pl.UInt8, (-5.5, 300.2)),
+            (pl.UInt8, (200.0, 300.0)),
+        ],
+        ids=["uint32_below_zero", "uint8_both_sides", "uint8_above_max"],
+    )
+    def test_viewport_past_the_dtype_range_counts_like_int64(self, dtype, x_range):
+        # A bound past the dtype range once cast to null and emptied the bins.
+        vals = [0, 1, 2, 3, 10, 250, 255]
+
+        def counts(dt):
+            df = pl.DataFrame({"val": pl.Series(vals, dtype=dt)})
+            return list(_aggregate_hist(df, bins=4, x_range=x_range)["y"])
+
+        got = counts(dtype)
+        assert sum(got) > 0
+        assert got == counts(pl.Int64)
+
     def test_lattice_aligned_viewport_is_unchanged(self):
         # 20..60 over 10 bins has width 4 and both bounds are multiples of it.
         assert snap_range(20.0, 60.0, 10) == (20.0, 60.0, 10)

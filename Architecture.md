@@ -718,12 +718,12 @@ fig.add_corr_heatmap(columns=["a", "b"], color_scale="RdBu", color_range="auto")
 _dtype_for_col(schema, col_name)   → pl.DataType | None
 _typed_temporal_lit(value, dtype)  → pl.Expr
 _typed_range_bounds(lo, hi, dtype) → Tuple[pl.Expr, pl.Expr]
-_range_filter_expr(col, lo, hi, schema) → pl.Expr  # is_between with typed literals
+_range_filter_expr(col, range_, schema, closed) → pl.Expr  # is_between with typed literals
 ```
 
 All traces call these for consistent datetime, integer, and float casting in `is_between` expressions.
 
-`_typed_range_bounds` rounds an integer or `Float32` bound so that no value of the column crosses it: a closed bound toward the interior of the range, an open bound away from it. A selection predicate applies the same rule to a temporal bound that is finer than its column (`_temporal_bound_toward`, for `Date` and `Datetime("ms")`), so a brush from 13:00 does not keep that day. A viewport mask still truncates a temporal bound: rounding there would change which points a line keeps at the edge of a zoom.
+`_typed_range_bounds` rounds an integer or `Float32` bound so that no value of the column crosses it: a closed bound toward the interior of the range, an open bound away from it. On an integer column both bounds come back inclusive, and `_range_filter_expr` applies `closed="both"`. They are then clamped to the dtype range, because a bound past it casts to null and selects nothing (a pan below 0 on a `UInt32` row index). A range wholly outside becomes the inverted pair `(max, min)`, which is empty, also as a sorted line's slice. A selection predicate applies the same rule to a temporal bound that is finer than its column (`_temporal_bound_toward`, for `Date` and `Datetime("ms")`), so a brush from 13:00 does not keep that day. A viewport mask still truncates a temporal bound: rounding there would change which points a line keeps at the edge of a zoom.
 
 ---
 

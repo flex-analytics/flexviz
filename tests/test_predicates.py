@@ -240,7 +240,7 @@ class TestIntegerClosedRounding:
     range would select on a Float64 copy of the column.
     """
 
-    # ClauseFilter only models "both" and "left"; the bounds helper supports
+    # ClauseFilter only models "both" and "left"; the range filter supports
     # all four is_between closed values, so the full matrix is pinned there.
     @pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt32])
     @pytest.mark.parametrize("closed", ["both", "left", "right", "none"])
@@ -256,13 +256,10 @@ class TestIntegerClosedRounding:
         ],
     )
     def test_bounds_membership_matches_float_semantics(self, dtype, closed, rng):
-        from flexviz.trace.base import _typed_range_bounds
+        from flexviz.trace.base import _range_filter_expr
 
         df = pl.DataFrame({"i": pl.Series(range(5), dtype=dtype)})
-        lo_e, hi_e = _typed_range_bounds("i", rng, df.schema, closed)
-        got = df.filter(pl.col("i").is_between(lo_e, hi_e, closed=closed))[
-            "i"
-        ].to_list()
+        got = df.filter(_range_filter_expr("i", rng, df.schema, closed))["i"].to_list()
         lo, hi = rng
         ref = df.filter(pl.col("i").cast(pl.Float64).is_between(lo, hi, closed=closed))[
             "i"
@@ -272,18 +269,59 @@ class TestIntegerClosedRounding:
     @pytest.mark.parametrize("closed", ["both", "left", "right", "none"])
     @pytest.mark.parametrize("rng", [(-1.5, 1.5), (-3.2, -0.2), (-2.0, 2.0)])
     def test_negative_bounds_match_float_semantics(self, closed, rng):
-        from flexviz.trace.base import _typed_range_bounds
+        from flexviz.trace.base import _range_filter_expr
 
         df = pl.DataFrame({"i": pl.Series(range(-4, 5), dtype=pl.Int64)})
-        lo_e, hi_e = _typed_range_bounds("i", rng, df.schema, closed)
-        got = df.filter(pl.col("i").is_between(lo_e, hi_e, closed=closed))[
-            "i"
-        ].to_list()
+        got = df.filter(_range_filter_expr("i", rng, df.schema, closed))["i"].to_list()
         lo, hi = rng
         ref = df.filter(pl.col("i").cast(pl.Float64).is_between(lo, hi, closed=closed))[
             "i"
         ].to_list()
         assert got == ref
+
+    @pytest.mark.parametrize("dtype", [pl.UInt8, pl.Int8, pl.UInt64])
+    @pytest.mark.parametrize(
+        "rng", [(-3.5, 2.0), (-1000.0, 1000.0), (100.0, 300.0), (300.0, 400.0)]
+    )
+    def test_clause_past_the_dtype_range_matches_float_semantics(self, dtype, rng):
+        # A bound past the dtype range once cast to null and selected nothing.
+        from flexviz.predicates import predicates_to_expr
+
+        df = pl.DataFrame({"i": pl.Series([0, 1, 2, 5, 120, 127], dtype=dtype)})
+        preds = [SelectionPredicate(clauses=[ClauseFilter(column="i", range=rng)])]
+        got = df.filter(predicates_to_expr(preds, df.schema))["i"].to_list()
+        ref = df.filter(pl.col("i").cast(pl.Float64).is_between(*rng))["i"].to_list()
+        assert got == ref
+
+    @pytest.mark.parametrize(
+        "rng,expected", [((240.0, 260.0), [250, 255]), ((255.0, 300.0), [255])]
+    )
+    def test_half_open_clause_past_the_max_keeps_the_max(self, rng, expected):
+        # A cube commits every bin but the top one half-open. Clamping the open
+        # upper bound to the dtype max once dropped the max value itself.
+        from flexviz.predicates import predicates_to_expr
+
+        df = pl.DataFrame({"i": pl.Series([0, 200, 250, 255], dtype=pl.UInt8)})
+        clause = ClauseFilter(column="i", range=rng, closed="left")
+        preds = [SelectionPredicate(clauses=[clause])]
+        assert df.filter(predicates_to_expr(preds, df.schema))["i"].to_list() == (
+            expected
+        )
+
+    def test_right_closed_range_below_zero_keeps_zero(self):
+        from flexviz.trace.base import _range_filter_expr
+
+        df = pl.DataFrame({"i": pl.Series([0, 1, 5, 255], dtype=pl.UInt8)})
+        expr = _range_filter_expr("i", (-3.0, 1.0), df.schema, "right")
+        assert df.filter(expr)["i"].to_list() == [0, 1]
+
+    def test_non_numeric_bounds_keep_the_plain_cast(self):
+        from flexviz.trace.base import _typed_range_bounds
+
+        df = pl.DataFrame({"i": pl.Series(range(12), dtype=pl.Int64)})
+        lo, hi = _typed_range_bounds("i", ("5", "10"), df.schema)
+        got = df.filter(pl.col("i").is_between(lo, hi))["i"].to_list()
+        assert got == list(range(5, 11))
 
     @pytest.mark.parametrize("closed", ["both", "left"])
     @pytest.mark.parametrize("rng", [(0.2, 1.2), (0.5, 3.5), (1.0, 3.0)])

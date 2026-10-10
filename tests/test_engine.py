@@ -3263,3 +3263,77 @@ class TestResidentLineXWidth:
         first, second = self._two_requests(lf, cache_backend=InMemoryLRUCache())
         assert first > second
         assert lf._sorted_cols == {"ts"}
+
+
+class TestLineViewportPastTheXDtypeRange:
+    """A line zoomed or panned past an integer x dtype's range."""
+
+    @staticmethod
+    def _run(lf: LFQueryBuilder, trace: LinePlot, zoom: tuple):
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        event, viewports = _zoom({"x": zoom})
+        deltas = engine.process(event, infos, viewports)
+        return list(zip(deltas[0].updates["x"], deltas[0].updates["y"]))
+
+    @pytest.mark.parametrize("zoom", [(256.0, 300.0), (-20.0, -10.0)])
+    def test_a_sorted_slice_wholly_outside_the_dtype_range_is_empty(self, zoom):
+        # nth on a sorted x slices by binary search, with no bucket grid to
+        # fall back on, so the bounds alone must give an empty window.
+        df = pl.DataFrame(
+            {"ts": pl.Series([0, 1, 254, 255], dtype=pl.UInt8), "val": [1.0, 2, 3, 4]}
+        )
+        lf = LFQueryBuilder(df)
+        lf.assume_sorted("ts")
+        line = LinePlot(x="ts", y="val", n_points=50, downsample="nth")
+        assert self._run(lf, line, zoom) == []
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    @pytest.mark.parametrize("zoom", [(300.0, 400.0), (-20.0, -10.0)])
+    def test_a_viewport_wholly_outside_the_dtype_range_is_empty(self, zoom, downsample):
+        df = pl.DataFrame(
+            {"ts": pl.Series([0, 1, 2], dtype=pl.UInt8), "val": [1.0, 2, 3]}
+        )
+        line = LinePlot(x="ts", y="val", n_points=50, downsample=downsample)
+        assert self._run(LFQueryBuilder(df), line, zoom) == []
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs", "nth"])
+    @pytest.mark.parametrize(
+        "dtype,xs,zoom",
+        [
+            (pl.UInt64, [0, 1, 2], (-1.0, 3.0)),
+            (pl.Int8, [-100, 0, 1], (-1000.0, 3.0)),
+            (pl.UInt8, [0, 1, 2], (0.0, 300.0)),
+            (pl.Int8, [-100, 0, 100], (-1000.0, 1000.0)),
+        ],
+        ids=["uint64_below", "int8_below", "uint8_above", "int8_both"],
+    )
+    @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    def test_a_viewport_bound_outside_the_dtype_range(
+        self, tmp_path, dtype, xs, zoom, downsample, scan
+    ):
+        # A bound past the dtype range once cast to null and emptied the line.
+        def lf(dt):
+            df = pl.DataFrame(
+                {
+                    "ts": pl.Series("ts", xs, dtype=dt),
+                    "val": [10.0 * (i + 1) for i in range(len(xs))],
+                }
+            )
+            if not scan:
+                return LFQueryBuilder(df)
+            path = tmp_path / f"{dt}.parquet"
+            df.write_parquet(path)
+            return LFQueryBuilder(pl.scan_parquet(path))
+
+        def line():
+            return LinePlot(x="ts", y="val", n_points=50, downsample=downsample)
+
+        got = self._run(lf(dtype), line(), zoom)
+        assert got
+        assert (got[0][0], got[-1][0]) == (xs[0], xs[-1])
+        assert got == self._run(lf(pl.Int64), line(), zoom)
