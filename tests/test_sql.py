@@ -88,6 +88,11 @@ def _frame() -> pl.DataFrame:
         pl.col("ts").dt.cast_time_unit("ms").alias("ts_ms"),
         pl.col("ts").dt.cast_time_unit("ns").alias("ts_ns"),
     ).with_columns(
+        # NaN only where v is null: no complete (v, wn) pair holds a NaN.
+        pl.when(pl.col("v").is_null())
+        .then(float("nan"))
+        .otherwise(pl.col("w"))
+        .alias("wn"),
         # Group "d" has no value at all: sum gives 0 and mean null on both sides.
         pl.when(pl.col("cat") == "d").then(None).otherwise(pl.col("v")).alias("vb"),
         pl.when((pl.col("cat") == "d") | (row % 13 == 0))
@@ -327,6 +332,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     ),
     "corr": (_add("add_corr_heatmap", columns=["t", "v", "w", "i"]), None),
     "corr_bool": (_add("add_corr_heatmap", columns=["w", "flag"]), None),
+    "corr_nan_null": (_add("add_corr_heatmap", columns=["v", "wn"]), None),
     "corr_nan": (_add("add_corr_heatmap", columns=["vn", "w"]), None),
     "corr_abs": (
         _add("add_corr_heatmap", columns=["v", "w", "lat"], absolute=True),
