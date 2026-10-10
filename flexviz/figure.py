@@ -223,11 +223,11 @@ class Figure:
             (MinMaxLTTB), ``"fpcs"``, or ``"nth"``.  All four work grouped.
         assume_sorted_x:
             The engine reads x for ascending order (nulls first, NaN last)
-            and raises `ValueError` when the column fails. That pass runs once per source
-            and column, and only for an ungrouped x-width line on a resident
-            frame. Set True to skip it by marking the column sorted. Only pass
-            it if you guarantee `x` meets the contract: a column that breaks it
-            then gives wrong results.
+            and raises `ValueError` when the column fails. That pass runs once
+            per source and column, and only for an ungrouped x-width line on a
+            resident frame. Set True to skip it by marking the column sorted.
+            Only pass it if you guarantee `x` meets the contract: a column that
+            breaks it then gives wrong results.
         """
         trace = LinePlot(
             x=x,
