@@ -170,8 +170,8 @@ binned columns, so that the bins line up across charts.
 The results are equal to the results on a Polars frame with the same rows,
 with these exceptions:
 
-- A sum or a mean can be different in the last digits, because the database
-  adds the values in its own order.
+- A sum, a mean or a median can be different in the last digits, because the
+  database adds and halves the values in its own order.
 - If more rows have the same y minimum or y maximum in a line bucket, the
   database can show the x of a different one of these rows.
 - On Postgres, a sum of 64-bit integers is exact only up to 2**53.
