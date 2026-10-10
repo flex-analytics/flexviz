@@ -181,7 +181,7 @@ function handleRelayout(relayout, figUid) {
   if (isMapEvent) {
     const coords = mapCoordinatesFromRelayout(relayout);
     if (coords) {
-      fvCommitViewportChange(figUid, fvWriteViewport(figUid + '/coordinates', coords));
+      _fvCommitNavigation(figUid, fvWriteViewport(figUid + '/coordinates', coords));
     }
     return;
   }
@@ -239,7 +239,7 @@ function handleRelayout(relayout, figUid) {
     ([k, v]) => fvWriteViewport(figUid + '/' + k, { min: v[0], max: v[1] })
   );
   if (touchedLockedAxes) window.fvApplyAxisLocks?.(figUid);
-  fvCommitViewportChange(figUid, changed);
+  _fvCommitNavigation(figUid, changed);
 }
 
 // The TRUE category value of a selected bar point: the trace's underlying
@@ -1989,7 +1989,30 @@ function handleWheel(evt, figUid) {
     evt.stopPropagation();
     return;
   }
+  _fvWheelAt[figUid] = performance.now();
   if (!map && target !== evt.target) _fvForward(evt, target);
+}
+
+// Plotly ends a wheel zoom 50 ms after the last notch, so a slow spin gives
+// one relayout per notch. Their requests wait until the spin stops, so a spin
+// sends one request. Linked figures still follow each notch at once.
+const _fvWheelAt = {};
+const _fvWheelCommits = {};
+function _fvCommitNavigation(figUid, keys) {
+  if (!(performance.now() - _fvWheelAt[figUid] < 300)) {
+    fvCommitViewportChange(figUid, keys);
+    return;
+  }
+  for (const other of fvFiguresOfKeys(keys)) {
+    if (other !== figUid) _fvRenderFigure(other);
+  }
+  const pending = _fvWheelCommits[figUid] ??= { keys: new Set() };
+  keys.forEach(k => pending.keys.add(k));
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => {
+    delete _fvWheelCommits[figUid];
+    fvCommitViewportChange(figUid, [...pending.keys]);
+  }, 200);
 }
 
 // A middle-button drag pans only when it starts on the plot area, in every

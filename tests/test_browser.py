@@ -8646,6 +8646,31 @@ class TestWheelNavigationBrowser:
         assert page.evaluate("() => window.scrollX") > 0
         assert events == []
 
+    def test_slow_wheel_spin_sends_one_request(self, page: Page, server_port: int):
+        # Plotly ends a wheel zoom 50 ms after a notch, so each notch here
+        # is its own relayout.
+        events: list[str] = []
+        page.on(
+            "request",
+            lambda r: (
+                events.append(r.post_data_json["event"]["type"])
+                if "/dashboard/update" in r.url
+                else None
+            ),
+        )
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        events.clear()
+        box = _drag_box(page, 0)
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for _ in range(6):
+            page.mouse.wheel(0, -100)
+            page.wait_for_timeout(80)
+        # The linked histogram follows before the request goes out.
+        assert page.evaluate(_FIG_RANGES, 1)["x"] == page.evaluate(_FIG_RANGES, 0)["x"]
+        page.wait_for_timeout(600)
+        assert events == ["viewport"]
+
     def test_wheel_zooms_both_axes_of_other_figures(self, page: Page, server_port: int):
         page.goto(_dashboard_url_wheel(server_port))
         _wait_for_init(page)
