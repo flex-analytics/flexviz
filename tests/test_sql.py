@@ -456,20 +456,9 @@ EVENTS = (
 ZOOM_EVENTS = {"zoom", "zoom_sel"}
 
 
-def _matrix(
-    cases: list[str], events: tuple[str, ...], xfails: dict[tuple[str, str], str]
-) -> list:
+def _matrix(cases: list[str], events: tuple[str, ...]) -> list[tuple[str, str]]:
     return [
-        pytest.param(
-            case,
-            event,
-            id=f"{case}-{event}",
-            marks=(
-                [pytest.mark.xfail(strict=True, reason=xfails[(case, event)])]
-                if (case, event) in xfails
-                else []
-            ),
-        )
+        (case, event)
         for case in cases
         for event in events
         if CASES[case][1] is not None or event not in ZOOM_EVENTS
@@ -577,12 +566,8 @@ def _assert_same(client: TestClient, ref: str, sql: str, case: str, event: str) 
 # 1. Equivalence on DuckDB
 # ---------------------------------------------------------------------------
 
-# (case, event) -> the bug that makes the SQL delta differ. Strict: a fix
-# turns the entry into a failure, so it gets removed.
-DUCKDB_XFAILS: dict[tuple[str, str], str] = {}
 
-
-@pytest.mark.parametrize(("case", "event"), _matrix(list(CASES), EVENTS, DUCKDB_XFAILS))
+@pytest.mark.parametrize(("case", "event"), _matrix(list(CASES), EVENTS))
 def test_duckdb_matches_polars(client, case, event):
     _assert_same(client, POLARS, DUCKDB, case, event)
 
@@ -591,8 +576,7 @@ def test_fewer_connections_than_plans(client, duck):
     """Two connections serve every plan of one request, in turn."""
     name = "_sql_test_duckdb_2conn"
     register_source(name, SQLSource(duck, table="src", max_connections=2))
-    broken = {case for case, _ in DUCKDB_XFAILS}
-    dash, uids = _build([c for c in CASES if c not in broken])
+    dash, uids = _build(list(CASES))
     state, event = _event("compound_sel", {})
     want = _post(client, dash, POLARS, state, event)
     got = _post(client, dash, name, state, event)
@@ -1072,7 +1056,6 @@ def test_cube_request_on_sql_source_returns_empty_bundle(client):
 # DuckDB-only cases: Postgres stores microseconds only.
 REAL_CASES = [c for c in CASES if c not in ("hist_ts_ms", "hist_ts_ns")]
 REAL_EVENTS = ("init", "zoom", "values_sel", "temporal_sel", "compound_sel", "overlay")
-REAL_XFAILS: dict[str, dict[tuple[str, str], str]] = {"postgres": {}, "clickhouse": {}}
 # Real databases do not keep the frame's row order: rid restores it, and the
 # reference frame is read back from the database so both sides share dtypes.
 _REAL_COLUMNS = [c for c in DF.columns if c not in ("ts_ms", "ts_ns")]
@@ -1415,20 +1398,14 @@ def _ch_connect_rows(table: str) -> list[tuple]:
         conn.close()
 
 
-def _real_matrix() -> list:
-    params = []
+def _real_matrix() -> list[tuple[str, str, str]]:
     # Generated only for a configured database: hundreds of skips say nothing.
-    for backend, env in (("postgres", PG_ENV), ("clickhouse", CH_ENV)):
-        if not os.environ.get(env):
-            continue
-        for p in _matrix(REAL_CASES, REAL_EVENTS, REAL_XFAILS[backend]):
-            case, event = p.values
-            params.append(
-                pytest.param(
-                    backend, case, event, id=f"{backend}-{p.id}", marks=p.marks
-                )
-            )
-    return params
+    return [
+        (backend, case, event)
+        for backend, env in (("postgres", PG_ENV), ("clickhouse", CH_ENV))
+        if os.environ.get(env)
+        for case, event in _matrix(REAL_CASES, REAL_EVENTS)
+    ]
 
 
 @pytest.mark.parametrize(("backend", "case", "event"), _real_matrix())
