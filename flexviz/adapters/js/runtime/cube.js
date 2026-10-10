@@ -1000,8 +1000,6 @@ function fvApplyLineGaps(x, y, addGaps) {
 // every server delta, replaces it.
 function lineEnvDeltaFromCells(traceSpec, cells, entry) {
   const bdim = _fvLineEnvBucketDim(entry).dim;
-  // Gaps are found on x as it is written: whole epoch µs, as the render
-  // parses the strings back.
   const written = bdim.unit ? v => _fvDimToUs(bdim, v) : v => v;
   const sorted = cells.slice().sort((a, b) => a.bucketIdx - b.bucketIdx);
   const xs = [];
