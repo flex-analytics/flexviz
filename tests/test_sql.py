@@ -1380,7 +1380,9 @@ def clickhouse_table(clickhouse_client) -> Any:
 def _ch_connect() -> Any:
     from clickhouse_connect import dbapi
 
-    return dbapi.connect(**_ch_params())
+    # A session zone other than UTC, as a server in another zone would have: a
+    # naive datetime literal must still read as UTC.
+    return dbapi.connect(**_ch_params(), session_timezone="Europe/Brussels")
 
 
 @pytest.fixture(scope="module")
