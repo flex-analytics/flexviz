@@ -181,8 +181,8 @@ DashboardSpec
             / show_grid / show_share / show_export / show_import: bool (all True by default)
 
 InteractionEvent
-├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
-├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed
+├── type: "init" | "viewport" | "selection" | "deselect" | "refresh" | "cube_request"
+├── viewport_keys: List[str]             ← state.viewport keys ("{figure_uid}/{axis_id}") this event changed (the server adds a stream's locked keys)
 └── force_update: bool
 
 A viewport event carries no ranges: the engine reads every range from
@@ -869,8 +869,9 @@ FlexEngine
          grid, so the engine sends a fresh bg. init/deselect still emit the
          sole unfiltered layer for every trace) and execute
          only the layers required by the event (`selection` → fg, plus bg when
-         a trace's viewport key changed; `init`/`deselect` → bg; `viewport` →
-         bg or bg+fg depending on active selections)
+         a trace's viewport key changed; `init`/`deselect` → bg; `viewport` and
+         `refresh` → bg or bg+fg depending on active selections; `refresh`
+         also sends a fresh bg for every trace)
       10. Route regular results to _to_update(df_agg)
       11. Route grouped results to _to_grouped_update(df_grouped)
       12. Normalize Series → list once; emit TraceDelta / GroupedChildDelta
@@ -1010,7 +1011,7 @@ A stream is never cacheable. Its cacheable flag stays False, so the response cac
 
 The page polls `GET /sources/{name}/version` once a second (`runtime/stream.js`). It polls only the sources in `FV_STREAMING_SOURCES`, which holds the versions at render time. The poll skips a hidden tab. It also skips while a mouse button is down, and it checks again before it sends the refresh. When a version changed, the page sends one `refresh` event with `force_update: true`. The engine recomputes every trace and keeps the selections, with the layers of a `viewport` event. It also sends a fresh background for `filtered_only` traces in overlay mode, because their cached background holds the old rows. The request writes no viewport. The page keeps the new versions only when the refresh worked, so a failed refresh is tried again. The server stores no interaction state for this: the version is a property of the data.
 
-With `window`, `dashboard_update` fills the missing x viewport of each figure whose trace has `x == order_by`. The range is `[last - window, last]`, in the form the client sends for a zoom. `last` comes from the builder that the request resolved, so the window always overlaps the rows. A locked axis with no viewport gets its pinned range (`axis_lock_ranges`) instead, with or without `window`: the client pins only the display, and rows that arrive later must not stretch the grid past it. The fill changes only the request-local viewport map, never the request state. The client still sees the axis at autorange, so Plotly fits it to the windowed data. A real zoom wins. A locked axis is also listed as changed in the request, because the lock itself sent none: the background then gets the pinned grid with the foreground. Polars computes the datetime bounds, so a time-zone-aware window spans the same elapsed time across a DST change, also in the repeated autumn hour. The upper bound is rounded up by 1 µs, because a Python datetime cannot hold the nanoseconds of the last row. A numeric lower bound is a float, so an unsigned `order_by` does not wrap below 0.
+With `window`, `dashboard_update` fills the missing x viewport of each figure whose trace has `x == order_by`. The range is `[last - window, last]`, in the form the client sends for a zoom. `last` comes from the builder that the request resolved, so the window always overlaps the rows. A locked x axis over `order_by` with no viewport gets its pinned range (`axis_lock_ranges`) instead, with or without `window`: the client pins only the display, and rows that arrive later must not stretch the grid past it. Other locked axes keep the client's ranges, because a pinned bar or heatmap range has half-bin padding, which a zoom grid would snap to an extra bin. The fill changes only the request-local viewport map, never the request state. The client still sees the axis at autorange, so Plotly fits it to the windowed data. A real zoom wins. `_fill_stream_viewports` returns the pinned keys, and `dashboard_update` lists them as changed in a copy of the event, because the lock itself sent no request: the background then gets the pinned grid with the foreground. Polars computes the datetime bounds, so a time-zone-aware window spans the same elapsed time across a DST change. Zone-aware bounds go out in UTC, so their text order is their time order, also in the repeated autumn hour. The upper bound is rounded up by 1 µs, because a Python datetime cannot hold the nanoseconds of the last row. Python computes numeric bounds, exact on integers. On an unsigned `order_by` the lower bound can fall below 0, and the integer range filter clamps it.
 
 ### Caching carve-out to the stateless invariant
 

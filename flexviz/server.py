@@ -60,7 +60,7 @@ import threading
 import warnings
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -198,9 +198,10 @@ class Stream:
         """Append rows to the stream.
 
         ``data`` is a Polars DataFrame or LazyFrame, a pandas DataFrame or
-        an Arrow table; a LazyFrame is collected. The rows must be sorted by ``order_by``, without nulls or
-        NaN in it, and start at or after the last row of the stream. Its
-        columns must match the stream's names, order and dtypes.
+        an Arrow table; a LazyFrame is collected. The rows must be sorted by
+        ``order_by``, without nulls or NaN in it, and start at or after the
+        last row of the stream. Its columns must match the stream's names,
+        order and dtypes.
 
         Thread-safe: appends from several threads run one after the other.
 
@@ -477,69 +478,84 @@ def _viewports_by_figure(
     return {fig.uid: _figure_viewport_from_state(state, fig.uid) for fig in figures}
 
 
-def _fill_stream_windows(
+def _fill_stream_viewports(
     spec: DashboardSpec,
-    event: InteractionEvent,
     source_map: dict[str | None, LFQueryBuilder | None],
     viewports_by_figure: dict[str, dict[str, Any]],
-) -> None:
-    """Give the unzoomed axes of a stream figure the range they show.
+) -> list[str]:
+    """Give an unzoomed x axis over a stream's ``order_by`` the range it shows.
 
     A locked axis gets its pinned range: the client pins only the display, and
-    rows that arrive later must not stretch the grid past it. The lock sends no
-    request, so the axis is also listed as changed: the background then gets
-    the pinned grid with the foreground. An unlocked x axis over ``order_by``
-    gets the window. The range has the form the client sends for a zoom, so
-    the traces aggregate only that range. The request state is not changed, so
-    the client still sees the axis at autorange.
+    rows that arrive later must not stretch the grid past it. Otherwise, with
+    ``window``, the axis gets ``[last - window, last]``. The range has the form
+    the client sends for a zoom, so the traces aggregate only that range. The
+    request state is not changed, so the client still sees the axis at
+    autorange. Other axes keep the client's ranges: a pinned bar or heatmap
+    range has half-bin padding, which a zoom grid would snap to an extra bin.
+
+    Returns the viewport keys pinned to a lock.
     """
     client = spec.client_state
+    pinned_keys = []
     for fig in spec.figures:
         stream = _streams.get(fig.source)
         if stream is None:
             continue
         viewport = viewports_by_figure[fig.uid]
-        prefix = f"{fig.uid}/"
-        for key, pinned in client.axis_lock_ranges.items():
-            axis = key.removeprefix(prefix)
+        axes = {
+            ts.axes[0]
+            for ts in fig.traces
+            if ts.axes
+            and ts.backend_data.get("x") == stream.order_by
+            and viewport.get(ts.axes[0]) is None
+        }
+        window = None
+        for axis in axes:
+            key = f"{fig.uid}/{axis}"
+            pinned = client.axis_lock_ranges.get(key)
             # The client keys locks by axis family: "x" also covers "x2".
-            if (
-                key.startswith(prefix)
-                and client.axis_locks.get(prefix + axis[0])
-                and viewport.get(axis) is None
-            ):
+            if pinned is not None and client.axis_locks.get(f"{fig.uid}/{axis[0]}"):
                 viewport[axis] = pinned.as_tuple()
-                event.viewport_keys.append(key)
-        if stream.window is None:
-            continue
-        # The last row of the builder this request reads, not of the live
-        # stream: an append since then must not move the window past the rows.
-        last = pl.col(stream.order_by).last()
-        if isinstance(stream.window, timedelta):
-            # Polars does the time math in absolute time, so it holds across a
-            # DST change. A Python datetime holds microseconds, so the upper
-            # bound rounds up to keep the last row of a nanosecond column.
-            bounds = (last - stream.window, last + timedelta(microseconds=1))
-        else:
-            # Float, so an unsigned column does not wrap below 0.
-            bounds = (last.cast(pl.Float64) - stream.window, last)
-        lo, hi = (
-            source_map[fig.source]
-            ._ldf.select(bounds[0].alias("lo"), bounds[1].alias("hi"))
-            .collect(engine="in-memory")
-            .row(0)
+                pinned_keys.append(key)
+                continue
+            if stream.window is None:
+                continue
+            if window is None:
+                window = _stream_window(stream, source_map[fig.source])
+            if window is not None:
+                viewport[axis] = window
+    return pinned_keys
+
+
+def _stream_window(stream: Stream, builder: LFQueryBuilder) -> tuple[Any, Any] | None:
+    """``[last - window, last]`` over the rows of ``builder``, or None if empty.
+
+    ``builder`` is the one this request resolved, not the live stream: an
+    append since then must not move the window past the rows.
+    """
+    last = pl.col(stream.order_by).last()
+    if not isinstance(stream.window, timedelta):
+        # Python math: exact on integers, and no unsigned wrap below 0 (the
+        # range filter clamps that bound).
+        hi = builder._ldf.select(last).collect(engine="in-memory").item()
+        return None if hi is None else (hi - stream.window, hi)
+    # Polars does the time math in absolute time, so it holds across a DST
+    # change. A Python datetime holds microseconds, so the upper bound rounds
+    # up to keep the last row of a nanosecond column.
+    lo, hi = (
+        builder._ldf.select(
+            (last - stream.window).alias("lo"),
+            (last + timedelta(microseconds=1)).alias("hi"),
         )
-        if hi is None:
-            continue
-        if isinstance(hi, datetime):
-            lo, hi = lo.isoformat(), hi.isoformat()
-        for ts in fig.traces:
-            if (
-                ts.axes
-                and ts.backend_data.get("x") == stream.order_by
-                and viewport.get(ts.axes[0]) is None
-            ):
-                viewport[ts.axes[0]] = (lo, hi)
+        .collect(engine="in-memory")
+        .row(0)
+    )
+    if hi is None:
+        return None
+    if hi.tzinfo is not None:
+        # In UTC, the text order is the time order, also in a repeated hour.
+        lo, hi = lo.astimezone(timezone.utc), hi.astimezone(timezone.utc)
+    return lo.isoformat(), hi.isoformat()
 
 
 def _serialise_updates(updates: dict[str, Any], uid: str) -> dict[str, Any]:
@@ -919,7 +935,14 @@ async def dashboard_update(
             uid_to_fig_uid[trace.uid] = fig_spec.uid
 
     viewports_by_figure = _viewports_by_figure(req.spec.state, req.spec.figures)
-    _fill_stream_windows(req.spec, event, source_map, viewports_by_figure)
+    pinned_keys = _fill_stream_viewports(req.spec, source_map, viewports_by_figure)
+    if pinned_keys:
+        # A lock sends no request, so this one may be the first to bin over
+        # the pinned range: list the axes as changed, so the background
+        # re-bins with the foreground.
+        event = event.model_copy(
+            update={"viewport_keys": [*event.viewport_keys, *pinned_keys]}
+        )
 
     # -- cube path: assemble cubes for the active source's figure; no deltas.
     #    The response is a binary cube bundle, not JSON deltas. ----------------

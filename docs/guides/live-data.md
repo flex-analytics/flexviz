@@ -73,8 +73,9 @@ positive number for a numeric one. A zoom or pan shows any range of the
 history. Charts of other columns, such as the histogram in the example,
 still use all rows.
 
-A locked axis keeps the range that you locked, and its charts use only the
-rows in that range. New rows outside it do not change the chart.
+A locked x axis over `order_by` keeps the range that you locked, and its
+charts use only the rows in that range. New rows after it do not change the
+chart.
 
 ## Limits
 
