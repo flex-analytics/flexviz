@@ -1711,5 +1711,5 @@ def test_trino_column_without_dtype_fails_at_add_time(trino_source, column):
     src = SQLSource(_trino_connect, dialect="trino", query=query)
     assert list(src.schema) == ["w"]
     fig = Dashboard(src).add_figure()
-    with pytest.raises(ValueError, match="not in the SQL source"):
+    with pytest.raises(ValueError, match="of a type FlexViz cannot read"):
         fig.add_histogram(x="u")
