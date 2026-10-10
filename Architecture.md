@@ -1023,7 +1023,9 @@ SQLSource
   differs), integer division (`int_div`), the x at a y extremum
   (`extreme_by`: `arg_min` in DuckDB and ClickHouse; on Postgres the smallest
   `ARRAY[y, x]`, which was faster on 5M rows than `array_agg ORDER BY`,
-  `DISTINCT ON` and window functions) and typed literals (`lit`).
+  `DISTINCT ON` and window functions) and typed literals (`lit`; on
+  ClickHouse a datetime is written in UTC, because ClickHouse reads a datetime
+  without a zone in the server's zone, and the driver reads values as UTC).
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name
   that is not in the schema (and, on ClickHouse, a name with a backslash, which
@@ -1033,17 +1035,28 @@ SQLSource
   clause as written; `table=` is parsed as a table name.
 - **Connections.** A function that opens a DB-API connection, a Postgres URI
   (ADBC, else psycopg), a SQLAlchemy engine or a DuckDB connection (a cursor
-  per thread). Idle connections are kept and reused, in autocommit mode: an
-  idle Postgres connection inside a transaction would hold its table lock for
-  the server's lifetime. A connection that fails a query is closed. Arrow
-  drivers (ADBC, DuckDB) keep column types in an empty result; for row drivers
-  the schema comes from the cursor description (Postgres OIDs, ClickHouse type
-  names). Postgres `numeric` reads as Float64 on every driver: the OID map
-  says so for row drivers, and ADBC, which sends `numeric` as text, gets those
-  columns cast after the fetch.
-- **Postgres x at an extremum.** The array form returns x as a double, exact
-  below 2**53. A 64-bit integer or nanosecond x takes
-  `(array_agg(x ORDER BY y, x))[1]` instead, which keeps its type.
+  per thread, which does not see the connection's TEMP tables and registered
+  views). Idle connections are kept and reused, in autocommit mode: an idle
+  Postgres connection inside a transaction would hold its table lock for the
+  server's lifetime. A SQLAlchemy connection goes back to the app's pool, so
+  it keeps its mode and gets a rollback after each query instead. A connection
+  that fails a query is closed (a SQLAlchemy one goes back to its pool, which
+  resets it). When a reused idle connection fails, the query runs once more
+  on a new connection: a database restart or an idle timeout drops idle
+  connections. Arrow drivers (ADBC, DuckDB) keep column types in an empty
+  result. psycopg gives the schema from the type OIDs of the cursor
+  description. ClickHouse results are built from the type names of the cursor
+  description, with their time zones. Postgres `numeric` and ClickHouse
+  `Decimal` read as Float64: the OID map and the type names say so for row
+  drivers, and ADBC, which sends `numeric` as text, gets those columns cast
+  after the fetch.
+- **Postgres x at an extremum.** The array form holds x and y as doubles,
+  exact below 2**53. A 64-bit integer or nanosecond x, and a y that is not a
+  float or an integer of at most 32 bits, take
+  `(array_agg(x ORDER BY y, x))[1]` instead, which keeps the types.
+- **Postgres Booleans.** Postgres has no `SUM`, `MIN`, `MAX` or double cast of
+  a Boolean, so a Boolean value column is cast to an integer first
+  (`SQLFrame.num`).
 - **Checked when a trace is added.** `Figure._add_trace` runs `check_source`
   on a SQL source (it reads only the schema), so a missing column and the
   traces a SQL source cannot run fail in the user's code: `box`, `geo_line`,

@@ -114,7 +114,8 @@ FlexViz opens up to `max_connections` connections (4 by default) and runs the
 queries of one request in parallel. It does not share one connection between
 threads, so it needs a function that opens a connection, not a connection
 object. A DuckDB connection is the exception: FlexViz opens a cursor per
-thread.
+thread. A cursor does not see the TEMP tables and the registered views
+(`con.register`) of your connection, so use a table or a view in the database.
 
 ClickHouse example:
 
@@ -136,8 +137,19 @@ becomes one count per bin. A bar, pie or treemap becomes one aggregate per
 category. FlexViz first asks the database for the minimum and maximum of the
 binned columns, so that the bins line up across charts.
 
-The results are equal to the results on a Polars frame with the same rows.
-The test suite checks this for every supported chart.
+The results are equal to the results on a Polars frame with the same rows,
+with these exceptions:
+
+- A sum or a mean can be different in the last digits, because the database
+  adds the values in its own order.
+- If more rows have the same y minimum or y maximum in a line bucket, the
+  database can show the x of a different one of these rows.
+- On Postgres, a sum of 64-bit integers is exact only up to 2**53.
+- On Postgres, the minimum and the maximum of a text column follow the
+  collation of the database.
+
+The test suite compares the two for every supported chart on DuckDB, Postgres
+and ClickHouse.
 
 ### Supported dialects and charts
 
