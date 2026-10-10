@@ -392,49 +392,75 @@ class SQLFrame:
         return self.range_cond(name, *_eval(bounds))
 
     def extreme_by(
-        self, x: exp.Expression, y: exp.Expression, kind: str, *, exact: bool = False
+        self, x_name: str, y_name: str, kind: str
     ) -> tuple[exp.Expression, exp.Expression]:
-        """``(x at the y extremum, the y extremum)`` as two aggregates.
+        """``(x at the y extremum, the y extremum)`` as two aggregates, whose
+        values cast to the dtypes of x and y.
 
         Postgres has no arg_min. Arrays compare element by element, so the
         smallest ``ARRAY[y, x]`` holds the smallest y and, on a tie, the
-        smallest x. Both elements need one type, so x comes back as a double;
-        the caller casts it to x's dtype. Measured on 5M rows, this beats
-        ``array_agg ORDER BY``, ``DISTINCT ON`` and window functions.
+        smallest x. Measured on 5M rows, this beats ``array_agg ORDER BY``,
+        ``DISTINCT ON`` and window functions. Both elements are doubles, so it
+        takes only an x and a y that a double holds exactly.
         """
+        sch = self.source.schema
+        x_dtype, y_dtype = sch.get(x_name), sch.get(y_name)
+        x, y = self.col(x_name), self.num(y_name)
         agg = exp.Min if kind == "min" else exp.Max
-        if self.dialect == "postgres" and exact:
-            # A double holds an integer exactly only up to 2**53, so an x that
-            # can pass it (a 64-bit integer, nanoseconds) keeps its own type.
-            # Sorting each bucket is slower than the array minimum.
-            desc = kind == "max"
-            ordered = exp.ArrayAgg(
-                this=exp.Order(
-                    this=x,
-                    expressions=[
-                        exp.Ordered(this=y, desc=desc),
-                        exp.Ordered(this=x.copy(), desc=desc),
-                    ],
-                )
-            )
-            first = exp.Bracket(
-                this=exp.Paren(this=ordered), expressions=[exp.Literal.number(0)]
-            )
-            return first, agg(this=y.copy())
-        if self.dialect == "postgres":
+        if self.dialect != "postgres":
+            by = exp.ArgMin if kind == "min" else exp.ArgMax
+            return by(this=x, expression=y), agg(this=y)
+        # x is exact below 2**53 in physical units; y must be a float or an
+        # integer of at most 32 bits.
+        x_fits = x_dtype not in (pl.Int64, pl.UInt64) and not (
+            isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
+        )
+        y_fits = y_dtype is not None and (
+            y_dtype.is_float() or y_dtype in _INT32_OR_SMALLER
+        )
+        if x_fits and y_fits:
             dbl = exp.DataType.Type.DOUBLE
+            phys = exp.cast(self.phys(x_name, x_dtype), dbl)
             arr = exp.Paren(
-                this=agg(
-                    this=exp.Array(expressions=[exp.cast(y, dbl), exp.cast(x, dbl)])
-                )
+                this=agg(this=exp.Array(expressions=[exp.cast(y, dbl), phys]))
             )
             # SQLGlot writes a 0-based index 1-based for Postgres.
-            return (
-                exp.Bracket(this=arr, expressions=[exp.Literal.number(1)]),
-                exp.Bracket(this=arr.copy(), expressions=[exp.Literal.number(0)]),
+            x_at: exp.Expression = exp.Bracket(
+                this=arr, expressions=[exp.Literal.number(1)]
             )
-        by = exp.ArgMin if kind == "min" else exp.ArgMax
-        return by(this=x, expression=y), agg(this=y)
+            if x_dtype is not None and not x_dtype.is_float():
+                # Integral again, in physical units.
+                x_at = exp.cast(x_at, exp.DataType.Type.BIGINT)
+            return x_at, exp.Bracket(
+                this=arr.copy(), expressions=[exp.Literal.number(0)]
+            )
+        # Sorting each bucket is slower than the array minimum, but keeps types.
+        desc = kind == "max"
+        ordered = exp.ArrayAgg(
+            this=exp.Order(
+                this=x,
+                expressions=[
+                    exp.Ordered(this=y, desc=desc),
+                    exp.Ordered(this=x.copy(), desc=desc),
+                ],
+            )
+        )
+        first = exp.Bracket(
+            this=exp.Paren(this=ordered), expressions=[exp.Literal.number(0)]
+        )
+        return first, agg(this=y.copy())
+
+
+#: The integer dtypes a double holds exactly.
+_INT32_OR_SMALLER = (
+    pl.Boolean,
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+)
 
 
 def _eval(exprs: Sequence[pl.Expr]) -> tuple[Any, ...]:
@@ -737,17 +763,6 @@ class SQLSource:
 # ---------------------------------------------------------------------------
 
 
-_INT32_OR_SMALLER = (
-    pl.Boolean,
-    pl.Int8,
-    pl.Int16,
-    pl.Int32,
-    pl.UInt8,
-    pl.UInt16,
-    pl.UInt32,
-)
-
-
 def _cast_like(df: pl.DataFrame, dtypes: dict[str, pl.DataType]) -> pl.DataFrame:
     """Cast the result columns to the dtypes the Polars path produces."""
     return df.with_columns(
@@ -803,20 +818,8 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
-    # The Postgres array form holds x and y as doubles: x is exact only below
-    # 2**53, and y must be a float or an integer of at most 32 bits.
-    exact = (
-        x_dtype in (pl.Int64, pl.UInt64)
-        or (isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns")
-        or not (
-            y_dtype is not None and (y_dtype.is_float() or y_dtype in _INT32_OR_SMALLER)
-        )
-    )
-    array_form = frame.dialect == "postgres" and not exact
-    x_arg = frame.phys(x_col, x_dtype) if array_form else frame.col(x_col)
-    y = frame.num(y_col)
-    lo_x, lo_y = frame.extreme_by(x_arg, y, "min", exact=exact)
-    hi_x, hi_y = frame.extreme_by(x_arg.copy(), y.copy(), "max", exact=exact)
+    lo_x, lo_y = frame.extreme_by(x_col, y_col, "min")
+    hi_x, hi_y = frame.extreme_by(x_col, y_col, "max")
     names = {
         "lo_x": f"{_ALIAS_PREFIX}lo_{x_col}",
         "lo_y": f"{_ALIAS_PREFIX}lo_{y_col}",
@@ -843,11 +846,6 @@ def bucket_extrema(
         dtypes[g] = sch[g]
     for k in ("lo_y", "hi_y"):
         dtypes[names[k]] = y_dtype
-    if array_form and x_dtype is not None and not x_dtype.is_float():
-        # The array form returns the physical x as a double: integral again first.
-        df = df.with_columns(
-            pl.col(names["lo_x"], names["hi_x"]).round().cast(pl.Int64)
-        )
     for k in ("lo_x", "hi_x"):
         dtypes[names[k]] = x_dtype
     return _cast_like(df, dtypes)
