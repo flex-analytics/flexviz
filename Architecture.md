@@ -832,9 +832,10 @@ FlexEngine
       3. Partition the traces by owner: a figure is never filtered by its own
          selection, so the traces of each figure that owns an active selection
          form their own partition, and all others share one. Each partition
-         builds its cross-filter Polars exprs by passing every other selection's
-         predicates through `predicates_to_expr` (one expression per selection —
-         predicates ORed inside, expressions ANDed across selections). A single
+         builds its cross-filter conditions by passing every other selection's
+         predicates through the source's `compile_filter` (`predicates_to_expr`
+         for a frame, a SQLGlot condition for a SQL source; one condition per
+         selection — predicates ORed inside, ANDed across selections). A single
          figure's zoom is one partition; a linked zoom that reaches an owner
          figure adds one
       4. Group histogram domain-sharing siblings for the request: for histogram
@@ -1040,10 +1041,10 @@ SQLSource
   per thread, which does not see the connection's TEMP tables and registered
   views). Idle connections are kept and reused, in autocommit mode: an idle
   Postgres connection inside a transaction would hold its table lock for the
-  server's lifetime. A SQLAlchemy connection goes back to the app's pool, so
-  it keeps its mode and gets a rollback after each query instead. A connection
-  that fails a query is closed (a SQLAlchemy one goes back to its pool, which
-  resets it). When a reused idle connection fails, the query runs once more
+  server's lifetime. A SQLAlchemy connection keeps its mode instead: FlexViz
+  keeps up to `max_connections` of them checked out of the app's pool and rolls
+  each one back after every query. A connection that fails a query is closed
+  (a SQLAlchemy one goes back to its pool, which resets it). When a reused idle connection fails, the query runs once more
   on a new connection: a database restart or an idle timeout drops idle
   connections. Arrow drivers (ADBC, DuckDB) keep column types in an empty
   result. psycopg gives the schema from the type OIDs of the cursor
@@ -1072,7 +1073,7 @@ SQLSource
 FastAPI app in `server.py`. The only persistent server state is:
 
 ```python
-_sources: Dict[str, LFQueryBuilder]
+_sources: Dict[str, LFQueryBuilder | SQLSource]
 ```
 
 Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.

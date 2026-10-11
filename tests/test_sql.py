@@ -59,6 +59,9 @@ def _frame() -> pl.DataFrame:
             "k": np.cumsum(rng.integers(1, 160, N)),
             # Epoch nanoseconds stored as Int64: past 2**53, no double holds them.
             "big": 1_700_000_000_000_000_000 + np.cumsum(rng.integers(1, 10**8, N)),
+            # Narrow integers whose span overflows their own type.
+            "k16": np.linspace(-20_000, 20_000, N).astype(np.int16),
+            "k32": np.linspace(-2e9, 2e9, N).astype(np.int32),
             "ts": pl.datetime_range(
                 T0, T0 + dt.timedelta(seconds=N - 1), "1s", eager=True
             ),
@@ -84,6 +87,12 @@ def _frame() -> pl.DataFrame:
     return df.with_columns(
         pl.when(row % 97 == 0).then(None).otherwise(pl.col("v")).alias("v"),
         pl.when(row % 89 == 0).then(float("nan")).otherwise(pl.col("vn")).alias("vn"),
+        pl.when(row % 101 == 0)
+        .then(float("inf"))
+        .when(row % 103 == 0)
+        .then(float("-inf"))
+        .otherwise(pl.col("w"))
+        .alias("wi"),
         pl.when(row % 53 == 0).then(None).otherwise(pl.col("sub")).alias("sub"),
         pl.col("ts").dt.replace_time_zone("UTC").alias("tsz"),
         pl.col("ts").dt.cast_time_unit("ms").alias("ts_ms"),
@@ -155,6 +164,14 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
         {"x": {"min": 200_000.5, "max": 600_000.2}},
     ),
     "line_big_int_x": (_add("add_line", x="big", y="w", n_points=300), None),
+    "line_int16_x": (
+        _add("add_line", x="k16", y="w", n_points=300),
+        {"x": {"min": -15_000.5, "max": 9_000.2}},
+    ),
+    "line_int32_x": (
+        _add("add_line", x="k32", y="w", n_points=300),
+        {"x": {"min": -1.5e9, "max": 1.8e9}},
+    ),
     "line_lttb": (
         _add("add_line", x="t", y="w", n_points=200, downsample="lttb"),
         LINE_T_ZOOM,
@@ -236,6 +253,11 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     "hist_grouped_null": (
         _add("add_histogram", x="w", bins=20, group_by="sub"),
         {"x": {"min": -1.0, "max": 1.5}},
+    ),
+    # Group "d" has no value: it keeps its zero bins.
+    "hist_grouped_no_value": (
+        _add("add_histogram", x="vb", bins=20, group_by="cat"),
+        {"x": {"min": 5.0, "max": 12.0}},
     ),
     "bar_count": (_add("add_bar", labels="cat"), None),
     "bar_sum": (_add("add_bar", labels="cat", values="vb", agg="sum"), None),
@@ -340,6 +362,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], dict | None]] = {
     "corr_bool": (_add("add_corr_heatmap", columns=["w", "flag"]), None),
     "corr_nan_null": (_add("add_corr_heatmap", columns=["v", "wn"]), None),
     "corr_nan": (_add("add_corr_heatmap", columns=["vn", "w"]), None),
+    "corr_inf": (_add("add_corr_heatmap", columns=["wi", "w", "v"]), None),
     "corr_abs": (
         _add("add_corr_heatmap", columns=["v", "w", "lat"], absolute=True),
         None,
@@ -382,7 +405,7 @@ SEL_COMPOUND = [
         "predicates": [
             {
                 "clauses": [
-                    {"column": "i", "range": [-10.5, 20.2]},
+                    {"column": "i", "range": [-10.5, 20.2], "closed": "left"},
                     {"column": "flag", "values": ["true"]},
                 ]
             },
@@ -1338,6 +1361,8 @@ def test_postgres_numeric_reads_as_float64(driver):
 _CH_TYPES = {
     pl.Float64: "Float64",
     pl.Int64: "Int64",
+    pl.Int32: "Int32",
+    pl.Int16: "Int16",
     pl.String: "String",
     pl.Boolean: "Bool",
     pl.Date: "Date",
@@ -1464,6 +1489,23 @@ def test_clickhouse_schema_from_nullable_columns(clickhouse_table):
     a DECIMAL reads as Float64."""
     src = SQLSource(_ch_connect, table=clickhouse_table, dialect="clickhouse")
     assert src.schema == DF.select(_REAL_COLUMNS).schema
+
+
+def test_clickhouse_minmax_over_no_rows_is_null(clickhouse_client):
+    """Over no rows, ClickHouse gives a non-Nullable column's default (0,
+    1970-01-01) as its min and max; Polars gives null."""
+    table = f"fv_test_{secrets.token_hex(6)}"
+    clickhouse_client.command(
+        f'CREATE TABLE "{table}" (i Int32, ts DateTime64(6), v Float64) '
+        "ENGINE = MergeTree ORDER BY tuple()"
+    )
+    src = SQLSource(_ch_connect, table=table, dialect="clickhouse")
+    try:
+        bounds = src.physical_minmax(["i", "ts", "v"])
+        assert bounds == dict.fromkeys(["i", "ts", "v"], (None, None))
+    finally:
+        _close_pool(src)
+        clickhouse_client.command(f'DROP TABLE IF EXISTS "{table}"')
 
 
 @pytest.mark.parametrize(

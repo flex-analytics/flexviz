@@ -40,9 +40,9 @@ except ImportError as e:  # pragma: no cover - depends on the install
     ) from e
 
 from .LF import AggregationSpec, GroupedAggregationSpec
-from .predicates import _values_to_typed_series
+from .predicates import _clause_bounds, _values_to_typed_series
 from .spec import ClauseFilter, SelectionPredicate
-from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bounds
+from .trace.base import _typed_range_bounds
 
 #: The dialects whose SQL has run against a real database in the test suite.
 _DIALECTS = ("postgres", "duckdb", "clickhouse")
@@ -268,6 +268,9 @@ class SQLFrame:
         """A column in its Polars physical units: epoch units for a temporal
         column, ``num`` otherwise. Grids are arithmetic on these."""
         c = self.num(name)
+        if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt16, pl.UInt32):
+            # Grid arithmetic on a narrow integer overflows its type.
+            return exp.cast(c, exp.DataType.Type.BIGINT)
         if dtype is None or not dtype.is_temporal():
             return c
         d = self.dialect
@@ -545,8 +548,9 @@ class SQLSource:
         """
         conn = self._connect()
         if hasattr(conn, "dbapi_connection"):
-            # A SQLAlchemy connection goes back to the app's pool, so it keeps
-            # its mode; ``_run`` ends each query's transaction instead.
+            # A SQLAlchemy connection goes back to the app's pool when it is
+            # closed, so it keeps its mode; ``_run`` ends each query's
+            # transaction instead.
             return conn
         try:
             if hasattr(conn, "adbc_connection"):
@@ -655,22 +659,11 @@ class SQLSource:
             if typed.is_empty():
                 return exp.false()
             return c.isin(*[frame.lit(v, typed.dtype) for v in typed.to_list()])
-        dtype = _dtype_for_col(schema, clause.column)
-        if dtype is not None and dtype.is_temporal():
-            lo, hi = clause.range  # type: ignore[misc]
-            bounds = (
-                _temporal_bound_toward(lo, dtype, up=clause.closed in ("both", "left")),
-                _temporal_bound_toward(
-                    hi, dtype, up=clause.closed not in ("both", "right")
-                ),
-            )
-        else:
-            bounds = _typed_range_bounds(
-                clause.column, clause.range, schema, clause.closed
-            )
+        bounds = _clause_bounds(clause, schema)
         if bounds is None:
             return exp.true()
-        return frame.range_cond(clause.column, *_eval(bounds), closed=clause.closed)
+        lo, hi, closed = bounds
+        return frame.range_cond(clause.column, *_eval((lo, hi)), closed=closed)
 
     def physical_minmax(
         self,
@@ -691,9 +684,12 @@ class SQLSource:
             frame = SQLFrame(self, tuple(filter_exprs))
             aggs = []
             for i, c in enumerate(missing):
-                dtype = sch.get(c)
+                dtype = sch.get(c, pl.Null)
                 v = frame.num(c)
-                if dtype is not None and dtype.is_float():
+                # On ClickHouse the CASE makes the column Nullable, so no rows
+                # give NULL, not the type's default (0, 1970-01-01). Elsewhere
+                # the bare column lets Postgres read MIN and MAX from an index.
+                if dtype.is_float() or self.dialect == "clickhouse":
                     v = exp.case().when(frame.usable(c, dtype), v)
                 aggs += [
                     _alias(exp.Min(this=v), f"{_P}min{i}"),
@@ -870,11 +866,17 @@ def hist_counts(
 ) -> pl.DataFrame:
     """Rows per bin (per group): ``group_cols``, ``__fv_b`` and ``__fv_count``.
 
-    The bin index is ``_bin_index``.
+    The bin index is ``_bin_index``. A grouped row without a usable value
+    counts in a null bin, so a group with no value keeps its zero bins, as in
+    the Polars plan.
     """
-    dtype = frame.source.schema.get(col_name)
+    usable = frame.usable(col_name, frame.source.schema.get(col_name))
     b = _bin_index(frame, col_name, lo, hi, bins, exp.DataType.Type.INT)
-    conds = [frame.usable(col_name, dtype)]
+    conds: list[exp.Expression] = []
+    if group_cols:
+        b = exp.case().when(usable, b)
+    else:
+        conds.append(usable)
     if zoomed:
         conds.append(frame.phys_range_cond(col_name, lo, hi))
     groups = [frame.col(g) for g in group_cols]
@@ -1076,25 +1078,32 @@ def corr_plan(
         n = len(cols)
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
         dbl = exp.DataType.Type.DOUBLE
+
+        def finite(c: str) -> exp.Expression:
+            """Not null, and neither NaN nor infinite for a float."""
+            if not sch.get(c, pl.Null).is_float():
+                return exp.Not(this=exp.Is(this=frame.col(c), expression=exp.Null()))
+            # False for NaN on every dialect: NaN compares false or above all.
+            magnitude = exp.Abs(this=exp.cast(frame.num(c), dbl))
+            return exp.LT(this=magnitude, expression=_num(math.inf))
+
         aggs = []
         for i, j in pairs:
             a, b = cols[i], cols[j]
             # CORR skips a pair with a null, as Polars does. Polars gives NaN
-            # when a NaN is in the data; DuckDB raises on it, so the NaN rows
-            # are left out of CORR and flagged on their own.
-            both = exp.and_(frame.usable(a, sch.get(a)), frame.usable(b, sch.get(b)))
+            # when a NaN or an infinity is in a complete pair; DuckDB raises on
+            # them, so those rows are left out of CORR and flagged on their own.
+            both = exp.and_(finite(a), finite(b))
             x = exp.case().when(both, exp.cast(frame.num(a), dbl))
             y = exp.case().when(both.copy(), exp.cast(frame.num(b), dbl))
             aggs.append(_alias(exp.Corr(this=x, expression=y), f"{_P}r{i}_{j}"))
-            nans = [frame.nan(c) for c in (a, b) if sch.get(c, pl.Null).is_float()]
-            if nans:
-                # Only a NaN in a complete pair: Polars skips a pair with a null.
+            if sch.get(a, pl.Null).is_float() or sch.get(b, pl.Null).is_float():
                 complete = [
                     exp.Not(this=exp.Is(this=frame.col(c), expression=exp.Null()))
                     for c in (a, b)
                 ]
-                nan_pair = exp.and_(*complete, exp.or_(*nans))
-                flag = exp.case().when(nan_pair, _num(1)).else_(_num(0))
+                bad = exp.and_(*complete, exp.Not(this=both.copy()))
+                flag = exp.case().when(bad, _num(1)).else_(_num(0))
                 aggs.append(_alias(exp.Max(this=flag), f"{_P}n{i}_{j}"))
         row = frame.collect(exp.select(*aggs)).row(0, named=True)
         mat = np.eye(n)
