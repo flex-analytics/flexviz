@@ -1029,19 +1029,20 @@ SQLSource
 - **Trino.** `date_diff` counts epoch units exactly, but in milliseconds at
   most. A microsecond column adds the microseconds within the millisecond from
   `to_unixtime`, a double. That is exact while one ulp of the epoch seconds
-  is below 1 µs, about the years 1700 to 2240 (the whole double rounded wrong
-  from 2100 on), and 2.6 times faster than reading the digits of the text
-  form. Trino has no exact percentile, so the median is the mean of the
-  middle values of `array_sort(array_agg(v))`, sorted once per group and held
-  in memory. Where the sum of the two middle values overflows, each is halved
-  first. The `trino` driver returns rows: the dtypes come from the
-  type names of the cursor description, and `decimal` reads as Float64. A
-  column of another type (uuid, time, varbinary, array, map, row) is left out
-  of the schema: Trino compares it with no string literal, so a selection on
-  it could not run. A timestamp finer than microseconds is left out too: the
-  driver rounds it to a Python datetime, the epoch in SQL does not, so a bin
-  would disagree with the value. Trino in front of Postgres pulls the rows: its connector
-  does not push down a bin key, a text group key or `min_by`.
+  is below 1 µs, tested from the year 1700 to 2240 (the whole double
+  rounded wrong from 2100 on), and 2.6 times faster than reading the digits
+  of the text form. Trino has no exact percentile, so the median is the mean
+  of the middle values of `array_sort(array_agg(v))`, sorted once per group
+  and held in memory. Each of the two middle values is halved before the sum,
+  so the sum cannot overflow. The `trino` driver returns rows: the dtypes come
+  from the type names of the cursor description, and `decimal` reads as
+  Float64. A column of another type (uuid, time, varbinary, array, map, row)
+  is left out of the schema: Trino compares it with no string literal, so a
+  selection on it could not run. A timestamp finer than microseconds is left
+  out too: the driver rounds it to a Python datetime, the epoch in SQL does
+  not, so a bin would disagree with the value. Trino in front of Postgres
+  pulls the rows: its connector does not push down a bin key, a text group
+  key or `min_by`.
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name
   that is not in the schema (and, on ClickHouse, a name with a backslash, which

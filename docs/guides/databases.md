@@ -152,7 +152,9 @@ On Trino, a column of a type such as `uuid`, `json`, `time`, `varbinary`,
 query, for example `CAST(run_id AS varchar) AS run_id`. A `char` value comes
 back padded with spaces, which a selection on it cannot match. A timestamp
 finer than microseconds (`timestamp(9)`) is not available either; read it as
-`CAST(ts AS timestamp(6)) AS ts`.
+`CAST(ts AS timestamp(6)) AS ts`. Keep a `timestamp with time zone` column in
+UTC: `ts AT TIME ZONE 'UTC' AS ts`. In a zone with daylight saving time, the
+driver reads a value in the repeated hour one hour early.
 
 Use Trino through its catalogs for files and lakehouse tables (Hive, Iceberg,
 Delta Lake). Do not put Trino in front of Postgres to speed it up: Trino's
@@ -178,8 +180,8 @@ with these exceptions:
 - On Postgres, a sum of 64-bit integers is exact only up to 2**53.
 - On Postgres, the minimum and the maximum of a text column follow the
   collation of the database.
-- On Trino, a microsecond timestamp bins exactly only from about the year 1700
-  to 2240 (see Limits).
+- On Trino, a microsecond timestamp bins exactly only from the year 1700 to
+  2240 (see Limits).
 
 The test suite compares the two for every supported chart on DuckDB, Postgres,
 ClickHouse and Trino.
@@ -220,8 +222,8 @@ have, gives an error when you add the chart, in your own code.
   `ALTER ROLE flexviz_reader SET work_mem = '1GB'`.
 - On Trino, a median (`agg="median"`) sorts the values of each group in
   memory, because Trino has no exact percentile function.
-- On Trino, the epoch microseconds of a `timestamp(6)` are exact from about
-  the year 1700 to 2240. Outside that range (for example a `9999-12-31`
+- On Trino, the epoch microseconds of a `timestamp(6)` are exact from the
+  year 1700 to 2240. Outside that range (for example a `9999-12-31`
   sentinel date) a value can be 1 µs or more off, so it can fall in the bin
   next to its own at a bin edge. The value that a chart shows stays exact.
 - `Dashboard(src, cache=True)` declares that the data does not change while the
@@ -283,7 +285,8 @@ machine can read it without a warehouse:
 - DuckDB: pass a DuckDB connection to `SQLSource`, with a query that reads the
   files, for example
   `fv.SQLSource(duckdb.connect(), query="SELECT * FROM read_parquet('s3://bucket/runs/*.parquet')")`.
-  For Iceberg, attach the catalog with DuckDB's `iceberg` extension first.
+  For a private bucket, run `CREATE SECRET` on the connection first, and for
+  Iceberg, attach the catalog with DuckDB's `iceberg` extension first.
 
 On one machine and the same Parquet files, DuckDB rendered the dashboard of
 the first table in 1.5 s and Trino in 4.3 s. Trino is the better choice when

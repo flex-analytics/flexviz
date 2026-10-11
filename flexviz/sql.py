@@ -241,7 +241,7 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
         if len(keep) < len(types):
             rows = [[r[i] for i in keep] for r in rows]
         schema = {types[i][0]: types[i][1] for i in keep}
-        return pl.DataFrame(rows, schema=schema, orient="row", strict=False)
+        return pl.DataFrame(rows, schema=schema, orient="row")
     return pl.read_database(sql, conn)
 
 
@@ -364,8 +364,8 @@ class SQLFrame:
             # date_diff counts exactly, but in milliseconds at most. The
             # microseconds within the millisecond come from to_unixtime, a
             # double: exact while one ulp of the epoch seconds is below 1 us,
-            # about the years 1700 to 2240 (measured: exact from 1922 to 2240,
-            # off by 1 us in 2300). The whole double rounded wrong from 2100 on.
+            # the years 1700 to 2240 (tested; off by 1 us in 2300). The whole
+            # double rounded wrong from 2100 on.
             epoch = "TIMESTAMP '1970-01-01 00:00:00" + (
                 " UTC'" if dtype.time_zone else "'"
             )
@@ -1120,15 +1120,13 @@ def _agg_sql(
         if frame.dialect == "trino":
             # Trino has only approx_percentile: the mean of the middle values of
             # the group, sorted once. The array holds the group in memory. Each
-            # value is halved first only where the sum overflows, so no other
-            # result changes.
+            # value is halved first, so the sum cannot overflow; halving a
+            # double is exact unless the result is subnormal.
             a = "element_at(s, (cardinality(s) + 1) / 2)"
             b = "element_at(s, cardinality(s) / 2 + 1)"
             return _trino(
                 "transform(ARRAY[array_sort(array_agg(CAST(:v AS double))"
-                " FILTER (WHERE :v IS NOT NULL))], s ->"
-                f" CASE WHEN is_infinite({a} + {b}) THEN {a} / 2 + {b} / 2"
-                f" ELSE ({a} + {b}) / 2 END)[1]",
+                f" FILTER (WHERE :v IS NOT NULL))], s -> {a} / 2 + {b} / 2)[1]",
                 v=v,
             )
         return exp.PercentileCont(this=v, expression=_num(0.5))

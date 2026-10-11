@@ -931,7 +931,8 @@ def test_dialect_alias_is_accepted(duck):
 
 
 @pytest.mark.parametrize(
-    ("name", "dialect"), [("postgresql", "postgres"), ("clickhousedb", "clickhouse")]
+    ("name", "dialect"),
+    [("postgresql", "postgres"), ("clickhousedb", "clickhouse"), ("trino", "trino")],
 )
 def test_sqlalchemy_dialect_names(name, dialect):
     """The dialect of a SQLAlchemy engine comes from its dialect name."""
@@ -1519,7 +1520,9 @@ _TRINO_TYPES = {
 }
 
 
-def _trino_type(dtype: pl.DataType) -> str:
+def _trino_type(name: str, dtype: pl.DataType) -> str:
+    if name == "dec":
+        return "decimal(12,3)"
     if isinstance(dtype, pl.Datetime):
         return "timestamp(6)" + (" with time zone" if dtype.time_zone else "")
     return _TRINO_TYPES[dtype.base_type()]
@@ -1577,7 +1580,7 @@ def trino_source() -> Any:
     pytest.importorskip("trino")
     table = f"fv_test_{secrets.token_hex(6)}"
     df = DF.select(_REAL_COLUMNS)
-    cols = ", ".join(f'"{c}" {_trino_type(t)}' for c, t in df.schema.items())
+    cols = ", ".join(f'"{c}" {_trino_type(c, t)}' for c, t in df.schema.items())
     _trino_execute(f'CREATE TABLE "{table}" ({cols})')
     try:
         for chunk in df.iter_slices(2_000):
@@ -1655,18 +1658,19 @@ def test_trino_millisecond_timestamp(trino_source):
     ],
 )
 def test_trino_epoch_microseconds_are_exact(trino_source, cast):
-    """``phys`` gives the exact epoch microseconds from 1922 to 2200, where a
+    """``phys`` gives the exact epoch microseconds from 1700 to 2240, where a
     plain double rounds wrong from about 2100 on."""
     query = f"""SELECT us, CAST(from_unixtime_nanos(us * 1000) {cast}) AS c
     FROM (SELECT b + n * 7919 + (n * n) % 997 AS us
           FROM UNNEST(sequence(0, 9999)) AS t(n)
-          CROSS JOIN UNNEST(ARRAY[BIGINT '-1500000000123457', BIGINT '0',
-            BIGINT '1767225600000000', BIGINT '7258118400000000']) AS s(b))"""
+          CROSS JOIN UNNEST(ARRAY[BIGINT '-8519000000000000',
+            BIGINT '-1500000000123457', BIGINT '0', BIGINT '1767225600000000',
+            BIGINT '7258118400000000', BIGINT '8520000000000000']) AS s(b))"""
     src = SQLSource(_trino_connect, dialect="trino", query=query)
     frame = SQLFrame(src)
     phys = frame.phys("c", src.schema["c"])
     wrong = exp.CountIf(this=exp.NEQ(this=phys, expression=frame.col("us")))
-    assert src._run(exp.select(wrong, exp.Count(this=exp.Star()))).row(0) == (0, 40_000)
+    assert src._run(exp.select(wrong, exp.Count(this=exp.Star()))).row(0) == (0, 60_000)
 
 
 @pytest.mark.parametrize(
