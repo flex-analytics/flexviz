@@ -181,7 +181,7 @@ function handleRelayout(relayout, figUid) {
   if (isMapEvent) {
     const coords = mapCoordinatesFromRelayout(relayout);
     if (coords) {
-      fvCommitViewportChange(figUid, fvWriteViewport(figUid + '/coordinates', coords));
+      _fvCommitNavigation(figUid, fvWriteViewport(figUid + '/coordinates', coords));
     }
     return;
   }
@@ -239,7 +239,7 @@ function handleRelayout(relayout, figUid) {
     ([k, v]) => fvWriteViewport(figUid + '/' + k, { min: v[0], max: v[1] })
   );
   if (touchedLockedAxes) window.fvApplyAxisLocks?.(figUid);
-  fvCommitViewportChange(figUid, changed);
+  _fvCommitNavigation(figUid, changed);
 }
 
 // The TRUE category value of a selected bar point: the trace's underlying
@@ -1905,4 +1905,144 @@ function handleDeselect(figUid) {
   if (_fvIsProgrammatic(figUid)) return;
   _fvCubeGestureAbort(figUid);
   clearFigureSelection(figUid);
+}
+
+// === Wheel zoom and middle-button pan ===
+// Both navigate without a mode switch, only where Zoom and Pan can
+// (_fvCanZoomPan). Plotly moves the axis under an axis dragger and both axes
+// over the plot area. Two rules differ, and Plotly has no option for them:
+// over the plot area a line figure moves only x, so y keeps autoscaling, and a
+// locked axis never moves. Plotly skips a fixed-range axis itself, but still
+// takes the wheel, so such an axis counts as fixed here too. The dragger of the
+// one axis that moves then takes the event, as a copy.
+
+// The axes Plotly moves for an event on a dragger: its class is ns + ew +
+// 'drag' (plotly.js dragbox.js), so the plot area is 'nsewdrag'.
+function _fvDraggerAxes(dragger) {
+  for (const cls of dragger.classList) {
+    const match = /^(n?s?)(e?w?)drag$/.exec(cls);
+    if (match && cls !== 'drag') return { x: match[2] !== '', y: match[1] !== '' };
+  }
+  return { x: false, y: false };
+}
+
+// The dragger under an event. A drawn selection lies over the plot area, so an
+// event on it belongs to the plot area's dragger.
+function _fvDraggerUnder(target, gd) {
+  if (target.closest('.selectionlayer, .outline-controllers')) {
+    return gd.querySelector('.draglayer .nsewdrag');
+  }
+  return target.closest('.draglayer .drag');
+}
+
+function _fvAxisMoves(figUid, axis) {
+  return !window.fvIsAxisLocked(figUid, axis)
+    && !divs[figUidToIdx[figUid]]._fullLayout[axis + 'axis'].fixedrange;
+}
+
+// The dragger that moves the axes an event on `dragger` may move, or null
+// when no axis may move.
+function _fvNavigationDragger(dragger, figUid) {
+  const axes = _fvDraggerAxes(dragger);
+  const lineFigure = figSpecByUid[figUid].traces.some(ts => ts.trace_type === 'line');
+  const x = axes.x && _fvAxisMoves(figUid, 'x');
+  const y = axes.y && _fvAxisMoves(figUid, 'y')
+    && !(lineFigure && dragger.classList.contains('nsewdrag'));
+  if (x === axes.x && y === axes.y) return dragger;
+  if (!x && !y) return null;
+  return dragger.parentNode.querySelector(x ? ':scope > .ewdrag' : ':scope > .nsdrag');
+}
+
+let _fvForwarding = false;
+
+// Send a copy of `evt` to `dragger`, which Plotly handles at the same cursor
+// position, and keep the original from Plotly. The handlers let the copy pass.
+function _fvForward(evt, dragger) {
+  evt.stopPropagation();
+  evt.preventDefault();
+  _fvForwarding = true;
+  try {
+    dragger.dispatchEvent(new evt.constructor(evt.type, evt));
+  } finally {
+    _fvForwarding = false;
+  }
+}
+
+// wheel-mode.js decides whether a wheel zooms. When it does not, or no axis
+// may zoom, the event never reaches Plotly and the page scrolls.
+function handleWheel(evt, figUid) {
+  if (_fvForwarding) return;
+  // A sideways wheel (a trackpad swipe) is not a zoom. Plotly would still
+  // send a relayout and cancel the page scroll or back-swipe.
+  if (!evt.deltaY) {
+    evt.stopPropagation();
+    return;
+  }
+  const dragger = _fvDraggerUnder(evt.target, evt.currentTarget);
+  const map = !dragger && evt.target.closest('.maplibregl-map');
+  // Elsewhere (a legend, a colorbar) the wheel is not a zoom.
+  if (!dragger && !map) return;
+  const target = _fvCanZoomPan(figUid) ? (map || _fvNavigationDragger(dragger, figUid)) : null;
+  // Check the target first: fvWheelZooms can show the Ctrl/⌘ hint, which must
+  // not show over a plot that cannot zoom.
+  if (!target || !window.fvWheelZooms(evt)) {
+    evt.stopPropagation();
+    return;
+  }
+  _fvWheelAt[figUid] = performance.now();
+  if (!map && target !== evt.target) _fvForward(evt, target);
+}
+
+// Plotly ends a wheel zoom 50 ms after the last notch, so a slow spin gives
+// one relayout per notch. Their requests wait until the spin stops, so a spin
+// sends one request. Linked figures still follow each notch at once.
+const _fvWheelAt = {};
+const _fvWheelCommits = {};
+function _fvCommitNavigation(figUid, keys) {
+  // A relayout within 300 ms of a wheel event comes from it: Plotly sends it
+  // 50 ms after the notch.
+  if (!(performance.now() - _fvWheelAt[figUid] < 300)) {
+    fvCommitViewportChange(figUid, keys);
+    return;
+  }
+  for (const other of fvFiguresOfKeys(keys)) {
+    if (other !== figUid) _fvRenderFigure(other);
+  }
+  const pending = _fvWheelCommits[figUid] ??= { keys: new Set() };
+  keys.forEach(k => pending.keys.add(k));
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => {
+    delete _fvWheelCommits[figUid];
+    fvCommitViewportChange(figUid, [...pending.keys]);
+  }, 200);
+}
+
+// A middle-button drag pans only when it starts on the plot area, in every
+// drag mode. Plotly treats every button as a left drag, so the handler stops a
+// press that would start another drag: on an axis (pan or stretch it, also a
+// locked one), on a map, and where the figure cannot pan (select or zoom). Over the plot
+// area Plotly pans only in pan mode. It reads the drag mode when the drag
+// starts, in this dispatch, so pan mode lasts only for this press.
+// ponytail: sets Plotly's internal _fullLayout.dragmode. The middle-drag
+// browser tests fail if a Plotly upgrade stops reading it at drag start.
+function handleMiddleButtonDown(evt, figUid) {
+  if (evt.button !== 1 || _fvForwarding) return;
+  const dragger = _fvDraggerUnder(evt.target, evt.currentTarget);
+  const plotArea = dragger !== null && dragger.classList.contains('nsewdrag');
+  const target = plotArea && _fvCanZoomPan(figUid) ? _fvNavigationDragger(dragger, figUid) : null;
+  if (!target) {
+    if (dragger || evt.target.closest('.maplibregl-map')) {
+      evt.stopPropagation();
+      evt.preventDefault();
+    }
+    return;
+  }
+  if (target === dragger) {
+    const fullLayout = evt.currentTarget._fullLayout;
+    const dragmode = fullLayout.dragmode;
+    // Plotly swaps pan and zoom while Shift is held.
+    fullLayout.dragmode = evt.shiftKey ? 'zoom' : 'pan';
+    setTimeout(() => { fullLayout.dragmode = dragmode; });
+  }
+  if (target !== evt.target) _fvForward(evt, target);
 }

@@ -333,6 +333,13 @@ class AbstractAdapter(ABC):
                 '        <button id="fv-hover-btn" aria-pressed="false">Hover: Off</button>\n'
                 "      </div>"
             )
+        if tc.show_wheel:
+            # wheel-mode.js wires it and sets its label.
+            g2.append(
+                '      <button id="fv-btn-wheel" title="What the mouse wheel does over a'
+                " plot. Auto zooms, but needs Ctrl or ⌘ when the page is embedded"
+                ' in another page.">Wheel: Auto</button>'
+            )
 
         # Grid/layout control sits in its own group so a divider separates it
         # from the cross-filter / lock / hover controls to its left.

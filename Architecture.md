@@ -177,8 +177,8 @@ DashboardSpec
     ├── grid_editable: bool               ← initial lock/edit mode when draggable
     ├── grid_items: List[GridItem] | None ← client-updated positions/sizes
     └── toolbar: ToolbarConfig            ← controls which toolbar buttons are rendered
-        └── show_reset / show_deselect / show_cfmode / show_hover
-            / show_grid / show_share / show_export / show_import: bool (all True by default)
+        └── show_reset / show_deselect / show_cfmode / show_hover / show_lock_all_axes
+            / show_wheel / show_grid / show_share / show_export / show_import: bool (all True by default)
 
 InteractionEvent
 ├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
@@ -1525,6 +1525,7 @@ adapters/js/
 ├── theme-mode.js             ← light/dark mode, inlined in <head> by page_head_html()
 ├── toolbar.css               ← toolbar and header styles
 ├── toolbar.js                ← shared toolbar hooks + state helpers
+├── wheel-mode.js             ← wheel mode: fvWheelZooms, the Ctrl/⌘ hint, the Wheel button
 ├── gridstack-bridge.js       ← GridStack.init() IIFE + change/resizestop handlers
 ├── panel.js                  ← <fv-panel> wrapper + shared panel-control binding
 ├── runtime/
@@ -1546,7 +1547,7 @@ adapters/js/
 ```
 
 `runtime.py` assembles two bundles from these sources at import: `shared` (panel.js +
-runtime/*.js + toolbar.js) and `plotly` (plotly/*.js); `theme.css`
+runtime/*.js + toolbar.js + wheel-mode.js) and `plotly` (plotly/*.js); `theme.css`
 and `gridstack-bridge.js` are served verbatim, and `page_head_html()` inlines
 `theme-mode.js`.
 
@@ -1567,6 +1568,15 @@ color or spacing values remain.
 - `fvApplyThemeToTraces`, called by `buildTracesForFigure`, applies the theme parts that a template cannot hold, because they are per trace: the dark `"Viridis"` and a hover label border in the series color. The label itself uses the neutral tooltip tokens. A trace value beats the layout, so a figure that sets `hoverlabel.bordercolor` gets no series border. A figure with its own template gets neither part.
 - The linked-hover overlay of a figure carries `data-fv-mode` from `fvPlotSurfaceMode`: the mode of the figure's own plot background (the plot color, else the paper color, else the page mode). `theme.css` declares its two token blocks for the overlay too, so the guides use ink on a light plot and paper on a dark one, also when a figure's own template or `plot_bgcolor` differs from the page mode.
 - The y axis uses `automargin`. The margin grows past `margin.l` only when the tick labels do not fit, so the plot area moves on a zoom only when the labels would otherwise be cut off.
+
+### Wheel zoom and middle-button pan
+
+- Every figure sets Plotly's `scrollZoom: true`. Capture-phase `wheel` and `mousedown` listeners on the graph div (`handleWheel`, `handleMiddleButtonDown` in `plotly/events.js`) run before Plotly's draggers and the MapLibre map, and decide each event. An event that must not zoom or pan stops there, so Plotly never sees it and the page scrolls.
+- The wheel mode (`wheel-mode.js`) is a viewer preference like the light/dark mode: localStorage `fv-wheel`, never the spec, a share URL or the server. `auto` zooms in a top-level page and needs Ctrl/⌘ in an iframe (a notebook, a web app, a report), where a plain wheel must scroll the page. The `#fv-btn-wheel` button cycles the modes, and `ToolbarConfig.show_wheel` hides it.
+- Over the plot area a line figure moves only x, so y keeps its autoscale. A locked axis and an axis with `fixedrange` never move. Plotly has no option for these rules, so `_fvNavigationDragger` picks the dragger of the one axis that may move and `_fvForward` sends it a copy of the event. A sideways wheel (no `deltaY`) is not a zoom.
+- Plotly ends a wheel zoom 50 ms after the last notch, so a slow spin gives one relayout per notch. `_fvCommitNavigation` holds the request of a relayout that follows a wheel zoom until 200 ms pass without one, so a spin sends one request. Linked figures still follow each notch at once.
+- A middle-button drag pans only when it starts on the plot area, in every drag mode. Plotly treats every button as a left drag, so a middle press elsewhere (an axis, a map) is stopped. Plotly reads `_fullLayout.dragmode` when a drag starts, so the handler sets `pan` for this press only.
+- Both gestures follow `_fvCanZoomPan` (`plotly/render.js`), the rule of the Zoom and Pan buttons. Plotly's dragger class names and `_fullLayout.dragmode` are Plotly internals: the browser tests in `TestWheelNavigationBrowser` fail when a Plotly upgrade changes them.
 
 ### Shared Runtime (`adapters/runtime.py`)
 

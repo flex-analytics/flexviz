@@ -521,6 +521,7 @@ class ToolbarConfig(BaseModel):
     show_cfmode: bool = True
     show_hover: bool = True
     show_lock_all_axes: bool = True
+    show_wheel: bool = True
     show_grid: bool = True
     show_share: bool = True
     show_export: bool = True

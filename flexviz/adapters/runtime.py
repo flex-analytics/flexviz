@@ -35,6 +35,7 @@ _SHARED_SOURCES: list[str] = [
     "runtime/overlay.js",
     "runtime/hover.js",
     "toolbar.js",
+    "wheel-mode.js",
 ]
 
 _PLOTLY_SOURCES: list[str] = [

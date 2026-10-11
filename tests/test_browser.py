@@ -8503,3 +8503,508 @@ class TestThemeBrowser:
             return ticks.length && Math.min(...ticks.map(t => t.getBoundingClientRect().left)) - left;
         }""")
         assert overflow >= 0
+
+
+# ---------------------------------------------------------------------------
+# Wheel zoom and middle-button pan
+# ---------------------------------------------------------------------------
+
+# One wheel notch: Plotly zooms by exp(-20 / 200), its largest step.
+_NOTCH_ZOOM = math.exp(-0.1)
+
+_FIG_RANGES = """i => ({
+    x: divs[i]._fullLayout.xaxis.range.slice(),
+    y: divs[i]._fullLayout.yaxis.range.slice(),
+  })"""
+
+
+def _dashboard_url_wheel(port: int, line_layout: dict | None = None) -> str:
+    """A line (figure 0) and a histogram (figure 1), linked on ts."""
+    from flexviz.dashboard import Dashboard
+    from flexviz.server import register_source
+    from flexviz.spec import encode_spec
+
+    df = pl.DataFrame({"ts": list(range(500)), "val": [float(i) for i in range(500)]})
+    register_source("_browser_test", df)
+    dash = Dashboard(df)
+    line = dash.add_figure(title="Line").add_line(x="ts", y="val", n_points=200)
+    if line_layout:
+        line.update_layout(**line_layout)
+    dash.add_figure(title="Hist").add_histogram(x="ts", bins=50)
+    dash.link_axes(on="ts")
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(dash.to_spec(source_name='_browser_test'))}"
+
+
+def _drag_box(target, fig_index: int, cls: str = "nsewdrag") -> dict:
+    """Page coordinates of a Plotly dragger: the plot area, or an axis."""
+    box = (
+        target.locator(".js-plotly-plot")
+        .nth(fig_index)
+        .locator(f".{cls}")
+        .bounding_box()
+    )
+    assert box is not None
+    return box
+
+
+def _wheel(
+    page: Page, x: float, y: float, delta: float = -100, key: str | None = None
+) -> None:
+    """One wheel notch at (x, y), negative delta zooms in; then let it settle."""
+    page.mouse.move(x, y)
+    if key:
+        page.keyboard.down(key)
+    page.mouse.wheel(0, delta)
+    if key:
+        page.keyboard.up(key)
+    page.wait_for_timeout(500)
+
+
+def _width(axis_range: list[float]) -> float:
+    return axis_range[1] - axis_range[0]
+
+
+_Y_AUTOSCALES = """i => divs[i]._fullLayout.yaxis.autorange === true
+    && !((DASHBOARD_SPEC.figures[i].uid + '/y') in DASHBOARD_SPEC.state.viewport)"""
+
+
+def _drag(page: Page, x0: float, x1: float, y: float, button: str = "left") -> None:
+    """A horizontal drag with one mouse button, then let it settle."""
+    page.mouse.move(x0, y)
+    page.mouse.down(button=button)
+    page.mouse.move(x1, y, steps=8)
+    page.mouse.up(button=button)
+    page.wait_for_timeout(800)
+
+
+def _modifier_key(page: Page) -> str:
+    return page.evaluate(
+        "() => /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'"
+    )
+
+
+@pytest.mark.browser
+class TestWheelNavigationBrowser:
+    """The wheel zooms and the middle button pans without a mode switch."""
+
+    def test_wheel_zooms_a_line_in_x_around_the_cursor(
+        self, page: Page, server_port: int
+    ):
+        events: list[dict] = []
+        page.on(
+            "request",
+            lambda r: (
+                events.append(r.post_data_json["event"])
+                if "/dashboard/update" in r.url
+                else None
+            ),
+        )
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        events.clear()
+        box = _drag_box(page, 0)
+        x_px = box["x"] + box["width"] * 0.25
+        data_x_at_cursor = f"() => divs[0]._fullLayout.xaxis.p2d({box['width'] * 0.25})"
+        before = page.evaluate(_FIG_RANGES, 0)
+        anchor = page.evaluate(data_x_at_cursor)
+
+        _wheel(page, x_px, box["y"] + box["height"] / 2)
+
+        after = page.evaluate(_FIG_RANGES, 0)
+        assert _width(after["x"]) == pytest.approx(
+            _width(before["x"]) * _NOTCH_ZOOM, rel=1e-3
+        )
+        # y keeps autoscaling to the rows in view.
+        assert page.evaluate(_Y_AUTOSCALES, 0)
+        assert page.evaluate(data_x_at_cursor) == pytest.approx(
+            anchor, abs=_width(after["x"]) * 2e-3
+        )
+        assert [e["type"] for e in events] == ["viewport"]
+        assert page.evaluate(_FIG_RANGES, 1)["x"] == after["x"]
+
+        # Over the y axis the wheel zooms y, line or not.
+        y_axis = _drag_box(page, 0, "nsdrag")
+        _wheel(
+            page, y_axis["x"] + y_axis["width"] / 2, y_axis["y"] + y_axis["height"] / 2
+        )
+        zoomed_y = page.evaluate(_FIG_RANGES, 0)
+        assert zoomed_y["x"] == after["x"]
+        assert _width(zoomed_y["y"]) == pytest.approx(
+            _width(after["y"]) * _NOTCH_ZOOM, rel=1e-3
+        )
+
+        # A sideways wheel (a trackpad swipe) scrolls the page and sends nothing.
+        events.clear()
+        page.evaluate(
+            "() => document.body.insertAdjacentHTML('beforeend',"
+            " '<div style=\"width:5000px;height:1px\"></div>')"
+        )
+        page.mouse.move(x_px, box["y"] + box["height"] / 2)
+        page.mouse.wheel(100, 0)
+        page.wait_for_timeout(500)
+        assert page.evaluate(_FIG_RANGES, 0) == zoomed_y
+        assert page.evaluate("() => window.scrollX") > 0
+        assert events == []
+
+    def test_slow_wheel_spin_sends_one_request(self, page: Page, server_port: int):
+        # Plotly ends a wheel zoom 50 ms after a notch, so each notch here
+        # is its own relayout.
+        events: list[str] = []
+        page.on(
+            "request",
+            lambda r: (
+                events.append(r.post_data_json["event"]["type"])
+                if "/dashboard/update" in r.url
+                else None
+            ),
+        )
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        events.clear()
+        box = _drag_box(page, 0)
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for _ in range(6):
+            page.mouse.wheel(0, -100)
+            page.wait_for_timeout(80)
+        # The linked histogram follows before the request goes out.
+        assert page.evaluate(_FIG_RANGES, 1)["x"] == page.evaluate(_FIG_RANGES, 0)["x"]
+        page.wait_for_timeout(600)
+        assert events == ["viewport"]
+
+    def test_wheel_zooms_both_axes_of_other_figures(self, page: Page, server_port: int):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        box = _drag_box(page, 1)
+        before = page.evaluate(_FIG_RANGES, 1)
+
+        _wheel(page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+        after = page.evaluate(_FIG_RANGES, 1)
+        for axis in ("x", "y"):
+            assert _width(after[axis]) == pytest.approx(
+                _width(before[axis]) * _NOTCH_ZOOM, rel=1e-3
+            )
+
+    def test_wheel_never_zooms_a_locked_axis(self, page: Page, server_port: int):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        # Locks both line axes and, through the link, the histogram's x.
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(300)
+        # All line axes are locked: no Zoom or Pan. The histogram's y is free.
+        for mode in ("zoom", "pan"):
+            assert page.is_disabled(f"#fv-bar-0 .fv-mode-btn[data-mode='{mode}']")
+            assert page.is_enabled(f"#fv-bar-1 .fv-mode-btn[data-mode='{mode}']")
+        line_before = page.evaluate(_FIG_RANGES, 0)
+        hist_before = page.evaluate(_FIG_RANGES, 1)
+        events: list[str] = []
+        page.on(
+            "request",
+            lambda r: events.append(r.url) if "/dashboard/update" in r.url else None,
+        )
+
+        line = _drag_box(page, 0)
+        _wheel(page, line["x"] + line["width"] / 2, line["y"] + line["height"] / 2)
+        hist = _drag_box(page, 1)
+        page.evaluate(
+            """() => { window.__keys = [];
+              divs[1].on('plotly_relayout', e => window.__keys.push(...Object.keys(e))); }"""
+        )
+        _wheel(page, hist["x"] + hist["width"] / 2, hist["y"] + hist["height"] / 2)
+
+        assert page.evaluate(_FIG_RANGES, 0) == line_before
+        hist_after = page.evaluate(_FIG_RANGES, 1)
+        assert hist_after["x"] == hist_before["x"]
+        # x never moved: Plotly zoomed only y, nothing snapped back.
+        keys = page.evaluate("() => window.__keys")
+        assert keys and all(k.startswith("yaxis") for k in keys)
+        assert _width(hist_after["y"]) == pytest.approx(
+            _width(hist_before["y"]) * _NOTCH_ZOOM, rel=1e-3
+        )
+        # A count axis binds no trace: the y zoom needs no request.
+        assert events == []
+
+    def test_wheel_scrolls_the_page_over_fixed_range_axes(
+        self, page: Page, server_port: int
+    ):
+        page.set_viewport_size({"width": 1280, "height": 400})
+        fixed = {"xaxis": {"fixedrange": True}, "yaxis": {"fixedrange": True}}
+        page.goto(_dashboard_url_wheel(server_port, line_layout=fixed))
+        _wait_for_init(page)
+        before = page.evaluate(_FIG_RANGES, 0)
+        box = _drag_box(page, 0)
+
+        _wheel(
+            page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, delta=100
+        )
+
+        assert page.evaluate(_FIG_RANGES, 0) == before
+        assert page.evaluate("() => document.scrollingElement.scrollTop") > 0
+
+    def test_wheel_button_cycles_the_modes_and_remembers_the_choice(
+        self, page: Page, server_port: int
+    ):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        key = _modifier_key(page)
+        labels = []
+        for _ in range(5):
+            labels.append(page.inner_text("#fv-btn-wheel"))
+            page.click("#fv-btn-wheel")
+        assert labels == [
+            "Wheel: Auto",
+            "Wheel: Zoom",
+            f"Wheel: {key}",
+            "Wheel: Off",
+            "Wheel: Auto",
+        ]
+        assert page.evaluate("() => localStorage.getItem('fv-wheel')") == "zoom"
+
+        page.click("#fv-btn-wheel")  # Zoom -> Ctrl
+        page.reload()
+        _wait_for_init(page)
+        assert page.inner_text("#fv-btn-wheel") == f"Wheel: {key}"
+        box = _drag_box(page, 0)
+        center = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        before = page.evaluate(_FIG_RANGES, 0)
+
+        _wheel(page, *center)
+        assert page.evaluate(_FIG_RANGES, 0) == before
+        hint = page.locator("fv-panel .fv-wheel-hint.visible")
+        assert hint.inner_text() == f"Use {key} + scroll to zoom"
+        hint.wait_for(state="detached")
+        # After the fade the hint is hidden, not only transparent.
+        page.locator(".fv-wheel-hint").wait_for(state="hidden")
+
+        _wheel(page, *center, key="Control")
+        zoomed = page.evaluate(_FIG_RANGES, 0)
+        assert _width(zoomed["x"]) < _width(before["x"])
+
+        # A mode change hides a shown hint: it names the key of the old mode.
+        _wheel(page, *center)
+        assert hint.count() == 1
+        page.click("#fv-btn-wheel")  # Ctrl -> Off
+        assert hint.count() == 0
+        _wheel(page, *center, key="Control")
+        assert page.evaluate(_FIG_RANGES, 0) == zoomed
+        assert hint.count() == 0
+
+    def test_wheel_in_an_iframe_scrolls_the_page_until_the_key_is_held(
+        self, page: Page, server_port: int
+    ):
+        url = _dashboard_url_wheel(server_port)
+        page.set_content(
+            f'<iframe src="{url}" style="width:1100px;height:700px;border:0"></iframe>'
+            '<div style="height:3000px"></div>'
+        )
+        frame = page.frames[1]
+        frame.wait_for_selector(".js-plotly-plot")
+        page.wait_for_timeout(2_000)
+        key = _modifier_key(page)
+        assert frame.inner_text("#fv-btn-wheel") == "Wheel: Auto"
+        before = frame.evaluate(_FIG_RANGES, 0)
+        box = _drag_box(frame, 0)
+
+        _wheel(
+            page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, delta=100
+        )
+        assert frame.evaluate(_FIG_RANGES, 0) == before
+        assert page.evaluate("() => window.scrollY") > 0
+        assert (
+            frame.locator(".fv-wheel-hint.visible").inner_text()
+            == f"Use {key} + scroll to zoom"
+        )
+
+        box = _drag_box(frame, 0)
+        _wheel(
+            page,
+            box["x"] + box["width"] / 2,
+            box["y"] + box["height"] / 2,
+            key="Control",
+        )
+        assert _width(frame.evaluate(_FIG_RANGES, 0)["x"]) < _width(before["x"])
+
+    def test_wheel_mode_also_gates_maps(self, page: Page, server_port: int):
+        page.goto(_dashboard_url_geo(server_port))
+        _wait_for_init(page)
+        for _ in range(3):
+            page.click("#fv-btn-wheel")  # Auto -> Zoom -> Ctrl -> Off
+        canvas = page.locator(".js-plotly-plot .maplibregl-canvas").bounding_box()
+        assert canvas is not None
+        center = (canvas["x"] + canvas["width"] / 2, canvas["y"] + canvas["height"] / 2)
+        map_zoom = "() => divs[0]._fullLayout.map.zoom"
+        zoom = page.evaluate(map_zoom)
+
+        _wheel(page, *center, key="Control")
+        assert page.evaluate(map_zoom) == zoom
+
+        page.click("#fv-btn-wheel")  # Off -> Auto, a full tab: the wheel zooms
+        _wheel(page, *center)
+        page.wait_for_function(f"() => divs[0]._fullLayout.map.zoom > {zoom}")
+
+    def test_wheel_over_a_brush_zooms_and_keeps_the_brush(
+        self, page: Page, server_port: int
+    ):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        page.click("#fv-bar-0 .fv-mode-btn[data-mode='select']")
+        box = _drag_box(page, 0)
+        mid_y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] * 0.2, mid_y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * 0.6, mid_y, steps=8)
+        page.mouse.up()
+        page.wait_for_function("() => DASHBOARD_SPEC.state.selections.length === 1")
+        page.wait_for_timeout(500)
+        selections = "() => JSON.stringify(DASHBOARD_SPEC.state.selections)"
+        brush = page.evaluate(selections)
+        before = page.evaluate(_FIG_RANGES, 0)
+
+        _wheel(page, box["x"] + box["width"] * 0.4, mid_y)
+
+        after = page.evaluate(_FIG_RANGES, 0)
+        assert _width(after["x"]) == pytest.approx(
+            _width(before["x"]) * _NOTCH_ZOOM, rel=1e-3
+        )
+        assert page.evaluate(selections) == brush
+
+    def test_middle_drag_does_nothing_on_a_map(self, page: Page, server_port: int):
+        page.goto(_dashboard_url_geo(server_port))
+        _wait_for_init(page)
+        page.click("#fv-bar-0 .fv-mode-btn[data-mode='select']")
+        canvas = page.locator(".js-plotly-plot .maplibregl-canvas").bounding_box()
+        assert canvas is not None
+        center = "() => JSON.stringify(divs[0]._fullLayout.map.center)"
+        before = page.evaluate(center)
+
+        page.mouse.move(
+            canvas["x"] + canvas["width"] * 0.3, canvas["y"] + canvas["height"] * 0.3
+        )
+        page.mouse.down(button="middle")
+        page.mouse.move(
+            canvas["x"] + canvas["width"] * 0.7,
+            canvas["y"] + canvas["height"] * 0.7,
+            steps=8,
+        )
+        page.mouse.up(button="middle")
+        page.wait_for_timeout(800)
+
+        assert page.evaluate(center) == before
+        # In CF mode Plotly would draw a selection for any button.
+        assert page.locator(".js-plotly-plot .select-outline").count() == 0
+
+    def test_middle_drag_pans_a_line_in_x_from_a_brush(
+        self, page: Page, server_port: int
+    ):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        page.click("#fv-bar-0 .fv-mode-btn[data-mode='select']")
+        box = _drag_box(page, 0)
+        mid_y = box["y"] + box["height"] / 2
+        _drag(page, box["x"] + box["width"] * 0.2, box["x"] + box["width"] * 0.6, mid_y)
+        page.wait_for_function("() => DASHBOARD_SPEC.state.selections.length === 1")
+        page.wait_for_timeout(500)
+        selections = "() => JSON.stringify(DASHBOARD_SPEC.state.selections)"
+        brush = page.evaluate(selections)
+        before = page.evaluate(_FIG_RANGES, 0)
+
+        # The drag starts on the brush: it pans and leaves the brush alone.
+        _drag(
+            page,
+            box["x"] + box["width"] * 0.5,
+            box["x"] + box["width"] * 0.3,
+            mid_y,
+            "middle",
+        )
+
+        after = page.evaluate(_FIG_RANGES, 0)
+        assert _width(after["x"]) == pytest.approx(_width(before["x"]))
+        assert after["x"][0] > before["x"][0]
+        assert page.evaluate(_Y_AUTOSCALES, 0)
+        assert page.evaluate(selections) == brush
+        assert page.evaluate("() => divs[0].layout.selections.length") == 1
+        assert page.evaluate("() => divs[0]._fullLayout.dragmode") == "select"
+
+    def test_middle_drag_pans_both_axes_of_other_figures(
+        self, page: Page, server_port: int
+    ):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        page.click("#fv-bar-1 .fv-mode-btn[data-mode='select']")
+        box = _drag_box(page, 1)
+        before = page.evaluate(_FIG_RANGES, 1)
+
+        page.mouse.move(box["x"] + box["width"] * 0.6, box["y"] + box["height"] * 0.4)
+        # Shift does not turn the pan into a zoom box.
+        page.keyboard.down("Shift")
+        page.mouse.down(button="middle")
+        page.wait_for_timeout(100)
+        # Pan mode lasts only for the press: the panel mode is back at once.
+        assert page.evaluate("() => divs[1]._fullLayout.dragmode") == "select"
+        page.mouse.move(
+            box["x"] + box["width"] * 0.4, box["y"] + box["height"] * 0.6, steps=8
+        )
+        page.mouse.up(button="middle")
+        page.keyboard.up("Shift")
+        page.wait_for_timeout(800)
+
+        after = page.evaluate(_FIG_RANGES, 1)
+        for axis in ("x", "y"):
+            assert _width(after[axis]) == pytest.approx(_width(before[axis]))
+            assert after[axis] != before[axis]
+        assert page.evaluate("() => DASHBOARD_SPEC.state.selections.length") == 0
+
+        # A middle drag that starts on an axis does nothing.
+        x_axis = _drag_box(page, 1, "ewdrag")
+        axis_y = x_axis["y"] + x_axis["height"] / 2
+        _drag(
+            page,
+            x_axis["x"] + x_axis["width"] * 0.6,
+            x_axis["x"] + x_axis["width"] * 0.3,
+            axis_y,
+            "middle",
+        )
+        assert page.evaluate(_FIG_RANGES, 1) == after
+
+    def test_middle_drag_never_moves_a_locked_axis(self, page: Page, server_port: int):
+        page.goto(_dashboard_url_wheel(server_port))
+        _wait_for_init(page)
+        # Locks both line axes and, through the link, the histogram's x.
+        page.click("#fv-bar-0 .fv-mode-action-btn[data-action='lock-axes']")
+        page.wait_for_timeout(300)
+        line_before = page.evaluate(_FIG_RANGES, 0)
+        hist_before = page.evaluate(_FIG_RANGES, 1)
+        page.evaluate(
+            """() => { window.__keys = [];
+              divs[1].on('plotly_relayout', e => window.__keys.push(...Object.keys(e))); }"""
+        )
+
+        line = _drag_box(page, 0)
+        line_y = line["y"] + line["height"] / 2
+        _drag(
+            page,
+            line["x"] + line["width"] * 0.7,
+            line["x"] + line["width"] * 0.5,
+            line_y,
+            "middle",
+        )
+        hist = _drag_box(page, 1)
+        page.mouse.move(
+            hist["x"] + hist["width"] * 0.5, hist["y"] + hist["height"] * 0.3
+        )
+        page.mouse.down(button="middle")
+        page.mouse.move(
+            hist["x"] + hist["width"] * 0.3, hist["y"] + hist["height"] * 0.6, steps=8
+        )
+        page.mouse.up(button="middle")
+        page.wait_for_timeout(800)
+
+        assert page.evaluate(_FIG_RANGES, 0) == line_before
+        # Locked axes put the line in CF mode: a plain drag there would select.
+        assert page.evaluate("() => DASHBOARD_SPEC.state.selections.length") == 0
+        hist_after = page.evaluate(_FIG_RANGES, 1)
+        assert hist_after["x"] == hist_before["x"]
+        assert hist_after["y"] != hist_before["y"]
+        # x never moved: Plotly panned only y, nothing snapped back.
+        keys = page.evaluate("() => window.__keys")
+        assert keys and all(k.startswith("yaxis") for k in keys)

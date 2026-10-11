@@ -112,6 +112,12 @@ class TestSharedToolbar:
         assert "fv-btn-share" not in html
         assert "fv-btn-reset" in html
 
+    def test_toolbar_html_hides_the_wheel_button(self):
+        assert "fv-btn-wheel" in AbstractAdapter._toolbar_html(ToolbarConfig())
+        html = AbstractAdapter._toolbar_html(ToolbarConfig(show_wheel=False))
+        assert "fv-btn-wheel" not in html
+        assert "fv-hover-btn" in html
+
     def test_toolbar_html_omits_empty_group(self):
         tc = ToolbarConfig(show_share=False, show_export=False, show_import=False)
         html = AbstractAdapter._toolbar_html(tc)
@@ -127,6 +133,7 @@ class TestSharedToolbar:
             show_cfmode=False,
             show_hover=False,
             show_lock_all_axes=False,
+            show_wheel=False,
             show_grid=False,
             show_share=False,
             show_export=False,
@@ -138,11 +145,12 @@ class TestSharedToolbar:
         assert "fv-header" in html
 
     def test_toolbar_config_roundtrips_via_layout_spec(self):
-        tc = ToolbarConfig(show_share=False, show_import=False)
+        tc = ToolbarConfig(show_share=False, show_import=False, show_wheel=False)
         layout = LayoutSpec(toolbar=tc)
         dumped = layout.model_dump()
         restored = LayoutSpec.model_validate(dumped)
         assert restored.toolbar.show_share is False
+        assert restored.toolbar.show_wheel is False
         assert restored.toolbar.show_import is False
         assert restored.toolbar.show_reset is True
 

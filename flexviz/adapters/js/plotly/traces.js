@@ -6,8 +6,10 @@ const traceTemplateByUid = {};
 const legendVisibilityByUid = {};
 window.__fvLegendVisibilityByUid = legendVisibilityByUid;
 
+// The wheel zooms every subplot type here; handleWheel gates each event.
 const configsByFig = DASHBOARD_SPEC.figures.map(() => ({
   responsive: true, displaylogo: false, showTips: false, displayModeBar: false,
+  scrollZoom: true,
 }));
 
 function heatmapColorScale(ts) {

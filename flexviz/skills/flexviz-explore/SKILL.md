@@ -272,7 +272,7 @@ dash.share_url(server_url, source_name, rows=None, cols=None,
 LayoutSpec(gap="8px", draggable=True, grid_editable=False,
            grid_items=None,      # [GridItem(...)]; None auto-places the figures
            toolbar=ToolbarConfig())   # show_reset/deselect/cfmode/hover/
-                                      #   lock_all_axes/grid/share/export/import
+                                      #   lock_all_axes/wheel/grid/share/export/import
 GridItem(fig_uid, x=0, y=0, w=6, h=5)  # 12-column grid; height is h * 80 px
 history.add(url, note="", actor="agent")   # -> int; the only place a URL belongs
 

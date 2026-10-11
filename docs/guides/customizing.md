@@ -181,8 +181,8 @@ dash.show(
 ```
 
 The fields are `show_reset`, `show_deselect`, `show_cfmode`, `show_hover`,
-`show_lock_all_axes`, `show_grid`, `show_share`, `show_export` and
-`show_import`. An empty button group disappears with its divider. The
+`show_lock_all_axes`, `show_wheel`, `show_grid`, `show_share`, `show_export`
+and `show_import`. An empty button group disappears with its divider. The
 **Mode** button always shows: see [Light and dark mode](#light-and-dark-mode).
 
 Most of these hide a button whose state you can reach another way.
@@ -194,8 +194,8 @@ change.
 ### Toolbar versus panel controls
 
 The top toolbar holds dashboard-wide state: reset, deselect, cross-filter
-mode, hover, axis lock, layout, share, export and import. `ToolbarConfig`
-controls these.
+mode, hover, axis lock, wheel mode, layout, share, export and import.
+`ToolbarConfig` controls these.
 
 Each panel also has its own bottom bar with Zoom, Pan, CF, Reset and axis
 lock. These follow what the traces in that panel support, and they are not
@@ -246,6 +246,50 @@ The dark block outranks a plain `:root` rule. To change a token in both
 modes, name both selectors. Keep `--fv-series` the same in both modes,
 because the spec stores each group's color as a hex value. The full token
 list is in `flexviz/adapters/js/theme.css`.
+
+## Zoom and pan
+
+Where a panel has the Zoom and Pan buttons, you can zoom and pan in every
+panel mode (Zoom, Pan and CF):
+
+- The mouse wheel zooms around the cursor. Over the plot area of a line
+  figure, it zooms only x, so y keeps its autoscale. Other charts zoom both
+  axes, and a map zooms in and out.
+- Over an axis, the wheel zooms only that axis.
+- A trackpad pinch zooms as the wheel does.
+- On a chart, a drag with the middle mouse button pans when it starts on the
+  plot area, also on a cross-filter selection. A line figure pans only x. On
+  an axis or a map, the middle button does nothing. A map pans with a plain
+  drag in Zoom and Pan mode.
+- In Zoom mode, a drag with Shift held pans. In Pan mode, a drag with Shift
+  held zooms to the box.
+- A double-click resets the view.
+
+A locked axis does not zoom or pan. Neither does an axis with `fixedrange`
+set through `update_layout()`. If the wheel can zoom no axis under the
+cursor, it scrolls the page.
+
+### Wheel mode
+
+The **Wheel** button in the toolbar sets what the wheel does over a plot. It
+cycles four modes:
+
+| Mode | The wheel over a plot |
+|---|---|
+| **Auto** | Zooms. When the page is embedded in another page (a notebook, a web app, a report), it works as **Ctrl**. |
+| **Zoom** | Zooms. |
+| **Ctrl** (**⌘** on a Mac) | Scrolls the page. The wheel with Ctrl or ⌘ held zooms. |
+| **Off** | Scrolls the page and never zooms. |
+
+In an embedded page, a plain wheel must scroll the page, so **Auto** needs the
+key there. If the dashboard is taller than its frame, the frame scrolls first,
+then the outer page. When the wheel scrolls the page and the key zooms, a
+short hint over the plot shows the key. The mode applies to maps too.
+
+The wheel mode is a viewer preference, as the light and dark mode is. It is
+not part of the spec, so a share URL does not carry it. The browser remembers
+a choice other than Auto for the server address. `show_wheel=False` hides the
+button, and the page keeps the mode that the viewer chose before.
 
 ## Precedence
 
