@@ -1513,6 +1513,8 @@ def test_clickhouse_minmax_over_no_rows_is_null(clickhouse_client):
 
 _TRINO_TYPES = {
     pl.Float64: "double",
+    pl.Int16: "smallint",
+    pl.Int32: "integer",
     pl.Int64: "bigint",
     pl.String: "varchar",
     pl.Boolean: "boolean",
@@ -1537,6 +1539,8 @@ def _trino_value(v: Any) -> str:
     if isinstance(v, float):
         if math.isnan(v):
             return "nan()"
+        if math.isinf(v):
+            return "infinity()" if v > 0 else "-infinity()"
         return f"DOUBLE '{v!r}'"
     if isinstance(v, int):
         return str(v)
