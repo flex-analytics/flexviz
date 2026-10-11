@@ -892,15 +892,13 @@ class TestLineXWidthBuckets:
         # The same span holds far fewer points when the buckets span the data.
         assert sum(v >= 500_000 for v in unzoomed["x"].to_list()) < len(xs_out)
 
-    def test_all_null_x_breaks_the_x_contract(self):
-        # The engine rejects a null x before the aggregation runs. The
-        # aggregation itself also yields nothing.
+    def test_all_null_x_yields_an_empty_line(self):
+        # The line skips the null x, so the aggregation yields nothing.
         df = pl.DataFrame(
             {"ts": pl.Series("ts", [None, None], dtype=pl.Int64), "val": [1.0, 2.0]}
         )
         lf = LFQueryBuilder(df)
-        with pytest.raises(ValueError, match="null values"):
-            lf.check_line_x("ts")
+        lf.check_line_x("ts")
         out = _minmax_points(lf, LinePlot(x="ts", y="val", n_points=20))
         assert len(out["x"]) == 0 or all(v is None for v in out["x"].to_list())
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import itertools
 import math
+from typing import ClassVar
 
 import polars as pl
 import pytest
@@ -2992,15 +2993,13 @@ class TestResidentLineXWidth:
     @pytest.mark.parametrize(
         "xs,dtype,message",
         [
-            ([1.0, None, 3.0], pl.Float64, "null values"),
-            ([1.0, 2.0, float("nan")], pl.Float64, "NaN values"),
             ([1.0, 2.0, float("inf")], pl.Float64, "no finite span"),
             (["a", "b", "c"], pl.String, "numeric or a temporal"),
             # Wider than the kernel's i64 edge search: rejected before it panics.
             ([1, 2, 3], pl.Int128, "64-bit-or-smaller"),
             ([1, 2, 3], pl.Decimal(10, 2), "64-bit-or-smaller"),
         ],
-        ids=["null", "nan", "inf", "string", "int128", "decimal"],
+        ids=["inf", "string", "int128", "decimal"],
     )
     def test_x_contract_is_enforced(self, xs, dtype, message):
         df = pl.DataFrame(
@@ -3313,15 +3312,18 @@ class TestLineViewportPastTheXDtypeRange:
         ids=["uint64_below", "int8_below", "uint8_above", "int8_both"],
     )
     @pytest.mark.parametrize("scan", [False, True], ids=["resident", "scan"])
+    @pytest.mark.parametrize("nulls", [0, 2])
     def test_a_viewport_bound_outside_the_dtype_range(
-        self, tmp_path, dtype, xs, zoom, downsample, scan
+        self, tmp_path, dtype, xs, zoom, downsample, scan, nulls
     ):
         # A bound past the dtype range once cast to null and emptied the line.
+        # A null bound would also start a sorted slice inside the null prefix,
+        # whose rows carry y = 1000.
         def lf(dt):
             df = pl.DataFrame(
                 {
-                    "ts": pl.Series("ts", xs, dtype=dt),
-                    "val": [10.0 * (i + 1) for i in range(len(xs))],
+                    "ts": pl.Series("ts", [None] * nulls + xs, dtype=dt),
+                    "val": [1000.0] * nulls + [10.0 * (i + 1) for i in range(len(xs))],
                 }
             )
             if not scan:
@@ -3336,4 +3338,119 @@ class TestLineViewportPastTheXDtypeRange:
         got = self._run(lf(dtype), line(), zoom)
         assert got
         assert (got[0][0], got[-1][0]) == (xs[0], xs[-1])
+        assert all(y < 1000.0 for _, y in got)
         assert got == self._run(lf(pl.Int64), line(), zoom)
+
+
+class TestLineSkipsNullAndNanX:
+    """An ungrouped x-width line drops null and NaN x rows instead of raising."""
+
+    N = 1_000
+    VAL: ClassVar[list[float]] = [
+        float((i * 7) % 1009) for i in range(N)
+    ]  # distinct, so no plateau ties
+
+    @classmethod
+    def _clean(cls, dtype=pl.Float64) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"ts": pl.Series("ts", range(cls.N), dtype=dtype), "val": cls.VAL}
+        )
+
+    @classmethod
+    def _dirty(cls, dtype=pl.Float64, nulls=3, nans=2) -> pl.DataFrame:
+        """``_clean`` behind ``nulls`` null rows and before ``nans`` NaN rows.
+
+        Every padding row is its own chunk, so a prefix crosses chunk bounds.
+        """
+
+        def pad(x):
+            return pl.DataFrame(
+                {"ts": pl.Series("ts", [x], dtype=dtype), "val": [-1.0]}
+            )
+
+        tail = [pad(float("nan"))] * nans if dtype.is_float() else []
+        return pl.concat(
+            [*[pad(None)] * nulls, cls._clean(dtype), *tail], rechunk=False
+        )
+
+    @staticmethod
+    def _run(lf: LFQueryBuilder, trace: LinePlot, zoom: dict | None = None):
+        engine = FlexEngine(backend_lf=lf, scalable_traces={trace.uid: trace})
+        infos = [
+            TraceInfo(
+                uid=trace.uid, axes=("x", "y"), trace_type="line", figure_uid="fig"
+            )
+        ]
+        if zoom is None:
+            deltas = engine.process(
+                InteractionEvent(type="init", force_update=True), infos
+            )
+        else:
+            event, viewports = _zoom(zoom)
+            deltas = engine.process(event, infos, viewports)
+        return list(zip(deltas[0].updates["x"], deltas[0].updates["y"]))
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_resident_skips_a_null_prefix_and_a_nan_suffix(self, downsample):
+        def line():
+            return LinePlot(x="ts", y="val", n_points=100, downsample=downsample)
+
+        got = self._run(LFQueryBuilder(self._dirty()), line())
+        assert got == self._run(LFQueryBuilder(self._clean()), line())
+        assert got
+        assert all(x is not None and x == x for x, _ in got)
+
+    @pytest.mark.parametrize("downsample", ["minmax", "lttb", "fpcs"])
+    def test_scan_matches_resident(self, tmp_path, downsample):
+        def line():
+            return LinePlot(x="ts", y="val", n_points=100, downsample=downsample)
+
+        self._dirty().write_parquet(tmp_path / "dirty.parquet")
+        scanned = self._run(
+            LFQueryBuilder(pl.scan_parquet(tmp_path / "dirty.parquet")), line()
+        )
+        resident = self._run(LFQueryBuilder(self._dirty()), line())
+        assert scanned == resident
+        assert all(x is not None and x == x for x, _ in scanned)
+
+    def test_a_null_prefix_spanning_several_chunks(self):
+        df = self._dirty(nulls=40, nans=0)
+        assert df["ts"].n_chunks() > 40
+        line = LinePlot(x="ts", y="val", n_points=100)
+        got = self._run(LFQueryBuilder(df), line)
+        assert got == self._run(LFQueryBuilder(self._clean()), line)
+
+    def test_an_integer_x_skips_a_null_prefix(self):
+        line = LinePlot(x="ts", y="val", n_points=100)
+        got = self._run(LFQueryBuilder(self._dirty(pl.Int64)), line)
+        assert got == self._run(LFQueryBuilder(self._clean(pl.Int64)), line)
+
+    def test_a_zoomed_request_skips_them_too(self):
+        line = LinePlot(x="ts", y="val", n_points=100)
+        zoom = {"x": (100.0, 400.0)}
+        got = self._run(LFQueryBuilder(self._dirty()), line, zoom)
+        assert got
+        assert got == self._run(LFQueryBuilder(self._clean()), line, zoom)
+
+    def test_an_all_null_x_returns_an_empty_line(self):
+        df = pl.DataFrame(
+            {"ts": pl.Series("ts", [None] * 5, dtype=pl.Float64), "val": [1.0] * 5}
+        )
+        got = self._run(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+        assert got == []
+
+    def test_trailing_nulls_from_a_nulls_last_sort_are_an_error(self):
+        # The sort keeps an ascending flag, but the slice would start at the
+        # null count and drop the first valid rows.
+        df = pl.DataFrame(
+            {"ts": [None, 2.0, 3.0, 4.0], "val": [99.0, 20.0, 30.0, 40.0]}
+        ).sort("ts", nulls_last=True)
+        with pytest.raises(ValueError, match="not sorted ascending"):
+            self._run(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))
+
+    @pytest.mark.parametrize("xs", [[1.0, None, 3.0], [1.0, float("nan"), 3.0]])
+    def test_a_null_or_nan_inside_x_is_still_an_error(self, xs):
+        # Polars sorts nulls first and NaN last, so these are not sorted.
+        df = pl.DataFrame({"ts": xs, "val": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="not sorted ascending"):
+            self._run(LFQueryBuilder(df), LinePlot(x="ts", y="val", n_points=50))

@@ -339,10 +339,10 @@ class LFQueryBuilder:
     def check_line_x(self, col: str | pl.Expr) -> None:
         """Verify the data of an x column against the resident-frame line contract.
 
-        The x-width kernel needs x sorted ascending and free of nulls and NaN.
-        Verifying that costs one collect: an O(1) null check, one pass over the
-        order, and on a float dtype an O(1) read of the last element. NaN sorts
-        last, so on a sorted null-free column every NaN is a suffix.
+        The x-width kernel needs x sorted ascending in Polars order, where
+        nulls come first and NaN last. ``LinePlot`` slices the null prefix and
+        the NaN suffix off the kernel input. Verifying the order costs one
+        collect: one pass over the order and an O(1) null count.
 
         The dtype half of the contract lives on the trace
         (``LinePlot.check_schema``), and ``LinePlot.check_source`` calls this
@@ -357,34 +357,28 @@ class LFQueryBuilder:
         Raises
         ------
         ValueError
-            If the column breaks the contract.
+            If the column is not sorted, which includes a null or NaN that is
+            not in the prefix or suffix.
         """
         col_name: str = get_col_name(col)
         if col_name in self._sorted_cols:
             return
-        is_float = self.schema[col_name].is_float()
         x = pl.col(col_name)
         stats = self._ldf.select(
-            x.has_nulls().alias("__has_nulls"),
             x.is_sorted().alias("__sorted"),
-            *([x.last().is_nan().alias("__last_nan")] if is_float else []),
+            # `is_sorted` trusts the sorted flag, and `sort(nulls_last=True)`
+            # keeps an ascending one. Counting the nulls in the first
+            # `null_count` rows (a validity-bitmap count) tells a prefix from
+            # trailing nulls, which the kernel slice would mistake for a prefix.
+            (x.slice(0, x.null_count()).null_count() == x.null_count()).alias(
+                "__nulls_lead"
+            ),
         ).collect(engine=self.collect_engine)
-        if stats["__has_nulls"].item():
-            raise ValueError(
-                f"x column '{col_name}' has null values. A minmax line needs "
-                f"a null-free x. Drop the null rows first."
-            )
-        if not stats["__sorted"].item():
-            # A NaN in the middle also lands here: it sorts last, so it breaks
-            # the order too.
+        if not (stats["__sorted"].item() and stats["__nulls_lead"].item()):
             raise ValueError(
                 f"Column '{col_name}' is not sorted ascending. Sort the frame by "
-                f"'{col_name}', or pass assume_sorted_x=True if you guarantee it."
-            )
-        if is_float and stats["__last_nan"].item():
-            raise ValueError(
-                f"x column '{col_name}' has NaN values. A minmax line needs "
-                f"a NaN-free x. Drop the NaN rows first."
+                f"'{col_name}', or pass assume_sorted_x=True if you guarantee it. "
+                f"Nulls may only lead the column and NaN may only trail it."
             )
         if self.static:
             self._ldf = self._ldf.set_sorted(col_name)

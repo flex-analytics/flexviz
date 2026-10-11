@@ -452,30 +452,35 @@ class TestCheckLineX:
         lf.check_line_x("ts")
         assert "ts" in lf.sorted_cols
 
-    def test_null_x_is_rejected(self):
+    def test_null_x_inside_the_column_is_rejected(self):
         lf = self._lf([1.0, None, 3.0])
-        with pytest.raises(ValueError, match="null values"):
-            lf.check_line_x("ts")
-
-    def test_trailing_nan_x_is_rejected(self):
-        # A NaN sorts last, so this column passes `is_sorted`.
-        lf = self._lf([1.0, 2.0, float("nan")])
-        with pytest.raises(ValueError, match="NaN values"):
-            lf.check_line_x("ts")
-
-    def test_nan_in_the_middle_is_rejected(self):
-        # A NaN sorts last, so it breaks the order first. Either message names
-        # a real defect of the column.
-        lf = self._lf([1.0, float("nan"), 3.0])
         with pytest.raises(ValueError, match="not sorted ascending"):
             lf.check_line_x("ts")
 
-    def test_failing_column_is_not_memoized(self):
-        lf = self._lf([1.0, 2.0, float("nan")])
-        for _ in range(2):
-            with pytest.raises(ValueError, match="NaN values"):
-                lf.check_line_x("ts")
+    @pytest.mark.parametrize(
+        "xs,sort_kwargs",
+        [
+            ([None, 2.0, 3.0, 4.0], {"nulls_last": True}),
+            ([None, 2.0, float("nan"), 4.0], {"nulls_last": True}),
+            ([1.0, 2.0, 3.0], {"descending": True}),
+            ([3.0, None, 1.0], {"descending": True}),
+        ],
+        ids=["trailing_null", "trailing_null_and_nan", "descending", "descending_null"],
+    )
+    def test_a_sort_flag_that_misplaces_nulls_is_rejected(self, xs, sort_kwargs):
+        # Polars keeps an ascending flag after `nulls_last=True`, so
+        # `is_sorted` passes. The kernel slice would then drop valid rows.
+        df = pl.DataFrame({"ts": xs, "val": [0.0] * len(xs)}).sort("ts", **sort_kwargs)
+        lf = LFQueryBuilder(df)
+        with pytest.raises(ValueError, match="not sorted ascending"):
+            lf.check_line_x("ts")
         assert "ts" not in lf.sorted_cols
+
+    def test_a_null_prefix_and_a_nan_suffix_pass(self):
+        # Nulls sort first and NaN last, so this column passes `is_sorted`.
+        lf = self._lf([None, None, 1.0, 2.0, float("nan")])
+        lf.check_line_x("ts")
+        assert "ts" in lf.sorted_cols
 
     def test_unsorted_x_is_rejected(self):
         lf = self._lf([3.0, 1.0, 2.0])
