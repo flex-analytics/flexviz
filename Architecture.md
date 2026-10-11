@@ -984,8 +984,8 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 ### SQL sources
 
 `SQLSource` in `sql.py` is the second source kind. The data stays in a database
-(Postgres, DuckDB, ClickHouse or Trino), and each trace aggregation runs there as one
-SQL query. It offers the surface the engine and the server use of an
+(Postgres, DuckDB, ClickHouse or Trino), and each trace aggregation runs there
+as one SQL query. It offers the surface the engine and the server use of an
 `LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
 true: a plan reads rows in no order), `physical_minmax`, `compile_filter` and
 `aggregate`. The server stores it in `_sources` like a builder, and `Figure`,
@@ -1028,29 +1028,24 @@ SQLSource
   there. The median in `_agg_sql` also switches on the dialect.
 - **Trino.** `date_diff` counts epoch units exactly, but in milliseconds at
   most. A microsecond column adds the microseconds within the millisecond from
-  `to_unixtime`, a double. That is exact while one ulp of the epoch seconds
-  is below 1 µs, tested from the year 1700 to 2240 (the whole double
-  rounded wrong from 2100 on), and 2.6 times faster than reading the digits
-  of the text form. Trino has no exact percentile, so the median is the mean
-  of the middle values of `array_sort(array_agg(v))`, sorted once per group
-  and held in memory. Each of the two middle values is halved before the sum,
-  so the sum cannot overflow. The `trino` driver returns rows: the dtypes come
-  from the type names of the cursor description, and `decimal` reads as
-  Float64. A column of another type (uuid, time, varbinary, array, map, row)
-  is left out of the schema: Trino compares it with no string literal, so a
-  selection on it could not run. A timestamp finer than microseconds is left
-  out too: the driver rounds it to a Python datetime, the epoch in SQL does
-  not, so a bin would disagree with the value. Trino in front of Postgres
-  pulls the rows: its connector does not push down a bin key, a text group
-  key or `min_by`.
+  `to_unixtime`, a double. That is exact while one ulp of the epoch seconds is
+  below 1 µs: the test checks points from the year 1700 to 2240. The whole
+  double rounded wrong from 2100 on, and the text form was 2.6 times slower.
+  Trino has no exact percentile, so the median is the mean of the two middle
+  values of `array_sort(array_agg(v))` (each group in memory), each halved
+  first so the sum cannot overflow. The `trino` driver returns rows, so the dtypes come from the type
+  names of the cursor description. A column of another type (uuid, time,
+  varbinary, array, map, row) is left out of the schema: Trino compares it with
+  no string literal, so a selection on it could not run. A timestamp finer than
+  microseconds is left out too: the driver rounds it to a Python datetime, the
+  epoch in SQL does not, so a bin would disagree with the value.
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name
-  that is not in the schema (and, on ClickHouse, a name with a backslash, which
-  ClickHouse reads as an escape inside a quoted identifier; Trino, like
-  Postgres, doubles a quote in an identifier and in a string, and has no
-  backslash escape). Every other
-  identifier is a FlexViz constant: a trace uid is never an SQL alias. The
-  user's `query=` goes into a `WITH` clause as written, never re-rendered.
+  that is not in the schema. On ClickHouse it also refuses a name with a
+  backslash, which ClickHouse reads as an escape inside a quoted identifier.
+  Postgres, DuckDB and Trino double a quote and have no backslash escape. Every
+  other identifier is a FlexViz constant: a trace uid is never an SQL alias.
+  The user's `query=` goes into a `WITH` clause as written, never re-rendered.
 
 ---
 
