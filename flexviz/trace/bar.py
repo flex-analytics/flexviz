@@ -29,7 +29,7 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, TargetDimSpec
 from ..LF import GroupedAggregationSpec
 from ..spec import TraceSelectionSpec, TraceSpec
-from ._hist_helpers import _AGG_FUNCTIONS
+from ._hist_helpers import _AGG_FUNCTIONS, category_agg_spec
 from .base import (
     FlexTrace,
     GroupedChildResult,
@@ -242,12 +242,6 @@ class BarPlot(FlexTrace):
         **_: Any,
     ) -> GroupedAggregationSpec:
         """Return a grouped aggregation spec for ``group_by().agg().sort()``."""
-        if self.values_col is None:
-            agg_expr = pl.len().alias(self.uid)
-        else:
-            agg_fn = _AGG_FUNCTIONS[self.agg]
-            agg_expr = agg_fn(self.values_col).alias(self.uid)
-
         label_cols = self.label_cols
         group_by_cols = self.group_by_cols
         if group_by_cols is not None:
@@ -256,20 +250,8 @@ class BarPlot(FlexTrace):
         else:
             group_cols = label_cols
             sort_cols = label_cols
-
-        plan = None
-        if sql_source:
-            from ..sql import group_agg_plan
-
-            plan = group_agg_plan(
-                self.uid, group_cols, sort_cols, self.agg, self.values_col, agg_expr
-            )
-        return GroupedAggregationSpec(
-            uid=self.uid,
-            group_cols=group_cols,
-            agg_exprs=(agg_expr,),
-            sort_cols=sort_cols,
-            plan=plan,
+        return category_agg_spec(
+            self.uid, group_cols, sort_cols, self.agg, self.values_col, sql_source
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:

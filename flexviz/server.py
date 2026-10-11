@@ -72,7 +72,7 @@ from flexviz.cache import (
 from flexviz.cube import encode_cube_bundle
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import ActiveSource, InteractionEvent, TraceDelta
-from flexviz.LF import LFQueryBuilder, polars_lf_from
+from flexviz.LF import LFQueryBuilder, as_source
 from flexviz.spec import (
     AxisRange,
     DashboardSpec,
@@ -131,13 +131,9 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         _sources[name].cache = cache
         set_source_cacheable(name, cache)
         return
-    if isinstance(data, LFQueryBuilder) or getattr(data, "is_sql", False):
-        _sources[name] = data
-    else:
-        _sources[name] = LFQueryBuilder(polars_lf_from(data))
     # The registrar declares the contract, so the source learns it here whoever
     # built the builder.
-    _sources[name].cache = cache
+    _sources[name] = as_source(data, cache)
     set_source_cacheable(name, cache)
     if is_reregistration:
         # Re-registration may carry new data, so the (now possibly stale)

@@ -640,14 +640,15 @@ class SQLSource:
     ) -> exp.Expression:
         """One selection's predicates (OR of ANDs) as one SQL condition: the
         twin of ``predicates_to_expr``, with the same typed bounds."""
-        frame = SQLFrame(self)
         if not predicates:
             return exp.true()
-        disjuncts = [
-            _and(*[self._clause(frame, c, schema) for c in p.clauses])
-            for p in predicates
-        ]
-        return exp.or_(*disjuncts) if len(disjuncts) > 1 else disjuncts[0]
+        frame = SQLFrame(self)
+        return exp.or_(
+            *[
+                _and(*[self._clause(frame, c, schema) for c in p.clauses])
+                for p in predicates
+            ]
+        )
 
     def _clause(
         self, frame: SQLFrame, clause: ClauseFilter, schema: pl.Schema | None
@@ -716,16 +717,9 @@ class SQLSource:
     ) -> tuple[pl.DataFrame, dict[str, pl.DataFrame]]:
         """Run every spec's SQL plan, in parallel, over the filtered rows.
 
-        Returns what ``LFQueryBuilder.aggregate`` returns. A spec without a plan
-        holds Polars expressions, which a database cannot run.
+        Returns what ``LFQueryBuilder.aggregate`` returns.
         """
         frame = SQLFrame(self, tuple(filter_exprs))
-        for spec in agg_specs:
-            if spec.plan is None:
-                raise ValueError(
-                    f"trace {spec.uid!r} has no SQL formulation for this source"
-                )
-
         with ThreadPoolExecutor(max_workers=self.max_connections) as pool:
             results = list(pool.map(lambda spec: spec.plan(frame), agg_specs))
 

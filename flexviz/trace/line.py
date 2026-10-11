@@ -824,9 +824,10 @@ class LinePlot(FlexTrace):
             n_buckets = _bucket_budget(self.n_points, self.downsample)
             x_domain = None if x_range is not None else (domains or {})[self.x_col]
 
-            if scan_source or sql_source:
+            if scan_source:
                 # The kernel needs the whole column in memory, so a scan runs
-                # the streaming plan instead, and a database its SQL twin.
+                # the streaming plan instead, and a SQL source (also a scan)
+                # its SQL twin.
                 return AggregationSpec(
                     uid=self.uid,
                     plan=pairs_plan(

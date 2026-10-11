@@ -10,7 +10,7 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, TargetDimSpec
 from ..LF import GroupedAggregationSpec
 from ..spec import TraceSelectionSpec, TraceSpec
-from ._hist_helpers import _AGG_FUNCTIONS
+from ._hist_helpers import _AGG_FUNCTIONS, category_agg_spec
 from .base import FlexTrace, TraceResult, _categorical_dims_ok, _cube_measure_spec
 
 
@@ -143,31 +143,14 @@ class TreeMap(FlexTrace):
         sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
-        path = self._params["path"]
-        values_col = self._backend_data.get("values")
-        if values_col is None:
-            agg_expr = pl.len().alias(self.uid)
-        else:
-            agg_fn = _AGG_FUNCTIONS[self._params["agg"]]
-            agg_expr = agg_fn(values_col).alias(self.uid)
-        plan = None
-        if sql_source:
-            from ..sql import group_agg_plan
-
-            plan = group_agg_plan(
-                self.uid,
-                tuple(path),
-                tuple(path),
-                self._params["agg"],
-                values_col,
-                agg_expr,
-            )
-        return GroupedAggregationSpec(
-            uid=self.uid,
-            group_cols=tuple(path),
-            agg_exprs=(agg_expr,),
-            sort_cols=tuple(path),
-            plan=plan,
+        path = tuple(self._params["path"])
+        return category_agg_spec(
+            self.uid,
+            path,
+            path,
+            self._params["agg"],
+            self._backend_data.get("values"),
+            sql_source,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:

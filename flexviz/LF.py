@@ -33,10 +33,11 @@ def polars_lf_from(data) -> pl.LazyFrame:
 def as_source(data, cache: bool = False):
     """The source behind a ``Figure`` or ``Dashboard``.
 
-    A ``flexviz.sql.SQLSource`` is a source already; anything else is data that
-    ``polars_lf_from`` accepts, wrapped in an ``LFQueryBuilder``.
+    An ``LFQueryBuilder`` or a ``flexviz.sql.SQLSource`` is a source already,
+    and takes ``cache``; anything else is data that ``polars_lf_from`` accepts,
+    wrapped in an ``LFQueryBuilder``.
     """
-    if getattr(data, "is_sql", False):
+    if isinstance(data, LFQueryBuilder) or getattr(data, "is_sql", False):
         data.cache = cache
         return data
     return LFQueryBuilder(polars_lf_from(data), cache=cache)

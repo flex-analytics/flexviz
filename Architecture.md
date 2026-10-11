@@ -988,15 +988,15 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 SQL query. It offers the surface the engine and the server use of an
 `LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
 true: a plan reads rows in no order), `physical_minmax`, `compile_filter` and
-`aggregate`. The
-server stores it in `_sources` like a builder, and `Figure`, `Dashboard` and
-`register_source` take it in place of data (`LF.as_source`).
+`aggregate`. The server stores it in `_sources` like a builder, and `Figure`,
+`Dashboard` and `register_source` take it in place of data (`LF.as_source`).
+Connections, supported charts and limits are in the
+[Databases guide](docs/guides/databases.md).
 
 ```
 SQLSource
-├── dialect                     ← "postgres" | "duckdb" | "clickhouse", inferred from a URI, an engine or a DuckDB connection; dialect= for a function
-├── schema                      ← Polars schema of `SELECT * ... LIMIT 0` (Postgres OIDs when the driver returns rows)
-├── compile_filter(predicates)  ← twin of `predicates_to_expr`: the same typed bounds, as a SQLGlot condition
+├── schema                      ← Polars schema of `SELECT * ... LIMIT 0`
+├── compile_filter(predicates)  ← the bounds of `predicates_to_expr` (`_clause_bounds`), as a SQLGlot condition
 ├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
 └── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
 ```
@@ -1005,66 +1005,30 @@ SQLSource
   `sql_source=True` to `get_aggregation_spec`. A trace with `sql_support`
   returns a spec whose `plan` takes a `SQLFrame` (the source plus the
   cross-filter conditions) and returns the frame its Polars plan returns. The
-  SQL twins live in `sql.py`: `bucket_extrema` (line stage 1, also LTTB and
-  FPCS), `hist1d_plan` and `grouped_hist_plan` (densified by the shared
-  `_dense_hist_groups`), `hist2d_plan` (`_fold_result_frame`), `group_agg_plan`
-  (bar, pie, treemap) and `corr_plan`. So `_to_update` is shared, and the
-  equivalence tests compare whole deltas against a Polars source.
+  SQL twins live in `sql.py` and end in the Polars shaping code of their twin
+  (`_dense_hist_groups`, `_fold_result_frame`, line stage 2). So `_to_update`
+  is shared, and the equivalence tests compare whole deltas against a Polars
+  source. A trace without `sql_support` fails `check_source`, which
+  `Figure._add_trace` and the engine run.
 - **Grid arithmetic is copied, literal by literal.** A bucket and a bin are the
   Polars plan's arithmetic in SQL, on the column's physical units (epoch units
-  per dialect for a temporal column). A float literal is written in exponent
-  form: DuckDB reads a plain decimal literal as an exact `DECIMAL` and rounds it
-  to a double one ulp off, which moved a domain-minimum row to bucket -1. It
-  is also cast to a non-nullable double: Postgres reads an exponent literal as
-  `numeric`, so a `numeric` column would compare and bucket in decimal, not as
-  the double that Polars uses. A nullable cast made a ClickHouse bucket query
-  2.5 times slower.
+  per dialect for a temporal column, `BIGINT` for a narrow integer). A float
+  literal is written in exponent form: DuckDB reads a plain decimal literal as
+  an exact `DECIMAL` and rounds it to a double one ulp off, which moved a
+  domain-minimum row to bucket -1. It is also cast to a non-nullable double:
+  Postgres reads an exponent literal as `numeric`, so a `numeric` column would
+  compare and bucket in decimal, not as the double that Polars uses. A
+  nullable cast made a ClickHouse bucket query 2.5 times slower.
 - **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
-  renders literals per dialect. These functions differ in meaning and are
-  defined per dialect: physical units (`phys`), NaN (`nan`, used by `usable`
-  for the rows a bin takes), a value column as a number (`num`), integer
-  division (`int_div`), the x at a y extremum
-  (`extreme_by`: `arg_min` in DuckDB and ClickHouse; on Postgres the smallest
-  `ARRAY[y, x]`, which was faster on 5M rows than `array_agg ORDER BY`,
-  `DISTINCT ON` and window functions) and typed literals (`lit`; on
-  ClickHouse a datetime is written in UTC, because ClickHouse reads a datetime
-  without a zone in the server's zone, and the driver reads values as UTC).
+  renders literals per dialect. The functions whose meaning differs per
+  dialect (`phys`, `nan`, `num`, `int_div`, `extreme_by`, `lit`) are defined
+  there.
 - **Identifiers.** Column names come from the spec, which the browser sends,
   so every column reaches the SQL through `SQLSource.col`, which refuses a name
   that is not in the schema (and, on ClickHouse, a name with a backslash, which
   ClickHouse reads as an escape inside a quoted identifier). Every other
-  identifier is a FlexViz constant: a trace uid is never an SQL alias.
-- **The user's query is never re-rendered.** `query=` goes into a `WITH`
-  clause as written; `table=` is parsed as a table name.
-- **Connections.** A function that opens a DB-API connection, a Postgres URI
-  (ADBC, else psycopg), a SQLAlchemy engine or a DuckDB connection (a cursor
-  per thread, which does not see the connection's TEMP tables and registered
-  views). Idle connections are kept and reused, in autocommit mode: an idle
-  Postgres connection inside a transaction would hold its table lock for the
-  server's lifetime. A SQLAlchemy connection keeps its mode instead: FlexViz
-  keeps up to `max_connections` of them checked out of the app's pool and rolls
-  each one back after every query. A connection that fails a query is closed
-  (a SQLAlchemy one goes back to its pool, which resets it). When a reused idle connection fails, the query runs once more
-  on a new connection: a database restart or an idle timeout drops idle
-  connections. Arrow drivers (ADBC, DuckDB) keep column types in an empty
-  result. psycopg gives the schema from the type OIDs of the cursor
-  description. ClickHouse results are built from the type names of the cursor
-  description, with their time zones. Postgres `numeric` and ClickHouse
-  `Decimal` read as Float64: the OID map and the type names say so for row
-  drivers, and ADBC, which sends `numeric` as text, gets those columns cast
-  after the fetch.
-- **Postgres x at an extremum.** The array form holds x and y as doubles,
-  exact below 2**53. A 64-bit integer or nanosecond x, and a y that is not a
-  float or an integer of at most 32 bits, take
-  `(array_agg(x ORDER BY y, x))[1]` instead, which keeps the types.
-- **Postgres Booleans.** Postgres has no `SUM`, `MIN`, `MAX` or double cast of
-  a Boolean, so a Boolean value column is cast to an integer first
-  (`SQLFrame.num`).
-- **Checked when a trace is added.** `Figure._add_trace` runs `check_source`
-  on a SQL source (it reads only the schema), so a missing column and the
-  traces a SQL source cannot run fail in the user's code: `box`, `geo_line`,
-  line `nth` (a table has no row order to stride) and Spearman correlation.
-  `build_cubes` returns no cubes, so a brush commits on mouseup.
+  identifier is a FlexViz constant: a trace uid is never an SQL alias. The
+  user's `query=` goes into a `WITH` clause as written, never re-rendered.
 
 ---
 

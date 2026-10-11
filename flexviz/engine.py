@@ -23,7 +23,7 @@ from .cube import (
 )
 from .events import ActiveSource, GroupedChildDelta, InteractionEvent, TraceDelta
 from .LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
-from .predicates import canonical_passive_key, predicates_to_expr
+from .predicates import canonical_passive_key
 from .spec import SelectionState
 from .trace.base import (
     FlexTrace,
@@ -405,9 +405,7 @@ class FlexEngine:
         if passive:
             build_ldf = build_ldf.filter(
                 *[
-                    predicates_to_expr(
-                        sel.predicates, schema, is_scan=self._backend_lf.is_scan
-                    )
+                    self._backend_lf.compile_filter(sel.predicates, schema)
                     for sel in passive
                 ]
             )

@@ -20,7 +20,7 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, TargetDimSpec
 from ..LF import GroupedAggregationSpec
 from ..spec import TraceSelectionSpec, TraceSpec
-from ._hist_helpers import _AGG_FUNCTIONS
+from ._hist_helpers import _AGG_FUNCTIONS, category_agg_spec
 from .base import (
     FlexTrace,
     TraceResult,
@@ -192,30 +192,13 @@ class PiePlot(FlexTrace):
         sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
-        if self.values_col is None:
-            agg_expr = pl.len().alias(self.uid)
-        else:
-            agg_fn = _AGG_FUNCTIONS[self.agg]
-            agg_expr = agg_fn(self.values_col).alias(self.uid)
-
-        plan = None
-        if sql_source:
-            from ..sql import group_agg_plan
-
-            plan = group_agg_plan(
-                self.uid,
-                self.label_cols,
-                self.label_cols,
-                self.agg,
-                self.values_col,
-                agg_expr,
-            )
-        return GroupedAggregationSpec(
-            uid=self.uid,
-            group_cols=self.label_cols,
-            agg_exprs=(agg_expr,),
-            sort_cols=self.label_cols,
-            plan=plan,
+        return category_agg_spec(
+            self.uid,
+            self.label_cols,
+            self.label_cols,
+            self.agg,
+            self.values_col,
+            sql_source,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
