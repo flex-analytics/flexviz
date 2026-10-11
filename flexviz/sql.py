@@ -687,16 +687,24 @@ class SQLSource:
             for i, c in enumerate(missing):
                 dtype = sch.get(c, pl.Null)
                 v = frame.num(c)
-                # On ClickHouse the CASE makes the column Nullable, so no rows
-                # give NULL, not the type's default (0, 1970-01-01). Elsewhere
-                # the bare column lets Postgres read MIN and MAX from an index.
-                if dtype.is_float() or self.dialect == "clickhouse":
+                # The bare column lets Postgres read MIN and MAX from an index.
+                if dtype.is_float():
                     v = exp.case().when(frame.usable(c, dtype), v)
                 aggs += [
                     _alias(exp.Min(this=v), f"{_P}min{i}"),
                     _alias(exp.Max(this=v.copy()), f"{_P}max{i}"),
                 ]
+            # Over no rows, ClickHouse gives a non-Nullable column's default
+            # (0, 1970-01-01), not NULL. A count costs nothing; a CASE that
+            # makes the column Nullable made a DateTime probe on 100M rows 3
+            # times slower.
+            no_rows_default = self.dialect == "clickhouse"
+            if no_rows_default:
+                aggs.append(_alias(exp.Count(this=exp.Star()), f"{_P}n"))
             row = frame.collect(exp.select(*aggs))
+            if no_rows_default and row[f"{_P}n"].item() == 0:
+                memo.update(dict.fromkeys(missing, (None, None)))
+                missing = []
             for i, c in enumerate(missing):
                 dtype = sch.get(c)
                 pair = []
