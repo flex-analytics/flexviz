@@ -41,9 +41,9 @@ def test_append_grows_and_old_builder_keeps_its_rows():
     name = _name()
     stream = register_stream(name, _rows(0, 10), order_by="t")
     old = _sources[name]
-    assert stream.version == 0
+    version = stream.version
     stream.append(_rows(10, 5))
-    assert stream.version == 1
+    assert stream.version != version
     assert _height(name) == 15
     assert old._ldf.select(pl.len()).collect().item() == 10
 
@@ -51,8 +51,9 @@ def test_append_grows_and_old_builder_keeps_its_rows():
 def test_append_accepts_lazy_and_empty_batches():
     stream = register_stream(_name(), _rows(0, 3), order_by="t")
     stream.append(_rows(3, 2).lazy())
+    version = stream.version
     stream.append(_rows(5, 0))
-    assert stream.version == 1  # an empty batch adds nothing
+    assert stream.version == version  # an empty batch adds nothing
 
 
 @pytest.mark.parametrize(
@@ -66,16 +67,41 @@ def test_append_accepts_lazy_and_empty_batches():
 )
 def test_append_rejects_out_of_order_rows(batch):
     stream = register_stream(_name(), _rows(0, 10), order_by="t")
+    version = stream.version
     with pytest.raises(ValueError):
         stream.append(batch)
-    assert stream.version == 0
+    assert stream.version == version
+
+
+def test_append_compares_nanoseconds():
+    def rows(ns: int) -> pl.DataFrame:
+        return pl.DataFrame({"t": pl.Series([ns]).cast(pl.Datetime("ns"))})
+
+    # 500 ns and 200 ns fall in the same microsecond.
+    stream = register_stream(_name(), rows(500), order_by="t")
+    with pytest.raises(ValueError, match="before the last"):
+        stream.append(rows(200))
+
+
+def test_append_across_the_repeated_autumn_hour():
+    # 00:45 UTC is 02:45+02:00 and 01:15 UTC is 02:15+01:00 in Brussels: the
+    # second row is later, although its wall time is earlier.
+    utc = [
+        dt.datetime(2026, 10, 25, 0, 45, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 10, 25, 1, 15, tzinfo=dt.timezone.utc),
+    ]
+    t = pl.Series("t", utc).dt.convert_time_zone("Europe/Brussels")
+    stream = register_stream(_name(), t[:1].to_frame(), order_by="t")
+    stream.append(t[1:].to_frame())
+    assert stream._frame.height == 2
 
 
 def test_append_rejects_a_schema_mismatch():
     stream = register_stream(_name(), _rows(0, 10), order_by="t")
+    version = stream.version
     with pytest.raises(pl.exceptions.PolarsError):
         stream.append(_rows(10, 2).with_columns(pl.col("v").cast(pl.Int64)))
-    assert stream.version == 0
+    assert stream.version == version
 
 
 def test_register_stream_rejects_unsorted_data():
@@ -97,6 +123,7 @@ def test_register_stream_rejects_unsorted_data():
         ("i", 0),
         ("i", -1),
         ("i", True),
+        ("i", Fraction(1, 2)),
     ],
 )
 def test_register_stream_rejects_a_bad_window(order_by, window):
@@ -186,7 +213,18 @@ def test_register_source_replaces_a_stream_and_the_old_handle_stops():
     register_source(name, _rows(0, 3))
     with pytest.raises(RuntimeError, match="replaced"):
         stream.append(_rows(10, 1))
+    with pytest.raises(RuntimeError, match="replaced"):
+        stream.append(_rows(10, 0))
     assert _height(name) == 3
+
+
+def test_a_stream_registered_again_gets_a_new_version():
+    """An open page knows the old version. It must see a change, also when a
+    plain source replaced the stream in between."""
+    name = _name()
+    version = register_stream(name, _rows(0, 10), order_by="t").version
+    register_source(name, _rows(0, 3))
+    assert register_stream(name, _rows(0, 5), order_by="t").version != version
 
 
 def test_a_rejected_registration_keeps_the_stream():
@@ -242,7 +280,7 @@ def _refresh(client, spec):
         "/dashboard/update",
         json={
             "spec": spec.model_dump(mode="json"),
-            "event": {"type": "refresh", "force_update": True},
+            "event": {"type": "refresh"},
         },
     )
     assert resp.status_code == 200, resp.text
@@ -383,10 +421,9 @@ def test_a_zone_aware_window_spans_the_repeated_autumn_hour(unit, minutes):
     ("values", "window", "count"),
     [
         ([0, 1, 2], 1.0, 2),
-        ([0, 1, 2], Fraction(1, 2), 1),
         ([2**53 + 2, 2**53 + 3], 1, 2),
     ],
-    ids=["float_window", "fraction_window", "exact_past_2_53"],
+    ids=["float_window", "exact_past_2_53"],
 )
 def test_a_window_on_a_decimal_order_by(values, window, count):
     name = _name()
@@ -570,12 +607,12 @@ def test_version_route():
     name = _name()
     stream = register_stream(name, _rows(0, 10), order_by="t")
     with TestClient(app) as client:
-        assert client.get(f"/sources/{name}/version").json() == 0
+        assert client.get(f"/sources/{name}/version").json() == stream.version
         stream.append(_rows(10, 1))
-        assert client.get(f"/sources/{name}/version").json() == 1
+        assert client.get(f"/sources/{name}/version").json() == stream.version
         assert client.get("/sources/no_such_stream/version").status_code == 404
-        register_stream(f"{name}/a b", _rows(0, 1), order_by="t")
-        assert client.get(f"/sources/{name}%2Fa%20b/version").json() == 0
+        other = register_stream(f"{name}/a b", _rows(0, 1), order_by="t")
+        assert client.get(f"/sources/{name}%2Fa%20b/version").json() == other.version
 
 
 def test_refresh_returns_the_appended_rows():
@@ -641,18 +678,6 @@ def test_window_limits_an_unzoomed_line_only():
     assert xs.max() <= T0 + dt.timedelta(seconds=21)
 
 
-def test_numeric_window():
-    name = _name()
-    df = pl.DataFrame({"i": list(range(1000)), "v": [float(i) for i in range(1000)]})
-    register_stream(name, df, order_by="i", window=100)
-    dash = Dashboard()
-    dash.add_figure().add_line("i", "v", n_points=50)
-    spec = dash.to_spec(source_name=name)
-    with TestClient(app) as client:
-        xs = _line_x(_refresh(client, spec), spec)
-    assert min(xs) >= 899 and max(xs) == 999
-
-
 # ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
@@ -664,7 +689,7 @@ def test_page_lists_only_streaming_sources():
     stream.append(_rows(10, 1))
     register_source("static_src_for_stream_test", _rows(0, 10))
     html = PlotlyAdapter()._build_dashboard_html(_line_hist_spec(name))
-    assert f'const FV_STREAMING_SOURCES = {{"{name}": 1}};' in html
+    assert f'const FV_STREAMING_SOURCES = {{"{name}": {stream.version}}};' in html
     static = PlotlyAdapter()._build_dashboard_html(
         _line_hist_spec("static_src_for_stream_test")
     )

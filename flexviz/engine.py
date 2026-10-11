@@ -856,7 +856,8 @@ class FlexEngine:
         selection_fig_uids: set[str | None],
         changed_axes: dict[str, set[str]],
     ) -> bool:
-        if self._viewport_changed(trace_info, changed_axes):
+        # New rows can change every trace.
+        if event.type == "refresh" or self._viewport_changed(trace_info, changed_axes):
             return True
         if not event.force_update:
             return False

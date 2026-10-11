@@ -12,7 +12,7 @@ once at startup (or before ``uvicorn.run``). A stream (``register_stream``)
 swaps in a new builder on each append.
 
     ┌─────────────────────────────────────────────────────┐
-    │  _sources: Dict[str, LFQueryBuilder]                │  ← read-only after startup
+    │  _sources: Dict[str, LFQueryBuilder]                │  ← set at registration and on stream appends
     │                                                     │
     │  POST /dashboard/update                             │
     │    ← DashboardSpec + InteractionEvent               │  ← full state from client
@@ -51,9 +51,9 @@ from __future__ import annotations
 
 import gzip
 import ipaddress
+import itertools
 import logging
 import math
-import numbers
 import re
 import socket
 import threading
@@ -104,6 +104,9 @@ _streams: dict[str, Stream] = {}
 # its stream handle and the version change together.
 # ponytail: one lock for all streams; an append holds it for about 0.1 ms.
 _registry_lock = threading.RLock()
+# One counter for all streams: a stream registered again under a name never
+# gets a version that an open page already knows.
+_versions = itertools.count()
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:
@@ -178,7 +181,7 @@ class Stream:
     Each append builds a new ``LFQueryBuilder`` and swaps it into the
     registry. A request resolves its builder once, so it reads one version.
     Polars chunks are immutable, so an older builder keeps its rows.
-    ``version`` starts at 0 and goes up by one on each append that adds rows.
+    ``version`` changes on each append that adds rows.
     """
 
     def __init__(
@@ -187,12 +190,11 @@ class Stream:
         frame: pl.DataFrame,
         order_by: str,
         window: timedelta | float | None,
-        version: int,
     ) -> None:
         self.name = name
         self.order_by = order_by
         self.window = window
-        self.version = version
+        self.version = next(_versions)
         self._frame = frame
 
     def append(self, data: Any) -> None:
@@ -215,13 +217,15 @@ class Stream:
         """
         batch = _collected(data)
         _check_order(batch, self.order_by)
-        if batch.is_empty():
-            return
         with _registry_lock:
             if _streams.get(self.name) is not self:
                 raise RuntimeError(f"stream {self.name!r} was replaced")
+            if batch.is_empty():
+                return
             last = self._frame.get_column(self.order_by)
-            if len(last) and batch[self.order_by][0] < last[-1]:
+            # Polars compares the physical values: Python datetimes drop the
+            # nanoseconds and compare wall time in a repeated DST hour.
+            if len(last) and (batch[self.order_by].head(1) < last.tail(1)).item():
                 raise ValueError(
                     f"appended rows start before the last '{self.order_by}' "
                     f"of stream {self.name!r} ({last[-1]})"
@@ -233,7 +237,7 @@ class Stream:
                 frame = frame.rechunk()
             self._frame = frame
             _sources[self.name] = _stream_builder(frame, self.order_by)
-            self.version += 1
+            self.version = next(_versions)
 
 
 def _collected(data: Any) -> pl.DataFrame:
@@ -261,7 +265,7 @@ def _check_window(window: Any, dtype: pl.DataType) -> None:
     else:
         valid = (
             dtype.is_numeric()
-            and isinstance(window, numbers.Real)
+            and isinstance(window, (int, float))
             and not isinstance(window, bool)
             and math.isfinite(window)
             and window > 0
@@ -269,7 +273,7 @@ def _check_window(window: Any, dtype: pl.DataType) -> None:
     if not valid:
         raise ValueError(
             "window must be a positive timedelta for a Datetime order_by, "
-            f"or a positive finite number for a numeric one; got {window!r} "
+            f"or a positive finite int or float for a numeric one; got {window!r} "
             f"for dtype {dtype}"
         )
 
@@ -334,9 +338,7 @@ def register_stream(
     _check_window(window, frame.schema[order_by])
     builder = _stream_builder(frame, order_by)
     with _registry_lock:
-        old = _streams.get(name)
-        # Carry the version on, so an open page also refreshes onto the new data.
-        stream = Stream(name, frame, order_by, window, old.version + 1 if old else 0)
+        stream = Stream(name, frame, order_by, window)
         register_source(name, builder)
         _streams[name] = stream
     return stream
@@ -544,8 +546,7 @@ def _stream_window(stream: Stream, builder: LFQueryBuilder) -> tuple[Any, Any] |
             return None
         window = stream.window
         if isinstance(hi, Decimal):
-            integral = isinstance(window, numbers.Integral)
-            window = Decimal(str(window if integral else float(window)))
+            window = Decimal(str(window))
         return hi - window, hi
     # Polars does the time math in absolute time, so it holds across a DST
     # change. A Python datetime holds microseconds, so the upper bound rounds

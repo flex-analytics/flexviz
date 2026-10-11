@@ -26,8 +26,8 @@ async function _fvPollStreams() {
       }
       // Keep the versions only after a refresh that worked, so a failed one
       // is retried on the next poll.
-      if (Object.keys(changed).length && !_fvPointerDown
-          && await postDashboardUpdate({ type: 'refresh', force_update: true })) {
+      if (Object.keys(changed).length && !document.hidden && !_fvPointerDown
+          && await postDashboardUpdate({ type: 'refresh' })) {
         Object.assign(_fvStreamVersions, changed);
       }
     } catch (e) {

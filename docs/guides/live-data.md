@@ -52,7 +52,7 @@ stream. An append with rows out of order raises a `ValueError`, and the
 stream does not change. The columns of an append must have the same names,
 order and dtypes as the stream. You can append from more than one thread.
 
-`Stream.version` goes up by one on each append that adds rows. The page
+`Stream.version` changes on each append that adds rows. The page
 reads this number to know when to refresh.
 
 ## Zoom and selections
@@ -88,7 +88,6 @@ on the server. These features are not available:
 - Push updates (WebSocket or SSE). The page polls once a second.
 - Incremental updates and cube deltas
 - Caching (a stream is never cached, and live brushing is off)
-- A shrinking y axis in overlay mode (the y range only grows)
 - Rows out of order, updates and deletes of rows
 - A stream over a file scan (the first data is collected into memory)
 - More than one server process
