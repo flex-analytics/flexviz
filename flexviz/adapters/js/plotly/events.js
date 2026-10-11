@@ -1155,7 +1155,7 @@ function _fvCubeApplyTargetSlices(targets, rangesForEntry, gesture) {
     if (grouped) {
       const groupResults = ts.trace_type === 'line'
         ? fvLineEnvGroupedResults(
-            target.figUid, ts, entry.header, fvLineEnvCells(entry, binRanges))
+            target.figUid, ts, entry, fvLineEnvCells(entry, binRanges))
         : fvGroupedResultsFromCells(
             target.figUid, ts, entry.header, fvCubeSliceCells(entry, binRanges));
       for (const cr of groupResults) childUidToParentUid[cr.uid] = target.uid;
@@ -1166,7 +1166,7 @@ function _fvCubeApplyTargetSlices(targets, rangesForEntry, gesture) {
       setLayerData(delta.uid, layerKey, delta.updates);
     } else if (ts.trace_type === 'line') {
       const cells = fvLineEnvCells(entry, binRanges);
-      const delta = lineEnvDeltaFromCells(ts, cells);
+      const delta = lineEnvDeltaFromCells(ts, cells, entry);
       setLayerData(delta.uid, layerKey, delta.updates);
     } else if (ts.trace_type === 'corr_heatmap') {
       // corr restyles the full z matrix each frame (cells = len(cols)^2, tiny).

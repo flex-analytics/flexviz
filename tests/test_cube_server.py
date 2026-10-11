@@ -1910,6 +1910,44 @@ class TestBoxLineRangeSources:
         assert body["trace_cubes"] == {}
 
 
+class TestTemporalCubeTargetZone:
+    """A temporal target on a zone-aware ``Datetime`` is served by the cube
+    only for UTC: the server draws other zones as offset strings."""
+
+    @staticmethod
+    def _served(time_zone: str | None, target: str) -> bool:
+        df = _temporal_server_df("us").with_columns(
+            pl.col("t").dt.replace_time_zone(time_zone),
+            a=pl.col("b") * 2,
+        )
+        register_source(_TS_SRC, df, cache=True)
+        get_cache().clear()
+        get_cube_cache().clear()
+        dash = Dashboard(df)
+        dash.add_figure(title="Source").add_histogram(x="a", bins=16)
+        fig = dash.add_figure(title="Target")
+        if target == "hist":
+            fig.add_histogram(x="t", bins=12)
+        elif target == "hist2d":
+            fig.add_histogram2d(x="t", y="b", x_bins=8, y_bins=6)
+        else:
+            fig.add_line(x="t", y="b")
+        spec = dash.to_spec(source_name=_TS_SRC)
+        resp = TestClient(app).post(
+            "/dashboard/update", json=_cube_payload(spec, spec.figures[0].uid, "a")
+        )
+        return bool(_cube_body(resp)["trace_cubes"])
+
+    @pytest.mark.parametrize("target", ["hist", "hist2d", "line"])
+    @pytest.mark.parametrize("time_zone", [None, "UTC"])
+    def test_naive_and_utc_targets_are_served(self, time_zone, target):
+        assert self._served(time_zone, target)
+
+    @pytest.mark.parametrize("target", ["hist", "hist2d", "line"])
+    def test_other_zone_target_is_not_served(self, target):
+        assert not self._served("Europe/Brussels", target)
+
+
 # ---------------------------------------------------------------------------
 # 2-D box (hist2d) source (plan step 13 / contract H)
 # ---------------------------------------------------------------------------

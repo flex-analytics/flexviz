@@ -747,7 +747,8 @@ class FlexEngine:
 
         Temporal binned dims gain their physical ``unit`` from the schema
         dtype (contract G); an unsupported temporal dtype (``Datetime("ns")``,
-        ``Time``) means the target is not served.
+        ``Time``, or a ``Datetime`` in a time zone other than UTC) means the
+        target is not served.
         """
         dims = []
         for d in target_dims:
@@ -763,6 +764,9 @@ class FlexEngine:
                 unit = temporal_unit(dtype)
                 if unit is None:
                     return None  # ns/Time gate
+                # The server draws zoned centers as offset strings; the cube draws UTC.
+                if getattr(dtype, "time_zone", None) not in (None, "UTC"):
+                    return None
             dims.append(replace(d, domain=(domain[0], domain[1]), unit=unit))
         return tuple(dims)
 
