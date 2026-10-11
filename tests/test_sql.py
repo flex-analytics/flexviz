@@ -883,8 +883,15 @@ def test_sqlsource_export_is_lazy():
         "import flexviz.sql\n"
         "assert 'sqlglot' in sys.modules\n"
         "assert SQLSource is flexviz.sql.SQLSource is flexviz.SQLSource\n"
-        "assert 'SQLSource' in flexviz.__all__\n"
     )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_star_import_works_without_sqlglot():
+    """``from flexviz import *`` works without the ``sql`` extra."""
+    # A None entry in sys.modules makes `import sqlglot` raise ImportError.
+    code = "import sys\nsys.modules['sqlglot'] = None\nfrom flexviz import *\n"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
 

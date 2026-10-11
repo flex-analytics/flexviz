@@ -19,12 +19,12 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'flexviz' has no attribute {name!r}")
 
 
+# SQLSource is left out: `from flexviz import *` must work without the sql extra.
 __all__ = [
     "Dashboard",
     "Figure",
     "GridItem",
     "LayoutSpec",
-    "SQLSource",
     "ToolbarConfig",
     "app",
     "mount_into",
