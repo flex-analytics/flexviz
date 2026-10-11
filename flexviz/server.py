@@ -55,6 +55,7 @@ import itertools
 import logging
 import math
 import re
+import secrets
 import socket
 import threading
 import warnings
@@ -105,8 +106,9 @@ _streams: dict[str, Stream] = {}
 # ponytail: one lock for all streams; an append holds it for about 0.1 ms.
 _registry_lock = threading.RLock()
 # One counter for all streams: a stream registered again under a name never
-# gets a version that an open page already knows.
-_versions = itertools.count()
+# gets a version that an open page already knows. A random start (exact in
+# JavaScript) holds that across a server restart too.
+_versions = itertools.count(secrets.randbits(52))
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:

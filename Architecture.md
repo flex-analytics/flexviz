@@ -451,7 +451,8 @@ aggregation, via ``_default_recompute_axes()`` (overridable per trace; the
 escape hatch on line/geo_line freezes a trace to ``()``).  A viewport change
 re-aggregates a trace only when it moves one of these axes — so a line ignores
 y-only zoom, a vertical histogram ignores count-axis zoom, and categorical
-traces ignore zoom entirely.  The same concrete ``recompute_axes`` set is
+traces ignore zoom entirely.  A `refresh` event (new stream rows)
+re-aggregates every trace.  The same concrete ``recompute_axes`` set is
 serialized into `TraceSpec`, read by the client to suppress no-op `/dashboard/update` POSTs
 and by the engine (`_should_process_trace`) to gate per-trace recompute.  This is
 a producer contract: current specs must carry the concrete tuple/list emitted by
