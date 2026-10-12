@@ -615,12 +615,22 @@ class TestValuesEdgeCases:
         df = pl.DataFrame({"i": [1, 2, 3]})
         assert self._rows(df, "i", ["abc", "2"]) == [2]
 
-    def test_datetime_string_value_selects_no_rows(self):
-        # Polars 1.44 casts String → Datetime to null, so the clause is empty.
+    @pytest.mark.parametrize(
+        ("dtype", "label"),
+        [
+            (pl.Date, "2026-01-02"),
+            (pl.Datetime("us"), "2026-01-02T00:00:00"),
+            (pl.Datetime("ms", "UTC"), "2026-01-02T00:00:00Z"),
+        ],
+    )
+    def test_temporal_label_selects_its_rows(self, dtype, label):
+        # A bar over a temporal column sends its labels as the ISO strings the
+        # server serialized them to.
         import datetime as dt
 
-        df = pl.DataFrame({"ts": [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)]})
-        assert self._rows(df, "ts", ["2026-01-02"]) == []
+        ts = pl.Series("ts", [dt.datetime(2026, 1, 1), dt.datetime(2026, 1, 2)])
+        df = pl.DataFrame(ts.cast(dtype))
+        assert self._rows(df, "ts", [label]) == df["ts"][1:].to_list()
 
     def test_null_member_on_boolean_column_selects_no_rows(self):
         df = pl.DataFrame({"flag": [True, False, None]})
