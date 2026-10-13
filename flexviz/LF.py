@@ -25,8 +25,6 @@ def polars_lf_from(data) -> pl.LazyFrame:
         return pl.from_pandas(data).lazy()
     elif isinstance(data, pa.Table):
         return pl.from_arrow(data).lazy()
-    # elif hasattr("__dataframe__", data): ??? # TODO?
-    #     return pl.from_dataframe(data)
     raise ValueError(f"Unsupported data type: {type(data)}")
 
 

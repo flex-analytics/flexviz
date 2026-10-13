@@ -32,7 +32,7 @@ _HEADER_HEIGHT_PX = 45
 
 # Pinned the way Gridstack is pinned in flexviz/adapters/base.py. The UMD
 # builds are the ones that define the globals ``marked`` and ``DOMPurify``.
-_MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.0.14/lib/marked.umd.min.js"
+_MARKED_URL = "https://cdn.jsdelivr.net/npm/marked@18.1.0/lib/marked.umd.min.js"
 _DOMPURIFY_URL = "https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"
 
 _FV_LINE_RE = re.compile(r"fv:(\d+)")

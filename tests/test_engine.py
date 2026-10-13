@@ -3360,7 +3360,8 @@ class TestLineSkipsNullAndNanX:
     def _dirty(cls, dtype=pl.Float64, nulls=3, nans=2) -> pl.DataFrame:
         """``_clean`` behind ``nulls`` null rows and before ``nans`` NaN rows.
 
-        Every padding row is its own chunk, so a prefix crosses chunk bounds.
+        Every padding row is its own frame, so a prefix crosses chunk bounds.
+        Polars merges some of these one-row chunks on concat, but not all.
         """
 
         def pad(x):
@@ -3415,7 +3416,7 @@ class TestLineSkipsNullAndNanX:
 
     def test_a_null_prefix_spanning_several_chunks(self):
         df = self._dirty(nulls=40, nans=0)
-        assert df["ts"].n_chunks() > 40
+        assert df["ts"].n_chunks() > 2  # several null chunks, then the data
         line = LinePlot(x="ts", y="val", n_points=100)
         got = self._run(LFQueryBuilder(df), line)
         assert got == self._run(LFQueryBuilder(self._clean()), line)

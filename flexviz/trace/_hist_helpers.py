@@ -34,7 +34,7 @@ _HISTNORM_OPTIONS = (
     "probability density",  # count / (total * bin_width)
 )
 _COLOR_NORM_OPTIONS = ("linear", "log")
-# The built-in color scales of plotly.js 4.1.1. Plotly knows only these exact
+# The built-in color scales of plotly.js 4.1.2. Plotly knows only these exact
 # spellings, and silently draws its automatic scale for any other name.
 _COLOR_SCALE_OPTIONS = (
     "Blackbody",

@@ -38,6 +38,10 @@ def _values_to_typed_series(
                 f"Boolean predicate value must be 'true' or 'false', got {e.args[0]!r}"
             ) from e
     series = pl.Series(coerced)
+    if series.dtype == pl.String and isinstance(dtype, (pl.Date, pl.Datetime, pl.Time)):
+        # Polars cannot cast a string to a temporal type. A temporal label
+        # arrives as its ISO string, so parse it.
+        return series.str.strptime(dtype, strict=False)
     if dtype is not None:
         series = series.cast(dtype, strict=False)
     return series
