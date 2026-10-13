@@ -8812,6 +8812,9 @@ class TestWheelNavigationBrowser:
 
         page.click("#fv-btn-wheel")  # Off -> Auto
         assert page.evaluate("() => localStorage.getItem('fv-wheel')") == "auto"
+        # The viewer's choice stays out of the spec, so out of a share URL.
+        toolbar = "() => DASHBOARD_SPEC.layout.toolbar.wheel_mode"
+        assert page.evaluate(toolbar) == "off"
         page.reload()
         _wait_for_init(page)
         assert page.inner_text("#fv-btn-wheel") == "Wheel: Auto"
