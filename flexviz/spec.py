@@ -514,6 +514,10 @@ class ToolbarConfig(BaseModel):
     leaves the current mode in place rather than locking the layout. Use
     ``LayoutSpec.draggable=False`` for a layout that cannot move. ``show_import``
     can still restore ``grid_editable`` from an imported spec.
+
+    ``wheel_mode`` is the mouse-wheel mode of the page. With the Wheel button
+    shown, it is the start mode and a choice the viewer stored wins. With
+    ``show_wheel=False``, the page always uses ``wheel_mode``.
     """
 
     show_reset: bool = True
@@ -522,6 +526,7 @@ class ToolbarConfig(BaseModel):
     show_hover: bool = True
     show_lock_all_axes: bool = True
     show_wheel: bool = True
+    wheel_mode: Literal["auto", "zoom", "ctrl", "off"] = "auto"
     show_grid: bool = True
     show_share: bool = True
     show_export: bool = True

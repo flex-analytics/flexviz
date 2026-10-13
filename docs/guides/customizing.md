@@ -286,10 +286,19 @@ key there. If the dashboard is taller than its frame, the frame scrolls first,
 then the outer page. When the wheel scrolls the page and the key zooms, a
 short hint over the plot shows the key. The mode applies to maps too.
 
-The wheel mode is a viewer preference, as the light and dark mode is. It is
-not part of the spec, so a share URL does not carry it. The browser remembers
-a choice other than Auto for the server address. `show_wheel=False` hides the
-button, and the page keeps the mode that the viewer chose before.
+`ToolbarConfig(wheel_mode=...)` sets the mode that the page starts in. The
+default is `"auto"`. The other values are `"zoom"`, `"ctrl"` and `"off"`.
+
+The viewer's choice is a preference, as the light and dark mode is. It is not
+part of the spec, so a share URL does not carry it. The browser remembers the
+choice for the server address, and the choice wins over `wheel_mode`.
+`show_wheel=False` hides the button. Then the page always uses `wheel_mode`,
+because the viewer cannot see or change the mode. For a page where the wheel
+always scrolls:
+
+```python
+ToolbarConfig(show_wheel=False, wheel_mode="off")
+```
 
 ## Precedence
 

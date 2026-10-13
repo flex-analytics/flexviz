@@ -145,12 +145,15 @@ class TestSharedToolbar:
         assert "fv-header" in html
 
     def test_toolbar_config_roundtrips_via_layout_spec(self):
-        tc = ToolbarConfig(show_share=False, show_import=False, show_wheel=False)
+        tc = ToolbarConfig(
+            show_share=False, show_import=False, show_wheel=False, wheel_mode="off"
+        )
         layout = LayoutSpec(toolbar=tc)
         dumped = layout.model_dump()
         restored = LayoutSpec.model_validate(dumped)
         assert restored.toolbar.show_share is False
         assert restored.toolbar.show_wheel is False
+        assert restored.toolbar.wheel_mode == "off"
         assert restored.toolbar.show_import is False
         assert restored.toolbar.show_reset is True
 

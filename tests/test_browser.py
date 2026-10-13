@@ -31,6 +31,8 @@ import uvicorn
 from playwright.sync_api import Page
 from playwright.sync_api import Request as PWRequest
 
+from flexviz.spec import ToolbarConfig
+
 pytestmark = pytest.mark.browser
 
 
@@ -8518,7 +8520,9 @@ _FIG_RANGES = """i => ({
   })"""
 
 
-def _dashboard_url_wheel(port: int, line_layout: dict | None = None) -> str:
+def _dashboard_url_wheel(
+    port: int, line_layout: dict | None = None, toolbar: ToolbarConfig | None = None
+) -> str:
     """A line (figure 0) and a histogram (figure 1), linked on ts."""
     from flexviz.dashboard import Dashboard
     from flexviz.server import register_source
@@ -8532,7 +8536,10 @@ def _dashboard_url_wheel(port: int, line_layout: dict | None = None) -> str:
         line.update_layout(**line_layout)
     dash.add_figure(title="Hist").add_histogram(x="ts", bins=50)
     dash.link_axes(on="ts")
-    return f"http://127.0.0.1:{port}/view?spec={encode_spec(dash.to_spec(source_name='_browser_test'))}"
+    spec = dash.to_spec(source_name="_browser_test")
+    if toolbar:
+        spec.layout.toolbar = toolbar
+    return f"http://127.0.0.1:{port}/view?spec={encode_spec(spec)}"
 
 
 def _drag_box(target, fig_index: int, cls: str = "nsewdrag") -> dict:
@@ -8788,6 +8795,52 @@ class TestWheelNavigationBrowser:
         _wheel(page, *center, key="Control")
         assert page.evaluate(_FIG_RANGES, 0) == zoomed
         assert hint.count() == 0
+
+    def test_wheel_mode_starts_the_page_and_a_stored_choice_wins(
+        self, page: Page, server_port: int
+    ):
+        page.goto(
+            _dashboard_url_wheel(server_port, toolbar=ToolbarConfig(wheel_mode="off"))
+        )
+        _wait_for_init(page)
+        assert page.inner_text("#fv-btn-wheel") == "Wheel: Off"
+        box = _drag_box(page, 0)
+        center = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        before = page.evaluate(_FIG_RANGES, 0)
+        _wheel(page, *center)
+        assert page.evaluate(_FIG_RANGES, 0) == before
+
+        page.click("#fv-btn-wheel")  # Off -> Auto
+        assert page.evaluate("() => localStorage.getItem('fv-wheel')") == "auto"
+        # The viewer's choice stays out of the spec, so out of a share URL.
+        toolbar = "() => DASHBOARD_SPEC.layout.toolbar.wheel_mode"
+        assert page.evaluate(toolbar) == "off"
+        page.reload()
+        _wait_for_init(page)
+        assert page.inner_text("#fv-btn-wheel") == "Wheel: Auto"
+        _wheel(page, *center)
+        assert _width(page.evaluate(_FIG_RANGES, 0)["x"]) < _width(before["x"])
+
+    def test_wheel_mode_ignores_a_stored_choice_when_the_button_is_hidden(
+        self, page: Page, server_port: int
+    ):
+        page.set_viewport_size({"width": 1280, "height": 400})
+        toolbar = ToolbarConfig(show_wheel=False, wheel_mode="off")
+        page.goto(_dashboard_url_wheel(server_port, toolbar=toolbar))
+        # A choice stored on another page of this server.
+        page.evaluate("() => localStorage.setItem('fv-wheel', 'zoom')")
+        page.reload()
+        _wait_for_init(page)
+        assert page.locator("#fv-btn-wheel").count() == 0
+        before = page.evaluate(_FIG_RANGES, 0)
+        box = _drag_box(page, 0)
+
+        _wheel(
+            page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, delta=100
+        )
+
+        assert page.evaluate(_FIG_RANGES, 0) == before
+        assert page.evaluate("() => document.scrollingElement.scrollTop") > 0
 
     def test_wheel_in_an_iframe_scrolls_the_page_until_the_key_is_held(
         self, page: Page, server_port: int

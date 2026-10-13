@@ -1,17 +1,23 @@
 // === FlexViz mouse-wheel mode ===
-// A viewer preference like the light/dark mode: localStorage only, never the
-// spec or a share URL.
+// The spec sets the page's mode (toolbar.wheel_mode). A viewer's choice is a
+// preference like the light/dark mode: localStorage only, never the spec or a
+// share URL.
 (function() {
   const MODE_KEY = 'fv-wheel';
   const PREFERENCES = ['auto', 'zoom', 'ctrl', 'off'];
   const KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
   const LABELS = { auto: 'Auto', zoom: 'Zoom', ctrl: KEY, off: 'Off' };
   const HINT_MS = 1500;
-  let preference = 'auto';
-  try {
-    const stored = window.localStorage.getItem(MODE_KEY);
-    if (PREFERENCES.includes(stored)) preference = stored;
-  } catch (e) { /* storage blocked: auto */ }
+  const button = document.getElementById('fv-btn-wheel');
+  let preference = DASHBOARD_SPEC.layout.toolbar.wheel_mode;
+  // Without the button the viewer cannot see or change a stored choice, so
+  // the page's mode applies.
+  if (button) {
+    try {
+      const stored = window.localStorage.getItem(MODE_KEY);
+      if (PREFERENCES.includes(stored)) preference = stored;
+    } catch (e) { /* storage blocked: the page's mode */ }
+  }
 
   window.fvWheelZooms = function(event) {
     // In an iframe (a notebook, a web app) a plain wheel must scroll the page.
@@ -44,15 +50,14 @@
     hint?.classList.remove('visible');
   }
 
-  const button = document.getElementById('fv-btn-wheel');
   if (!button) return;
   const label = () => { button.textContent = 'Wheel: ' + LABELS[preference]; };
   label();
   button.addEventListener('click', () => {
     preference = PREFERENCES[(PREFERENCES.indexOf(preference) + 1) % PREFERENCES.length];
+    // Store Auto too: it can differ from the mode of another page.
     try {
-      if (preference === 'auto') window.localStorage.removeItem(MODE_KEY);
-      else window.localStorage.setItem(MODE_KEY, preference);
+      window.localStorage.setItem(MODE_KEY, preference);
     } catch (e) { /* storage blocked: the choice lasts for this page only */ }
     label();
     // A shown hint names the key of the old mode.

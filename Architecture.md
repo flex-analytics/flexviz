@@ -177,8 +177,9 @@ DashboardSpec
     ├── grid_editable: bool               ← initial lock/edit mode when draggable
     ├── grid_items: List[GridItem] | None ← client-updated positions/sizes
     └── toolbar: ToolbarConfig            ← controls which toolbar buttons are rendered
-        └── show_reset / show_deselect / show_cfmode / show_hover / show_lock_all_axes
-            / show_wheel / show_grid / show_share / show_export / show_import: bool (all True by default)
+        ├── show_reset / show_deselect / show_cfmode / show_hover / show_lock_all_axes
+        │   / show_wheel / show_grid / show_share / show_export / show_import: bool (all True by default)
+        └── wheel_mode: "auto" | "zoom" | "ctrl" | "off"   ← the page's wheel mode (default "auto")
 
 InteractionEvent
 ├── type: "init" | "viewport" | "selection" | "deselect" | "cube_request"
@@ -1582,7 +1583,7 @@ color or spacing values remain.
 ### Wheel zoom and middle-button pan
 
 - Every figure sets Plotly's `scrollZoom: true`. Capture-phase `wheel` and `mousedown` listeners on the graph div (`handleWheel`, `handleMiddleButtonDown` in `plotly/events.js`) run before Plotly's draggers and the MapLibre map, and decide each event. An event that must not zoom or pan stops there, so Plotly never sees it and the page scrolls.
-- The wheel mode (`wheel-mode.js`) is a viewer preference like the light/dark mode: localStorage `fv-wheel`, never the spec, a share URL or the server. `auto` zooms in a top-level page and needs Ctrl/⌘ in an iframe (a notebook, a web app, a report), where a plain wheel must scroll the page. The `#fv-btn-wheel` button cycles the modes, and `ToolbarConfig.show_wheel` hides it.
+- The wheel mode (`wheel-mode.js`) starts at `ToolbarConfig.wheel_mode`. The `#fv-btn-wheel` button cycles the modes, and the viewer's choice is a preference like the light/dark mode: localStorage `fv-wheel`, never the spec, a share URL or the server. A stored choice wins over `wheel_mode` only while the button shows: `show_wheel=False` hides it, and then the page always uses `wheel_mode`. `auto` zooms in a top-level page and needs Ctrl/⌘ in an iframe (a notebook, a web app, a report), where a plain wheel must scroll the page.
 - Over the plot area a line figure moves only x, so y keeps its autoscale. A locked axis and an axis with `fixedrange` never move. Plotly has no option for these rules, so `_fvNavigationDragger` picks the dragger of the one axis that may move and `_fvForward` sends it a copy of the event. A sideways wheel (no `deltaY`) is not a zoom.
 - Plotly ends a wheel zoom 50 ms after the last notch, so a slow spin gives one relayout per notch. `_fvCommitNavigation` holds the request of a relayout that follows a wheel zoom until 200 ms pass without one, so a spin sends one request. Linked figures still follow each notch at once.
 - A middle-button drag pans only when it starts on the plot area, in every drag mode. Plotly treats every button as a left drag, so a middle press elsewhere (an axis, a map) is stopped. Plotly reads `_fullLayout.dragmode` when a drag starts, so the handler sets `pan` for this press only.
