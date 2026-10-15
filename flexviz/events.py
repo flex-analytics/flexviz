@@ -23,6 +23,8 @@ class InteractionEvent(BaseModel):
         - ``"viewport"``  — zoom / pan / autorange (viewport state changed)
         - ``"selection"`` — one or more rectangle selections changed
         - ``"deselect"``  — all selections cleared
+        - ``"refresh"``   — the source data changed (a stream got rows):
+          every trace and every overlay layer is recomputed
         - ``"cube_request"`` — brush-start cube materialization hint.  Carries
           **no active range**; the server bakes the committed
           ``state.selections`` (the future passive set) into the cubes and
@@ -44,7 +46,9 @@ class InteractionEvent(BaseModel):
     ``state.selections`` and ignores them for ``"init"`` and ``"deselect"``.
     """
 
-    type: Literal["init", "viewport", "selection", "deselect", "cube_request"]
+    type: Literal[
+        "init", "viewport", "selection", "deselect", "refresh", "cube_request"
+    ]
     viewport_keys: list[str] = Field(default_factory=list)
     force_update: bool = False
 

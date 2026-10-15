@@ -77,6 +77,7 @@ nav:
       - Line downsampling: guides/line-downsampling.md
       - Caching and live brushing: guides/caching-and-live-brushing.md
       - Data sources: guides/data-sources.md
+      - Live data: guides/live-data.md
       - Sharing views: guides/sharing.md
       - Embedding: guides/embedding.md
       - Web apps: guides/web-apps.md
