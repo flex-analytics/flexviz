@@ -77,7 +77,7 @@ Python ≥ 3.10 · Polars · FastAPI · Uvicorn · Pydantic · flexviz_polars (R
 │  GET  /sources           — health / introspection              │
 │  GET  /h/{n}             — history entry n (run_server only)   │
 │  GET  /cache/stats       — cache hits/misses/entries           │
-│  _sources: name → LFQueryBuilder  (registered once at show())  │
+│  _sources: name → LFQueryBuilder | SQLSource (registered once)  │
 └─────────────────────┬──────────────────────────────────────────┘
                       │
                       ▼
@@ -833,9 +833,10 @@ FlexEngine
       3. Partition the traces by owner: a figure is never filtered by its own
          selection, so the traces of each figure that owns an active selection
          form their own partition, and all others share one. Each partition
-         builds its cross-filter Polars exprs by passing every other selection's
-         predicates through `predicates_to_expr` (one expression per selection —
-         predicates ORed inside, expressions ANDed across selections). A single
+         builds its cross-filter conditions by passing every other selection's
+         predicates through the source's `compile_filter` (`predicates_to_expr`
+         for a frame, a SQLGlot condition for a SQL source; one condition per
+         selection — predicates ORed inside, ANDed across selections). A single
          figure's zoom is one partition; a linked zoom that reaches an owner
          figure adds one
       4. Group histogram domain-sharing siblings for the request: for histogram
@@ -981,6 +982,55 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 
 `_to_update` receives the result as `df_agg[uid][0]` — a Python dict of `{field: value}` where array fields are Python lists (after `implode()` inside the trace expression).
 
+### SQL sources
+
+`SQLSource` in `sql.py` is the second source kind. The data stays in a database
+(Postgres, DuckDB or ClickHouse), and each trace aggregation runs there as one
+SQL query. It offers the surface the engine and the server use of an
+`LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
+true: a plan reads rows in no order), `physical_minmax`, `compile_filter` and
+`aggregate`. The server stores it in `_sources` like a builder, and `Figure`,
+`Dashboard` and `register_source` take it in place of data (`LF.as_source`).
+Connections, supported charts and limits are in the
+[Databases guide](docs/guides/databases.md).
+
+```
+SQLSource
+├── schema                      ← Polars schema of `SELECT * ... LIMIT 0`
+├── compile_filter(predicates)  ← the bounds of `predicates_to_expr` (`_clause_bounds`), as a SQLGlot condition
+├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
+└── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
+```
+
+- **Plans, not expressions.** On a SQL source the engine passes
+  `sql_source=True` to `get_aggregation_spec`. A trace with `sql_support`
+  returns a spec whose `plan` takes a `SQLFrame` (the source plus the
+  cross-filter conditions) and returns the frame its Polars plan returns. The
+  SQL twins live in `sql.py` and end in the Polars shaping code of their twin
+  (`_dense_hist_groups`, `_fold_result_frame`, line stage 2). So `_to_update`
+  is shared, and the equivalence tests compare whole deltas against a Polars
+  source. A trace without `sql_support` fails `check_source`, which
+  `Figure._add_trace` and the engine run.
+- **Grid arithmetic is copied, literal by literal.** A bucket and a bin are the
+  Polars plan's arithmetic in SQL, on the column's physical units (epoch units
+  per dialect for a temporal column, `BIGINT` for a narrow integer). A float
+  literal is written in exponent form: DuckDB reads a plain decimal literal as
+  an exact `DECIMAL` and rounds it to a double one ulp off, which moved a
+  domain-minimum row to bucket -1. It is also cast to a non-nullable double:
+  Postgres reads an exponent literal as `numeric`, so a `numeric` column would
+  compare and bucket in decimal, not as the double that Polars uses. A
+  nullable cast made a ClickHouse bucket query 2.5 times slower.
+- **Dialect meaning lives in `SQLFrame`.** SQLGlot quotes identifiers and
+  renders literals per dialect. The functions whose meaning differs per
+  dialect (`phys`, `nan`, `num`, `int_div`, `extreme_by`, `lit`) are defined
+  there.
+- **Identifiers.** Column names come from the spec, which the browser sends,
+  so every column reaches the SQL through `SQLSource.col`, which refuses a name
+  that is not in the schema (and, on ClickHouse, a name with a backslash, which
+  ClickHouse reads as an escape inside a quoted identifier). Every other
+  identifier is a FlexViz constant: a trace uid is never an SQL alias. The
+  user's `query=` goes into a `WITH` clause as written, never re-rendered.
+
 ---
 
 ## Server Layer
@@ -988,7 +1038,7 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 FastAPI app in `server.py`. The only persistent server state is:
 
 ```python
-_sources: Dict[str, LFQueryBuilder]
+_sources: Dict[str, LFQueryBuilder | SQLSource]
 ```
 
 Populated via `register_source(name, data, cache=False)` at `show()` time. Everything else is request-scoped.
@@ -1788,6 +1838,7 @@ the backend.
 | `fixed_hist`, `fixed_hist2d` | Both drop to their scalar path for any chunk that holds a null. Real data holds nulls, so a null-aware parallel path is worth having |
 | `fixed_hist2d_reduce` | Single-threaded; it has no rayon path at all |
 | Grouped histogram plan | The streaming `group_by` runs on the default Polars hot table, so a large group by bin product spills (issue #19) |
+| `sql.py` | No cube on a SQL source, so no live brushing there. `box`, `geo_line`, line `nth` and Spearman are not supported. Each trace is its own query, so a dashboard scans the source once per trace |
 
 ### Roadmap
 

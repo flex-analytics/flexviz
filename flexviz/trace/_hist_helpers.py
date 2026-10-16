@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 import polars as pl
 
+from ..LF import GroupedAggregationSpec
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -24,6 +26,35 @@ _AGG_FUNCTIONS: dict[str, Any] = {
     "max": lambda col: pl.col(col).max(),
     "n_unique": lambda col: pl.col(col).n_unique(),
 }
+
+
+def category_agg_spec(
+    uid: str,
+    group_cols: tuple[str, ...],
+    sort_cols: tuple[str, ...],
+    agg: str | None,
+    values_col: str | None,
+    sql_source: bool,
+) -> GroupedAggregationSpec:
+    """One aggregate per category (bar, pie, treemap): the row count without
+    ``values_col``. On a SQL source the spec carries its SQL plan."""
+    if values_col is None:
+        agg_expr = pl.len().alias(uid)
+    else:
+        agg_expr = _AGG_FUNCTIONS[agg](values_col).alias(uid)
+    plan = None
+    if sql_source:
+        from ..sql import group_agg_plan
+
+        plan = group_agg_plan(uid, group_cols, sort_cols, agg, values_col, agg_expr)
+    return GroupedAggregationSpec(
+        uid=uid,
+        group_cols=group_cols,
+        agg_exprs=(agg_expr,),
+        sort_cols=sort_cols,
+        plan=plan,
+    )
+
 
 _HISTFUNC_OPTIONS = tuple(_AGG_FUNCTIONS)
 _HISTNORM_OPTIONS = (

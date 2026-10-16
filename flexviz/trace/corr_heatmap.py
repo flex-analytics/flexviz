@@ -53,6 +53,7 @@ class CorrHeatmap(FlexTrace):
     """
 
     trace_type: str = "corr_heatmap"
+    sql_support = True
     select_policy_doc: str = "none — not a cross-filter source"
     overlay_style: str = "filtered_only"
     DEFAULT_COLOR_SCALE_BY_ABSOLUTE: ClassVar[dict[bool, str]] = {
@@ -141,6 +142,8 @@ class CorrHeatmap(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        sql_source: bool = False,
         **_: Any,
     ) -> AggregationSpec:
         cols = self._columns
@@ -150,8 +153,22 @@ class CorrHeatmap(FlexTrace):
             raise ValueError(
                 f"CorrHeatmap requires at least 2 numeric columns; got {cols!r}"
             )
+        if sql_source:
+            from ..sql import corr_plan
+
+            return AggregationSpec(
+                uid=self.uid, plan=corr_plan(self.uid, cols, self.absolute)
+            )
         expr = _corr_expr(cols, self.method, self.absolute, self.uid)
         return AggregationSpec(expr=expr, uid=self.uid)
+
+    def check_source(self, source: Any) -> None:
+        super().check_source(source)
+        if source.is_sql and self.method != "pearson":
+            raise ValueError(
+                f"method={self.method!r} cannot run on a SQL source: a database "
+                "computes Pearson correlation only."
+            )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:
         raw = df[self.uid][0]

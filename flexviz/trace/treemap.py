@@ -10,7 +10,7 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, TargetDimSpec
 from ..LF import GroupedAggregationSpec
 from ..spec import TraceSelectionSpec, TraceSpec
-from ._hist_helpers import _AGG_FUNCTIONS
+from ._hist_helpers import _AGG_FUNCTIONS, category_agg_spec
 from .base import FlexTrace, TraceResult, _categorical_dims_ok, _cube_measure_spec
 
 
@@ -33,6 +33,7 @@ class TreeMap(FlexTrace):
     """
 
     trace_type: str = "treemap"
+    sql_support = True
     select_policy_doc: str = "categorical — hierarchical path click"
     overlay_style: str = "filtered_only"
 
@@ -138,20 +139,18 @@ class TreeMap(FlexTrace):
         self,
         update_range: dict[str, Any],
         schema: pl.Schema | None = None,
+        *,
+        sql_source: bool = False,
         **_: Any,
     ) -> GroupedAggregationSpec:
-        path = self._params["path"]
-        values_col = self._backend_data.get("values")
-        if values_col is None:
-            agg_expr = pl.len().alias(self.uid)
-        else:
-            agg_fn = _AGG_FUNCTIONS[self._params["agg"]]
-            agg_expr = agg_fn(values_col).alias(self.uid)
-        return GroupedAggregationSpec(
-            uid=self.uid,
-            group_cols=tuple(path),
-            agg_exprs=(agg_expr,),
-            sort_cols=tuple(path),
+        path = tuple(self._params["path"])
+        return category_agg_spec(
+            self.uid,
+            path,
+            path,
+            self._params["agg"],
+            self._backend_data.get("values"),
+            sql_source,
         )
 
     def _to_update(self, df: pl.DataFrame) -> TraceResult:

@@ -90,6 +90,8 @@ class FlexTrace(ABC):
     # domain. Histogram edges stay put so the brushed subset stays comparable
     # with the whole.
     domain_follows_filter: ClassVar[bool] = False
+    # True when ``get_aggregation_spec(sql_source=True)`` returns SQL plans.
+    sql_support: ClassVar[bool] = False
     # One-line human description of the zoom re-aggregation policy, surfaced in
     # the generated Architecture.md table. Override alongside
     # ``_default_recompute_axes``.
@@ -233,6 +235,28 @@ class FlexTrace(ABC):
         The engine calls it for every trace before the domains are resolved.
         Reads the schema, and may read data.
         """
+        if not source.is_sql:
+            return
+        if not self.sql_support:
+            raise ValueError(
+                f"A {self.trace_type} trace cannot run on a SQL source yet. "
+                "Load the rows into a Polars frame for it."
+            )
+        # Reads the schema only. The SQL builder refuses an unknown column
+        # too; this names it before any query runs.
+        cols = [
+            c
+            for v in (
+                *self._backend_data.values(),
+                self.group_by_cols or (),
+                self._params.get("path") or (),
+                self._params.get("columns") or (),
+            )
+            for c in ([v] if isinstance(v, str) else v)
+        ]
+        missing = [c for c in dict.fromkeys(cols) if c not in source.schema]
+        if missing:
+            raise ValueError(f"column(s) {missing} not in the SQL source")
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose ``(min, max)`` this trace's spec needs.
@@ -258,6 +282,7 @@ class FlexTrace(ABC):
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
+        sql_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return an aggregation spec for the engine to execute.
 
@@ -284,6 +309,10 @@ class FlexTrace(ABC):
         sorted_cols:
             Columns the builder asserts sorted.  Only for picking a faster
             equivalent formulation, never to change results.
+        sql_source:
+            The source is a database (``flexviz.sql.SQLSource``).  A trace
+            with ``sql_support`` returns specs whose plans take a ``SQLFrame``
+            and return the frame its Polars plan returns.
 
         Returns
         -------
