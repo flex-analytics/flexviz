@@ -385,7 +385,7 @@ class Dashboard:
 
         spec = self.to_spec(source_name=source_name, layout=layout)
         spec.client_state.live_brush = _effective_live_brush(
-            live_brush, _serves_cubes(self._backend_lf, effective_cache)
+            live_brush, _serves_cubes(self._backend_lf, source_name, effective_cache)
         )
         if draggable is not None:
             spec.layout.draggable = draggable

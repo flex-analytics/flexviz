@@ -923,16 +923,21 @@ class Figure:
         spec = self.to_spec(source=src)
         dash_spec = DashboardSpec(figures=[spec.figure], state=spec.state)
         dash_spec.client_state.live_brush = _effective_live_brush(
-            live_brush, _serves_cubes(self._backend_lf, effective_cache)
+            live_brush, _serves_cubes(self._backend_lf, source_name, effective_cache)
         )
         _render_dashboard(
             renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
         )
 
 
-def _serves_cubes(source: Any, effective_cache: bool) -> bool:
+def _serves_cubes(source: Any, source_name: str | None, effective_cache: bool) -> bool:
     """Cubes are built only for a ``cache=True`` frame source: the "data is
-    static" contract, and a SQL source has no cube path."""
+    static" contract, and a SQL source has no cube path. Without data of its
+    own, a figure reads the source registered under ``source_name``."""
+    if source is None:
+        from .server import _sources
+
+        source = _sources.get(source_name)
     return effective_cache and not getattr(source, "is_sql", False)
 
 

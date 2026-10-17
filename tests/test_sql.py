@@ -1112,12 +1112,17 @@ def test_close_ends_the_idle_connections(duck):
 
 
 def test_live_brush_is_off_on_a_sql_source(duck):
-    """A SQL source serves no cube, so the page asks for none on each drag."""
-    dash = Dashboard(SQLSource(duck, table="src"), cache=True)
-    dash.add_figure().add_histogram(x="v")
-    url = dash.share_url(source_name=DUCKDB)
-    spec = decode_spec(parse_qs(urlsplit(url).query)["spec"][0])
-    assert spec.client_state.live_brush == "off"
+    """A SQL source serves no cube, so the page asks for none on each drag:
+    whether the dashboard holds the source or names a registered one."""
+    register_source("_sql_test_duckdb_static", SQLSource(duck, table="src"), cache=True)
+    for dash, name in (
+        (Dashboard(SQLSource(duck, table="src"), cache=True), DUCKDB),
+        (Dashboard(cache=True), "_sql_test_duckdb_static"),
+    ):
+        dash.add_figure().add_histogram(x="v")
+        url = dash.share_url(source_name=name)
+        spec = decode_spec(parse_qs(urlsplit(url).query)["spec"][0])
+        assert spec.client_state.live_brush == "off"
 
 
 def test_adbc_duckdb_reads_a_decimal_as_float64(tmp_path):
