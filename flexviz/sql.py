@@ -298,8 +298,9 @@ class SQLFrame:
                 exp.func("toDateTime64", c, exp.Literal.number(precision)),
             )
         # Postgres keeps microseconds. date_part returns a double, so the
-        # scaled value is within 0.5 of the exact count and rounds back to it
-        # (equal to the numeric EXTRACT on all 100M benchmark rows, 2x faster).
+        # scaled value rounds back to the exact count while one ulp of the
+        # epoch seconds is below 1 us: the years 1700 to 2240 (equal to the
+        # numeric EXTRACT on all 100M benchmark rows, 2x faster).
         scale = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
         epoch = exp.Anonymous(
             this="date_part", expressions=[exp.Literal.string("epoch"), c]

@@ -97,7 +97,9 @@ class Dashboard:
         ----------
         data:
             A Polars DataFrame or LazyFrame (or anything accepted by
-            ``polars_lf_from``).  All figures will share this data source.
+            ``polars_lf_from``), or a ``flexviz.SQLSource`` whose
+            aggregations run in a database.  All figures will share this data
+            source.
             Pass ``None`` for in-memory-only dashboards.
         cache:
             Opt the shared source into init-load caching.  Asserts the data

@@ -98,11 +98,11 @@ _sources: dict[str, LFQueryBuilder | SQLSource] = {}
 def register_source(name: str, data: Any, cache: bool = False) -> None:
     """Register a named data source.
 
-    ``data`` can be a pre-built ``LFQueryBuilder`` (no re-wrapping occurs)
-    or anything accepted by ``polars_lf_from``: a Polars DataFrame /
-    LazyFrame, a pandas DataFrame, or a PyArrow Table.  For file-backed or
-    database-backed sources, pass a pre-built ``pl.LazyFrame`` (e.g.
-    ``pl.scan_parquet(...)``).
+    ``data`` can be a pre-built ``LFQueryBuilder`` (no re-wrapping occurs),
+    a ``flexviz.SQLSource`` for a database table or query, or anything
+    accepted by ``polars_lf_from``: a Polars DataFrame / LazyFrame, a pandas
+    DataFrame, or a PyArrow Table.  For file-backed sources, pass a
+    ``pl.LazyFrame`` (e.g. ``pl.scan_parquet(...)``).
 
     Call this before ``uvicorn.run`` or before the first request in tests.
 
@@ -111,7 +111,8 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
     name:
         Identifier that clients reference via ``FigureSpec.source``.
     data:
-        A ``LFQueryBuilder`` or raw data to wrap in one.
+        A ``LFQueryBuilder``, a ``SQLSource``, or raw data to wrap in a
+        builder.
     cache:
         When ``True``, opt this source into server- and client-side caching
         of the initial (unfiltered) load.  Setting it **asserts the data is

@@ -186,8 +186,9 @@ have, gives an error when you add the chart, in your own code.
   64 MB and 1.9 s with 1 GB:
   `ALTER ROLE flexviz_reader SET work_mem = '1GB'`.
 - `Dashboard(src, cache=True)` declares that the data does not change while the
-  server runs. FlexViz then keeps the column bounds and the first render. Do
-  not set it on a table that receives new rows.
+  server runs. FlexViz then keeps the column bounds and the first render.
+  Without it, every request first asks the database for the column bounds
+  again. Do not set it on a table that receives new rows.
 
 ### Security
 

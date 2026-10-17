@@ -156,7 +156,8 @@ class Figure:
         ----------
         data:
             A Polars DataFrame or LazyFrame (or anything accepted by
-            ``polars_lf_from``).  Pass ``None`` for in-memory figures
+            ``polars_lf_from``), or a ``flexviz.SQLSource`` whose
+            aggregations run in a database.  Pass ``None`` for in-memory figures
             where each trace carries its own data.
         cache:
             Opt this figure's source into init-load caching.  Asserts the
