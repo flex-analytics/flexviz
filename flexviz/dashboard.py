@@ -38,6 +38,7 @@ from .figure import (
     _effective_live_brush,
     _register_source_if_needed,
     _render_dashboard,
+    _serves_cubes,
     _start_server_thread,
 )
 from .LF import LFQueryBuilder, as_source
@@ -379,7 +380,7 @@ class Dashboard:
 
         spec = self.to_spec(source_name=source_name, layout=layout)
         spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+            live_brush, _serves_cubes(self._backend_lf, effective_cache)
         )
         if draggable is not None:
             spec.layout.draggable = draggable

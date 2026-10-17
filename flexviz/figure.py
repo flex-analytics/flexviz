@@ -919,16 +919,22 @@ class Figure:
         spec = self.to_spec(source=src)
         dash_spec = DashboardSpec(figures=[spec.figure], state=spec.state)
         dash_spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+            live_brush, _serves_cubes(self._backend_lf, effective_cache)
         )
         _render_dashboard(
             renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
         )
 
 
+def _serves_cubes(source: Any, effective_cache: bool) -> bool:
+    """Cubes are built only for a ``cache=True`` frame source: the "data is
+    static" contract, and a SQL source has no cube path."""
+    return effective_cache and not getattr(source, "is_sql", False)
+
+
 def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
     """Couple ``live_brush`` to caching: cubes are only built for ``cache=True``
-    sources (the "data is static" contract), so live-brush cannot function
+    frame sources (see ``_serves_cubes``), so live-brush cannot function
     without it.  When ``effective_cache`` is False we force ``"off"`` — otherwise
     the client binds ``plotly_selecting`` and fires a wasted ``cube_request`` per
     drag that the server answers with an empty bundle, then degrades.
@@ -943,7 +949,7 @@ def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
         return requested
     if explicit and requested != "off":
         warnings.warn(
-            f"live_brush={requested!r} needs cache=True to serve cubes; "
+            f"live_brush={requested!r} needs a cache=True frame source to serve cubes; "
             "forcing live_brush='off'."
         )
     return "off"

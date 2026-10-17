@@ -17,7 +17,7 @@ import sys
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import duckdb
 import numpy as np
@@ -1102,6 +1102,15 @@ def test_close_ends_the_idle_connections(duck):
     # A later query opens a new connection.
     assert src.physical_minmax(["v"]) == first
     assert len(opened) == 2
+
+
+def test_live_brush_is_off_on_a_sql_source(duck):
+    """A SQL source serves no cube, so the page asks for none on each drag."""
+    dash = Dashboard(SQLSource(duck, table="src"), cache=True)
+    dash.add_figure().add_histogram(x="v")
+    url = dash.share_url(source_name=DUCKDB)
+    spec = decode_spec(parse_qs(urlsplit(url).query)["spec"][0])
+    assert spec.client_state.live_brush == "off"
 
 
 # 2026-01-01 in epoch nanoseconds. The rows lie 100 ns apart and off the whole
