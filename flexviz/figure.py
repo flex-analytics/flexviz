@@ -842,7 +842,7 @@ class Figure:
         if (
             backend_lf is not None
             and not isinstance(backend_lf, LFQueryBuilder)
-            and not getattr(backend_lf, "is_sql", False)
+            and not getattr(type(backend_lf), "is_sql", False)
         ):
             fig._backend_lf = LFQueryBuilder(
                 polars_lf_from(backend_lf), cache=fig._cache_enabled
