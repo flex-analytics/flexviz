@@ -1102,6 +1102,48 @@ def test_close_ends_the_idle_connections(duck):
     assert len(opened) == 2
 
 
+# 2026-01-01 in epoch nanoseconds. The rows lie 100 ns apart and off the whole
+# microseconds, which are all a Python datetime holds.
+_NS_EPOCH = 1_767_225_600_000_000_000
+_NS_FRAME = pl.DataFrame(
+    {"t": pl.Series(range(_NS_EPOCH + 50, _NS_EPOCH + 3_000, 100))}
+).cast(pl.Datetime("ns"))
+
+
+def _ns_source(request, backend: str) -> SQLSource:
+    if backend == "duckdb":
+        return SQLSource(_duckdb_con(_NS_FRAME), table="src")
+    client = request.getfixturevalue("clickhouse_client")
+    table = f"fv_test_{secrets.token_hex(6)}"
+    client.command(f'CREATE TABLE "{table}" (t DateTime64(9)) ENGINE = Memory')
+    request.addfinalizer(lambda: client.command(f'DROP TABLE "{table}"'))
+    # From the integers: the driver would send microseconds.
+    client.command(
+        f'INSERT INTO "{table}" SELECT fromUnixTimestamp64Nano('
+        f"toInt64({_NS_EPOCH + 50} + number * 100), 'UTC') FROM numbers(30)"
+    )
+    return SQLSource(_ch_connect, table=table, dialect="clickhouse")
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "clickhouse"])
+def test_nanosecond_bounds_are_exact(request, backend):
+    """A zoom edge and a selected value between two microseconds keep the rows
+    a Polars source keeps, not those of the microsecond they fall in."""
+    src = _ns_source(request, backend)
+    frame = SQLFrame(src)
+
+    def count(cond: exp.Expression) -> int:
+        return frame.collect(exp.select(exp.Count(this=exp.Star())).where(cond)).item()
+
+    # The rows at +550 ns to +1250 ns; [+0, +1000] would hold 10.
+    zoom = frame.phys_range_cond("t", _NS_EPOCH + 500, _NS_EPOCH + 1300)
+    assert count(zoom) == 8
+    clause = ClauseFilter(column="t", values=["2026-01-01T00:00:00.000000750"])
+    selected = src.compile_filter([SelectionPredicate(clauses=[clause])], src.schema)
+    assert count(selected) == 1
+    src.close()
+
+
 def test_cube_request_on_sql_source_returns_empty_bundle(client):
     get_cache().clear()
     dash = Dashboard()

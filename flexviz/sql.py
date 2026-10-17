@@ -52,6 +52,8 @@ _DIALECT_ALIASES = {"postgresql": "postgres", "clickhousedb": "clickhouse"}
 _P = "__fv_"
 _SRC = _P + "src"
 
+_EPOCH = dt.datetime(1970, 1, 1)
+
 #: Postgres type OIDs, for drivers that return rows instead of Arrow. Only the
 #: schema query needs them: an empty result carries no values to infer from.
 _PG_OIDS: dict[int, pl.DataType] = {
@@ -341,6 +343,8 @@ class SQLFrame:
         if value is None:
             return exp.Null()
         if dtype is not None and dtype.is_temporal() and isinstance(value, int):
+            if isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns":
+                return self._ns_lit(value)
             value = pl.Series([value], dtype=pl.Int64).cast(dtype).item()
         if isinstance(value, float):
             if math.isnan(value):
@@ -363,6 +367,19 @@ class SQLFrame:
             escaped = value.replace("\\", "\\\\").replace("'", "''")
             return exp.Var(this=f"E'{escaped}'")
         return exp.convert(value)
+
+    def _ns_lit(self, value: int) -> exp.Expression:
+        """An epoch-nanosecond instant as a literal. A Python datetime holds
+        microseconds, so the text comes from the integer. Only DuckDB and
+        ClickHouse store nanoseconds."""
+        seconds, ns = divmod(value, 1_000_000_000)
+        text = exp.Literal.string(f"{_EPOCH + dt.timedelta(seconds=seconds)}.{ns:09d}")
+        if self.dialect == "clickhouse":
+            # In UTC, as the driver reads a naive column.
+            return exp.func(
+                "toDateTime64", text, exp.Literal.number(9), exp.Literal.string("UTC")
+            )
+        return exp.cast(text, exp.DataType.build("TIMESTAMP_NS", dialect="duckdb"))
 
     def range_cond(
         self, name: str, lo: Any, hi: Any, closed: str = "both"
@@ -458,9 +475,16 @@ def _drop_final_semicolon(query: str, dialect: str) -> str:
     return query
 
 
-def _eval(exprs: Sequence[pl.Expr]) -> tuple[Any, ...]:
-    """Evaluate literal Polars expressions to Python values."""
-    return pl.select(*[e.alias(str(i)) for i, e in enumerate(exprs)]).row(0)
+def _eval(
+    exprs: Sequence[pl.Expr], dtype: pl.DataType | None = None
+) -> tuple[Any, ...]:
+    """Evaluate literal Polars expressions to Python values. A temporal value
+    comes as an int in the physical units of ``dtype``: a Python datetime holds
+    microseconds only."""
+    cols = [e.alias(str(i)) for i, e in enumerate(exprs)]
+    if dtype is not None and dtype.is_temporal():
+        cols = [c.cast(dtype).to_physical() for c in cols]
+    return pl.select(cols).row(0)
 
 
 # ---------------------------------------------------------------------------
@@ -678,12 +702,14 @@ class SQLSource:
             typed = typed.drop_nulls()
             if typed.is_empty():
                 return exp.false()
-            return c.isin(*[frame.lit(v, typed.dtype) for v in typed.to_list()])
+            values = typed.to_physical() if typed.dtype.is_temporal() else typed
+            return c.isin(*[frame.lit(v, typed.dtype) for v in values.to_list()])
         bounds = _clause_bounds(clause, schema)
         if bounds is None:
             return exp.true()
         lo, hi, closed = bounds
-        return frame.range_cond(clause.column, *_eval((lo, hi)), closed=closed)
+        dtype = self.schema.get(clause.column)
+        return frame.range_cond(clause.column, *_eval((lo, hi), dtype), closed=closed)
 
     def physical_minmax(
         self,
@@ -818,7 +844,7 @@ def bucket_extrema(
     if x_range is not None:
         bounds = _typed_range_bounds(x_col, x_range, sch)
         if bounds is not None:
-            conds.append(frame.range_cond(x_col, *_eval(bounds)))
+            conds.append(frame.range_cond(x_col, *_eval(bounds, x_dtype)))
 
     lo_x, lo_y = frame.extreme_by(x_col, y_col, "min")
     hi_x, hi_y = frame.extreme_by(x_col, y_col, "max")
