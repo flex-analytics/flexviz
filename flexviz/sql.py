@@ -297,10 +297,11 @@ class SQLFrame:
                 f"toUnixTimestamp64{fn}",
                 exp.func("toDateTime64", c, exp.Literal.number(precision)),
             )
-        # Postgres keeps microseconds. date_part returns a double, so the
-        # scaled value rounds back to the exact count while one ulp of the
-        # epoch seconds is below 1 us: the years 1700 to 2240 (equal to the
-        # numeric EXTRACT on all 100M benchmark rows, 2x faster).
+        # Postgres keeps microseconds. date_part returns a double (2x faster
+        # than the numeric EXTRACT), which rounds back to the exact count while
+        # one ulp of the epoch seconds is below 0.5 us: from 1834 to 2106.
+        # shortcut: outside that range a value can be 1 us off (a fifth of
+        # them near 2110); use EXTRACT if such values must bin exactly.
         scale = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
         epoch = exp.Anonymous(
             this="date_part", expressions=[exp.Literal.string("epoch"), c]
