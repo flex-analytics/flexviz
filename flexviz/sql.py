@@ -407,7 +407,7 @@ class SQLFrame:
         return self.range_cond(name, *_eval(bounds))
 
     def extreme_by(
-        self, x_name: str, y_name: str, kind: str
+        self, x_name: str, y_name: str, kind: str, x_exact: bool
     ) -> tuple[exp.Expression, exp.Expression]:
         """``(x at the y extremum, the y extremum)`` as two aggregates, whose
         values cast to the dtypes of x and y.
@@ -416,7 +416,8 @@ class SQLFrame:
         smallest ``ARRAY[y, x]`` holds the smallest y and, on a tie, the
         smallest x. Measured on 5M rows, this beats ``array_agg ORDER BY``,
         ``DISTINCT ON`` and window functions. Both elements are doubles, so it
-        takes only an x and a y that a double holds exactly.
+        takes only an x and a y that a double holds exactly: ``x_exact`` says
+        that a double holds every x in physical units.
         """
         sch = self.source.schema
         x_dtype, y_dtype = sch.get(x_name), sch.get(y_name)
@@ -425,15 +426,11 @@ class SQLFrame:
         if self.dialect != "postgres":
             by = exp.ArgMin if kind == "min" else exp.ArgMax
             return by(this=x, expression=y), agg(this=y)
-        # x is exact below 2**53 in physical units; y must be a float or an
-        # integer of at most 32 bits.
-        x_fits = x_dtype not in (pl.Int64, pl.UInt64) and not (
-            isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
-        )
+        # y must be a float or an integer of at most 32 bits.
         y_fits = y_dtype is not None and (
             y_dtype.is_float() or y_dtype in (pl.Boolean, pl.Int8, pl.Int16, pl.Int32)
         )
-        if x_fits and y_fits:
+        if x_exact and y_fits:
             dbl = exp.DataType.Type.DOUBLE
             phys = exp.cast(self.phys(x_name, x_dtype), dbl)
             arr = exp.Paren(
@@ -848,8 +845,12 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds, x_dtype)))
 
-    lo_x, lo_y = frame.extreme_by(x_col, y_col, "min")
-    hi_x, hi_y = frame.extreme_by(x_col, y_col, "max")
+    # Every row lies on the grid, so its bounds bound x.
+    x_exact = (x_dtype is not None and x_dtype.is_float()) or max(
+        abs(x_lo), abs(x_hi)
+    ) <= 2**53
+    lo_x, lo_y = frame.extreme_by(x_col, y_col, "min", x_exact)
+    hi_x, hi_y = frame.extreme_by(x_col, y_col, "max", x_exact)
     names = {
         "lo_x": f"{_ALIAS_PREFIX}lo_{x_col}",
         "lo_y": f"{_ALIAS_PREFIX}lo_{y_col}",
