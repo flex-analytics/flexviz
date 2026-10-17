@@ -27,7 +27,7 @@ expressions applied consistently.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -53,6 +53,9 @@ from .spec import (
     encode_spec,
     figure_axis_columns,
 )
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
 
 
 def _name_figures(message: str, figure_specs: list[FigureSpec]) -> str:
@@ -104,7 +107,7 @@ class Dashboard:
         """
         self._uid: str = str(uuid4())
         self._cache_enabled: bool = cache
-        self._backend_lf: LFQueryBuilder | None = None
+        self._backend_lf: LFQueryBuilder | SQLSource | None = None
         if data is not None:
             self._backend_lf = as_source(data, cache=cache)
 

@@ -19,7 +19,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, get_args
 from uuid import uuid4
 
 import numpy as np
@@ -28,6 +28,9 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
 from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import BackendDataValue, TraceHoverSpec, TraceSelectionSpec, TraceSpec
+
+if TYPE_CHECKING:
+    from ..sql import SQLSource
 
 
 @dataclass
@@ -229,7 +232,7 @@ class FlexTrace(ABC):
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
 
-    def check_source(self, source: LFQueryBuilder) -> None:
+    def check_source(self, source: LFQueryBuilder | SQLSource) -> None:
         """Raise when this trace cannot run on the source.
 
         The engine calls it for every trace before the domains are resolved.

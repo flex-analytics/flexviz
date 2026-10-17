@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 import warnings
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -36,6 +36,9 @@ from .trace.hist2d import Histogram2D
 from .trace.line import LinePlot
 from .trace.pie import PiePlot
 from .trace.treemap import TreeMap
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
 
 
 def _derive_axis_labels(trace_specs: list) -> dict[str, str | None]:
@@ -162,7 +165,7 @@ class Figure:
             call in :meth:`show`.
         """
         self._cache_enabled: bool = cache
-        self._backend_lf: LFQueryBuilder | None = None
+        self._backend_lf: LFQueryBuilder | SQLSource | None = None
         if data is not None:
             self._backend_lf = as_source(data, cache=cache)
 
@@ -956,7 +959,7 @@ def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
 
 
 def _register_source_if_needed(
-    source_name: str, backend_lf: LFQueryBuilder | None, cache: bool = False
+    source_name: str, backend_lf: LFQueryBuilder | SQLSource | None, cache: bool = False
 ) -> None:
     """Register *backend_lf* under *source_name*.
 

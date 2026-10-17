@@ -54,7 +54,7 @@ import re
 import socket
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -82,6 +82,9 @@ from flexviz.spec import (
     check_axis_types,
 )
 
+if TYPE_CHECKING:
+    from flexviz.sql import SQLSource
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ logger = logging.getLogger(__name__)
 # Populated before the server starts; read-only during request handling.
 # ---------------------------------------------------------------------------
 
-_sources: dict[str, LFQueryBuilder] = {}
+_sources: dict[str, LFQueryBuilder | SQLSource] = {}
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:
@@ -145,7 +148,7 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         get_cube_cache().clear()
 
 
-def get_source(name: str) -> LFQueryBuilder:
+def get_source(name: str) -> LFQueryBuilder | SQLSource:
     """Retrieve a registered source or raise ``KeyError``."""
     try:
         return _sources[name]
@@ -605,7 +608,7 @@ async def dashboard_update(
     event = req.event
 
     # -- 1. resolve unique sources --------------------------------------------
-    source_map: dict[str, LFQueryBuilder | None] = {}
+    source_map: dict[str, LFQueryBuilder | SQLSource | None] = {}
     for fig_spec in req.spec.figures:
         name = fig_spec.source
         if name not in source_map:

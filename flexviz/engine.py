@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
@@ -31,6 +31,10 @@ from .trace.base import (
     _physical_bound_expr,
     child_uid_from_group_key,
 )
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
+
 
 # Event types whose computation is unfiltered and viewport-free. These are the
 # only events cached in Phase 1: the engine forces them to drop all
@@ -99,7 +103,8 @@ class _Partition:
 
     owner: str | None
     items: list[_AggregationTrace]
-    filter_exprs: list[pl.Expr]
+    # What the source's compile_filter returns: Polars or SQLGlot conditions.
+    filter_exprs: list[Any]
 
 
 def _normalize_axis_ranges(ranges: dict[str, Any]) -> dict[str, Any]:
@@ -169,7 +174,7 @@ class FlexEngine:
 
     def __init__(
         self,
-        backend_lf: LFQueryBuilder | None,
+        backend_lf: LFQueryBuilder | SQLSource | None,
         scalable_traces: dict[str, FlexTrace],
         cache_backend: CacheBackend | None = None,
         source_name: str | None = None,
@@ -797,7 +802,7 @@ class FlexEngine:
         if not active_selections or self._backend_lf is None:
             return []
 
-        filter_exprs: list[pl.Expr] = []
+        filter_exprs: list[Any] = []
         for sel in active_selections:
             if sel.source_figure_uid is None:
                 continue
@@ -1187,7 +1192,7 @@ class FlexEngine:
 
     def _aggregate_layer(
         self,
-        filter_exprs: list[pl.Expr],
+        filter_exprs: list[Any],
         specs: list[AggregationSpec | GroupedAggregationSpec],
         items: list[_AggregationTrace],
         layer: Literal["bg", "fg"] | None = None,
