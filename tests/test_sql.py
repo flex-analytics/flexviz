@@ -716,22 +716,17 @@ def test_literals_round_trip_exactly(duck):
     assert not _same_values(duck.execute(sql).fetchone(), values)
 
 
-@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse"])
-def test_negative_float_literal_is_parenthesized(duck, dialect):
-    """``a - -1`` printed as ``a --1`` would read as a comment."""
-    frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
-    a = exp.column("a", quoted=True)
-    sql = exp.Sub(this=a, expression=frame.lit(-1.5)).sql(dialect=dialect)
-    assert "--" not in sql
-
-
 @pytest.mark.parametrize("value", [-1.5, -3, -(2**62), -1e-300])
 def test_negative_literal_subtracts(duck, value):
-    frame = SQLFrame(SQLSource(duck, table="src"))
-    sql = exp.select(exp.Sub(this=exp.Literal.number(2), expression=frame.lit(value)))
-    rendered = sql.sql(dialect="duckdb")
-    assert "--" not in rendered
-    assert duck.execute(rendered).fetchone()[0] == 2 - value
+    """``2 - -1`` printed as ``2 --1`` would read as a comment."""
+    for dialect in ("duckdb", "postgres", "clickhouse"):
+        frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
+        sql = exp.select(
+            exp.Sub(this=exp.Literal.number(2), expression=frame.lit(value))
+        ).sql(dialect=dialect)
+        assert "--" not in sql
+        if dialect == "duckdb":
+            assert duck.execute(sql).fetchone()[0] == 2 - value
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse"])
