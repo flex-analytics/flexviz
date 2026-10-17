@@ -1120,6 +1120,16 @@ def test_live_brush_is_off_on_a_sql_source(duck):
     assert spec.client_state.live_brush == "off"
 
 
+def test_adbc_duckdb_reads_a_decimal_as_float64(tmp_path):
+    dbapi = pytest.importorskip("adbc_driver_duckdb.dbapi")
+    path = str(tmp_path / "dec.duckdb")
+    with duckdb.connect(path) as con:
+        con.execute("CREATE TABLE t AS SELECT 1.25::DECIMAL(10, 3) AS d")
+    src = SQLSource(lambda: dbapi.connect(path), table="t", dialect="duckdb")
+    assert src.schema == pl.Schema({"d": pl.Float64()})
+    src.close()
+
+
 # 2026-01-01 in epoch nanoseconds. The rows lie 100 ns apart and off the whole
 # microseconds, which are all a Python datetime holds.
 _NS_EPOCH = 1_767_225_600_000_000_000

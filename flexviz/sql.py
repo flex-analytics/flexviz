@@ -179,15 +179,17 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
             table = cur.fetch_arrow_table()
         finally:
             cur.close()
-        # ADBC sends Postgres numeric as text. It reads as Float64, as the
-        # type OID map does for row drivers.
+        # ADBC sends Postgres numeric as text, and DuckDB DECIMAL as a decimal.
+        # Both read as Float64, as the type OID map does for row drivers.
         numeric = [
             f.name
             for f in table.schema
             if (f.metadata or {}).get(b"ADBC:postgresql:typname") == b"numeric"
         ]
         df: pl.DataFrame = pl.from_arrow(table)  # type: ignore[assignment]
-        return df.with_columns(pl.col(numeric).cast(pl.Float64))
+        return df.with_columns(
+            pl.col(numeric).cast(pl.Float64), pl.col(pl.Decimal).cast(pl.Float64)
+        )
     if module == "clickhouse_connect":
         # Typed by the column type names, so an empty result keeps its types.
         # Polars cannot read some of them, such as Nullable(Decimal(p, s)).
