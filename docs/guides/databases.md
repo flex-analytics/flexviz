@@ -116,6 +116,7 @@ threads, so it needs a function that opens a connection, not a connection
 object. A DuckDB connection is the exception: FlexViz opens a cursor per
 thread. A cursor does not see the TEMP tables and the registered views
 (`con.register`) of your connection, so use a table or a view in the database.
+A SQLAlchemy engine lends FlexViz a connection from its own pool for each query.
 
 FlexViz keeps its idle connections open for the next request. Call
 `src.close()` to close them, for example when your app stops using the source.
@@ -194,8 +195,10 @@ have, gives an error when you add the chart, in your own code.
   puts only columns of the source schema into the SQL, quoted, and renders
   every value as a typed literal, so a spec cannot inject SQL. A column name
   that is not in the schema is refused before any query runs.
-- FlexViz runs its connections in autocommit mode, so an idle connection holds
-  no lock on your tables.
+- FlexViz runs the connections that it opens in autocommit mode, so an idle
+  connection holds no lock on your tables. A connection from a SQLAlchemy
+  engine goes back to the engine's pool after each query, which ends its
+  transaction.
 - The database credentials stay in the Python process. The browser receives
   only aggregates.
 - The FlexViz server has no authentication. Whoever can reach its port can

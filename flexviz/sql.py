@@ -548,9 +548,9 @@ class SQLSource:
         """
         conn = self._connect()
         if hasattr(conn, "dbapi_connection"):
-            # A SQLAlchemy connection goes back to the app's pool when it is
-            # closed, so it keeps its mode; ``_run`` ends each query's
-            # transaction instead.
+            # A SQLAlchemy connection keeps the app's mode: ``_run_on`` hands
+            # it back to the app's pool after each query, which ends its
+            # transaction.
             return conn
         try:
             if hasattr(conn, "adbc_connection"):
@@ -581,10 +581,14 @@ class SQLSource:
     def _run_on(self, conn: Any, sql: str) -> pl.DataFrame:
         try:
             df = _fetch(conn, sql)
-            raw = getattr(conn, "dbapi_connection", conn)
-            if getattr(raw, "autocommit", True) is False:
+            if hasattr(conn, "dbapi_connection"):
+                # Back to the app's pool, which rolls back and applies the
+                # app's pre-ping and recycle rules.
+                conn.close()
+                return df
+            if getattr(conn, "autocommit", True) is False:
                 # The driver kept its transaction: end it before idling.
-                raw.rollback()
+                conn.rollback()
         except BaseException:
             # A failed connection can be broken; the next query opens a new one.
             _close(conn)

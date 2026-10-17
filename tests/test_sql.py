@@ -1222,18 +1222,20 @@ def test_postgres_sqlalchemy_engine(postgres_source):
 
 
 def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source):
-    """A connection that goes back to the app's pool is not left in autocommit:
-    a transaction that the app rolls back stays rolled back."""
+    """Each query hands its connection back to the app's pool, which ends its
+    transaction, and is not left in autocommit: a transaction that the app
+    rolls back stays rolled back."""
     sa = pytest.importorskip("sqlalchemy")
     pytest.importorskip("psycopg")
     uri = os.environ[PG_ENV].replace("postgresql://", "postgresql+psycopg://")
-    engine = sa.create_engine(uri, pool_size=1, max_overflow=1)
+    engine = sa.create_engine(uri, pool_size=1, max_overflow=0, pool_timeout=5)
     table = f"fv_test_{secrets.token_hex(6)}"
     src = SQLSource(engine, table=postgres_source._table)
     try:
-        # psycopg gives no dtypes for an empty result: the schema query runs on
-        # a second connection, which goes back to the pool.
+        # psycopg gives no dtypes for an empty result: the schema query runs
+        # again for the type OIDs, on the one pooled connection.
         assert src.schema == postgres_source.schema
+        assert engine.pool.checkedout() == 0
         with engine.begin() as c:
             c.exec_driver_sql(f'CREATE TABLE "{table}" (n int)')
         with pytest.raises(RuntimeError), engine.begin() as c:
@@ -1241,8 +1243,9 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
             raise RuntimeError
         with engine.connect() as c:
             assert c.exec_driver_sql(f'SELECT count(*) FROM "{table}"').scalar() == 0
-        # The source's own idle connection still holds no table lock.
+        # The connection went back to the pool and holds no table lock.
         src.physical_minmax(["w"])
+        assert engine.pool.checkedout() == 0
         with engine.begin() as c:
             c.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
             c.exec_driver_sql(

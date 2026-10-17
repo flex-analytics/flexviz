@@ -1002,6 +1002,13 @@ SQLSource
 └── close()                     ← closes the idle connections; a later query opens new ones
 ```
 
+- **Connections.** At most `max_connections` queries run at a time. A
+  connection that FlexViz opens runs in autocommit and waits in the source's
+  idle queue for the next query. A SQLAlchemy connection goes back to the
+  app's pool after each query instead: the pool ends its transaction and
+  applies its pre-ping and recycle rules, and FlexViz never holds one while
+  idle.
+
 - **Plans, not expressions.** On a SQL source the engine passes
   `sql_source=True` to `get_aggregation_spec`. A trace with `sql_support`
   returns a spec whose `plan` takes a `SQLFrame` (the source plus the
