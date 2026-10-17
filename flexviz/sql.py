@@ -601,12 +601,16 @@ class SQLSource:
             try:
                 conn = self._idle.get_nowait()
             except queue.Empty:
-                return self._run_on(self._open(), sql)
+                conn = self._open()
+                # A connection FlexViz just opened is fresh: no retry.
+                if not hasattr(conn, "dbapi_connection"):
+                    return self._run_on(conn, sql)
             try:
                 return self._run_on(conn, sql)
             except Exception:
-                # An idle connection can have been dropped (a database restart,
-                # an idle timeout): run the query once more, on a new one.
+                # An idle or pooled connection can have been dropped (a database
+                # restart, an idle timeout): run the query once more, on a new
+                # one.
                 # ponytail: any error retries, so a query that really fails (a
                 # statement timeout) runs twice; test the connection first if
                 # that cost matters.

@@ -1255,6 +1255,28 @@ def test_postgres_replaces_a_dropped_idle_connection(postgres_source):
         src.close()
 
 
+def test_postgres_sqlalchemy_replaces_a_dropped_pooled_connection(postgres_source):
+    """A connection in the app's pool that the database dropped (no pre-ping)
+    fails once, and the query runs again on a new one."""
+    sa = pytest.importorskip("sqlalchemy")
+    pytest.importorskip("psycopg")
+    adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
+    uri = os.environ[PG_ENV]
+    engine = sa.create_engine(
+        uri.replace("postgresql://", "postgresql+psycopg://"),
+        pool_size=1,
+        max_overflow=0,
+    )
+    src = SQLSource(engine, table=postgres_source._table)
+    try:
+        pid = src._run(exp.select(exp.func("pg_backend_pid")).limit(1)).item()
+        with adbc.connect(uri) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
+        assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
+    finally:
+        engine.dispose()
+
+
 def test_postgres_strings_without_standard_conforming_strings(postgres_source):
     """With the setting off, a plain string reads a backslash as an escape: a
     value from the browser still matches as data."""

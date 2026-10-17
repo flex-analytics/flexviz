@@ -117,6 +117,8 @@ object. A DuckDB connection is the exception: FlexViz opens a cursor per
 thread. A cursor does not see the TEMP tables and the registered views
 (`con.register`) of your connection, so use a table or a view in the database.
 A SQLAlchemy engine lends FlexViz a connection from its own pool for each query.
+Create it with `pool_pre_ping=True`, so that the pool replaces a connection
+that the database dropped before FlexViz uses it.
 
 FlexViz keeps its idle connections open for the next request. Call
 `src.close()` to close them, for example when your app stops using the source.
