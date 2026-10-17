@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from .spec import ClauseFilter, SelectionPredicate, SelectionState
-from .trace.base import _dtype_for_col, _temporal_bound_toward, _typed_range_bounds
+from .trace.base import _dtype_for_col, _range_filter_bounds, _temporal_bound_toward
 
 
 def _values_to_typed_series(
@@ -105,12 +105,7 @@ def _clause_bounds(
             ),
             clause.closed,
         )
-    bounds = _typed_range_bounds(clause.column, clause.range, schema, clause.closed)
-    if bounds is None:
-        return None
-    # _typed_range_bounds makes integer bounds inclusive.
-    closed = "both" if dtype is not None and dtype.is_integer() else clause.closed
-    return (*bounds, closed)
+    return _range_filter_bounds(clause.column, clause.range, schema, clause.closed)
 
 
 def predicate_to_expr(

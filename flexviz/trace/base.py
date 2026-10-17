@@ -865,10 +865,22 @@ def _range_filter_expr(
     closed: str = "both",
 ) -> pl.Expr | None:
     """Build a typed ``is_between`` expression for ``col_name`` and ``range_``."""
+    bounds = _range_filter_bounds(col_name, range_, schema, closed)
+    return None if bounds is None else pl.col(col_name).is_between(*bounds)
+
+
+def _range_filter_bounds(
+    col_name: str,
+    range_: tuple[Any, Any] | None,
+    schema: pl.Schema | None = None,
+    closed: str = "both",
+) -> tuple[pl.Expr, pl.Expr, str] | None:
+    """The typed bounds of ``_range_filter_expr`` and the ``closed`` to apply
+    them with. A SQL source compiles the same bounds."""
     bounds = _typed_range_bounds(col_name, range_, schema, closed)
     if bounds is None:
         return None
     dtype = _dtype_for_col(schema, col_name)
     if dtype is not None and dtype.is_integer():
         closed = "both"  # _typed_range_bounds made the bounds inclusive
-    return pl.col(col_name).is_between(*bounds, closed=closed)
+    return (*bounds, closed)

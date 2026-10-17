@@ -817,17 +817,12 @@ def bucket_extrema(
     the bucket's y minimum and y maximum. The bucket arithmetic copies the Polars
     plan's, so both put a row in the same bucket.
     """
-    from .trace.line_buckets import _ALIAS_PREFIX, _BUCKET, bucket_grid
+    from .trace.line_buckets import _ALIAS_PREFIX, _BUCKET, bucket_grid, bucket_width
 
     sch = schema if schema is not None else frame.source.schema
     x_dtype, y_dtype = sch.get(x_col), sch.get(y_col)
     x_lo, x_hi = bucket_grid(x_col, x_range, x_domain, x_dtype)
-    span = x_hi - x_lo
-    bsz = (
-        span / n_buckets
-        if x_dtype is not None and x_dtype.is_float()
-        else -(-span // n_buckets)
-    )
+    bsz = bucket_width(x_hi - x_lo, n_buckets, x_dtype)
     # Parenthesized: int_div builds its own node around it.
     offset = exp.paren(frame.phys(x_col, x_dtype) - _num(x_lo), copy=False)
     if isinstance(bsz, float):

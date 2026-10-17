@@ -129,6 +129,21 @@ def _grouped_bucket_keys(
     )
 
 
+def bucket_width(span: Any, n_buckets: int, dtype: pl.DataType | None) -> Any:
+    """The width of one of ``n_buckets`` buckets over ``span``.
+
+    Float columns need true division: integer ceiling division rounds a sub-1
+    width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
+    Integer and temporal columns divide with a ceiling to keep the width whole.
+    The branch is on the column dtype, because the Python type of the span is
+    no dtype signal: a JSON viewport bound of ``100`` arrives as an int on a
+    float column.
+    """
+    if dtype is not None and dtype.is_float():
+        return span / n_buckets
+    return -(-span // n_buckets)
+
+
 def _bucket_extrema(
     filtered_ldf: pl.LazyFrame,
     x_col: str,
@@ -177,18 +192,7 @@ def _bucket_extrema(
         else pl.col(x_col)
     )
     x_lo, x_hi = bucket_grid(x_col, x_range, x_domain, dtype)
-    # Float columns need true division: integer ceiling division rounds a sub-1
-    # width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
-    # Integer and temporal columns divide with a ceiling to keep the width
-    # whole. The branch is on the column dtype, because the Python type of the
-    # span is no dtype signal: a JSON viewport bound of ``100`` arrives as an
-    # int on a float column.
-    span = x_hi - x_lo
-    bsz = (
-        span / n_buckets
-        if dtype is not None and dtype.is_float()
-        else -(-span // n_buckets)
-    )
+    bsz = bucket_width(x_hi - x_lo, n_buckets, dtype)
 
     # A fractional width multiplies by the reciprocal instead of dividing:
     # Polars lowers a float `//` to that same multiply, and spelling it out is
