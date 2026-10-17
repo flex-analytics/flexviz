@@ -117,6 +117,9 @@ object. A DuckDB connection is the exception: FlexViz opens a cursor per
 thread. A cursor does not see the TEMP tables and the registered views
 (`con.register`) of your connection, so use a table or a view in the database.
 
+FlexViz keeps its idle connections open for the next request. Call
+`src.close()` to close them, for example when your app stops using the source.
+
 ClickHouse example:
 
 ```python

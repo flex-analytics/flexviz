@@ -998,7 +998,8 @@ SQLSource
 ├── schema                      ← Polars schema of `SELECT * ... LIMIT 0`
 ├── compile_filter(predicates)  ← the bounds of `predicates_to_expr` (`_clause_bounds`), as a SQLGlot condition
 ├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
-└── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
+├── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
+└── close()                     ← closes the idle connections; a later query opens new ones
 ```
 
 - **Plans, not expressions.** On a SQL source the engine passes

@@ -592,6 +592,14 @@ class SQLSource:
         self._idle.put(conn)
         return df
 
+    def close(self) -> None:
+        """Close the idle connections. A later query opens new ones."""
+        while True:
+            try:
+                _close(self._idle.get_nowait())
+            except queue.Empty:
+                return
+
     @cached_property
     def schema(self) -> pl.Schema:
         select = exp.select("*").limit(0)

@@ -1083,6 +1083,23 @@ def test_minmax_skips_nan_like_polars(duck):
     assert not math.isnan(hi)
 
 
+def test_close_ends_the_idle_connections(duck):
+    opened = []
+
+    def connect():
+        opened.append(duck.cursor())
+        return opened[-1]
+
+    src = SQLSource(connect, table="src", dialect="duckdb")
+    first = src.physical_minmax(["v"])
+    src.close()
+    with pytest.raises(duckdb.Error):
+        opened[0].execute("SELECT 1")
+    # A later query opens a new connection.
+    assert src.physical_minmax(["v"]) == first
+    assert len(opened) == 2
+
+
 def test_cube_request_on_sql_source_returns_empty_bundle(client):
     get_cache().clear()
     dash = Dashboard()
@@ -1123,11 +1140,6 @@ def _real_name(backend: str) -> str:
     return f"_sql_test_{backend}"
 
 
-def _close_pool(src: SQLSource) -> None:
-    while not src._idle.empty():
-        src._idle.get_nowait().close()
-
-
 @pytest.fixture(scope="module")
 def postgres_source() -> Any:
     uri = os.environ.get(PG_ENV)
@@ -1147,9 +1159,7 @@ def postgres_source() -> Any:
         register_source(_real_name("postgres"), src)
         yield src
     finally:
-        # A pooled connection sits in an open transaction and holds a lock that
-        # blocks the DROP (see test_postgres_pool_holds_no_table_lock).
-        _close_pool(src)
+        src.close()
         with adbc.connect(uri) as conn:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{table}"')
@@ -1180,7 +1190,7 @@ def test_postgres_replaces_a_dropped_idle_connection(postgres_source):
             cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
         assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
     finally:
-        _close_pool(src)
+        src.close()
 
 
 def test_postgres_sqlalchemy_engine(postgres_source):
@@ -1207,7 +1217,7 @@ def test_postgres_sqlalchemy_engine(postgres_source):
             assert all(want[uid] for uid in uids.values())
             assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
         engine.dispose()
 
 
@@ -1239,7 +1249,7 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
                 f'LOCK TABLE "{postgres_source._table}" IN ACCESS EXCLUSIVE MODE'
             )
     finally:
-        _close_pool(src)
+        src.close()
         with engine.begin() as c:
             c.exec_driver_sql(f'DROP TABLE IF EXISTS "{table}"')
         engine.dispose()
@@ -1278,7 +1288,7 @@ def test_postgres_line_bool_y():
         assert all(want.values())
         assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
         with adbc.connect(uri) as conn:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{table}"')
@@ -1348,7 +1358,7 @@ def test_postgres_numeric_reads_as_float64(driver):
                 assert all(want.values())
                 assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
 
 
 _CH_TYPES = {
@@ -1497,7 +1507,7 @@ def test_clickhouse_minmax_over_no_rows_is_null(clickhouse_client):
         bounds = src.physical_minmax(["i", "ts", "v"])
         assert bounds == dict.fromkeys(["i", "ts", "v"], (None, None))
     finally:
-        _close_pool(src)
+        src.close()
         clickhouse_client.command(f'DROP TABLE IF EXISTS "{table}"')
 
 
