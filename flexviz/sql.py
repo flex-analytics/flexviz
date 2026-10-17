@@ -478,16 +478,10 @@ def _drop_final_semicolon(query: str, dialect: str) -> str:
     return query
 
 
-def _eval(
-    exprs: Sequence[pl.Expr], dtype: pl.DataType | None = None
-) -> tuple[Any, ...]:
-    """Evaluate literal Polars expressions to Python values. A temporal value
-    comes as an int in the physical units of ``dtype``: a Python datetime holds
-    microseconds only."""
-    cols = [e.alias(str(i)) for i, e in enumerate(exprs)]
-    if dtype is not None and dtype.is_temporal():
-        cols = [c.cast(dtype).to_physical() for c in cols]
-    return pl.select(cols).row(0)
+def _eval(exprs: Sequence[pl.Expr]) -> tuple[Any, ...]:
+    """Evaluate literal Polars expressions to Python values. A typed range
+    bound is whole microseconds, which a Python datetime holds."""
+    return pl.select(*[e.alias(str(i)) for i, e in enumerate(exprs)]).row(0)
 
 
 # ---------------------------------------------------------------------------
@@ -717,8 +711,7 @@ class SQLSource:
         if bounds is None:
             return exp.true()
         lo, hi, closed = bounds
-        dtype = self.schema.get(clause.column)
-        return frame.range_cond(clause.column, *_eval((lo, hi), dtype), closed=closed)
+        return frame.range_cond(clause.column, *_eval((lo, hi)), closed=closed)
 
     def physical_minmax(
         self,
@@ -852,7 +845,7 @@ def bucket_extrema(
     if x_range is not None:
         bounds = _typed_range_bounds(x_col, x_range, sch)
         if bounds is not None:
-            conds.append(frame.range_cond(x_col, *_eval(bounds, x_dtype)))
+            conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
     # Every row lies on the grid, so its bounds bound x.
     x_exact = (x_dtype is not None and x_dtype.is_float()) or max(
