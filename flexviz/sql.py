@@ -847,7 +847,9 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
-    # Every row lies on the grid, so its bounds bound x.
+    # The grid spans this request's x bounds, so it bounds every row's x.
+    # shortcut: a row written between the bounds query and this one can lie
+    # outside it, and then its x rounds to a double for one render.
     x_exact = (x_dtype is not None and x_dtype.is_float()) or max(
         abs(x_lo), abs(x_hi)
     ) <= 2**53
