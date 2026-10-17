@@ -29,6 +29,7 @@ from sqlglot import exp
 from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
+from flexviz.LF import AggregationSpec
 from flexviz.server import app, register_source
 from flexviz.spec import ClauseFilter, SelectionPredicate, decode_spec
 from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype
@@ -938,6 +939,17 @@ def test_sqlalchemy_dialect_names(name, dialect):
         raw_connection=lambda: None, dialect=SimpleNamespace(name=name)
     )
     assert SQLSource(engine, table="src").dialect == dialect
+
+
+def test_max_connections_is_at_least_one(duck):
+    with pytest.raises(ValueError, match="at least 1"):
+        SQLSource(duck, table="src", max_connections=0)
+
+
+def test_aggregate_refuses_a_spec_without_a_plan(duck):
+    """A select expression is Polars: it has no SQL to run."""
+    with pytest.raises(ValueError, match="only specs with a plan"):
+        SQLSource(duck, table="src").aggregate([], [AggregationSpec(expr=pl.len())])
 
 
 def test_unknown_uri_scheme_is_refused():

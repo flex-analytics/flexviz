@@ -527,6 +527,8 @@ class SQLSource:
     ) -> None:
         if (table is None) == (query is None):
             raise ValueError("Give exactly one of table= or query=.")
+        if max_connections < 1:
+            raise ValueError("max_connections must be at least 1.")
         self._connect, implied = _connector(connection)
         self._idle: queue.SimpleQueue = queue.SimpleQueue()
         self._slots = threading.BoundedSemaphore(max_connections)
@@ -771,6 +773,10 @@ class SQLSource:
 
         Returns what ``LFQueryBuilder.aggregate`` returns.
         """
+        if any(
+            s.plan is None or getattr(s, "pre_group_filters", ()) for s in agg_specs
+        ):
+            raise ValueError("A SQL source runs only specs with a plan and no filters.")
         frame = SQLFrame(self, tuple(filter_exprs))
         with ThreadPoolExecutor(max_workers=self.max_connections) as pool:
             results = list(pool.map(lambda spec: spec.plan(frame), agg_specs))
