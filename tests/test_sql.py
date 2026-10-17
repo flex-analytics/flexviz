@@ -29,7 +29,7 @@ from sqlglot import exp
 from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
-from flexviz.LF import AggregationSpec
+from flexviz.LF import AggregationSpec, as_source
 from flexviz.server import app, register_source
 from flexviz.spec import ClauseFilter, SelectionPredicate, decode_spec
 from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype
@@ -1123,6 +1123,22 @@ def test_live_brush_is_off_on_a_sql_source(duck):
         url = dash.share_url(source_name=name)
         spec = decode_spec(parse_qs(urlsplit(url).query)["spec"][0])
         assert spec.client_state.live_brush == "off"
+
+
+def test_a_column_named_is_sql_is_data():
+    """A pandas frame answers ``df.is_sql`` with a column, whose truth value
+    raises: only a source class says it is a SQL source."""
+
+    class Column:
+        def __bool__(self) -> bool:
+            raise ValueError("The truth value of a Series is ambiguous.")
+
+    class Frame:
+        def __getattr__(self, name: str) -> Column:
+            return Column()
+
+    with pytest.raises(ValueError, match="Unsupported data type"):
+        as_source(Frame())
 
 
 def test_adbc_duckdb_reads_a_decimal_as_float64(tmp_path):
