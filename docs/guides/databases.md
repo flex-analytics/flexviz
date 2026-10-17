@@ -229,7 +229,8 @@ dash = fv.Dashboard(df, cache=True)
 Cast a Postgres `numeric` column to `double precision` in the query, for
 example `chamber_pressure::double precision AS chamber_pressure`. ADBC returns
 `numeric` as text and connectorx as `Decimal`, and FlexViz charts need a float.
-A `SQLSource` reads `numeric` as a float with every driver.
+A `SQLSource` reads a `numeric` or `DECIMAL` column as a float, with every
+driver.
 
 If the rows do not fit in memory, write them to Parquet once and scan the file:
 

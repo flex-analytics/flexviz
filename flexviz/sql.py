@@ -169,7 +169,9 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
     conn = getattr(conn, "dbapi_connection", conn)
     module = type(conn).__module__.split(".", 1)[0].lstrip("_")
     if module == "duckdb":
-        return conn.execute(sql).pl()
+        # A DECIMAL reads as Float64, as Postgres numeric does.
+        df = conn.execute(sql).pl()
+        return df.with_columns(pl.col(pl.Decimal).cast(pl.Float64))
     if module.startswith("adbc_driver"):
         cur = conn.cursor()
         try:

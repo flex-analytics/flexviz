@@ -71,7 +71,7 @@ def _frame() -> pl.DataFrame:
                 for d in rng.integers(0, 60, N)
             ],
             "v": rng.normal(10, 3, N),
-            # Three decimals: a DECIMAL column in ClickHouse.
+            # Three decimals: a DECIMAL column in DuckDB and ClickHouse.
             "dec": rng.integers(-100_000, 100_000, N) / 1000,
             "w": rng.normal(0, 1, N),
             "vn": rng.normal(0, 1, N),
@@ -128,7 +128,9 @@ def _duckdb_con(df: pl.DataFrame, table: str = "src") -> duckdb.DuckDBPyConnecti
 
 @pytest.fixture(scope="module")
 def duck() -> duckdb.DuckDBPyConnection:
-    return _duckdb_con(DF)
+    con = _duckdb_con(DF)
+    con.execute("ALTER TABLE src ALTER dec TYPE DECIMAL(10, 3)")
+    return con
 
 
 @pytest.fixture(scope="module")
