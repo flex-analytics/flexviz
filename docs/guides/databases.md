@@ -193,8 +193,10 @@ have, gives an error when you add the chart, in your own code.
 
 - Column names come from the dashboard spec, which the browser sends. FlexViz
   puts only columns of the source schema into the SQL, quoted, and renders
-  every value as a typed literal, so a spec cannot inject SQL. A column name
-  that is not in the schema is refused before any query runs.
+  every value as a typed literal, so a spec cannot inject SQL. On Postgres a
+  string is an escape string (`E'...'`), which reads the same with either
+  `standard_conforming_strings` setting. A column name that is not in the
+  schema is refused before any query runs.
 - FlexViz runs the connections that it opens in autocommit mode, so an idle
   connection holds no lock on your tables. A connection from a SQLAlchemy
   engine goes back to the engine's pool after each query, which ends its

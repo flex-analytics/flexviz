@@ -30,6 +30,7 @@ from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
 from flexviz.server import app, register_source
+from flexviz.spec import ClauseFilter, SelectionPredicate, decode_spec
 from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype
 
 pytestmark = pytest.mark.integration
@@ -762,11 +763,12 @@ AWKWARD = 'it\'s a \\ back\\slash "dq" -- not a comment; DROP TABLE src'
 @pytest.mark.parametrize(
     ("dialect", "rendered"),
     [
-        # Postgres and DuckDB read a backslash as itself.
+        # DuckDB reads a backslash as itself.
         ("duckdb", "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'"),
+        # An escape string, whatever standard_conforming_strings is.
         (
             "postgres",
-            "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'",
+            "E'it''s a \\\\ back\\\\slash \"dq\" -- not a comment; DROP TABLE src'",
         ),
         # ClickHouse reads a backslash as an escape.
         (
@@ -1189,6 +1191,36 @@ def test_postgres_replaces_a_dropped_idle_connection(postgres_source):
         with adbc.connect(os.environ[PG_ENV]) as conn, conn.cursor() as cur:
             cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
         assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
+    finally:
+        src.close()
+
+
+def test_postgres_strings_without_standard_conforming_strings(postgres_source):
+    """With the setting off, a plain string reads a backslash as an escape: a
+    value from the browser still matches as data."""
+    uri = os.environ[PG_ENV]
+    off = "options=-c%20standard_conforming_strings%3Doff"
+    src = SQLSource(
+        f"{uri}{'&' if '?' in uri else '?'}{off}", table=postgres_source._table
+    )
+    frame = SQLFrame(src)
+    try:
+        setting = exp.func(
+            "current_setting", exp.Literal.string("standard_conforming_strings")
+        )
+        assert src._run(exp.select(setting).limit(1)).item() == "off"
+        strings = [AWKWARD, "a\\nb", "a\\' OR 1=1 --"]
+        assert src._run(_literal_select(frame, strings).limit(1)).row(0) == tuple(
+            strings
+        )
+        clause = ClauseFilter(column="cat", values=strings)
+        cond = src.compile_filter([SelectionPredicate(clauses=[clause])], src.schema)
+        assert (
+            SQLFrame(src, (cond,))
+            .collect(exp.select(exp.Count(this=exp.Star())))
+            .item()
+            == 0
+        )
     finally:
         src.close()
 

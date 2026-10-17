@@ -355,6 +355,13 @@ class SQLFrame:
                 value = value.replace(tzinfo=dt.timezone.utc)
             else:
                 value = value.astimezone(dt.timezone.utc)
+        if isinstance(value, str) and self.dialect == "postgres":
+            # An escape string (E'...') reads the same under either setting of
+            # standard_conforming_strings. With it off, a plain string reads a
+            # backslash as an escape, so a value from the browser could end it.
+            # Written here: SQLGlot doubles the backslash only from 30.22 on.
+            escaped = value.replace("\\", "\\\\").replace("'", "''")
+            return exp.Var(this=f"E'{escaped}'")
         return exp.convert(value)
 
     def range_cond(
