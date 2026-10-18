@@ -120,6 +120,12 @@ threads, so it needs a function that opens a connection, not a connection
 object. A DuckDB connection is the exception: FlexViz opens a cursor per
 thread. A cursor does not see the TEMP tables and the registered views
 (`con.register`) of your connection, so use a table or a view in the database.
+A SQLAlchemy engine lends FlexViz a connection from its own pool for each query.
+Create it with `pool_pre_ping=True`, so that the pool replaces a connection
+that the database dropped before FlexViz uses it.
+
+FlexViz keeps its idle connections open for the next request. Call
+`src.close()` to close them, for example when your app stops using the source.
 
 ClickHouse example:
 
@@ -227,17 +233,22 @@ have, gives an error when you add the chart, in your own code.
   sentinel date) a value can be 1 µs or more off, so it can fall in the bin
   next to its own at a bin edge. The value that a chart shows stays exact.
 - `Dashboard(src, cache=True)` declares that the data does not change while the
-  server runs. FlexViz then keeps the column bounds and the first render. Do
-  not set it on a table that receives new rows.
+  server runs. FlexViz then keeps the column bounds and the first render.
+  Without it, every request first asks the database for the column bounds
+  again. Do not set it on a table that receives new rows.
 
 ### Security
 
 - Column names come from the dashboard spec, which the browser sends. FlexViz
   puts only columns of the source schema into the SQL, quoted, and renders
-  every value as a typed literal, so a spec cannot inject SQL. A column name
-  that is not in the schema is refused before any query runs.
-- FlexViz runs its connections in autocommit mode, so an idle connection holds
-  no lock on your tables.
+  every value as a typed literal, so a spec cannot inject SQL. On Postgres a
+  string is an escape string (`E'...'`), which reads the same with either
+  `standard_conforming_strings` setting. A column name that is not in the
+  schema is refused before any query runs.
+- FlexViz runs the connections that it opens in autocommit mode, so an idle
+  connection holds no lock on your tables. A connection from a SQLAlchemy
+  engine goes back to the engine's pool after each query, which ends its
+  transaction.
 - The database credentials stay in the Python process. The browser receives
   only aggregates.
 - The FlexViz server has no authentication. Whoever can reach its port can
@@ -266,7 +277,8 @@ dash = fv.Dashboard(df, cache=True)
 Cast a Postgres `numeric` column to `double precision` in the query, for
 example `chamber_pressure::double precision AS chamber_pressure`. ADBC returns
 `numeric` as text and connectorx as `Decimal`, and FlexViz charts need a float.
-A `SQLSource` reads `numeric` as a float with every driver.
+A `SQLSource` reads a `numeric` or `DECIMAL` column as a float, with every
+driver.
 
 If the rows do not fit in memory, write them to Parquet once and scan the file:
 

@@ -87,3 +87,4 @@ nav:
       - Dashboard: api/dashboard.md
       - Layout: api/layout.md
       - Server: api/server.md
+      - SQL source: api/sql.md

@@ -37,7 +37,8 @@ def as_source(data, cache: bool = False):
     and takes ``cache``; anything else is data that ``polars_lf_from`` accepts,
     wrapped in an ``LFQueryBuilder``.
     """
-    if isinstance(data, LFQueryBuilder) or getattr(data, "is_sql", False):
+    # The class attribute: a pandas frame answers ``.is_sql`` with a column.
+    if isinstance(data, LFQueryBuilder) or getattr(type(data), "is_sql", False):
         data.cache = cache
         return data
     return LFQueryBuilder(polars_lf_from(data), cache=cache)

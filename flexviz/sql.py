@@ -53,6 +53,8 @@ _DIALECT_ALIASES = {"postgresql": "postgres", "clickhousedb": "clickhouse"}
 _P = "__fv_"
 _SRC = _P + "src"
 
+_EPOCH = dt.datetime(1970, 1, 1)
+
 #: Postgres type OIDs, for drivers that return rows instead of Arrow. Only the
 #: schema query needs them: an empty result carries no values to infer from.
 _PG_OIDS: dict[int, pl.DataType] = {
@@ -202,7 +204,9 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
     conn = getattr(conn, "dbapi_connection", conn)
     module = type(conn).__module__.split(".", 1)[0].lstrip("_")
     if module == "duckdb":
-        return conn.execute(sql).pl()
+        # A DECIMAL reads as Float64, as Postgres numeric does.
+        df = conn.execute(sql).pl()
+        return df.with_columns(pl.col(pl.Decimal).cast(pl.Float64))
     if module.startswith("adbc_driver"):
         cur = conn.cursor()
         try:
@@ -210,15 +214,17 @@ def _fetch(conn: Any, sql: str) -> pl.DataFrame:
             table = cur.fetch_arrow_table()
         finally:
             cur.close()
-        # ADBC sends Postgres numeric as text. It reads as Float64, as the
-        # type OID map does for row drivers.
+        # ADBC sends Postgres numeric as text, and DuckDB DECIMAL as a decimal.
+        # Both read as Float64, as the type OID map does for row drivers.
         numeric = [
             f.name
             for f in table.schema
             if (f.metadata or {}).get(b"ADBC:postgresql:typname") == b"numeric"
         ]
         df: pl.DataFrame = pl.from_arrow(table)  # type: ignore[assignment]
-        return df.with_columns(pl.col(numeric).cast(pl.Float64))
+        return df.with_columns(
+            pl.col(numeric).cast(pl.Float64), pl.col(pl.Decimal).cast(pl.Float64)
+        )
     if module == "clickhouse_connect":
         # Typed by the column type names, so an empty result keeps its types.
         # Polars cannot read some of them, such as Nullable(Decimal(p, s)).
@@ -381,9 +387,11 @@ class SQLFrame:
                 f"{ms} * 1000 + CAST(round(({seconds} - {ms} / 1e3) * 1e6) AS bigint)",
                 c=c,
             )
-        # Postgres keeps microseconds. date_part returns a double, so the
-        # scaled value is within 0.5 of the exact count and rounds back to it
-        # (equal to the numeric EXTRACT on all 100M benchmark rows, 2x faster).
+        # Postgres keeps microseconds. date_part returns a double (2x faster
+        # than the numeric EXTRACT), which rounds back to the exact count while
+        # one ulp of the epoch seconds is below 0.5 us: from 1834 to 2106.
+        # shortcut: outside that range a value can be 1 us off (a fifth of
+        # them near 2110); use EXTRACT if such values must bin exactly.
         scale = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
         epoch = exp.Anonymous(
             this="date_part", expressions=[exp.Literal.string("epoch"), c]
@@ -430,6 +438,8 @@ class SQLFrame:
         if value is None:
             return exp.Null()
         if dtype is not None and dtype.is_temporal() and isinstance(value, int):
+            if isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns":
+                return self._ns_lit(value)
             value = pl.Series([value], dtype=pl.Int64).cast(dtype).item()
         if isinstance(value, float):
             return _num(value)
@@ -442,7 +452,27 @@ class SQLFrame:
                 value = value.replace(tzinfo=dt.timezone.utc)
             else:
                 value = value.astimezone(dt.timezone.utc)
+        if isinstance(value, str) and self.dialect == "postgres":
+            # An escape string (E'...') reads the same under either setting of
+            # standard_conforming_strings. With it off, a plain string reads a
+            # backslash as an escape, so a value from the browser could end it.
+            # Written here: SQLGlot doubles the backslash only from 30.22 on.
+            escaped = value.replace("\\", "\\\\").replace("'", "''")
+            return exp.Var(this=f"E'{escaped}'")
         return exp.convert(value)
+
+    def _ns_lit(self, value: int) -> exp.Expression:
+        """An epoch-nanosecond instant as a literal. A Python datetime holds
+        microseconds, so the text comes from the integer. Only DuckDB and
+        ClickHouse store nanoseconds."""
+        seconds, ns = divmod(value, 1_000_000_000)
+        text = exp.Literal.string(f"{_EPOCH + dt.timedelta(seconds=seconds)}.{ns:09d}")
+        if self.dialect == "clickhouse":
+            # In UTC, as the driver reads a naive column.
+            return exp.func(
+                "toDateTime64", text, exp.Literal.number(9), exp.Literal.string("UTC")
+            )
+        return exp.cast(text, exp.DataType.build("TIMESTAMP_NS", dialect="duckdb"))
 
     def range_cond(
         self, name: str, lo: Any, hi: Any, closed: str = "both"
@@ -468,7 +498,7 @@ class SQLFrame:
         return self.range_cond(name, *_eval(bounds))
 
     def extreme_by(
-        self, x_name: str, y_name: str, kind: str
+        self, x_name: str, y_name: str, kind: str, x_exact: bool
     ) -> tuple[exp.Expression, exp.Expression]:
         """``(x at the y extremum, the y extremum)`` as two aggregates, whose
         values cast to the dtypes of x and y.
@@ -477,7 +507,8 @@ class SQLFrame:
         smallest ``ARRAY[y, x]`` holds the smallest y and, on a tie, the
         smallest x. Measured on 5M rows, this beats ``array_agg ORDER BY``,
         ``DISTINCT ON`` and window functions. Both elements are doubles, so it
-        takes only an x and a y that a double holds exactly.
+        takes only an x and a y that a double holds exactly: ``x_exact`` says
+        that a double holds every x in physical units.
         """
         sch = self.source.schema
         x_dtype, y_dtype = sch.get(x_name), sch.get(y_name)
@@ -486,15 +517,11 @@ class SQLFrame:
         if self.dialect != "postgres":
             by = exp.ArgMin if kind == "min" else exp.ArgMax
             return by(this=x, expression=y), agg(this=y)
-        # x is exact below 2**53 in physical units; y must be a float or an
-        # integer of at most 32 bits.
-        x_fits = x_dtype not in (pl.Int64, pl.UInt64) and not (
-            isinstance(x_dtype, pl.Datetime) and x_dtype.time_unit == "ns"
-        )
+        # y must be a float or an integer of at most 32 bits.
         y_fits = y_dtype is not None and (
             y_dtype.is_float() or y_dtype in (pl.Boolean, pl.Int8, pl.Int16, pl.Int32)
         )
-        if x_fits and y_fits:
+        if x_exact and y_fits:
             dbl = exp.DataType.Type.DOUBLE
             phys = exp.cast(self.phys(x_name, x_dtype), dbl)
             arr = exp.Paren(
@@ -539,7 +566,8 @@ def _drop_final_semicolon(query: str, dialect: str) -> str:
 
 
 def _eval(exprs: Sequence[pl.Expr]) -> tuple[Any, ...]:
-    """Evaluate literal Polars expressions to Python values."""
+    """Evaluate literal Polars expressions to Python values. A typed range
+    bound is whole microseconds, which a Python datetime holds."""
     return pl.select(*[e.alias(str(i)) for i, e in enumerate(exprs)]).row(0)
 
 
@@ -584,6 +612,8 @@ class SQLSource:
     ) -> None:
         if (table is None) == (query is None):
             raise ValueError("Give exactly one of table= or query=.")
+        if max_connections < 1:
+            raise ValueError("max_connections must be at least 1.")
         self._connect, implied = _connector(connection)
         self._idle: queue.SimpleQueue = queue.SimpleQueue()
         self._slots = threading.BoundedSemaphore(max_connections)
@@ -635,9 +665,9 @@ class SQLSource:
         """
         conn = self._connect()
         if hasattr(conn, "dbapi_connection"):
-            # A SQLAlchemy connection goes back to the app's pool when it is
-            # closed, so it keeps its mode; ``_run`` ends each query's
-            # transaction instead.
+            # A SQLAlchemy connection keeps the app's mode: ``_run_on`` hands
+            # it back to the app's pool after each query, which ends its
+            # transaction.
             return conn
         try:
             if hasattr(conn, "adbc_connection"):
@@ -654,12 +684,16 @@ class SQLSource:
             try:
                 conn = self._idle.get_nowait()
             except queue.Empty:
-                return self._run_on(self._open(), sql)
+                conn = self._open()
+                # A connection FlexViz just opened is fresh: no retry.
+                if not hasattr(conn, "dbapi_connection"):
+                    return self._run_on(conn, sql)
             try:
                 return self._run_on(conn, sql)
             except Exception:
-                # An idle connection can have been dropped (a database restart,
-                # an idle timeout): run the query once more, on a new one.
+                # An idle or pooled connection can have been dropped (a database
+                # restart, an idle timeout): run the query once more, on a new
+                # one.
                 # ponytail: any error retries, so a query that really fails (a
                 # statement timeout) runs twice; test the connection first if
                 # that cost matters.
@@ -668,16 +702,28 @@ class SQLSource:
     def _run_on(self, conn: Any, sql: str) -> pl.DataFrame:
         try:
             df = _fetch(conn, sql)
-            raw = getattr(conn, "dbapi_connection", conn)
-            if getattr(raw, "autocommit", True) is False:
+            if hasattr(conn, "dbapi_connection"):
+                # Back to the app's pool, which rolls back and applies the
+                # app's pre-ping and recycle rules.
+                conn.close()
+                return df
+            if getattr(conn, "autocommit", True) is False:
                 # The driver kept its transaction: end it before idling.
-                raw.rollback()
+                conn.rollback()
         except BaseException:
             # A failed connection can be broken; the next query opens a new one.
             _close(conn)
             raise
         self._idle.put(conn)
         return df
+
+    def close(self) -> None:
+        """Close the idle connections. A later query opens new ones."""
+        while True:
+            try:
+                _close(self._idle.get_nowait())
+            except queue.Empty:
+                return
 
     @cached_property
     def schema(self) -> pl.Schema:
@@ -746,7 +792,8 @@ class SQLSource:
             typed = typed.drop_nulls()
             if typed.is_empty():
                 return exp.false()
-            return c.isin(*[frame.lit(v, typed.dtype) for v in typed.to_list()])
+            values = typed.to_physical() if typed.dtype.is_temporal() else typed
+            return c.isin(*[frame.lit(v, typed.dtype) for v in values.to_list()])
         bounds = _clause_bounds(clause, schema)
         if bounds is None:
             return exp.true()
@@ -814,6 +861,10 @@ class SQLSource:
 
         Returns what ``LFQueryBuilder.aggregate`` returns.
         """
+        if any(
+            s.plan is None or getattr(s, "pre_group_filters", ()) for s in agg_specs
+        ):
+            raise ValueError("A SQL source runs only specs with a plan and no filters.")
         frame = SQLFrame(self, tuple(filter_exprs))
         with ThreadPoolExecutor(max_workers=self.max_connections) as pool:
             results = list(pool.map(lambda spec: spec.plan(frame), agg_specs))
@@ -860,17 +911,12 @@ def bucket_extrema(
     the bucket's y minimum and y maximum. The bucket arithmetic copies the Polars
     plan's, so both put a row in the same bucket.
     """
-    from .trace.line_buckets import _ALIAS_PREFIX, _BUCKET, bucket_grid
+    from .trace.line_buckets import _ALIAS_PREFIX, _BUCKET, bucket_grid, bucket_width
 
     sch = schema if schema is not None else frame.source.schema
     x_dtype, y_dtype = sch.get(x_col), sch.get(y_col)
     x_lo, x_hi = bucket_grid(x_col, x_range, x_domain, x_dtype)
-    span = x_hi - x_lo
-    bsz = (
-        span / n_buckets
-        if x_dtype is not None and x_dtype.is_float()
-        else -(-span // n_buckets)
-    )
+    bsz = bucket_width(x_hi - x_lo, n_buckets, x_dtype)
     # Parenthesized: int_div builds its own node around it.
     offset = exp.paren(frame.phys(x_col, x_dtype) - _num(x_lo), copy=False)
     if isinstance(bsz, float):
@@ -888,8 +934,14 @@ def bucket_extrema(
         if bounds is not None:
             conds.append(frame.range_cond(x_col, *_eval(bounds)))
 
-    lo_x, lo_y = frame.extreme_by(x_col, y_col, "min")
-    hi_x, hi_y = frame.extreme_by(x_col, y_col, "max")
+    # The grid spans this request's x bounds, so it bounds every row's x.
+    # shortcut: a row written between the bounds query and this one can lie
+    # outside it, and then its x rounds to a double for one render.
+    x_exact = (x_dtype is not None and x_dtype.is_float()) or max(
+        abs(x_lo), abs(x_hi)
+    ) <= 2**53
+    lo_x, lo_y = frame.extreme_by(x_col, y_col, "min", x_exact)
+    hi_x, hi_y = frame.extreme_by(x_col, y_col, "max", x_exact)
     names = {
         "lo_x": f"{_ALIAS_PREFIX}lo_{x_col}",
         "lo_y": f"{_ALIAS_PREFIX}lo_{y_col}",

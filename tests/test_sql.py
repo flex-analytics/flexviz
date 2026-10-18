@@ -19,7 +19,7 @@ import sys
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import duckdb
 import numpy as np
@@ -31,7 +31,9 @@ from sqlglot import exp
 from flexviz import Dashboard
 from flexviz.cache import get_cache
 from flexviz.cube import decode_cube_bundle
+from flexviz.LF import AggregationSpec, as_source
 from flexviz.server import app, register_source
+from flexviz.spec import ClauseFilter, SelectionPredicate, decode_spec
 from flexviz.sql import SQLFrame, SQLSource, _clickhouse_dtype, _trino_dtype
 
 pytestmark = pytest.mark.integration
@@ -73,7 +75,7 @@ def _frame() -> pl.DataFrame:
                 for d in rng.integers(0, 60, N)
             ],
             "v": rng.normal(10, 3, N),
-            # Three decimals: a DECIMAL column in ClickHouse.
+            # Three decimals: a DECIMAL column in DuckDB and ClickHouse.
             "dec": rng.integers(-100_000, 100_000, N) / 1000,
             "w": rng.normal(0, 1, N),
             "vn": rng.normal(0, 1, N),
@@ -130,7 +132,9 @@ def _duckdb_con(df: pl.DataFrame, table: str = "src") -> duckdb.DuckDBPyConnecti
 
 @pytest.fixture(scope="module")
 def duck() -> duckdb.DuckDBPyConnection:
-    return _duckdb_con(DF)
+    con = _duckdb_con(DF)
+    con.execute("ALTER TABLE src ALTER dec TYPE DECIMAL(10, 3)")
+    return con
 
 
 @pytest.fixture(scope="module")
@@ -715,22 +719,17 @@ def test_literals_round_trip_exactly(duck):
     assert not _same_values(duck.execute(sql).fetchone(), values)
 
 
-@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse", "trino"])
-def test_negative_float_literal_is_parenthesized(duck, dialect):
-    """``a - -1`` printed as ``a --1`` would read as a comment."""
-    frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
-    a = exp.column("a", quoted=True)
-    sql = exp.Sub(this=a, expression=frame.lit(-1.5)).sql(dialect=dialect)
-    assert "--" not in sql
-
-
 @pytest.mark.parametrize("value", [-1.5, -3, -(2**62), -1e-300])
 def test_negative_literal_subtracts(duck, value):
-    frame = SQLFrame(SQLSource(duck, table="src"))
-    sql = exp.select(exp.Sub(this=exp.Literal.number(2), expression=frame.lit(value)))
-    rendered = sql.sql(dialect="duckdb")
-    assert "--" not in rendered
-    assert duck.execute(rendered).fetchone()[0] == 2 - value
+    """``2 - -1`` printed as ``2 --1`` would read as a comment."""
+    for dialect in ("duckdb", "postgres", "clickhouse", "trino"):
+        frame = SQLFrame(SQLSource(duck, table="src", dialect=dialect))
+        sql = exp.select(
+            exp.Sub(this=exp.Literal.number(2), expression=frame.lit(value))
+        ).sql(dialect=dialect)
+        assert "--" not in sql
+        if dialect == "duckdb":
+            assert duck.execute(sql).fetchone()[0] == 2 - value
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "clickhouse", "trino"])
@@ -765,11 +764,12 @@ AWKWARD = 'it\'s a \\ back\\slash "dq" -- not a comment; DROP TABLE src'
 @pytest.mark.parametrize(
     ("dialect", "rendered"),
     [
-        # Postgres and DuckDB read a backslash as itself.
+        # DuckDB reads a backslash as itself.
         ("duckdb", "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'"),
+        # An escape string, whatever standard_conforming_strings is.
         (
             "postgres",
-            "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'",
+            "E'it''s a \\\\ back\\\\slash \"dq\" -- not a comment; DROP TABLE src'",
         ),
         # Trino has no backslash escape in a string literal.
         ("trino", "'it''s a \\ back\\slash \"dq\" -- not a comment; DROP TABLE src'"),
@@ -942,6 +942,17 @@ def test_sqlalchemy_dialect_names(name, dialect):
     assert SQLSource(engine, table="src").dialect == dialect
 
 
+def test_max_connections_is_at_least_one(duck):
+    with pytest.raises(ValueError, match="at least 1"):
+        SQLSource(duck, table="src", max_connections=0)
+
+
+def test_aggregate_refuses_a_spec_without_a_plan(duck):
+    """A select expression is Polars: it has no SQL to run."""
+    with pytest.raises(ValueError, match="only specs with a plan"):
+        SQLSource(duck, table="src").aggregate([], [AggregationSpec(expr=pl.len())])
+
+
 def test_unknown_uri_scheme_is_refused():
     with pytest.raises(ValueError, match="only postgresql://"):
         SQLSource("mysql://u:p@localhost/db", table="src")
@@ -1089,6 +1100,105 @@ def test_minmax_skips_nan_like_polars(duck):
     assert not math.isnan(hi)
 
 
+def test_close_ends_the_idle_connections(duck):
+    opened = []
+
+    def connect():
+        opened.append(duck.cursor())
+        return opened[-1]
+
+    src = SQLSource(connect, table="src", dialect="duckdb")
+    first = src.physical_minmax(["v"])
+    src.close()
+    with pytest.raises(duckdb.Error):
+        opened[0].execute("SELECT 1")
+    # A later query opens a new connection.
+    assert src.physical_minmax(["v"]) == first
+    assert len(opened) == 2
+
+
+def test_live_brush_is_off_on_a_sql_source(duck):
+    """A SQL source serves no cube, so the page asks for none on each drag:
+    whether the dashboard holds the source or names a registered one."""
+    register_source("_sql_test_duckdb_static", SQLSource(duck, table="src"), cache=True)
+    for dash, name in (
+        (Dashboard(SQLSource(duck, table="src"), cache=True), DUCKDB),
+        (Dashboard(cache=True), "_sql_test_duckdb_static"),
+    ):
+        dash.add_figure().add_histogram(x="v")
+        url = dash.share_url(source_name=name)
+        spec = decode_spec(parse_qs(urlsplit(url).query)["spec"][0])
+        assert spec.client_state.live_brush == "off"
+
+
+def test_a_column_named_is_sql_is_data():
+    """A pandas frame answers ``df.is_sql`` with a column, whose truth value
+    raises: only a source class says it is a SQL source."""
+
+    class Column:
+        def __bool__(self) -> bool:
+            raise ValueError("The truth value of a Series is ambiguous.")
+
+    class Frame:
+        def __getattr__(self, name: str) -> Column:
+            return Column()
+
+    with pytest.raises(ValueError, match="Unsupported data type"):
+        as_source(Frame())
+
+
+def test_adbc_duckdb_reads_a_decimal_as_float64(tmp_path):
+    dbapi = pytest.importorskip("adbc_driver_duckdb.dbapi")
+    path = str(tmp_path / "dec.duckdb")
+    with duckdb.connect(path) as con:
+        con.execute("CREATE TABLE t AS SELECT 1.25::DECIMAL(10, 3) AS d")
+    src = SQLSource(lambda: dbapi.connect(path), table="t", dialect="duckdb")
+    assert src.schema == pl.Schema({"d": pl.Float64()})
+    src.close()
+
+
+# 2026-01-01 in epoch nanoseconds. The rows lie 100 ns apart and off the whole
+# microseconds, which are all a Python datetime holds.
+_NS_EPOCH = 1_767_225_600_000_000_000
+_NS_FRAME = pl.DataFrame(
+    {"t": pl.Series(range(_NS_EPOCH + 50, _NS_EPOCH + 3_000, 100))}
+).cast(pl.Datetime("ns"))
+
+
+def _ns_source(request, backend: str) -> SQLSource:
+    if backend == "duckdb":
+        return SQLSource(_duckdb_con(_NS_FRAME), table="src")
+    client = request.getfixturevalue("clickhouse_client")
+    table = f"fv_test_{secrets.token_hex(6)}"
+    client.command(f'CREATE TABLE "{table}" (t DateTime64(9)) ENGINE = Memory')
+    request.addfinalizer(lambda: client.command(f'DROP TABLE "{table}"'))
+    # From the integers: the driver would send microseconds.
+    client.command(
+        f'INSERT INTO "{table}" SELECT fromUnixTimestamp64Nano('
+        f"toInt64({_NS_EPOCH + 50} + number * 100), 'UTC') FROM numbers(30)"
+    )
+    return SQLSource(_ch_connect, table=table, dialect="clickhouse")
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "clickhouse"])
+def test_nanosecond_bounds_are_exact(request, backend):
+    """A zoom edge and a selected value between two microseconds keep the rows
+    a Polars source keeps, not those of the microsecond they fall in."""
+    src = _ns_source(request, backend)
+    frame = SQLFrame(src)
+
+    def count(cond: exp.Expression) -> int:
+        return frame.collect(exp.select(exp.Count(this=exp.Star())).where(cond)).item()
+
+    # The rows at +550 ns to +1250 ns; [+0, +1000] would hold 10.
+    zoom = frame.phys_range_cond("t", _NS_EPOCH + 500, _NS_EPOCH + 1300)
+    assert count(zoom) == 8
+    clause = ClauseFilter(column="t", values=["2026-01-01T00:00:00.000000750"])
+    selected = src.compile_filter([SelectionPredicate(clauses=[clause])], src.schema)
+    assert count(selected) == 1
+    src.close()
+
+
 def test_cube_request_on_sql_source_returns_empty_bundle(client):
     get_cache().clear()
     dash = Dashboard()
@@ -1129,11 +1239,6 @@ def _real_name(backend: str) -> str:
     return f"_sql_test_{backend}"
 
 
-def _close_pool(src: SQLSource) -> None:
-    while not src._idle.empty():
-        src._idle.get_nowait().close()
-
-
 @pytest.fixture(scope="module")
 def postgres_source() -> Any:
     uri = os.environ.get(PG_ENV)
@@ -1153,9 +1258,7 @@ def postgres_source() -> Any:
         register_source(_real_name("postgres"), src)
         yield src
     finally:
-        # A pooled connection sits in an open transaction and holds a lock that
-        # blocks the DROP (see test_postgres_pool_holds_no_table_lock).
-        _close_pool(src)
+        src.close()
         with adbc.connect(uri) as conn:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{table}"')
@@ -1186,7 +1289,59 @@ def test_postgres_replaces_a_dropped_idle_connection(postgres_source):
             cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
         assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
     finally:
-        _close_pool(src)
+        src.close()
+
+
+def test_postgres_sqlalchemy_replaces_a_dropped_pooled_connection(postgres_source):
+    """A connection in the app's pool that the database dropped (no pre-ping)
+    fails once, and the query runs again on a new one."""
+    sa = pytest.importorskip("sqlalchemy")
+    pytest.importorskip("psycopg")
+    adbc = pytest.importorskip("adbc_driver_postgresql.dbapi")
+    uri = os.environ[PG_ENV]
+    engine = sa.create_engine(
+        uri.replace("postgresql://", "postgresql+psycopg://"),
+        pool_size=1,
+        max_overflow=0,
+    )
+    src = SQLSource(engine, table=postgres_source._table)
+    try:
+        pid = src._run(exp.select(exp.func("pg_backend_pid")).limit(1)).item()
+        with adbc.connect(uri) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT pg_terminate_backend({int(pid)})")
+        assert src.physical_minmax(["w"])["w"] == (DF["w"].min(), DF["w"].max())
+    finally:
+        engine.dispose()
+
+
+def test_postgres_strings_without_standard_conforming_strings(postgres_source):
+    """With the setting off, a plain string reads a backslash as an escape: a
+    value from the browser still matches as data."""
+    uri = os.environ[PG_ENV]
+    off = "options=-c%20standard_conforming_strings%3Doff"
+    src = SQLSource(
+        f"{uri}{'&' if '?' in uri else '?'}{off}", table=postgres_source._table
+    )
+    frame = SQLFrame(src)
+    try:
+        setting = exp.func(
+            "current_setting", exp.Literal.string("standard_conforming_strings")
+        )
+        assert src._run(exp.select(setting).limit(1)).item() == "off"
+        strings = [AWKWARD, "a\\nb", "a\\' OR 1=1 --"]
+        assert src._run(_literal_select(frame, strings).limit(1)).row(0) == tuple(
+            strings
+        )
+        clause = ClauseFilter(column="cat", values=strings)
+        cond = src.compile_filter([SelectionPredicate(clauses=[clause])], src.schema)
+        assert (
+            SQLFrame(src, (cond,))
+            .collect(exp.select(exp.Count(this=exp.Star())))
+            .item()
+            == 0
+        )
+    finally:
+        src.close()
 
 
 def test_postgres_sqlalchemy_engine(postgres_source):
@@ -1213,23 +1368,25 @@ def test_postgres_sqlalchemy_engine(postgres_source):
             assert all(want[uid] for uid in uids.values())
             assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
         engine.dispose()
 
 
 def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source):
-    """A connection that goes back to the app's pool is not left in autocommit:
-    a transaction that the app rolls back stays rolled back."""
+    """Each query hands its connection back to the app's pool, which ends its
+    transaction, and is not left in autocommit: a transaction that the app
+    rolls back stays rolled back."""
     sa = pytest.importorskip("sqlalchemy")
     pytest.importorskip("psycopg")
     uri = os.environ[PG_ENV].replace("postgresql://", "postgresql+psycopg://")
-    engine = sa.create_engine(uri, pool_size=1, max_overflow=1)
+    engine = sa.create_engine(uri, pool_size=1, max_overflow=0, pool_timeout=5)
     table = f"fv_test_{secrets.token_hex(6)}"
     src = SQLSource(engine, table=postgres_source._table)
     try:
-        # psycopg gives no dtypes for an empty result: the schema query runs on
-        # a second connection, which goes back to the pool.
+        # psycopg gives no dtypes for an empty result: the schema query runs
+        # again for the type OIDs, on the one pooled connection.
         assert src.schema == postgres_source.schema
+        assert engine.pool.checkedout() == 0
         with engine.begin() as c:
             c.exec_driver_sql(f'CREATE TABLE "{table}" (n int)')
         with pytest.raises(RuntimeError), engine.begin() as c:
@@ -1237,15 +1394,16 @@ def test_postgres_sqlalchemy_engine_keeps_its_pool_transactional(postgres_source
             raise RuntimeError
         with engine.connect() as c:
             assert c.exec_driver_sql(f'SELECT count(*) FROM "{table}"').scalar() == 0
-        # The source's own idle connection still holds no table lock.
+        # The connection went back to the pool and holds no table lock.
         src.physical_minmax(["w"])
+        assert engine.pool.checkedout() == 0
         with engine.begin() as c:
             c.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
             c.exec_driver_sql(
                 f'LOCK TABLE "{postgres_source._table}" IN ACCESS EXCLUSIVE MODE'
             )
     finally:
-        _close_pool(src)
+        src.close()
         with engine.begin() as c:
             c.exec_driver_sql(f'DROP TABLE IF EXISTS "{table}"')
         engine.dispose()
@@ -1284,7 +1442,7 @@ def test_postgres_line_bool_y():
         assert all(want.values())
         assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
         with adbc.connect(uri) as conn:
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{table}"')
@@ -1354,7 +1512,7 @@ def test_postgres_numeric_reads_as_float64(driver):
                 assert all(want.values())
                 assert not _diff(want, got)
     finally:
-        _close_pool(src)
+        src.close()
 
 
 _CH_TYPES = {
@@ -1507,7 +1665,7 @@ def test_clickhouse_minmax_over_no_rows_is_null(clickhouse_client):
         bounds = src.physical_minmax(["i", "ts", "v"])
         assert bounds == dict.fromkeys(["i", "ts", "v"], (None, None))
     finally:
-        _close_pool(src)
+        src.close()
         clickhouse_client.command(f'DROP TABLE IF EXISTS "{table}"')
 
 

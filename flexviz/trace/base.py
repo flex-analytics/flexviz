@@ -19,7 +19,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, get_args
 from uuid import uuid4
 
 import numpy as np
@@ -28,6 +28,9 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
 from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import BackendDataValue, TraceHoverSpec, TraceSelectionSpec, TraceSpec
+
+if TYPE_CHECKING:
+    from ..sql import SQLSource
 
 
 @dataclass
@@ -229,7 +232,7 @@ class FlexTrace(ABC):
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
 
-    def check_source(self, source: LFQueryBuilder) -> None:
+    def check_source(self, source: LFQueryBuilder | SQLSource) -> None:
         """Raise when this trace cannot run on the source.
 
         The engine calls it for every trace before the domains are resolved.
@@ -868,10 +871,22 @@ def _range_filter_expr(
     closed: str = "both",
 ) -> pl.Expr | None:
     """Build a typed ``is_between`` expression for ``col_name`` and ``range_``."""
+    bounds = _range_filter_bounds(col_name, range_, schema, closed)
+    return None if bounds is None else pl.col(col_name).is_between(*bounds)
+
+
+def _range_filter_bounds(
+    col_name: str,
+    range_: tuple[Any, Any] | None,
+    schema: pl.Schema | None = None,
+    closed: str = "both",
+) -> tuple[pl.Expr, pl.Expr, str] | None:
+    """The typed bounds of ``_range_filter_expr`` and the ``closed`` to apply
+    them with. A SQL source compiles the same bounds."""
     bounds = _typed_range_bounds(col_name, range_, schema, closed)
     if bounds is None:
         return None
     dtype = _dtype_for_col(schema, col_name)
     if dtype is not None and dtype.is_integer():
         closed = "both"  # _typed_range_bounds made the bounds inclusive
-    return pl.col(col_name).is_between(*bounds, closed=closed)
+    return (*bounds, closed)

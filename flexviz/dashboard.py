@@ -27,7 +27,7 @@ expressions applied consistently.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -38,6 +38,7 @@ from .figure import (
     _effective_live_brush,
     _register_source_if_needed,
     _render_dashboard,
+    _serves_cubes,
     _start_server_thread,
 )
 from .LF import LFQueryBuilder, as_source
@@ -52,6 +53,9 @@ from .spec import (
     encode_spec,
     figure_axis_columns,
 )
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
 
 
 def _name_figures(message: str, figure_specs: list[FigureSpec]) -> str:
@@ -93,7 +97,9 @@ class Dashboard:
         ----------
         data:
             A Polars DataFrame or LazyFrame (or anything accepted by
-            ``polars_lf_from``).  All figures will share this data source.
+            ``polars_lf_from``), or a ``flexviz.SQLSource`` whose
+            aggregations run in a database.  All figures will share this data
+            source.
             Pass ``None`` for in-memory-only dashboards.
         cache:
             Opt the shared source into init-load caching.  Asserts the data
@@ -103,7 +109,7 @@ class Dashboard:
         """
         self._uid: str = str(uuid4())
         self._cache_enabled: bool = cache
-        self._backend_lf: LFQueryBuilder | None = None
+        self._backend_lf: LFQueryBuilder | SQLSource | None = None
         if data is not None:
             self._backend_lf = as_source(data, cache=cache)
 
@@ -379,7 +385,7 @@ class Dashboard:
 
         spec = self.to_spec(source_name=source_name, layout=layout)
         spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+            live_brush, _serves_cubes(self._backend_lf, source_name, effective_cache)
         )
         if draggable is not None:
             spec.layout.draggable = draggable

@@ -411,12 +411,17 @@ FlexTrace (ABC)
 │       unfiltered, or filtered where domain_follows_filter applies in update
 │       mode. A column drops out once the viewport supplies its axis.
 │       update_range holds any subset of the trace's recompute axes
-├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols)
+├── check_source(source)                 ← raises when the trace cannot run on
+│                                           the source (SQL: `sql_support` and
+│                                           the schema columns)
+├── sql_support: ClassVar[bool]           ← the spec hook returns SQL plans
+├── get_aggregation_spec(update_range, schema, *, domains, scan_source, sorted_cols, sql_source)
 │     → AggregationSpec | GroupedAggregationSpec                  [abstract]
 │     ← the engine calls every trace the same way; a trace ignores what it
 │       does not need. `domains` holds the resolved bounds of the unzoomed
 │       domain_cols (histogram, histogram2d, line); `scan_source` and
-│       `sorted_cols` only let a trace pick a faster equivalent formulation
+│       `sorted_cols` only let a trace pick a faster equivalent formulation;
+│       `sql_source` asks for plans that take a `SQLFrame` (SQL sources)
 ├── _to_update(df_agg) → TraceResult                              [abstract]
 ├── _to_grouped_update(df_grouped) → TraceResult                  [grouped parents]
 ├── _range_filter_exprs(col, range_, schema) → List[pl.Expr]      [convenience]
@@ -433,7 +438,8 @@ reading the source trace's ``backend_data``.
 A values clause casts its members to the column dtype and drops the nulls (a null
 never selects a row, and an empty remainder keeps ``is_in``, which selects nothing
 but still names the column).  The source kind picks the compiled form, so the engine
-passes the builder's ``is_scan`` to ``predicates_to_expr``.  A scan always keeps
+calls the source's ``compile_filter``, which passes the builder's ``is_scan`` to
+``predicates_to_expr``.  A SQL source compiles the same bounds to SQL instead.  A scan always keeps
 ``is_in``: both forms are pushed into the reader, where ``is_in`` costs one pass over
 the column and an equality chain costs one pass per value.  On a resident frame it is
 the other way round, so up to ``_EQUALITY_CHAIN_MAX_VALUES`` (64) members the clause
@@ -813,7 +819,7 @@ flexviz_polars._minmax_pairs_line(x_expr, y_expr, n_buckets, x_domain) → pl.Ex
 
 ```
 FlexEngine
-├── _backend_lf: LFQueryBuilder
+├── _backend_lf: LFQueryBuilder | SQLSource
 ├── _scalable_traces: Dict[str, FlexTrace]   ← keyed by trace uid
 │
 └── process(event, trace_infos, viewports_by_figure, selections, cross_filter_mode) → List[TraceDelta]
@@ -900,7 +906,7 @@ Because the engine keys its recompute on event type, `fvOnResetPanel` derives th
 The rules that decide how a trace runs locally. They hold across every trace, so
 a new trace inherits them instead of choosing again.
 
-- **Two paths, picked by source kind and grouping.** A resident ungrouped trace runs a Rust kernel. A scan, or a grouped trace on either source kind, runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` and the presence of `group_by` are the only inputs to that choice. The choice is internal, and there is no public engine option.
+- **Two paths, picked by source kind and grouping.** A resident ungrouped trace runs a Rust kernel. A scan, or a grouped trace on either source kind, runs a bounded-memory plan: a streaming `group_by`, or the same kernel folded over `collect_batches` batches. `LFQueryBuilder.is_scan` and the presence of `group_by` are the only inputs to that choice. The choice is internal, and there is no public engine option. On a SQL source every trace runs its SQL twin instead (see SQL sources).
 - **Every collect names its engine.** `"auto"` is never used. Each `.collect()` and `collect_batches()` in `flexviz/` passes an explicit `engine=`, from `LFQueryBuilder.collect_engine` or a literal.
 - **The bar for a kernel.** A Rust kernel replaces a Polars plan only when it is correct on the same inputs and measured faster on representative data with a release build. Otherwise the plan stays.
 - **Data type does not pick an implementation.** One exception, tracked in issue #33: a single string-like group column packs into the bucket key of a grouped line (`_grouped_bucket_keys` in `trace/line_buckets.py`).
@@ -921,6 +927,7 @@ The open gaps these rules leave are rows in the Known Issues / Technical Debt ta
 LFQueryBuilder
 ├── _ldf: pl.LazyFrame
 ├── _sorted_cols: Set[str]
+├── is_sql = False               ← `SQLSource` is the other kind of source
 │
 ├── schema                      ← cached property
 ├── collect_engine               ← "streaming" if is_scan else "in-memory"; the collects below use it (the line bucket plan, the grouped histogram plan and the domain probe always stream)
@@ -929,6 +936,7 @@ LFQueryBuilder
 ├── check_line_x(col)            ← line x data check on a resident frame: one collect verifying x is sorted in Polars order (a null prefix and a NaN suffix pass); the flag is kept only when static
 ├── sorted_cols                  ← the columns asserted sorted; passed to every trace's spec hook
 ├── assume_sorted(col)           ← skips verification; caller guarantees order
+├── compile_filter(predicates, schema)  ← one selection as one filter: `predicates_to_expr` with `is_scan`
 └── aggregate(filter_exprs, agg_specs) → tuple[pl.DataFrame, dict[str, pl.DataFrame]]
       filtered_ldf = _ldf if not filter_exprs else _ldf.filter(*filter_exprs)
       regular specs  → one batched select(...).collect(), plus any spec.plan(filtered_ldf) hstacked in
@@ -983,7 +991,9 @@ On a bare single-file local Parquet scan, `physical_minmax` reads the footer sta
 
 ### SQL sources
 
-`SQLSource` in `sql.py` is the second source kind. The data stays in a database
+`SQLSource` in `sql.py` is the second kind of source, next to `LFQueryBuilder`.
+(Elsewhere in this document, "both source kinds" means the two forms of a
+builder: a resident frame and a scan.) The data stays in a database
 (Postgres, DuckDB, ClickHouse or Trino), and each trace aggregation runs there
 as one SQL query. It offers the surface the engine and the server use of an
 `LFQueryBuilder`: `schema`, `cache` (set by the registrar), `is_scan` (always
@@ -998,8 +1008,16 @@ SQLSource
 ├── schema                      ← Polars schema of `SELECT * ... LIMIT 0`
 ├── compile_filter(predicates)  ← the bounds of `predicates_to_expr` (`_clause_bounds`), as a SQLGlot condition
 ├── physical_minmax(cols, filter_exprs=)  ← one MIN/MAX query; NaN left out as in Polars; memoized with cache
-└── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
+├── aggregate(filter_exprs, specs)  ← runs every spec's plan on a `SQLFrame`, in parallel, max_connections at a time
+└── close()                     ← closes the idle connections; a later query opens new ones
 ```
+
+- **Connections.** At most `max_connections` queries run at a time. A
+  connection that FlexViz opens runs in autocommit and waits in the source's
+  idle queue for the next query. A SQLAlchemy connection goes back to the
+  app's pool after each query instead: the pool ends its transaction and
+  applies its pre-ping and recycle rules, and FlexViz never holds one while
+  idle.
 
 - **Plans, not expressions.** On a SQL source the engine passes
   `sql_source=True` to `get_aggregation_spec`. A trace with `sql_support`
@@ -1754,7 +1772,9 @@ flexviz/
 │   │                           FVCube v1 codec
 │   ├── cache.py             ← CacheBackend, delta cache + cube-blob cache
 │   ├── LF.py                ← LFQueryBuilder, AggregationSpec,
-│   │                           GroupedAggregationSpec
+│   │                           GroupedAggregationSpec, as_source
+│   ├── sql.py               ← SQLSource, SQLFrame, the SQL twins of the
+│   │                           trace plans
 │   ├── server.py            ← FastAPI app, register_source, mount_into, run_server
 │   ├── figure.py            ← Figure
 │   ├── dashboard.py         ← Dashboard

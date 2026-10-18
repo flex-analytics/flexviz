@@ -38,7 +38,7 @@ Downsampling strategies:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, Literal, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args
 
 import polars as pl
 import polars.selectors as cs
@@ -63,6 +63,9 @@ from .base import (
     _typed_range_bounds,
 )
 from .line_buckets import bucket_grid, pairs_plan
+
+if TYPE_CHECKING:
+    from ..sql import SQLSource
 
 LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 
@@ -651,7 +654,7 @@ class LinePlot(FlexTrace):
         """
         return self.downsample != "nth"
 
-    def check_source(self, source: LFQueryBuilder) -> None:
+    def check_source(self, source: LFQueryBuilder | SQLSource) -> None:
         """The line contract: the dtypes always, the x data where order matters.
 
         Only an ungrouped x-width line on a resident frame reads x in order. A
