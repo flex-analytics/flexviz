@@ -18,12 +18,12 @@ from __future__ import annotations
 import threading
 import warnings
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import polars as pl
 
-from .LF import LFQueryBuilder, polars_lf_from
+from .LF import LFQueryBuilder, as_source, polars_lf_from
 from .spec import DashboardSpec, FigureSpec, VisualizationSpec
 from .trace.bar import BarPlot
 from .trace.base import FlexTrace, _composite_label
@@ -36,6 +36,9 @@ from .trace.hist2d import Histogram2D
 from .trace.line import LinePlot
 from .trace.pie import PiePlot
 from .trace.treemap import TreeMap
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
 
 
 def _derive_axis_labels(trace_specs: list) -> dict[str, str | None]:
@@ -153,7 +156,8 @@ class Figure:
         ----------
         data:
             A Polars DataFrame or LazyFrame (or anything accepted by
-            ``polars_lf_from``).  Pass ``None`` for in-memory figures
+            ``polars_lf_from``), or a ``flexviz.SQLSource`` whose
+            aggregations run in a database.  Pass ``None`` for in-memory figures
             where each trace carries its own data.
         cache:
             Opt this figure's source into init-load caching.  Asserts the
@@ -162,9 +166,9 @@ class Figure:
             call in :meth:`show`.
         """
         self._cache_enabled: bool = cache
-        self._backend_lf: LFQueryBuilder | None = None
+        self._backend_lf: LFQueryBuilder | SQLSource | None = None
         if data is not None:
-            self._backend_lf = LFQueryBuilder(polars_lf_from(data), cache=cache)
+            self._backend_lf = as_source(data, cache=cache)
 
         self._uid: str = str(uuid4())
         self._traces: list[FlexTrace] = []
@@ -178,6 +182,11 @@ class Figure:
     def _add_trace(self, trace: FlexTrace) -> Figure:
         """Assign a uid and register a trace."""
         trace.uid = str(uuid4())
+        # A database source checks here, so a chart it cannot run fails in the
+        # user's code instead of as a 500 in the browser. The check reads only
+        # the schema; on a frame it can read data, so it waits for a request.
+        if getattr(self._backend_lf, "is_sql", False):
+            trace.check_source(self._backend_lf)
         self._traces.append(trace)
         return self
 
@@ -834,7 +843,11 @@ class Figure:
         fig._uid = spec.figure.uid
         # A spec carries no cache opt-in; ``show(cache=...)`` still overrides.
         fig._cache_enabled = False
-        if backend_lf is not None and not isinstance(backend_lf, LFQueryBuilder):
+        if (
+            backend_lf is not None
+            and not isinstance(backend_lf, LFQueryBuilder)
+            and not getattr(type(backend_lf), "is_sql", False)
+        ):
             fig._backend_lf = LFQueryBuilder(
                 polars_lf_from(backend_lf), cache=fig._cache_enabled
             )
@@ -910,16 +923,27 @@ class Figure:
         spec = self.to_spec(source=src)
         dash_spec = DashboardSpec(figures=[spec.figure], state=spec.state)
         dash_spec.client_state.live_brush = _effective_live_brush(
-            live_brush, effective_cache
+            live_brush, _serves_cubes(self._backend_lf, source_name, effective_cache)
         )
         _render_dashboard(
             renderer, dash_spec, f"http://{host}:{port}", block=block, **kwargs
         )
 
 
+def _serves_cubes(source: Any, source_name: str | None, effective_cache: bool) -> bool:
+    """Cubes are built only for a ``cache=True`` frame source: the "data is
+    static" contract, and a SQL source has no cube path. Without data of its
+    own, a figure reads the source registered under ``source_name``."""
+    if source is None:
+        from .server import _sources
+
+        source = _sources.get(source_name)
+    return effective_cache and not getattr(source, "is_sql", False)
+
+
 def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
     """Couple ``live_brush`` to caching: cubes are only built for ``cache=True``
-    sources (the "data is static" contract), so live-brush cannot function
+    frame sources (see ``_serves_cubes``), so live-brush cannot function
     without it.  When ``effective_cache`` is False we force ``"off"`` — otherwise
     the client binds ``plotly_selecting`` and fires a wasted ``cube_request`` per
     drag that the server answers with an empty bundle, then degrades.
@@ -934,14 +958,14 @@ def _effective_live_brush(live_brush: str | None, effective_cache: bool) -> str:
         return requested
     if explicit and requested != "off":
         warnings.warn(
-            f"live_brush={requested!r} needs cache=True to serve cubes; "
+            f"live_brush={requested!r} needs a cache=True frame source to serve cubes; "
             "forcing live_brush='off'."
         )
     return "off"
 
 
 def _register_source_if_needed(
-    source_name: str, backend_lf: LFQueryBuilder | None, cache: bool = False
+    source_name: str, backend_lf: LFQueryBuilder | SQLSource | None, cache: bool = False
 ) -> None:
     """Register *backend_lf* under *source_name*.
 

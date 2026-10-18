@@ -19,7 +19,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, get_args
 from uuid import uuid4
 
 import numpy as np
@@ -28,6 +28,9 @@ import polars as pl
 from ..cube import CubeTargetSpec, FreeAxisSpec, MeasureAgg, MeasureSpec, temporal_unit
 from ..LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
 from ..spec import BackendDataValue, TraceHoverSpec, TraceSelectionSpec, TraceSpec
+
+if TYPE_CHECKING:
+    from ..sql import SQLSource
 
 
 @dataclass
@@ -90,6 +93,8 @@ class FlexTrace(ABC):
     # domain. Histogram edges stay put so the brushed subset stays comparable
     # with the whole.
     domain_follows_filter: ClassVar[bool] = False
+    # True when ``get_aggregation_spec(sql_source=True)`` returns SQL plans.
+    sql_support: ClassVar[bool] = False
     # One-line human description of the zoom re-aggregation policy, surfaced in
     # the generated Architecture.md table. Override alongside
     # ``_default_recompute_axes``.
@@ -227,12 +232,34 @@ class FlexTrace(ABC):
         """This trace's grouping+measure as a cube target, or None (fall back)."""
         return None
 
-    def check_source(self, source: LFQueryBuilder) -> None:
+    def check_source(self, source: LFQueryBuilder | SQLSource) -> None:
         """Raise when this trace cannot run on the source.
 
         The engine calls it for every trace before the domains are resolved.
         Reads the schema, and may read data.
         """
+        if not source.is_sql:
+            return
+        if not self.sql_support:
+            raise ValueError(
+                f"A {self.trace_type} trace cannot run on a SQL source yet. "
+                "Load the rows into a Polars frame for it."
+            )
+        # Reads the schema only. The SQL builder refuses an unknown column
+        # too; this names it before any query runs.
+        cols = [
+            c
+            for v in (
+                *self._backend_data.values(),
+                self.group_by_cols or (),
+                self._params.get("path") or (),
+                self._params.get("columns") or (),
+            )
+            for c in ([v] if isinstance(v, str) else v)
+        ]
+        missing = [c for c in dict.fromkeys(cols) if c not in source.schema]
+        if missing:
+            raise ValueError(f"column(s) {missing} not in the SQL source")
 
     def domain_cols(self, update_range: dict[str, Any]) -> tuple[str, ...]:
         """Columns whose ``(min, max)`` this trace's spec needs.
@@ -258,6 +285,7 @@ class FlexTrace(ABC):
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
+        sql_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return an aggregation spec for the engine to execute.
 
@@ -284,6 +312,10 @@ class FlexTrace(ABC):
         sorted_cols:
             Columns the builder asserts sorted.  Only for picking a faster
             equivalent formulation, never to change results.
+        sql_source:
+            The source is a database (``flexviz.sql.SQLSource``).  A trace
+            with ``sql_support`` returns specs whose plans take a ``SQLFrame``
+            and return the frame its Polars plan returns.
 
         Returns
         -------
@@ -836,10 +868,22 @@ def _range_filter_expr(
     closed: str = "both",
 ) -> pl.Expr | None:
     """Build a typed ``is_between`` expression for ``col_name`` and ``range_``."""
+    bounds = _range_filter_bounds(col_name, range_, schema, closed)
+    return None if bounds is None else pl.col(col_name).is_between(*bounds)
+
+
+def _range_filter_bounds(
+    col_name: str,
+    range_: tuple[Any, Any] | None,
+    schema: pl.Schema | None = None,
+    closed: str = "both",
+) -> tuple[pl.Expr, pl.Expr, str] | None:
+    """The typed bounds of ``_range_filter_expr`` and the ``closed`` to apply
+    them with. A SQL source compiles the same bounds."""
     bounds = _typed_range_bounds(col_name, range_, schema, closed)
     if bounds is None:
         return None
     dtype = _dtype_for_col(schema, col_name)
     if dtype is not None and dtype.is_integer():
         closed = "both"  # _typed_range_bounds made the bounds inclusive
-    return pl.col(col_name).is_between(*bounds, closed=closed)
+    return (*bounds, closed)

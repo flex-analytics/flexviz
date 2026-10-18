@@ -20,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from .spec import ClauseFilter, SelectionPredicate, SelectionState
-from .trace.base import _dtype_for_col, _range_filter_expr, _temporal_bound_toward
+from .trace.base import _dtype_for_col, _range_filter_bounds, _temporal_bound_toward
 
 
 def _values_to_typed_series(
@@ -77,6 +77,19 @@ def _clause_to_expr(
             )
         return pl.col(clause.column).is_in(typed.implode())
 
+    bounds = _clause_bounds(clause, schema)
+    # range was None: the model_validator rejects that, so this is a safe no-op.
+    if bounds is None:
+        return pl.lit(True)
+    lo, hi, closed = bounds
+    return pl.col(clause.column).is_between(lo, hi, closed=closed)
+
+
+def _clause_bounds(
+    clause: ClauseFilter, schema: pl.Schema | None
+) -> tuple[pl.Expr, pl.Expr, str] | None:
+    """The typed bounds of a range clause, and the ``closed`` to apply them
+    with. A SQL source compiles the same bounds."""
     dtype = _dtype_for_col(schema, clause.column)
     if clause.range is not None and dtype is not None and dtype.is_temporal():
         # A selection keeps exactly the instants in its range: each bound
@@ -85,16 +98,14 @@ def _clause_to_expr(
         # (_typed_range_bounds): rounding there would change which points a
         # line keeps at the edge of a zoom.
         lo, hi = clause.range
-        bounds = (
+        return (
             _temporal_bound_toward(lo, dtype, up=clause.closed in ("both", "left")),
             _temporal_bound_toward(
                 hi, dtype, up=clause.closed not in ("both", "right")
             ),
+            clause.closed,
         )
-        return pl.col(clause.column).is_between(*bounds, closed=clause.closed)
-    expr = _range_filter_expr(clause.column, clause.range, schema, clause.closed)
-    # range was None: the model_validator rejects that, so this is a safe no-op.
-    return pl.lit(True) if expr is None else expr
+    return _range_filter_bounds(clause.column, clause.range, schema, clause.closed)
 
 
 def predicate_to_expr(

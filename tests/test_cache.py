@@ -570,6 +570,6 @@ def test_live_brush_forced_off_without_cache():
 def test_live_brush_forced_off_warns_on_explicit_request():
     from flexviz.figure import _effective_live_brush
 
-    with pytest.warns(UserWarning, match="needs cache=True"):
+    with pytest.warns(UserWarning, match="needs a cache=True frame source"):
         result = _effective_live_brush("auto", effective_cache=False)
     assert result == "off"

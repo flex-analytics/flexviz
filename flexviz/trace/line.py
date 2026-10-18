@@ -38,7 +38,7 @@ Downsampling strategies:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, Literal, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args
 
 import polars as pl
 import polars.selectors as cs
@@ -63,6 +63,9 @@ from .base import (
     _typed_range_bounds,
 )
 from .line_buckets import bucket_grid, pairs_plan
+
+if TYPE_CHECKING:
+    from ..sql import SQLSource
 
 LineDownsample = Literal["minmax", "lttb", "fpcs", "nth"]
 
@@ -453,6 +456,7 @@ class LinePlot(FlexTrace):
 
     trace_type: str = "line"
     domain_follows_filter: ClassVar[bool] = True
+    sql_support = True
     select_policy_doc: str = "x anchor only — vertical band across all series"
     recompute_policy_doc: str = (
         "x anchor — downsample window (frozen if update_on_zoom=False)"
@@ -650,14 +654,20 @@ class LinePlot(FlexTrace):
         """
         return self.downsample != "nth"
 
-    def check_source(self, source: LFQueryBuilder) -> None:
+    def check_source(self, source: LFQueryBuilder | SQLSource) -> None:
         """The line contract: the dtypes always, the x data where order matters.
 
         Only an ungrouped x-width line on a resident frame reads x in order. A
         grouped plan and a scan plan read x in no order, so they stop at the
         dtype gate.
         """
+        super().check_source(source)
         self.check_schema(source.schema)
+        if source.is_sql and not self._x_width:
+            raise ValueError(
+                "downsample='nth' cannot run on a SQL source: a database has no "
+                "row order to stride. Use 'minmax', 'lttb' or 'fpcs'."
+            )
         if self._x_width and self.group_by_cols is None and not source.is_scan:
             source.check_line_x(self.x_col)
 
@@ -726,6 +736,7 @@ class LinePlot(FlexTrace):
         domains: Mapping[str, tuple[Any, Any]] | None = None,
         scan_source: bool = False,
         sorted_cols: frozenset[str] = frozenset(),
+        sql_source: bool = False,
     ) -> AggregationSpec | GroupedAggregationSpec:
         """Return either a regular or grouped line aggregation spec.
 
@@ -762,9 +773,10 @@ class LinePlot(FlexTrace):
         if group_by_cols is not None:
             # Grouped lines restrict the frame *before* grouping, and a
             # frame-level filter is not a slice, so this path keeps the mask.
+            # The SQL twin builds its own viewport filter from ``x_range``.
             vp_expr = (
                 _range_filter_expr(self.x_col, x_range, schema=schema)
-                if x_range is not None
+                if x_range is not None and not sql_source
                 else None
             )
             spec = {
@@ -792,6 +804,7 @@ class LinePlot(FlexTrace):
                         None if x_range is not None else (domains or {})[self.x_col],
                         schema,
                         group_cols=group_by_cols,
+                        sql=sql_source,
                     ),
                 )
             return GroupedAggregationSpec(
@@ -816,7 +829,8 @@ class LinePlot(FlexTrace):
 
             if scan_source:
                 # The kernel needs the whole column in memory, so a scan runs
-                # the streaming plan instead.
+                # the streaming plan instead, and a SQL source (also a scan)
+                # its SQL twin.
                 return AggregationSpec(
                     uid=self.uid,
                     plan=pairs_plan(
@@ -826,12 +840,13 @@ class LinePlot(FlexTrace):
                         self.uid,
                         (
                             _range_filter_expr(self.x_col, x_range, schema=schema)
-                            if x_range is not None
+                            if x_range is not None and not sql_source
                             else None
                         ),
                         x_range,
                         x_domain,
                         schema,
+                        sql=sql_source,
                     ),
                 )
 

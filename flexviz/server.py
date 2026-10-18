@@ -54,7 +54,7 @@ import re
 import socket
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -72,7 +72,7 @@ from flexviz.cache import (
 from flexviz.cube import encode_cube_bundle
 from flexviz.engine import FlexEngine, TraceInfo
 from flexviz.events import ActiveSource, InteractionEvent, TraceDelta
-from flexviz.LF import LFQueryBuilder, polars_lf_from
+from flexviz.LF import LFQueryBuilder, as_source
 from flexviz.spec import (
     AxisRange,
     DashboardSpec,
@@ -82,6 +82,9 @@ from flexviz.spec import (
     check_axis_types,
 )
 
+if TYPE_CHECKING:
+    from flexviz.sql import SQLSource
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -89,17 +92,17 @@ logger = logging.getLogger(__name__)
 # Populated before the server starts; read-only during request handling.
 # ---------------------------------------------------------------------------
 
-_sources: dict[str, LFQueryBuilder] = {}
+_sources: dict[str, LFQueryBuilder | SQLSource] = {}
 
 
 def register_source(name: str, data: Any, cache: bool = False) -> None:
     """Register a named data source.
 
-    ``data`` can be a pre-built ``LFQueryBuilder`` (no re-wrapping occurs)
-    or anything accepted by ``polars_lf_from``: a Polars DataFrame /
-    LazyFrame, a pandas DataFrame, or a PyArrow Table.  For file-backed or
-    database-backed sources, pass a pre-built ``pl.LazyFrame`` (e.g.
-    ``pl.scan_parquet(...)``).
+    ``data`` can be a pre-built ``LFQueryBuilder`` (no re-wrapping occurs),
+    a ``flexviz.SQLSource`` for a database table or query, or anything
+    accepted by ``polars_lf_from``: a Polars DataFrame / LazyFrame, a pandas
+    DataFrame, or a PyArrow Table.  For file-backed sources, pass a
+    ``pl.LazyFrame`` (e.g. ``pl.scan_parquet(...)``).
 
     Call this before ``uvicorn.run`` or before the first request in tests.
 
@@ -108,7 +111,8 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
     name:
         Identifier that clients reference via ``FigureSpec.source``.
     data:
-        A ``LFQueryBuilder`` or raw data to wrap in one.
+        A ``LFQueryBuilder``, a ``SQLSource``, or raw data to wrap in a
+        builder.
     cache:
         When ``True``, opt this source into server- and client-side caching
         of the initial (unfiltered) load.  Setting it **asserts the data is
@@ -131,13 +135,9 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         _sources[name].cache = cache
         set_source_cacheable(name, cache)
         return
-    if isinstance(data, LFQueryBuilder):
-        _sources[name] = data
-    else:
-        _sources[name] = LFQueryBuilder(polars_lf_from(data))
     # The registrar declares the contract, so the source learns it here whoever
     # built the builder.
-    _sources[name].cache = cache
+    _sources[name] = as_source(data, cache)
     set_source_cacheable(name, cache)
     if is_reregistration:
         # Re-registration may carry new data, so the (now possibly stale)
@@ -149,7 +149,7 @@ def register_source(name: str, data: Any, cache: bool = False) -> None:
         get_cube_cache().clear()
 
 
-def get_source(name: str) -> LFQueryBuilder:
+def get_source(name: str) -> LFQueryBuilder | SQLSource:
     """Retrieve a registered source or raise ``KeyError``."""
     try:
         return _sources[name]
@@ -609,7 +609,7 @@ async def dashboard_update(
     event = req.event
 
     # -- 1. resolve unique sources --------------------------------------------
-    source_map: dict[str, LFQueryBuilder | None] = {}
+    source_map: dict[str, LFQueryBuilder | SQLSource | None] = {}
     for fig_spec in req.spec.figures:
         name = fig_spec.source
         if name not in source_map:

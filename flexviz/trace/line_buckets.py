@@ -129,6 +129,21 @@ def _grouped_bucket_keys(
     )
 
 
+def bucket_width(span: Any, n_buckets: int, dtype: pl.DataType | None) -> Any:
+    """The width of one of ``n_buckets`` buckets over ``span``.
+
+    Float columns need true division: integer ceiling division rounds a sub-1
+    width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
+    Integer and temporal columns divide with a ceiling to keep the width whole.
+    The branch is on the column dtype, because the Python type of the span is
+    no dtype signal: a JSON viewport bound of ``100`` arrives as an int on a
+    float column.
+    """
+    if dtype is not None and dtype.is_float():
+        return span / n_buckets
+    return -(-span // n_buckets)
+
+
 def _bucket_extrema(
     filtered_ldf: pl.LazyFrame,
     x_col: str,
@@ -177,18 +192,7 @@ def _bucket_extrema(
         else pl.col(x_col)
     )
     x_lo, x_hi = bucket_grid(x_col, x_range, x_domain, dtype)
-    # Float columns need true division: integer ceiling division rounds a sub-1
-    # width up to 1 (0.002 / 500 -> 1), collapsing every row into one bucket.
-    # Integer and temporal columns divide with a ceiling to keep the width
-    # whole. The branch is on the column dtype, because the Python type of the
-    # span is no dtype signal: a JSON viewport bound of ``100`` arrives as an
-    # int on a float column.
-    span = x_hi - x_lo
-    bsz = (
-        span / n_buckets
-        if dtype is not None and dtype.is_float()
-        else -(-span // n_buckets)
-    )
+    bsz = bucket_width(x_hi - x_lo, n_buckets, dtype)
 
     # A fractional width multiplies by the reciprocal instead of dividing:
     # Polars lowers a float `//` to that same multiply, and spelling it out is
@@ -239,6 +243,7 @@ def pairs_plan(
     schema: pl.Schema | None,
     *,
     group_cols: tuple[str, ...] | None = None,
+    sql: bool = False,
 ):
     """Stage 1 of every x-width strategy: the bucket extrema kept as pairs.
 
@@ -254,6 +259,11 @@ def pairs_plan(
     The pair names live only as struct fields: grouped, the frame still carries
     the user's group columns, and a top-level ``x_min`` beside a group column of
     that name would collide.
+
+    With ``sql`` the plan runs on a ``SQLFrame``: the database returns the
+    bucket extrema (``flexviz.sql.bucket_extrema``), and the same code shapes
+    them. ``vp_filter`` is then unused, the SQL twin builds its own from
+    ``x_range``.
     """
     pair_cols = (
         f"{_ALIAS_PREFIX}lo_{x_col}",
@@ -265,8 +275,13 @@ def pairs_plan(
         *(pl.col(c).alias(f) for c, f in zip(pair_cols, _PAIR_FIELDS))
     )
 
+    if sql:
+        from ..sql import bucket_extrema as extrema
+    else:
+        extrema = _bucket_extrema
+
     def run(filtered_ldf: pl.LazyFrame) -> pl.DataFrame:
-        result = _bucket_extrema(
+        result = extrema(
             filtered_ldf,
             x_col,
             y_col,

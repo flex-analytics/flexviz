@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
@@ -23,7 +23,7 @@ from .cube import (
 )
 from .events import ActiveSource, GroupedChildDelta, InteractionEvent, TraceDelta
 from .LF import AggregationSpec, GroupedAggregationSpec, LFQueryBuilder
-from .predicates import canonical_passive_key, predicates_to_expr
+from .predicates import canonical_passive_key
 from .spec import SelectionState
 from .trace.base import (
     FlexTrace,
@@ -31,6 +31,10 @@ from .trace.base import (
     _physical_bound_expr,
     child_uid_from_group_key,
 )
+
+if TYPE_CHECKING:
+    from .sql import SQLSource
+
 
 # Event types whose computation is unfiltered and viewport-free. These are the
 # only events cached in Phase 1: the engine forces them to drop all
@@ -99,7 +103,8 @@ class _Partition:
 
     owner: str | None
     items: list[_AggregationTrace]
-    filter_exprs: list[pl.Expr]
+    # What the source's compile_filter returns: Polars or SQLGlot conditions.
+    filter_exprs: list[Any]
 
 
 def _normalize_axis_ranges(ranges: dict[str, Any]) -> dict[str, Any]:
@@ -169,7 +174,7 @@ class FlexEngine:
 
     def __init__(
         self,
-        backend_lf: LFQueryBuilder | None,
+        backend_lf: LFQueryBuilder | SQLSource | None,
         scalable_traces: dict[str, FlexTrace],
         cache_backend: CacheBackend | None = None,
         source_name: str | None = None,
@@ -375,7 +380,13 @@ class FlexEngine:
         too, because the brush is unknown at build time: the live envelope is
         an approximate preview that the committed selection POST replaces.
         """
-        if self._backend_lf is None or self._source_name is None:
+        # A SQL source has no cube path yet: the client falls back to the
+        # committed-selection request.
+        if (
+            self._backend_lf is None
+            or self._source_name is None
+            or self._backend_lf.is_sql
+        ):
             return [], {}
 
         viewports_by_figure = _normalize_viewports(viewports_by_figure)
@@ -399,9 +410,7 @@ class FlexEngine:
         if passive:
             build_ldf = build_ldf.filter(
                 *[
-                    predicates_to_expr(
-                        sel.predicates, schema, is_scan=self._backend_lf.is_scan
-                    )
+                    self._backend_lf.compile_filter(sel.predicates, schema)
                     for sel in passive
                 ]
             )
@@ -793,7 +802,7 @@ class FlexEngine:
         if not active_selections or self._backend_lf is None:
             return []
 
-        filter_exprs: list[pl.Expr] = []
+        filter_exprs: list[Any] = []
         for sel in active_selections:
             if sel.source_figure_uid is None:
                 continue
@@ -802,9 +811,7 @@ class FlexEngine:
             if not sel.predicates:
                 continue
             filter_exprs.append(
-                predicates_to_expr(
-                    sel.predicates, backend_schema, is_scan=self._backend_lf.is_scan
-                )
+                self._backend_lf.compile_filter(sel.predicates, backend_schema)
             )
         return filter_exprs
 
@@ -971,6 +978,7 @@ class FlexEngine:
                     domains=trace_domains,
                     scan_source=lf is not None and lf.is_scan,
                     sorted_cols=lf.sorted_cols if lf is not None else frozenset(),
+                    sql_source=lf is not None and lf.is_sql,
                 )
             )
 
@@ -1184,7 +1192,7 @@ class FlexEngine:
 
     def _aggregate_layer(
         self,
-        filter_exprs: list[pl.Expr],
+        filter_exprs: list[Any],
         specs: list[AggregationSpec | GroupedAggregationSpec],
         items: list[_AggregationTrace],
         layer: Literal["bg", "fg"] | None = None,
