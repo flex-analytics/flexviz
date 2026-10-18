@@ -1820,14 +1820,15 @@ def test_trino_millisecond_timestamp(trino_source):
     ],
 )
 def test_trino_epoch_microseconds_are_exact(trino_source, cast):
-    """``phys`` gives the exact epoch microseconds from 1700 to 2240, where a
-    plain double rounds wrong from about 2100 on."""
+    """``phys`` gives the exact epoch microseconds from 1834 to 2106, where one
+    ulp of the epoch seconds is below 0.5 us, and where a plain double rounds
+    wrong from about 2100 on."""
     query = f"""SELECT us, CAST(from_unixtime_nanos(us * 1000) {cast}) AS c
     FROM (SELECT b + n * 7919 + (n * n) % 997 AS us
           FROM UNNEST(sequence(0, 9999)) AS t(n)
-          CROSS JOIN UNNEST(ARRAY[BIGINT '-8519000000000000',
+          CROSS JOIN UNNEST(ARRAY[BIGINT '-4294000000000000',
             BIGINT '-1500000000123457', BIGINT '0', BIGINT '1767225600000000',
-            BIGINT '7258118400000000', BIGINT '8520000000000000']) AS s(b))"""
+            BIGINT '4200000000000000', BIGINT '4294000000000000']) AS s(b))"""
     src = SQLSource(_trino_connect, dialect="trino", query=query)
     frame = SQLFrame(src)
     phys = frame.phys("c", src.schema["c"])

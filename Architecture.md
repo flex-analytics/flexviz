@@ -1047,8 +1047,11 @@ SQLSource
 - **Trino.** `date_diff` counts epoch units exactly, but in milliseconds at
   most. A microsecond column adds the microseconds within the millisecond from
   `to_unixtime`, a double. That is exact while one ulp of the epoch seconds is
-  below 1 µs: the test checks points from the year 1700 to 2240. The whole
-  double rounded wrong from 2100 on, and the text form was 2.6 times slower.
+  below 0.5 µs: from the year 1834 to 2106, which the test checks. Outside it
+  Trino 484 was 1 µs off for about a fifth of the values. Shifting the value
+  by its whole milliseconds first (`date_add`) is exact everywhere but made a
+  timestamp histogram 1.6 times slower; the text form was 2.6 times slower.
+  The whole double rounded wrong from 2100 on.
   Trino has no exact percentile, so the median is the mean of the two middle
   values of `array_sort(array_agg(v))` (each group in memory), each halved
   first so the sum cannot overflow. The `trino` driver returns rows, so the dtypes come from the type
